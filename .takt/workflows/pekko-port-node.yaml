@@ -69,9 +69,9 @@ loop_monitors:
       persona: supervisor
       instruction: pekko-verify-red-loop-judge
       rules:
-        - condition: 健全（red にならない理由が変わり、テストの修正が前進している）
+        - condition: 健全（修正がテストに反映され、状況が前進している）
           next: port-test
-        - condition: 非生産的（同じ理由で red にならない状態が繰り返される）
+        - condition: 非生産的（同じ理由のまま繰り返され、テストの修正が前進していない）
           next: ABORT
   # verify_green の差し戻し上限（決定 c の verify 系 5 回）。機械ゲートが落ちて develop へ
   # 差し戻される。連続 5 回目の差し戻しで judge が判定する。ゲートを通って
@@ -91,9 +91,9 @@ loop_monitors:
       persona: supervisor
       instruction: pekko-verify-green-loop-judge
       rules:
-        - condition: 健全（落ちるゲートや理由が変わり、修正が前進している）
+        - condition: 健全（失敗が減っている、または内容が変わり、修正が前進している）
           next: develop
-        - condition: 非生産的（同じゲートが同じ理由で落ち続ける）
+        - condition: 非生産的（同じ失敗が同じ内容のまま繰り返され、修正が前進していない）
           next: ABORT
 steps:
   - name: triage
