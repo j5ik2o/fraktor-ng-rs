@@ -1,15 +1,27 @@
 # TAKT ワークフロー設計（移植パイプライン）
 
 状態: **設計決定済み（2026-11-11、判断ポイント a〜d はすべて決定、ファセットは
-標準継承の方針）**。YAML 実装済み（下記「現行仕様への適合」参照）。
+標準継承の方針）**。YAML 実装済みで、takt 0.75.0 で再確認した
+（下記「現行仕様への適合」参照）。
 persona と policy は標準ファセットをそのまま使う。
 なお差し戻し上限（決定 c）は、TAKT の loop_monitors（cycle＋threshold＋judge）で
 表現した。judge が非生産的と判定したら ABORT し、人間に上がる。
 
-### 現行仕様への適合（2026-11-11、takt 0.74.0 で再構成）
+### 現行仕様への適合（takt 0.75.0、2026-11-12 に再確認）
 
-初版 YAML は旧版 takt の同梱資料を下敷きにしていたため、0.74.0 の仕様に
-合わせて再構成した。検証は `takt workflow doctor` で両ワークフローとも OK。
+0.74.0 で再構成した構成を、takt 0.75.0 で確認し直した。0.74.0 での通過は
+根拠にしていない。ワークフローと facet に、0.75.0 のための変更は要らなかった。
+
+**確認した結果（takt 0.75.0）**
+
+- `takt workflow doctor` は、`pekko-porting-ng` と `pekko-port-node` の両方が OK
+- `takt workflow inspect` の出力は、0.74.0 と 0.75.0 で一致する（参照先のパスを除く）。
+  ステップ、遷移条件、return、loop monitor、facet の解決先に差は無い
+- `takt prompt` で組み立てたプロンプトには、プロジェクト facet の全行が本文に載る。
+  0.74.0 との差は、builtin の policy（`contract-change`、`testing`）の文言だけである
+- 本文に載る上限（2,000 字）、loop monitor の照合、judge の実行は、0.74.0 と同じ実装である
+
+**0.74.0 で再構成した点（0.75.0 でも変更不要）**
 
 - **サブワークフロー化**：root の `pekko-porting-ng` はゴール単位の薄い
   ループ（`workflow_call` でノード処理を繰り返す）とし、ノード1件の処理は
@@ -23,13 +35,173 @@ persona と policy は標準ファセットをそのまま使う。
   分類できない場合だけ、軽量な agent step（classify-red）に落ちる（決定 d の形）
 - **人間の判断は run の外で受ける**：triage の未承認の除外提案は、
   子が needs_human を返して run が終わる。承認は人間が台帳の
-  `cases.excluded` に記録し、再 run がそれを見て進む（第3節）
+  `cases.excluded` に記録し、再 run がそれを見て進む（第3節）。台帳が正である
 - **設定の置き場所**：system step のコマンド実行許可
   （`workflow_system_commands.custom_scripts: true`）を `.takt/config.yaml` に
-  追加した。provider やモデルの割り当ては workflow YAML には書かず、
-  runtime.yaml／config 側で持つ（0.74.0 の流儀）
+  置く。provider やモデルの割り当ては workflow YAML には書かず、
+  runtime.yaml／config 側で持つ
 - 標準 persona の改名に追随：等価性レビューの persona は `qa-reviewer`
   （旧）ではなく `testing-reviewer` を使う
+
+**0.75.0 で消えた前提**
+
+- permission judge は廃止された。`runtime.yaml` の `manager-permission-judge` の
+  設定と `manager.sensitive_paths` は、書いてあっても無視される。このリポジトリに、
+  それに頼る記述や設定は無い（全文を検索して確認した）
+- director は巡回しない。`director.patrol_interval` は無視される。全体の見回りは
+  manager の巡回が担う。`docs/design-settings-draft.md` の役割の説明を直した。
+  凍結した baseline の `cover-memo.md` にある「director（常駐・監督）」は、
+  0.75.0 より前の説明としてそのまま残す
+- manager の巡回と、ワークフローの loop monitor は別物である
+
+| | manager の巡回 | ワークフローの loop monitor |
+|---|---|---|
+| 動く場所 | daemon。run の外 | run の中。子ワークフロー `pekko-port-node` |
+| きっかけ | 既定 1,800 秒ごと（`manager.patrol_interval`）。活動中のゴールがあるリポジトリだけを見る。人のマージを待つだけのゴールは除く | 差し戻しが連続した回数。review 系は 3 回目、verify 系は 5 回目 |
+| 見るもの | 実行中のタスクの報告、レビュー指摘、修正計画が、指示と受け入れ条件の範囲内か。経過時間や繰り返し回数では判定しない | judge が、差し戻しが前進しているかを判定する |
+| 結果 | manager が次の手を決める | 健全なら差し戻しを続け、非生産的なら run を ABORT する |
+
+manager の巡回は回数を数えない。差し戻しの回数の上限を持つのは、loop monitor と
+`max_steps` だけである。
+
+**builtin の差分のうち、このワークフローに届くもの**
+
+0.74.0 と 0.75.0 の builtin を比べた。`mini-core`、使っている step fragment、
+instruction、output-contract（`test-report`、`testing-review`）、workflow rule に
+変更は無い。届くのは、次の文言の変更だけである。
+
+- policy `contract-change`、`testing`、`process-deviation`
+- output-contract `supervisor-validation`（mini-core の supervise の報告）
+- policy に取り込まれる partial `evidence-based-judgment`、`review-common`
+
+「同じ問題が再発したら、前回の修理の前提を再検討する」という変更（新しい policy
+`repair-strategy`）は、`review-remediation` と peer-review の fragment に入った。
+`mini-core` はそれを参照しないので、develop の委譲の構造には影響しない。
+実際の挙動は G0a の実走で見る。
+
+**manager 経由でゴールを発行する場合に要るもの（発行経路は未決定）**
+
+- manager が新しい開発タスクに選べるワークフローは、既定では `default` と `simple`
+  だけである。`pekko-porting-ng` を使わせるには、`.takt/config.yaml` の
+  `manager.workflows` に登録する。一覧を書くと、既定の候補は置き換わる。
+  手動の CLI、既存タスクの再開、子ワークフローの呼び出しは制限されない
+
+  ```yaml
+  manager:
+    workflows:
+      - pekko-porting-ng: 台帳のゴール（ノードの集合）を、Pekko のテストから1件ずつ移植する
+  ```
+
+- コードを変えるゴールには Gherkin 仕様が付く。G0a のゴール定義に足す案は次のとおり
+  である（未採用。発行経路が決まってから `docs/goals/g0a-pipeline-smoke.md` に入れる）
+
+  ```gherkin
+  Feature: G0a 台帳パイプラインの通し
+
+    Scenario: 対象の 2 ノードが green になる
+      Given 台帳の ActorPathSpec と RelativeActorPathSpec がゴール G0a に属し、unported である
+      When ゴール G0a の run が完了する
+      Then cargo test -p fraktor-actor が通る
+      And 2 ノードの status が green で、cases.total が実数で記録されている
+      And rollup.py --goal G0a が 0 を返す
+
+    Scenario: 台帳の変更が対象ノードに限られる
+      When ゴール G0a の run が完了する
+      Then ledger/nodes.yaml の差分は、対象の 2 ノードの欄だけである
+
+    Scenario: 1 ノード目だけが green の時点では完了にならない
+      Given 1 ノード目が green で、2 ノード目が unported である
+      When 完了判定を実行する
+      Then rollup.py --goal G0a は 0 以外を返す
+  ```
+
+- 設定の `manager.permission`、`assistant.formal_spec`、`manager.main_merge` は、
+  オーナーの判断待ちである（下の表）
+
+**G0a の実走で確認する項目**
+
+0.75.0 側の確認では決められず、実走で見る項目である。G0a の範囲とする。
+
+1. mini-core への委譲（develop）が、0.75.0 の builtin で従来どおり回るか
+2. 途中で止めた run を、保存された位置から再開できるか（1 回検証する）。手動の
+   CLI なら `takt resume`、manager のタスクなら requeue と retry を使う
+3. 再開したとき、前段の system step の結果（`context.verify_red`、
+   `context.verify_green`）と構造化出力が復元されているか。classify-red と
+   verify 系の judge は、この結果を instruction で参照する。子ワークフローの結果の
+   復元は、同じ呼び出しに限られる
+4. verify_red から再開したとき、`TAKT_PREVIOUS_RESPONSE_FILE` に port-test の応答
+   （node、crate、test_file の 3 行）が渡るか。渡らないと verify_red は
+   unclassifiable を返す。verify_green は、台帳の red のノードから対象を引ける
+5. needs_human や ABORT で終わった run の成果物が残り、次に引き継げるか（下の
+   「run の成果を捨てない設計」）
+6. 再 run で、green のノードが飛ばされ、止まったノードがどこからやり直されるか
+7. CI 待ちを manager の `takt_wait_command` に寄せる。このリポジトリには GitHub
+   Actions のワークフローが無いので、待つ対象は PR のチェックになる
+   （例：`gh pr checks <番号> --watch`。Actions を足したら `gh run watch --exit-status`）
+8. judge が実際に下す判定（review 系 1 本、verify 系 2 本）
+
+**run の成果を捨てない設計（2026-11-12 のオーナー方針）**
+
+方針は「非対話の run が needs_human や ABORT で終わっても、その run の作業成果を
+破棄しない」である。次は 0.75.0 の CLI のヘルプ、changelog、manager の knowledge、
+実装の読みによる。実走では確かめていない。
+
+| | 手動の CLI（`takt --pipeline --skip-git`） | manager のタスク |
+|---|---|---|
+| 作業の場所 | 発行したリポジトリの作業ツリーそのもの。作業用のコピーを作らない | ゴールブランチを基点にした、タスクごとの作業コピー |
+| 止まったときのテストと実装 | コミットされない変更として作業ツリーに残る | タスクの作業コピーに残る。ゴールブランチには取り込まれない |
+| レポート | `.takt/runs/<run>/` に残る。git の管理外である | run の記録として残る |
+| 再開 | `takt resume`。直近の失敗または中断した run を、保存位置から続ける | requeue は保存位置から続ける。retry は指示を更新して同じタスクを戻す |
+| 成果が消える操作 | 作業ツリーを reset や clean で戻す | タスクを片付ける操作（`takt_remove_goal_task`）。未取り込みの完了成果は、`discardUnmerged` を付けたときだけ破棄される |
+
+ワークフロー側の事実は次のとおりである。
+
+- ワークフローの中のエージェントは commit しない（takt の実行ルール）。
+  「成果を run の外に残してから終わる」は、ワークフローの手順としては書けない。
+  成果が残るかどうかは、発行経路と takt の後処理で決まる
+- 除外提案は triage（読み中心で、やり直しが安い）で needs_human にする。後段で
+  run を終える経路は 4 つある。port-test の needs_human（triage が見逃した除外提案）、
+  equivalence-review の ABORT（等価性を確認できない）、review 系の judge の ABORT、
+  verify 系の judge の ABORT である。どれも移植テストや実装ができた後に終わるので、
+  成果は上の表のとおりに残る前提である
+- 完了したノードは、台帳が green を保持する。ただし 1 run が 1 ゴールを通しで
+  処理するので、2 ノード目で止まると、1 ノード目の成果もコミットや取り込みが
+  されないまま、同じ作業コピーに残る
+- 新しい run は triage から始まる。triage は「まだ処理していない最初の 1 件」を
+  選ぶが、その判定に台帳の status を使うとは書いていない。rollup が走るのは
+  台帳更新のときだけである。red まで進んだノードを新しい run が拾うと、port-test
+  から入り直す。「やり直しは当該ノードの triage まで」が成り立つのは、保存位置からの
+  再開を使った場合だけである
+- ゴールへの所属を決める正が 2 つある。triage はゴール定義文書の一覧から選び、
+  `rollup.py --goal` は台帳の `goal` 欄で数える。`goal` を green の記録と同時に
+  書くと、1 ノード目が green になった時点で所属ノードが 1 件だけになり、完了と
+  判定される（`rollup.py` を台帳の一時コピーで走らせて確認した）。
+  `ledger-schema-draft.md` は、`goal` を「割り当て時に記入」としている
+
+成果が消える経路と、やり直しが増える経路に対する回避策の案は次のとおりである。
+どれも未決定で、ワークフローには入れていない。
+
+1. ゴール用のブランチで run を動かし、止まった時点の作業コピーをそのブランチに
+   コミットしてから次に進む。manager 経由なら、タスクの作業コピーが保持される。
+   手動の CLI なら、run の後にコミットする手順を発行手順に足す
+2. 1 タスクを 1 ノードにして、ノードが green になるたびにゴールブランチへ取り込む
+   （承認済みのグラフモデル提案も、1 タスク 1 ノードを勧めている）
+3. triage の選び方を、台帳の status で明記する。止まった run は、新しい run ではなく
+   保存位置からの再開で続ける。status が red のノードを develop から始める分岐は、
+   遷移の追加になる
+4. ゴールを発行するときに、対象ノードの `goal` 欄を書く
+
+**オーナーの判断待ち（2026-11-12）**
+
+| 項目 | 推奨 | 理由 |
+|---|---|---|
+| G0a の発行経路（manager か、手動の CLI か） | manager 経由 | 設計の前提が director、manager、run の構成である。タスクごとの作業コピー、ゴールブランチへの取り込み、保存位置からの再開が使え、成果を捨てない方針に合う。手動の CLI は、差分がコミットされないまま作業ツリーに残る |
+| `manager.permission`（既定 auto か、full か） | auto のまま | auto は Claude と Codex で provider 側の確認を使う。不可逆な操作は人間が承認する方針に合う。実走で必要な操作が止まる場合に full を検討する |
+| `assistant.formal_spec`（既定はオフ） | オフのまま | このプロジェクトの正は Pekko のテストで、G0a の完了条件は機械判定できる。Quint と Alloy の仕様は、並行性を扱うゴールで検討する |
+| `manager.main_merge`（既定 approve か、auto か） | approve のまま | auto は「以後のゴールは確認なしでマージしてよい」という恒常の指示になる。不可逆な操作は人間が承認する方針と合わない |
+| G0a の `goal` 欄を誰がいつ書くか | 発行のときに、対象ノードへ書く | `ledger-schema-draft.md` の「割り当て時に記入」と合う。台帳を正に保てる |
+| system step の結果を、次のステップと judge に渡す仕組み | verify のツールが出力の全文をファイルに残し、そのパスを JSON に入れる | 今は末尾だけが残り、直近の 1 回分しか渡らない。verify_green が落ちた理由は develop に渡っていない。台帳ツールの変更が要る |
+| 成果を捨てないための回避策（上の 1 から 3） | 1 と 2 を採り、3 は triage の明記までにする | 1 と 2 は takt の仕組みで成果を残せる。red から始める分岐は遷移の追加で、G0a の実走を見てから決める |
 
 ### builtin 資産の活用（v3、2026-11-11）
 
@@ -113,13 +285,13 @@ takt 0.74.0 は、1 ステップの knowledge を連結した文字列の先頭 
 2,000 字を超えるものが多い（`architecture` は約 12,000 字）ので、builtin を
 先に並べるとプロジェクトの規約は本文に 1 行も載らない。
 
-- knowledge `pekko-porting-rules`（1,942 字）は、配列の先頭に置く。
+- knowledge `pekko-porting-rules`（1,935 字）は、配列の先頭に置く。
   mini-core への引数（`plan_knowledge`、`development_knowledge`）と、
   equivalence-review の knowledge が該当する。equivalence-review は
   fragment の並びを上書きしている
 - `pekko-porting-rules` は 2,000 字以内に保つ。超えると末尾の
   「移植の作法」（テストファイルの凍結を含む）から本文に載らなくなる
-- policy `pekko-coding-rules`（2,456 字）は、どのステップでも本文に載って
+- policy `pekko-coding-rules`（2,617 字）は、どのステップでも本文に載って
   いない。builtin の fragment が `contract-change` を先頭に固定するためで、
   引数の並びでは変えられない。スナップショットファイル経由では届く。
   本文に載せる手当ては、builtin 再利用とは別件として切り出す
