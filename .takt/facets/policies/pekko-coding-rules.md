@@ -34,7 +34,10 @@
 
 - **use-placement**：`use` と、本体を持たない `mod` 宣言は、ファイルまたは
   モジュールの冒頭にまとめる。関数やブロックの中に `use` を書かない。
-  テストファイルにも適用される（暫定）
+  テスト、ベンチ、example のファイルは対象外である（`tests/`、`benches/`、
+  `examples/` の下と、`tests.rs`、`*_test.rs`、`*_tests.rs`。ただし
+  `tests/ui/` の下は対象）。それ以外のファイルでは、`#[cfg(test)]` の付いた
+  宣言やモジュールの中も対象になる
 - **tests-location**：`src` 内の単体テストは、対象ファイルと同階層の
   `*_test.rs` に置き、本体ファイルには
   `#[cfg(test)] #[path = "<module>_test.rs"] mod tests;` だけを書く。
