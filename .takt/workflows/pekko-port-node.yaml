@@ -125,7 +125,8 @@ steps:
       移植済みテストを通す実装を、builtin の mini-core（plan → implement →
       並列レビュー → 修正ループ）に委譲する。ドメイン規約は knowledge として
       注入され、mini-core 内の implement、supervisor、fix の各ステップに届く。
-      テストファイルの凍結も knowledge `pekko-porting-rules` が宣言する
+      テストファイルの凍結も knowledge `pekko-porting-rules` が宣言する。
+      knowledge は先頭 2,000 字だけが本文に載るので、移植規約を先頭に置く
     kind: workflow_call
     call: mini-core
     args:
@@ -133,15 +134,15 @@ steps:
         - design-planning
         - pekko-coding-rules
       plan_knowledge:
-        - architecture
         - pekko-porting-rules
+        - architecture
       development_policy:
         - coding
         - testing
         - pekko-coding-rules
       development_knowledge:
-        - architecture
         - pekko-porting-rules
+        - architecture
     input_reports:
       - from_step: triage
         reports:

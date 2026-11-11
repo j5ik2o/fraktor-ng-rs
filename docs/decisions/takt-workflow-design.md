@@ -42,7 +42,8 @@ persona と policy は標準ファセットをそのまま使う。
   plan → implement → 並列レビュー（AI アンチパターン＋supervisor の要件照合）
   → 修正ループ（履歴つき loop monitor）が mini-core の内側で回る
 - ドメイン規約は引数で注入する：`plan_knowledge` と `development_knowledge`
-  に `pekko-porting-rules` を加える。これで implement、supervisor、fix の
+  に `pekko-porting-rules` を加える（配列の先頭に置く。理由は v4 の
+  「facet の並び順」）。これで implement、supervisor、fix の
   各ステップに規約が届く。プロジェクト専用の implement instruction は
   持たない（mini-core の implement は標準 instruction 固定のため）
 - プロジェクト側に残るのは、台帳と原典と機械判定にまつわる部分だけ：
@@ -102,6 +103,25 @@ persona と policy は標準ファセットをそのまま使う。
 ワークフロー 2 本（`pekko-porting-ng`、`pekko-port-node`）も独自である。
 ゴールとノードの繰り返し、verify の system step、return ラベルは台帳の
 進め方そのもので、builtin のワークフローには無い。
+
+**facet の並び順**
+
+takt 0.74.0 は、1 ステップの knowledge を連結した文字列の先頭 2,000 字だけを
+プロンプト本文に載せる（policy も同じ）。残りはスナップショットファイルに
+書かれ、エージェントはそれを読むよう指示される。builtin の facet は 1 本で
+2,000 字を超えるものが多い（`architecture` は約 12,000 字）ので、builtin を
+先に並べるとプロジェクトの規約は本文に 1 行も載らない。
+
+- knowledge `pekko-porting-rules`（1,942 字）は、配列の先頭に置く。
+  mini-core への引数（`plan_knowledge`、`development_knowledge`）と、
+  equivalence-review の knowledge が該当する。equivalence-review は
+  fragment の並びを上書きしている
+- `pekko-porting-rules` は 2,000 字以内に保つ。超えると末尾の
+  「移植の作法」（テストファイルの凍結を含む）から本文に載らなくなる
+- policy `pekko-coding-rules`（2,456 字）は、どのステップでも本文に載って
+  いない。builtin の fragment が `contract-change` を先頭に固定するためで、
+  引数の並びでは変えられない。スナップショットファイル経由では届く。
+  本文に載せたい場合の手当ては未決定（要判断）
 
 G0a の発行コマンドで参照した旧 fraktor-rs の
 `pekko-porting` ワークフローをそのまま使う前提は置き直す。ng の決定済み設計から
