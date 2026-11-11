@@ -161,6 +161,10 @@ main の loop monitor（cycle が equivalence-review、develop の順）は発�
 | verify_red | port-test、verify_red（classify-red は照合から外す） | テストが最初から通る、または classify-red が想定外と判断して、port-test へ戻る | 想定どおりの red になって develop へ進む |
 | verify_green | develop、verify_green | 機械ゲートが落ちて develop へ戻る | ゲートを通って equivalence-review へ進む |
 
+- judge が呼ばれるのは、差し戻しで cycle の先頭（port-test または develop）へ
+  戻るときだけである。5 回目の実行でテストが想定どおりの red になった場合や、
+  ゲートを通った場合は、judge は呼ばれずに先へ進む。takt 0.74.0 の検出器は、
+  自然な遷移が cycle の先頭へ戻るときだけ発動する
 - judge には、直近の system step の出力を instruction の `{context:...}` で渡す。
   system step の結果はレポートではないので、`input_reports` では渡せない。
   まだ実行されていない step の結果を参照すると失敗するので、judge の
