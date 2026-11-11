@@ -207,7 +207,7 @@ steps:
         next: ledger-update
       - condition: 指摘あり（原典側の根拠つき）
         next: develop
-      - condition: 原典または移植側を確認できず、等価性を判断できない
+      - condition: 指摘はないが、原典または移植側を確認できず、等価性を判断できない
         next: ABORT
     output_contracts:
       report:

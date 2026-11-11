@@ -89,7 +89,7 @@ persona と policy は標準ファセットをそのまま使う。
 | instruction `pekko-port-test` | `write-tests-first` | 原典の移植であること、置き場所、ケースの扱い、test-report への書き方、機械判定が読む 3 行 |
 | instruction `pekko-review-equivalence` | `testing-review` | 原典との突き合わせの 3 観点 |
 | instruction `pekko-loop-judge` | `loop-monitor-reviewers-fix` | 選べる結果が 2 つであること、標準の語（収束中、停滞または発散）との対応、非生産的と判定したときの人間向け要約 |
-| output-contract `equivalence-review` | `testing-review` | 対象、原典側の根拠、深刻度、追加の 3 観点、結果と遷移条件の対応、未確認範囲が残る間は APPROVE にしないこと |
+| output-contract `equivalence-review` | `testing-review` | 対象、原典側の根拠、深刻度、追加の 3 観点、結果と遷移条件の対応、未確認範囲が残る間は APPROVE にしないこと、指摘と未確認範囲の両方があるときは REJECT を優先すること |
 
 **独自のまま残すもの**
 
@@ -206,8 +206,9 @@ G0a の発行コマンドで参照した旧 fraktor-rs の
   pekko-porting-compat-reviewer）を踏襲する
 - provider: 実装者と別系統のクラウド上位モデル固定
 - 指摘あり → implement へ差し戻し（ループ上限つき）。なし → ledger-update へ。
-  原典または移植側を確認できず等価性を判断できない → ABORT
-  （確認しないまま green にしない。PR #2 のレビュー指摘で追加）
+  指摘はないが、原典または移植側を確認できず等価性を判断できない → ABORT
+  （確認しないまま green にしない。指摘と未確認範囲の両方がある場合は、
+  指摘を優先して差し戻す。PR #2 のレビュー指摘で追加）
 
 ### 2.7 ledger-update（編集可、台帳の対象ノードのみ）
 
