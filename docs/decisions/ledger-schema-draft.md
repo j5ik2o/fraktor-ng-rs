@@ -109,7 +109,8 @@
 - **`kind` の fixture 判定**。変換器は `test` で出す
 - **`cases`**。移植するまで値が無い。変換器は null と空配列で出す
 - **taggedAs つきのケース数**。`test_cases_approx` は 314 ケースを数えていない。
-  凍結済みの baseline は書き換えない。再計測の結果は補遺として別ファイルに置く（未作成）
+  凍結済みの baseline は書き換えない。再計測の結果は補遺
+  `docs/baseline/pekko-v1.7.1/supplement-recount.md` にある
 
 ## 状態と遷移の規則
 
