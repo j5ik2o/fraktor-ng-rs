@@ -61,6 +61,48 @@ persona と policy は標準ファセットをそのまま使う。
 - 大きな基盤ゴール（G0b の TestKit 等）では、testing 工程と companion、
   レビュースイートを持つ development-core への格上げを検討する。
   その場合も引数の注入で切り替える
+
+### builtin 資産の再利用の棚卸し（v4、2026-11-11）
+
+設計原則は「builtin の facet、step fragment、workflow をできるだけ再利用する。
+独自 facet はプロジェクト固有の意味論が必要な所だけに置き、新規作成ではなく
+`{extends:...}` で差分だけを書く」である（2026-11-11、ユーザー指摘）。
+この原則で `.takt/` の全要素を棚卸しし、次の 3 つに仕分けた。
+ステップの順序、遷移条件、return、system step のコマンド、差し戻し上限は
+変えていない（`takt workflow inspect` の出力で前後を比較して確認した）。
+
+**builtin で置き換えたもの**
+
+| 対象 | 置き換え先（builtin） |
+|---|---|
+| port-test のステップ定義 | step fragment `development-core-write-tests` |
+| port-test のレポート形式（独自の `verify-report`） | output-contract `test-report`。ファイル名は `test-report.md` |
+| equivalence-review のステップ定義 | step fragment `development-testing-reviewer` |
+| 指摘と用語の書き方の規則（無し） | workflow rule `findings-handling` と `plain-terminology`（`all_steps.rules`。mini-core と同じ） |
+| ループ判定の入力（無し） | judge の `input_reports`。等価性レビュー報告と、その前 2 回分の履歴を渡す |
+
+**extends で差分だけを書くもの**
+
+| プロジェクト facet | 親（builtin） | 差分 |
+|---|---|---|
+| instruction `pekko-port-test` | `write-tests-first` | 原典の移植であること、置き場所、ケースの扱い、test-report への書き方、機械判定が読む 3 行 |
+| instruction `pekko-review-equivalence` | `testing-review` | 原典との突き合わせの 3 観点 |
+| instruction `pekko-loop-judge` | `loop-monitor-reviewers-fix` | 非生産的と判定したときの人間向け要約 |
+| output-contract `equivalence-review` | `testing-review` | 対象、原典側の根拠、深刻度、追加の 3 観点、結果と遷移条件の対応 |
+
+**独自のまま残すもの**
+
+| プロジェクト facet | builtin で表現できない理由 |
+|---|---|
+| instruction `pekko-triage`、output-contract `triage-report` | 台帳のノード 1 件について、原典のケース実数、needs、前提基盤、除外提案を確かめる工程である。builtin には台帳も、人間だけが承認する除外も無い。近い instruction のうち `research-*` は計画、分解、分析を別ステップで回す調査用で、`plan` は実装方針の立案用（mini-core が内側で行う）である。fragment `development-core-plan` はレポート名が `plan.md` に固定で、mini-core が書く `plan.md` と同名になる。`triage-report` の欄は遷移条件と後段が読む固定欄で、`research-report` には無い |
+| instruction `pekko-classify-red`、output-contract `verify-report` | 固有の機械ゲート verify_red が分類できなかった出力を読み、想定どおりの red かを判定して台帳の `status` を書く工程である。builtin の検証系 instruction（`verify-fix`、`apply-fix-verification`、`merge-ci-investigate`）は `fix-plan.md` や CI の収集結果など、このワークフローに無い入力を前提にしている |
+| instruction `pekko-ledger-update`、output-contract `ledger-report` | 台帳への green の記録と、`rollup.py` による完了判定である。builtin に対応する工程が無い |
+| knowledge `pekko-porting-rules`、policy `pekko-coding-rules` | 決定文書（台帳の規則、クレート構成、所有権モデル）と syn チェッカーのルールの要約である。builtin の `architecture` や `coding` を置き換えるものではなく、並べて注入する |
+
+ワークフロー 2 本（`pekko-porting-ng`、`pekko-port-node`）も独自である。
+ゴールとノードの繰り返し、verify の system step、return ラベルは台帳の
+進め方そのもので、builtin のワークフローには無い。
+
 G0a の発行コマンドで参照した旧 fraktor-rs の
 `pekko-porting` ワークフローをそのまま使う前提は置き直す。ng の決定済み設計から
 ワークフローを設計し直すための叩き台であり、決定ではない。
@@ -193,15 +235,16 @@ output-contract は、ゼロから書かず **TAKT の標準ファセットを�
 差分だけをプロジェクトファセットとして置く**（2026-11-11、ユーザー指摘）。
 標準側の更新に追随でき、書く量も減る。
 
-ステップごとの割り当て案（標準ファセット名は takt-analyzer のビルトイン参照で確認）：
+ステップごとの割り当て（全 facet の仕分けと理由は「builtin 資産の再利用の棚卸し（v4）」）：
 
 | ステップ | 継承する標準ファセット | ng 固有の差分 |
 |---|---|---|
-| triage | persona: research-analyzer 系 | knowledge: 台帳スキーマと triage の観点 |
-| port-test | persona: coder | instruction は write-tests-first を継承＋差分：出典ヘッダ、1ノード1ファイル |
+| triage | persona: research-analyzer | instruction と output-contract は独自（台帳の triage） |
+| port-test | step fragment development-core-write-tests（persona: coder、policy: contract-change）、output-contract: test-report | instruction は write-tests-first を継承＋差分：出典ヘッダ、1ノード1ファイル、test-report への書き方 |
 | implement | mini-core 内蔵（persona: coder、標準 instruction） | プロジェクト instruction は持たず、knowledge 注入で規約を届ける |
-| equivalence-review | persona: testing-reviewer（旧 qa-reviewer）、policy に ai-antipattern | instruction 差分：Pekko 原典との突き合わせ観点 |
-| ledger-update | 標準の最小 persona | policy: 台帳の遷移規則と write_scope |
+| equivalence-review | step fragment development-testing-reviewer（persona: testing-reviewer、policy: testing、contract-change、review）、policy に ai-antipattern | instruction と output-contract は testing-review を継承＋差分：Pekko 原典との突き合わせ観点 |
+| ledger-update | persona: coder | instruction と output-contract は独自（台帳の記録と完了判定） |
+| ループ判定 | persona: supervisor | instruction は loop-monitor-reviewers-fix を継承＋差分：人間向け要約 |
 
 ng 固有の規約は各 instruction に散らさず、knowledge ファセット
 （例：`pekko-porting-rules`）に集約し、必要なステップから参照する。
