@@ -60,29 +60,26 @@ steps:
         - name: triage-report.md
           format: triage-report
   - name: port-test
-    edit: true
-    persona: coder
-    policy:
-      - coding
-      - testing
-      - pekko-coding-rules
-    knowledge:
-      - pekko-porting-rules
-    required_permission_mode: edit
+    description: Pekko 原典のテストを移植する（実装より先に書く）
+    uses: development-core-write-tests
+    with:
+      testing_policy:
+        - coding
+        - testing
+        - pekko-coding-rules
+      testing_knowledge:
+        - pekko-porting-rules
+      testing_instruction: pekko-port-test
+      testing_report_format: test-report
     input_reports:
       - from_step: triage
         reports:
           - triage-report.md
-    instruction: pekko-port-test
     rules:
       - condition: テストの移植が完了した（除外は承認済みの提案だけを反映）
         next: verify_red
       - condition: 移植を進行できない
         next: ABORT
-    output_contracts:
-      report:
-        - name: port-test-report.md
-          format: verify-report
   - name: verify_red
     kind: system
     system_inputs:
@@ -151,7 +148,7 @@ steps:
           - triage-report.md
       - from_step: port-test
         reports:
-          - port-test-report.md
+          - test-report.md
       - from_step: equivalence-review
         reports:
           - equivalence-review.md
@@ -185,7 +182,7 @@ steps:
     input_reports:
       - from_step: port-test
         reports:
-          - port-test-report.md
+          - test-report.md
       - from_step: develop
         reports: all
         optional_if_unrun: true
