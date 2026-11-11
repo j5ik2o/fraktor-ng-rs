@@ -64,6 +64,8 @@ loop_monitors:
             - test-report.md
           history:
             previous: 2
+        # classify-red の報告は渡せない。takt は judge の入力を cycle の中の
+        # ステップに限る（classify-red は照合から外したステップである）
       persona: supervisor
       instruction: pekko-verify-red-loop-judge
       rules:

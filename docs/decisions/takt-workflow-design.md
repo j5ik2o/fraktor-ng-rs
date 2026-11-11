@@ -170,6 +170,14 @@ review 系と同じく judge が判定する（2026-11-11、ユーザー決定�
   system step の結果はレポートではないので、`input_reports` では渡せない。
   まだ実行されていない step の結果を参照すると失敗するので、judge の
   instruction はループごとに分けた
+- judge に渡る system step の出力は、直近の 1 回分だけである。過去の回の出力は
+  残らない。過去の回は、port-test や develop の報告の履歴で補う。classify-red の
+  報告は渡せない（takt は judge の入力を cycle の中のステップに限る）。
+  各回の出力を残すには、台帳ツールかステップ構成の変更が要る（要判断）
+- judge が判定できなかった場合（provider のエラーなど）、takt は差し戻しを
+  そのまま続け、回数を 0 に戻す。review 系を含む 3 本とも同じで、ワークフロー
+  側では変えられない。その場合に効く上限は `max_steps` だけである。judge の
+  provider は、runtime の設定（`internal_agents` の `loop-judge`）で割り当てる
 - 回数はノードごとに数える。子ワークフローは呼び出しのたびに新しい状態で始まる
 - judge が判定すると、3 本の loop monitor の回数がすべて 0 に戻る。takt の
   検出器が 1 つの履歴を共有するためである
