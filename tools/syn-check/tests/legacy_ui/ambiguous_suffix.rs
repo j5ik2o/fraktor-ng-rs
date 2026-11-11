@@ -1,9 +1,11 @@
 use crate::spec::LintSpec;
 
-// 未移植。移植したら rules にルール id を入れ、必要なら adaptations と differences を書く。
 pub(crate) const SPEC: LintSpec = LintSpec {
     dir: "ambiguous-suffix",
-    rules: &[],
-    adaptations: &[],
+    rules: &["ambiguous-suffix"],
+    adaptations: &[(
+        "allow_attribute.rs",
+        "`#[allow(ambiguous_suffix)]` の直前の空行を `// syn-check: allow(ambiguous-suffix)` に置き換えた",
+    )],
     differences: &[],
 };
