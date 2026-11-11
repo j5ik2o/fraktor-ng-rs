@@ -171,6 +171,8 @@ G0a の発行コマンドで参照した旧 fraktor-rs の
 
 - Rust テストを書く。置き場所は案Cの規則（検証対象クレートの `tests/`、
   ノード1件＝ファイル1件）。ファイル冒頭に出典（Pekko v1.7.1 のパス）を残す
+- 分岐：移植できないケースが見つかり、未承認の除外提案がある → needs_human で
+  終了（triage と同じ扱い。PR #2 のレビュー指摘で追加）。移植完了 → verify-red へ
 - provider: 量産期は DGX（DeepSeek V4.1 Flash）。基盤期（G0a〜G0c）はクラウド
 
 ### 2.3 verify-red（機械検証）
@@ -218,7 +220,8 @@ TAKT は HOTL（Human on the Loop）の道具であり、run の途中に同期�
 レポートに残して終わり、判断は run の外（manager との会話、台帳への
 記録）で行われる。再 run は、台帳に記録された判断を見て進む。
 
-- triage の除外提案（ケース除外、`do_not_port` の提案）：run は
+- triage の除外提案（ケース除外、`do_not_port` の提案）と、port-test で
+  移植中に見つかった除外提案：run は
   needs_human で終了する。承認の記録先は台帳の `cases.excluded`
   （人間が書く。項目があることが承認済みを意味する）。`do_not_port` は
   人間が status に直接書く

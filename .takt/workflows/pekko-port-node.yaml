@@ -83,6 +83,8 @@ steps:
     rules:
       - condition: テストの移植が完了した（除外は承認済みの提案だけを反映）
         next: verify_red
+      - condition: 未承認の除外提案がある（移植できないケースが見つかり、人間の承認が要る）
+        return: needs_human
       - condition: 移植を進行できない
         next: ABORT
   - name: verify_red
