@@ -53,6 +53,7 @@ steps:
     policy:
       - coding
       - testing
+      - pekko-coding-rules
     knowledge:
       - pekko-porting-rules
     required_permission_mode: edit
@@ -119,9 +120,16 @@ steps:
     kind: workflow_call
     call: mini-core
     args:
+      plan_policy:
+        - design-planning
+        - pekko-coding-rules
       plan_knowledge:
         - architecture
         - pekko-porting-rules
+      development_policy:
+        - coding
+        - testing
+        - pekko-coding-rules
       development_knowledge:
         - architecture
         - pekko-porting-rules

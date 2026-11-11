@@ -49,6 +49,11 @@ persona と policy は標準ファセットをそのまま使う。
   triage、テスト移植、verify の system step、
   等価性レビュー（原典との忠実さは builtin レビューの守備範囲外なので
   独立ステップとして残す。指摘は develop の再呼び出しで直す）、台帳更新
+- チェッカーのルールは policy としても事前提示する（後出しの回避）：
+  syn チェッカーの判定項目は、policy `pekko-coding-rules` として
+  mini-core の plan / development ポリシーと port-test のポリシーに加え、
+  実装する側が書く時点で見えるようにする。チェッカーは事後の裏付けであり、
+  ルールの正はチェッカー側の定義に置き、policy はその要約とする
 - ファセットは `{extends:...}` で標準を継承する形にした：
   pekko-port-test は write-tests-first を、pekko-review-equivalence は
   testing-review を継承し、差分だけを書く。triage は、継承候補の
