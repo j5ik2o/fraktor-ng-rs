@@ -205,7 +205,9 @@ G0a の発行コマンドで参照した旧 fraktor-rs の
 - 旧 fraktor-rs の persona 名（pekko-porting-qa-reviewer、
   pekko-porting-compat-reviewer）を踏襲する
 - provider: 実装者と別系統のクラウド上位モデル固定
-- 指摘あり → implement へ差し戻し（ループ上限つき）。なし → ledger-update へ
+- 指摘あり → implement へ差し戻し（ループ上限つき）。なし → ledger-update へ。
+  原典または移植側を確認できず等価性を判断できない → ABORT
+  （確認しないまま green にしない。PR #2 のレビュー指摘で追加）
 
 ### 2.7 ledger-update（編集可、台帳の対象ノードのみ）
 
