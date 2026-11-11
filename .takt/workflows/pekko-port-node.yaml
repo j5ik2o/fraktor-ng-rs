@@ -172,13 +172,21 @@ steps:
       - condition: when(true)
         next: develop
   - name: equivalence-review
-    edit: false
-    persona: testing-reviewer
-    policy:
-      - review
-      - ai-antipattern
+    description: 移植したテストと実装を Pekko 原典と突き合わせ、等価性の問題を報告する
+    uses: development-testing-reviewer
+    with:
+      review_policy_additions:
+        - ai-antipattern
+      review_knowledge_additions: []
+      testing_review_instruction: pekko-review-equivalence
+    # takt は knowledge を連結して先頭 2,000 字だけを本文に載せ、残りは
+    # スナップショットファイルを読ませる。fragment の並び（unit-testing、
+    # e2e-testing、追加分）のままだと移植規約が本文から外れるので、
+    # 移植規約を先頭に置いた並びで上書きする
     knowledge:
       - pekko-porting-rules
+      - unit-testing
+      - e2e-testing
     input_reports:
       - from_step: port-test
         reports:
@@ -186,7 +194,6 @@ steps:
       - from_step: develop
         reports: all
         optional_if_unrun: true
-    instruction: pekko-review-equivalence
     rules:
       - condition: 指摘なし（原典との等価性に問題がない）
         next: ledger-update
