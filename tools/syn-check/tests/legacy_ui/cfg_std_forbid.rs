@@ -1,9 +1,11 @@
 use crate::spec::LintSpec;
 
-// 未移植。移植したら rules にルール id を入れ、必要なら adaptations と differences を書く。
 pub(crate) const SPEC: LintSpec = LintSpec {
     dir: "cfg-std-forbid",
-    rules: &[],
-    adaptations: &[],
+    rules: &["cfg-std-forbid"],
+    adaptations: &[(
+        "core_allow.rs",
+        "`#[allow(cfg_std_forbid)]` の直前の空行を `// syn-check: allow(cfg-std-forbid)` に置き換えた",
+    )],
     differences: &[],
 };
