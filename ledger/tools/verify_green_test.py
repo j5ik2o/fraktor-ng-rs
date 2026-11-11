@@ -4,10 +4,12 @@
 使い方:
     python3 ledger/tools/verify_green_test.py
 
-一時ディレクトリに 2 クレートのワークスペースを作り、verify_green.py を 3 通りに走らせる。
+一時ディレクトリに 4 クレートのワークスペースを作り、verify_green.py を 5 通りに走らせる。
   1. 違反の無いクレート        syn_checker が pass で、all_pass が true
   2. 違反のあるクレート        syn_checker だけが fail で、all_pass が false
   3. チェッカーが無い配置      syn_checker が not_installed で、all_pass が true
+  4. tests/ に関数内の use     syn_checker が pass（use-placement はテストファイルを見ない）
+  5. src/ に関数内の use       syn_checker だけが fail で、use-placement が報告される
 cargo と、tools/syn-check のビルドに要る依存の取得ができる環境で走らせること。
 """
 import json
@@ -23,6 +25,24 @@ VERIFY_GREEN = Path(__file__).resolve().parent / "verify_green.py"
 CLEAN_LIB = "pub struct Clean;\n"
 # 公開型が 2 つあるので type-per-file に違反する。cargo test、clippy、fmt は通る。
 DIRTY_LIB = "pub struct First;\n\npub struct Second;\n"
+# 関数の中に use がある。同じ書き方を、テストファイルと lib 側のファイルに置く。
+LOCAL_USE_TEST = (
+    "#[test]\n"
+    "fn ported_case() {\n"
+    "    use std::collections::HashMap;\n"
+    "\n"
+    "    let map: HashMap<u8, u8> = HashMap::new();\n"
+    "    assert!(map.is_empty());\n"
+    "}\n"
+)
+LOCAL_USE_LIB = (
+    "pub fn count() -> usize {\n"
+    "    use std::collections::HashMap;\n"
+    "\n"
+    "    let map: HashMap<u8, u8> = HashMap::new();\n"
+    "    map.len()\n"
+    "}\n"
+)
 
 
 def write(path: Path, text: str) -> None:
@@ -31,12 +51,15 @@ def write(path: Path, text: str) -> None:
 
 
 def make_workspace(root: Path) -> None:
-    write(root / "Cargo.toml",
-          '[workspace]\nmembers = ["crates/stub-clean", "crates/stub-dirty"]\nresolver = "3"\n')
-    for name, lib in (("stub-clean", CLEAN_LIB), ("stub-dirty", DIRTY_LIB)):
+    crates = (("stub-clean", CLEAN_LIB), ("stub-dirty", DIRTY_LIB),
+              ("stub-test-use", CLEAN_LIB), ("stub-lib-use", LOCAL_USE_LIB))
+    members = ", ".join(f'"crates/{name}"' for name, _ in crates)
+    write(root / "Cargo.toml", f'[workspace]\nmembers = [{members}]\nresolver = "3"\n')
+    for name, lib in crates:
         write(root / "crates" / name / "Cargo.toml",
               f'[package]\nname = "{name}"\nversion = "0.0.0"\nedition = "2024"\npublish = false\n')
         write(root / "crates" / name / "src" / "lib.rs", lib)
+    write(root / "crates" / "stub-test-use" / "tests" / "port.rs", LOCAL_USE_TEST)
 
 
 def run_verify(script: Path, workspace: Path, crate: str) -> dict:
@@ -80,6 +103,21 @@ def main() -> int:
         assert gate_results(absent)["syn_checker"] == "not_installed", absent
         assert absent["all_pass"] is True, absent
         print("3. no checker:", gate_results(absent), "all_pass =", absent["all_pass"])
+
+        test_use = run_verify(VERIFY_GREEN, workspace, "stub-test-use")
+        assert test_use["all_pass"] is True, test_use
+        assert gate_results(test_use)["syn_checker"] == "pass", test_use
+        print("4. use inside a test fn:", gate_results(test_use), "all_pass =", test_use["all_pass"])
+
+        lib_use = run_verify(VERIFY_GREEN, workspace, "stub-lib-use")
+        results = gate_results(lib_use)
+        assert lib_use["all_pass"] is False, lib_use
+        assert results["syn_checker"] == "fail", lib_use
+        assert all(results[gate] == "pass" for gate in ("test", "clippy", "fmt")), lib_use
+        detail = lib_use["gates"]["syn_checker"]["detail"]
+        assert "use-placement" in detail and "crates/stub-lib-use/src/lib.rs:2:5" in detail, detail
+        print("5. use inside a lib fn:", results, "all_pass =", lib_use["all_pass"])
+        print("   detail:", detail.splitlines()[0][:110])
     print("ok")
     return 0
 
