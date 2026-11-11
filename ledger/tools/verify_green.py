@@ -9,13 +9,21 @@
   test     cargo test -p <crate>（クレート全体。既存テストの退行検出を含む）
   clippy   cargo clippy -p <crate> -- -D warnings
   fmt      cargo fmt --check
-  syn_checker / aislop は、実行物が導入されたらここに追加する。
+  syn_checker  tools/syn-check を対象クレートのディレクトリに対して実行する。
+               違反かパース不能のファイルがあれば fail。チェッカーが無い環境
+               （tools/syn-check が無い、cargo が無い）では "not_installed" として
+               報告し、合否には含めない。
+  aislop は、実行物が導入されたらここに追加する。
   現時点では "not_installed" として報告し、合否には含めない。
 """
 import json
 import os
 import re
+import shutil
 import subprocess
+from pathlib import Path
+
+SYN_CHECK_MANIFEST = Path(__file__).resolve().parents[2] / "tools" / "syn-check" / "Cargo.toml"
 
 
 def parse_crate() -> str | None:
@@ -51,6 +59,45 @@ def run(cmd: list[str], timeout: int = 840) -> dict:
         return {"result": "fail", "detail": f"{type(e).__name__}: {e}"}
 
 
+def crate_dir(crate: str) -> str | None:
+    """cargo metadata から、パッケージ名に対応するディレクトリを引く。"""
+    try:
+        proc = subprocess.run(["cargo", "metadata", "--no-deps", "--format-version", "1"],
+                              capture_output=True, text=True, timeout=120)
+        for package in json.loads(proc.stdout).get("packages", []):
+            if package.get("name") == crate:
+                # チェッカーのパス述語は相対パスで評価する。親ディレクトリの名前に左右されないようにする。
+                return os.path.relpath(os.path.dirname(package["manifest_path"]))
+    except Exception:
+        return None
+    return None
+
+
+def run_syn_checker(crate: str) -> dict:
+    if not SYN_CHECK_MANIFEST.exists() or shutil.which("cargo") is None:
+        return {"result": "not_installed", "detail": ""}
+    target = crate_dir(crate)
+    if target is None:
+        return {"result": "fail", "detail": f"cannot find the directory of crate {crate}"}
+    cmd = ["cargo", "run", "--quiet", "--release", "--locked",
+           "--manifest-path", str(SYN_CHECK_MANIFEST), "--", "--format", "json", target]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=840)
+    except Exception as e:
+        return {"result": "fail", "detail": f"{type(e).__name__}: {e}"}
+    if proc.returncode == 0:
+        return {"result": "pass", "detail": ""}
+    try:
+        report = json.loads(proc.stdout)
+    except ValueError:  # チェッカー自体のビルド失敗や使い方の誤り。JSON は出ない
+        return {"result": "fail", "detail": (proc.stdout + proc.stderr)[-800:]}
+    lines = [f"{v['path']}:{v['line']}:{v['column']}: {v['rule']}: {v['message']}"
+             for v in report.get("violations", [])]
+    lines += [f"{f['path']}: parse failure: {f['message']}"
+              for f in report.get("parse_failures", [])]
+    return {"result": "fail", "detail": "\n".join(lines)[:800]}
+
+
 def main() -> int:
     crate = parse_crate()
     if not crate:
@@ -62,7 +109,7 @@ def main() -> int:
         "test": run(["cargo", "test", "-p", crate]),
         "clippy": run(["cargo", "clippy", "-p", crate, "--", "-D", "warnings"]),
         "fmt": run(["cargo", "fmt", "--check"]),
-        "syn_checker": {"result": "not_installed", "detail": ""},
+        "syn_checker": run_syn_checker(crate),
         "aislop": {"result": "not_installed", "detail": ""},
     }
     all_pass = all(g["result"] in ("pass", "not_installed") for g in gates.values())
