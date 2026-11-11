@@ -1,4 +1,4 @@
-use std::{collections::HashSet, path::Path};
+use std::collections::HashSet;
 
 use quote::ToTokens;
 use syn::{
@@ -7,7 +7,7 @@ use syn::{
 };
 
 use crate::{
-    ast, check_context::CheckContext, position::Position, rule::Rule, sink::Sink,
+    ast, check_context::CheckContext, paths, position::Position, rule::Rule, sink::Sink,
     source_file::SourceFile,
 };
 
@@ -21,7 +21,7 @@ impl Rule for TypePerFile {
     }
 
     fn check(&self, file: &SourceFile, _cx: &CheckContext<'_>, sink: &mut Sink) {
-        if should_ignore(file.path()) {
+        if paths::is_test_or_build_output(file.path()) {
             return;
         }
         let Some(ast) = file.ast() else {
@@ -127,36 +127,4 @@ impl<'ast> Visit<'ast> for Collector {
         self.record(&node.vis, &node.ident, "trait", node);
         visit::visit_item_trait(self, node);
     }
-}
-
-fn should_ignore(path: &Path) -> bool {
-    if path.extension().is_none_or(|extension| extension != "rs") {
-        return true;
-    }
-
-    if path
-        .components()
-        .any(|component| component.as_os_str() == "target")
-    {
-        return true;
-    }
-
-    let mut components = path.components().peekable();
-    while let Some(component) = components.next() {
-        if component.as_os_str() == "tests" {
-            if components
-                .peek()
-                .is_some_and(|next| next.as_os_str() == "ui")
-            {
-                continue;
-            }
-            return true;
-        }
-    }
-
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            name == "tests.rs" || name.ends_with("_test.rs") || name.ends_with("_tests.rs")
-        })
 }

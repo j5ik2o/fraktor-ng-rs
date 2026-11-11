@@ -11,6 +11,7 @@ pub mod check_context;
 pub mod layout;
 pub mod options;
 pub mod parse_failure;
+mod paths;
 pub mod position;
 pub mod report;
 pub mod rule;
