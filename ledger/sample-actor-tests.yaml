@@ -1,9 +1,10 @@
 nodes:
-- id: actor-tests:AbstractFSMActorTest
+- id: actor-tests/src/test/java/org/apache/pekko/actor/AbstractFSMActorTest.java
+  name: actor-tests:AbstractFSMActorTest
+  kind: test
   pekko:
     module: actor-tests
     class: AbstractFSMActorTest
-    file: actor-tests/src/test/java/org/apache/pekko/actor/AbstractFSMActorTest.java
     test_cases_approx: 1
   status: unported
   triage:
@@ -15,15 +16,21 @@ nodes:
   depends_on_impl:
     modules: []
     coverage: approx
+  cases:
+    total: null
+    ported: null
+    passing: null
+    excluded: []
   rust:
     crate: null
     test_file: null
   goal: null
-- id: actor-tests:AbstractFSMWithStashActorTest
+- id: actor-tests/src/test/java/org/apache/pekko/actor/AbstractFSMWithStashActorTest.java
+  name: actor-tests:AbstractFSMWithStashActorTest
+  kind: test
   pekko:
     module: actor-tests
     class: AbstractFSMWithStashActorTest
-    file: actor-tests/src/test/java/org/apache/pekko/actor/AbstractFSMWithStashActorTest.java
     test_cases_approx: 1
   status: unported
   triage:
@@ -35,15 +42,21 @@ nodes:
   depends_on_impl:
     modules: []
     coverage: approx
+  cases:
+    total: null
+    ported: null
+    passing: null
+    excluded: []
   rust:
     crate: null
     test_file: null
   goal: null
-- id: actor-tests:ActorConfigurationVerificationSpec
+- id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorConfigurationVerificationSpec.scala
+  name: actor-tests:ActorConfigurationVerificationSpec
+  kind: test
   pekko:
     module: actor-tests
     class: ActorConfigurationVerificationSpec
-    file: actor-tests/src/test/scala/org/apache/pekko/actor/ActorConfigurationVerificationSpec.scala
     test_cases_approx: 10
   status: unported
   triage:
@@ -55,15 +68,21 @@ nodes:
   depends_on_impl:
     modules: []
     coverage: approx
+  cases:
+    total: null
+    ported: null
+    passing: null
+    excluded: []
   rust:
     crate: null
     test_file: null
   goal: null
-- id: actor-tests:ActorCreationPerfSpec
+- id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorCreationPerfSpec.scala
+  name: actor-tests:ActorCreationPerfSpec
+  kind: test
   pekko:
     module: actor-tests
     class: ActorCreationPerfSpec
-    file: actor-tests/src/test/scala/org/apache/pekko/actor/ActorCreationPerfSpec.scala
     test_cases_approx: 0
   status: unported
   triage:
@@ -75,15 +94,21 @@ nodes:
   depends_on_impl:
     modules: []
     coverage: approx
+  cases:
+    total: null
+    ported: null
+    passing: null
+    excluded: []
   rust:
     crate: null
     test_file: null
   goal: null
-- id: actor-tests:ActorCreationTest
+- id: actor-tests/src/test/java/org/apache/pekko/actor/ActorCreationTest.java
+  name: actor-tests:ActorCreationTest
+  kind: test
   pekko:
     module: actor-tests
     class: ActorCreationTest
-    file: actor-tests/src/test/java/org/apache/pekko/actor/ActorCreationTest.java
     test_cases_approx: 17
   status: unported
   triage:
@@ -95,6 +120,11 @@ nodes:
   depends_on_impl:
     modules: []
     coverage: approx
+  cases:
+    total: null
+    ported: null
+    passing: null
+    excluded: []
   rust:
     crate: null
     test_file: null
