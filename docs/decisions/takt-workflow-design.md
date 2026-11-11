@@ -1,6 +1,8 @@
 # TAKT ワークフロー設計（移植パイプライン）
 
-状態: draft（2026-11-11）。G0a の発行コマンドで参照した旧 fraktor-rs の
+状態: **設計決定済み（2026-11-11、判断ポイント a〜d はすべて決定、ファセットは
+標準継承の方針）**。残る作業は `.takt/workflows/` への YAML 実装である。
+G0a の発行コマンドで参照した旧 fraktor-rs の
 `pekko-porting` ワークフローをそのまま使う前提は置き直す。ng の決定済み設計から
 ワークフローを設計し直すための叩き台であり、決定ではない。
 なお旧ワークフローのステップ定義自体は旧リポジトリには無く（persona の割り当てが
@@ -109,5 +111,26 @@ c. 差し戻しループ上限の初期値。
    **決定済み（2026-11-11、ユーザー）：verify 系は 5 回、review 系は 3 回**。
    上限到達時は人間チェックポイントへ上げる
 d. verify-red で「失敗理由が想定どおりか」の判定を機械だけで閉じるか、
-   軽量モデルの判定を挟むか。提案：機械判定（コンパイルエラーか否か）を既定とし、
-   分類できない場合のみ軽量モデルに回す
+   軽量モデルの判定を挟むか。
+   **決定済み（2026-11-11、ユーザー）：機械判定を既定とし、分類できない場合のみ
+   軽量モデルに回す**
+
+## 7. ファセットの方針（標準ファセットの継承）
+
+ワークフローのステップが使う persona、instruction、knowledge、policy、
+output-contract は、ゼロから書かず **TAKT の標準ファセットを継承し、ng 固有の
+差分だけをプロジェクトファセットとして置く**（2026-11-11、ユーザー指摘）。
+標準側の更新に追随でき、書く量も減る。
+
+ステップごとの割り当て案（標準ファセット名は takt-analyzer のビルトイン参照で確認）：
+
+| ステップ | 継承する標準ファセット | ng 固有の差分 |
+|---|---|---|
+| triage | persona: research-analyzer 系 | knowledge: 台帳スキーマと triage の観点 |
+| port-test | persona: coder | instruction 差分：出典ヘッダ、1ノード1ファイル |
+| implement | persona: coder | knowledge: 所有権モデル、P&A 段階1、クレート規則 |
+| equivalence-review | persona: qa-reviewer ＋ ai-antipattern-reviewer の観点 | instruction 差分：Pekko 原典との突き合わせ観点 |
+| ledger-update | 標準の最小 persona | policy: 台帳の遷移規則と write_scope |
+
+ng 固有の規約は各 instruction に散らさず、knowledge ファセット
+（例：`pekko-porting-rules`）に集約し、必要なステップから参照する。
