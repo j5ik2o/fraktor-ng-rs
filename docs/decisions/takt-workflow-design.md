@@ -89,6 +89,7 @@ persona と policy は標準ファセットをそのまま使う。
 | instruction `pekko-port-test` | `write-tests-first` | 原典の移植であること、置き場所、ケースの扱い、test-report への書き方、機械判定が読む 3 行 |
 | instruction `pekko-review-equivalence` | `testing-review` | 原典との突き合わせの 3 観点 |
 | instruction `pekko-loop-judge` | `loop-monitor-reviewers-fix` | 選べる結果が 2 つであること、標準の語（収束中、停滞または発散）との対応、非生産的と判定したときの人間向け要約 |
+| instruction `pekko-verify-red-loop-judge`、`pekko-verify-green-loop-judge` | `loop-monitor-reviewers-fix` | 選べる結果が 2 つであること、標準の語との対応、直近の system step の出力、非生産的と判定したときの人間向け要約 |
 | output-contract `equivalence-review` | `testing-review` | 対象、原典側の根拠、深刻度、追加の 3 観点、結果と遷移条件の対応、未確認範囲が残る間は APPROVE にしないこと、指摘と未確認範囲の両方があるときは REJECT を優先すること |
 
 **独自のまま残すもの**
@@ -149,9 +150,36 @@ main の loop monitor（cycle が equivalence-review、develop の順）は発�
   消費し、`workflow_call` 自体は消費しない。予算に達すると run は止まる
   （Max steps reached）。連続が切れて judge が呼ばれない場合も、ここで止まる
 
-verify 系の上限（決定 c の 5 回）を表す loop monitor は、この PR には無い。
-別 PR で足す（2026-11-11、ユーザー決定）。それまで verify 系の差し戻しを
-止めるのは `max_steps` だけである。
+**verify 系の上限（2026-11-11 のユーザー決定で追加）**
+
+決定 c の verify 系 5 回を、loop monitor 2 本で表す。どちらも「連続 5 回目の
+差し戻しで judge が判定する」という意味で、judge の結果は健全（差し戻しを
+続ける）と非生産的（ABORT）の 2 つである。
+
+| ループ | cycle | 数える差し戻し | 連続が切れる場合 |
+|---|---|---|---|
+| verify_red | port-test、verify_red（classify-red は照合から外す） | テストが最初から通る、または classify-red が想定外と判断して、port-test へ戻る | 想定どおりの red になって develop へ進む |
+| verify_green | develop、verify_green | 機械ゲートが落ちて develop へ戻る | ゲートを通って equivalence-review へ進む |
+
+- judge には、直近の system step の出力を instruction の `{context:...}` で渡す。
+  system step の結果はレポートではないので、`input_reports` では渡せない。
+  まだ実行されていない step の結果を参照すると失敗するので、judge の
+  instruction はループごとに分けた
+- 回数はノードごとに数える。子ワークフローは呼び出しのたびに新しい状態で始まる
+- judge が判定すると、3 本の loop monitor の回数がすべて 0 に戻る。takt の
+  検出器が 1 つの履歴を共有するためである
+
+この 2 本を足す前に verify 系の差し戻しを止めていたのは、`max_steps` だけで
+ある（takt 0.74.0 のコードで確認した）。
+
+- loop monitor は無かった
+- takt 組み込みのループ検出は、同じステップが連続した回数だけを数える
+  （既定は 10 回で、警告のみ）。verify 系の差し戻しは 2 つのステップが交互に
+  走るので、当たらない
+- `max_steps: 80` から計算すると、verify_green の差し戻しは 1 ノード目で
+  19 回前後まで回る。1 回に少なくとも 4 ステップ（mini-core の plan、implement、
+  reviewers と verify_green）を使うためである。verify_red の差し戻しは
+  1 回 2 ステップで、39 回前後になる
 
 G0a の発行コマンドで参照した旧 fraktor-rs の
 `pekko-porting` ワークフローをそのまま使う前提は置き直す。ng の決定済み設計から
@@ -196,6 +224,7 @@ G0a の発行コマンドで参照した旧 fraktor-rs の
 - `cargo test` を実行し、失敗することと、失敗理由が想定どおりであること
   （未実装によるコンパイルエラー、またはアサーション失敗）を確認する
 - 最初から通る、または無関係な理由で落ちる場合は port-test へ差し戻す
+  （ループ上限つき）
 - 通過したら台帳の status を red に更新する（台帳に触れるのは 2.3 と 2.7 のみ）
 
 ### 2.4 implement（編集可、write_scope 内の実装のみ）
@@ -280,7 +309,8 @@ c. 差し戻しループ上限の初期値。
    **決定済み（2026-11-11、ユーザー）：verify 系は 5 回、review 系は 3 回**。
    上限に達すると judge が判定し、非生産的なら ABORT して manager に上げる。
    review 系の 3 回は「連続 3 回目の指摘で判定」の意味である（2026-11-11、
-   ユーザー確認）。数え方と受け入れた制限は「ループ上限の効き方」に書いた
+   ユーザー確認）。verify 系の 5 回も同じ数え方で、「連続 5 回目の差し戻しで
+   判定」の意味である。数え方と受け入れた制限は「ループ上限の効き方」に書いた
 d. verify-red で「失敗理由が想定どおりか」の判定を機械だけで閉じるか、
    軽量モデルの判定を挟むか。
    **決定済み（2026-11-11、ユーザー）：機械判定を既定とし、分類できない場合のみ
@@ -302,7 +332,7 @@ output-contract は、ゼロから書かず **TAKT の標準ファセットを�
 | implement | mini-core 内蔵（persona: coder、標準 instruction） | プロジェクト instruction は持たず、knowledge 注入で規約を届ける |
 | equivalence-review | step fragment development-testing-reviewer（persona: testing-reviewer、policy: testing、contract-change、review）、policy に ai-antipattern | instruction と output-contract は testing-review を継承＋差分：Pekko 原典との突き合わせ観点 |
 | ledger-update | persona: coder | instruction と output-contract は独自（台帳の記録と完了判定） |
-| ループ判定 | persona: supervisor | instruction は loop-monitor-reviewers-fix を継承＋差分：人間向け要約 |
+| ループ判定（review 系 1 本、verify 系 2 本） | persona: supervisor | instruction は loop-monitor-reviewers-fix を継承＋差分：人間向け要約。verify 系は直近の system step の出力も渡す |
 
 ng 固有の規約は各 instruction に散らさず、knowledge ファセット
 （例：`pekko-porting-rules`）に集約し、必要なステップから参照する。
