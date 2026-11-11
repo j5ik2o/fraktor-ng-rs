@@ -154,7 +154,8 @@ main の loop monitor（cycle が equivalence-review、develop の順）は発�
 
 決定 c の verify 系 5 回を、loop monitor 2 本で表す。どちらも「連続 5 回目の
 差し戻しで judge が判定する」という意味で、judge の結果は健全（差し戻しを
-続ける）と非生産的（ABORT）の 2 つである。
+続ける）と非生産的（ABORT）の 2 つである。5 回で無条件に ABORT にはしない。
+review 系と同じく judge が判定する（2026-11-11、ユーザー決定）。
 
 | ループ | cycle | 数える差し戻し | 連続が切れる場合 |
 |---|---|---|---|
