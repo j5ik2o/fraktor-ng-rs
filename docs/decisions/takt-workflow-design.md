@@ -1,7 +1,11 @@
 # TAKT ワークフロー設計（移植パイプライン）
 
 状態: **設計決定済み（2026-11-11、判断ポイント a〜d はすべて決定、ファセットは
-標準継承の方針）**。残る作業は `.takt/workflows/` への YAML 実装である。
+標準継承の方針）**。YAML 実装済み：`.takt/workflows/pekko-porting-ng.yaml` と
+`.takt/facets/`（knowledge 1、instructions 7、output-contracts 4）。
+persona と policy は標準ファセットをそのまま使う。
+なお差し戻し上限（決定 c）は、TAKT の loop_monitors（cycle＋threshold＋judge）で
+表現した。judge が非生産的と判定したら ABORT し、人間に上がる。
 G0a の発行コマンドで参照した旧 fraktor-rs の
 `pekko-porting` ワークフローをそのまま使う前提は置き直す。ng の決定済み設計から
 ワークフローを設計し直すための叩き台であり、決定ではない。

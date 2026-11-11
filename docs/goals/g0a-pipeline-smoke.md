@@ -68,10 +68,14 @@ git pull
 takt --pipeline --skip-git -w pekko-porting-ng -t "docs/goals/g0a-pipeline-smoke.md のゴール定義に従って G0a を実施してください。完了条件は同文書の機械判定4項目です。対象ノード以外の台帳変更と、範囲外のクレート新設は禁止です。"
 ```
 
-ワークフロー `pekko-porting-ng` は `docs/decisions/takt-workflow-design.md` の
-設計が固まってから `.takt/workflows/` に置く。それまでは発行しない。
+ワークフロー `pekko-porting-ng` は `.takt/workflows/` に実装済み
+（設計は `docs/decisions/takt-workflow-design.md`）。
 `.takt/config.yaml` は最小構成（provider: codex、concurrency: 1、base_branch: main）
 を置いてある。
+
+前提として、run から Pekko v1.7.1 のソースを参照できること。clone の隣に
+`../pekko` としてタグ `v1.7.1` をチェックアウトしておく（triage が原典を
+参照できなければ ABORT して報告する）。
 
 run の後に人間が確認するコマンド：
 

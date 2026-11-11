@@ -1,0 +1,199 @@
+name: pekko-porting-ng
+description: >-
+  fraktor-ng-rs の Pekko 移植パイプライン。台帳のゴール（ノード集合）を
+  1件ずつ triage → テスト移植 → red 確認 → 実装 → 機械検証 → 等価性レビュー →
+  台帳更新の順で処理する。設計の正は docs/decisions/takt-workflow-design.md。
+workflow_config:
+  provider_options:
+    codex:
+      network_access: true
+    opencode:
+      network_access: true
+# ノード数と差し戻し上限から決まる目安。ゴールが大きい場合は分割するか、
+# 発行側で見直す
+max_steps: 80
+initial_step: triage
+loop_monitors:
+  # implement ⇄ verify-green の差し戻しは 5 回まで（決定 c）
+  - cycle:
+      - implement
+      - verify-green
+    threshold: 5
+    judge:
+      persona: supervisor
+      instruction: pekko-loop-judge
+      rules:
+        - condition: 健全（失敗内容が前進している）
+          next: implement
+        - condition: 非生産的（同じ失敗の繰り返し）
+          next: ABORT
+  # equivalence-review の差し戻しは 3 回まで（決定 c）
+  - cycle:
+      - equivalence-review
+      - implement
+    threshold: 3
+    judge:
+      persona: supervisor
+      instruction: pekko-loop-judge
+      rules:
+        - condition: 健全（指摘数が減少、修正が反映されている）
+          next: implement
+        - condition: 非生産的（同じ指摘が繰り返される）
+          next: ABORT
+steps:
+  - name: triage
+    edit: false
+    persona: research-analyzer
+    knowledge:
+      - pekko-porting-rules
+    provider_options:
+      claude:
+        allowed_tools:
+          - Read
+          - Glob
+          - Grep
+          - Bash
+    instruction: pekko-triage
+    rules:
+      - condition: 前提が揃っており、除外提案がない
+        next: port-test
+      - condition: 除外提案がある（ケース除外または do_not_port の提案）
+        next: triage
+        requires_user_input: true
+        interactive_only: true
+      - condition: 前提基盤が未 green、または Pekko 原典を参照できない
+        next: ABORT
+    output_contracts:
+      report:
+        - name: triage-report.md
+          format: triage-report
+  - name: port-test
+    edit: true
+    persona: coder
+    policy:
+      - coding
+      - testing
+    knowledge:
+      - pekko-porting-rules
+    required_permission_mode: edit
+    instruction: pekko-port-test
+    rules:
+      - condition: テストの移植が完了した（除外提案は triage で承認済みのものだけを反映）
+        next: verify-red
+      - condition: 移植を進行できない
+        next: ABORT
+    output_contracts:
+      report:
+        - name: port-test-report.md
+          format: verify-report
+  - name: verify-red
+    # 台帳の対象ノードの status だけを書く。それ以外の編集はしない
+    edit: true
+    persona: coder
+    knowledge:
+      - pekko-porting-rules
+    required_permission_mode: edit
+    instruction: pekko-verify-red
+    rules:
+      - condition: 想定どおりの失敗で、台帳の status を red に更新した
+        next: implement
+      - condition: 最初から成功した、または想定外の理由で失敗した
+        next: port-test
+      - condition: 検証自体を実行できない
+        next: ABORT
+    output_contracts:
+      report:
+        - name: verify-red-report.md
+          format: verify-report
+  - name: implement
+    edit: true
+    persona: coder
+    policy:
+      - coding
+    knowledge:
+      - pekko-porting-rules
+    required_permission_mode: edit
+    instruction: pekko-implement
+    rules:
+      - condition: 実装が完了した（テストファイルは変更していない）
+        next: verify-green
+      - condition: write_scope の拡張が必要
+        next: implement
+        requires_user_input: true
+        interactive_only: true
+      - condition: テスト自体の不備が判明した
+        next: triage
+      - condition: 実装を進行できない
+        next: ABORT
+    output_contracts:
+      report:
+        - name: coder-scope.md
+          format: coder-scope
+        - name: coder-decisions.md
+          format: coder-decisions
+  - name: verify-green
+    edit: false
+    persona: coder
+    knowledge:
+      - pekko-porting-rules
+    provider_options:
+      claude:
+        allowed_tools:
+          - Read
+          - Glob
+          - Grep
+          - Bash
+    instruction: pekko-verify-green
+    rules:
+      - condition: 全ゲート通過（test、clippy、fmt、syn checker、aislop）
+        next: equivalence-review
+      - condition: いずれかのゲートが失敗した
+        next: implement
+    output_contracts:
+      report:
+        - name: verify-green-report.md
+          format: verify-report
+  - name: equivalence-review
+    edit: false
+    persona: qa-reviewer
+    policy:
+      - review
+      - ai-antipattern
+    knowledge:
+      - pekko-porting-rules
+    provider_options:
+      claude:
+        allowed_tools:
+          - Read
+          - Glob
+          - Grep
+          - Bash
+    instruction: pekko-review-equivalence
+    rules:
+      - condition: 指摘なし（原典との等価性に問題がない）
+        next: ledger-update
+      - condition: 指摘あり（原典側の根拠つき）
+        next: implement
+    output_contracts:
+      report:
+        - name: equivalence-review.md
+          format: equivalence-review
+  - name: ledger-update
+    # 台帳の対象ノードの欄だけを書く
+    edit: true
+    persona: coder
+    knowledge:
+      - pekko-porting-rules
+    required_permission_mode: edit
+    instruction: pekko-ledger-update
+    rules:
+      - condition: ゴール完了（rollup の完了判定が終了コード 0）
+        next: COMPLETE
+      - condition: ゴール未完（残ノードがある）
+        next: triage
+      - condition: 台帳の更新や判定を実行できない
+        next: ABORT
+    output_contracts:
+      report:
+        - name: ledger-report.md
+          format: ledger-report
