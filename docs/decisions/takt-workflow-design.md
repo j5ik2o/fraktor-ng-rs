@@ -88,8 +88,8 @@ persona と policy は標準ファセットをそのまま使う。
 |---|---|---|
 | instruction `pekko-port-test` | `write-tests-first` | 原典の移植であること、置き場所、ケースの扱い、test-report への書き方、機械判定が読む 3 行 |
 | instruction `pekko-review-equivalence` | `testing-review` | 原典との突き合わせの 3 観点 |
-| instruction `pekko-loop-judge` | `loop-monitor-reviewers-fix` | 非生産的と判定したときの人間向け要約 |
-| output-contract `equivalence-review` | `testing-review` | 対象、原典側の根拠、深刻度、追加の 3 観点、結果と遷移条件の対応 |
+| instruction `pekko-loop-judge` | `loop-monitor-reviewers-fix` | 選べる結果が 2 つであること、標準の語（収束中、停滞または発散）との対応、非生産的と判定したときの人間向け要約 |
+| output-contract `equivalence-review` | `testing-review` | 対象、原典側の根拠、深刻度、追加の 3 観点、結果と遷移条件の対応、未確認範囲が残る間は APPROVE にしないこと |
 
 **独自のまま残すもの**
 
@@ -122,6 +122,20 @@ takt 0.74.0 は、1 ステップの knowledge を連結した文字列の先頭 
   いない。builtin の fragment が `contract-change` を先頭に固定するためで、
   引数の並びでは変えられない。スナップショットファイル経由では届く。
   本文に載せたい場合の手当ては未決定（要判断）
+
+**ループ監視の修正（PR #2 のレビュー指摘）**
+
+main の loop monitor（cycle が equivalence-review、develop の順）は発動しなかった。
+実際の経路は develop、verify_green、equivalence-review、develop の順で、takt は
+完了したステップの並びをそのまま照合するためである。次のとおりに直した。
+
+- cycle を develop、equivalence-review の順にし、`ignore_steps` で verify_green を
+  照合から外す。レビューが develop へ差し戻す時点で、連続 3 回目の指摘なら
+  judge が呼ばれる。judge の遷移（健全なら develop、非生産的なら ABORT）は
+  変えていない。judge が健全と判定すると回数は 0 に戻る
+- verify_green の失敗で develop をやり直すと、それより前の指摘は連続に
+  数えられない。全体の上限は親の `max_steps` が持つ
+- verify 系の上限（決定 c の 5 回）を表す loop monitor は無い（要判断）
 
 G0a の発行コマンドで参照した旧 fraktor-rs の
 `pekko-porting` ワークフローをそのまま使う前提は置き直す。ng の決定済み設計から
