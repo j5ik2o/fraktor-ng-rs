@@ -44,7 +44,7 @@ loop_monitors:
 steps:
   - name: triage
     edit: false
-    persona: research-analyzer
+    persona: research-digger
     knowledge:
       - pekko-porting-rules
     instruction: pekko-triage

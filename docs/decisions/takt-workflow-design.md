@@ -259,7 +259,7 @@ output-contract は、ゼロから書かず **TAKT の標準ファセットを�
 
 | ステップ | 継承する標準ファセット | ng 固有の差分 |
 |---|---|---|
-| triage | persona: research-analyzer | instruction と output-contract は独自（台帳の triage） |
+| triage | persona: research-digger（自分で調べて報告する役。research-analyzer は「自分で調査を実行しない」役なので合わない） | instruction と output-contract は独自（台帳の triage） |
 | port-test | step fragment development-core-write-tests（persona: coder、policy: contract-change）、output-contract: test-report | instruction は write-tests-first を継承＋差分：出典ヘッダ、1ノード1ファイル、test-report への書き方 |
 | implement | mini-core 内蔵（persona: coder、標準 instruction） | プロジェクト instruction は持たず、knowledge 注入で規約を届ける |
 | equivalence-review | step fragment development-testing-reviewer（persona: testing-reviewer、policy: testing、contract-change、review）、policy に ai-antipattern | instruction と output-contract は testing-review を継承＋差分：Pekko 原典との突き合わせ観点 |
