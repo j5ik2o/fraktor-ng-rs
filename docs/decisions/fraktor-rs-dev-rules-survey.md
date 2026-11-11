@@ -62,9 +62,11 @@
 
 ### 第5層：機械的強制（dylint / ci-check）
 
-- カスタム dylint 11本を `lints/` に実装し、10本を workspace で有効化
+- カスタム dylint は `lints/` に12クレート実装し、11本を workspace で有効化
   （mod-file / module-wiring / type-per-file / tests-location / use-placement /
-  redundant-fqcn / module-examples / rustdoc / cfg-std-forbid / ambiguous-suffix）
+  redundant-fqcn / module-examples / rustdoc / cfg-std-forbid / ambiguous-suffix /
+  port-adaptor-boundary）。`let-underscore-forbid` は実装済みだが workspace 未登録。
+  lint 本体は合計 約3,400行
 - 最終確認は `./scripts/ci-check.sh ai all`（1,786行のスクリプト。fmt / clippy /
   dylint / no-std / embedded / e2e 等を束ねる）。途中工程は対象範囲のチェックに留める
 - ci-check は内部で cargo を呼ぶため複数同時起動は禁止。hang 防止ガードの環境変数あり
@@ -115,3 +117,49 @@
 - **protoactor-go の参照実装としての併用**。ng の正は Pekko のみ
 - **旧 TAKT 設定値**（codex / gpt-5.5 / concurrency 1 は旧リポジトリの運用値）。
   ng の TAKT 構成は director / manager 前提で別途設計する
+
+## 3. dylint の syn 化（ユーザー方針、2026-11-11）
+
+方針：ng では dylint を使わず、lint は syn ベースで作り直す（ユーザーの見立て：
+dylint は処理が重い）。旧 lints/ を精査した結果、この方針は妥当と判断する。
+
+### 重さの構造
+
+- 全12クレートが `#![feature(rustc_private)]` の LateLintPass で、合計 約3,400行
+- rustc_private ゆえに toolchain が nightly 固定になる（project.md 自身が
+  「lint 自身が rustc_private を要求するため nightly 必須」と明記している）
+- dylint の実行は対象クレートのコンパイル（cargo check）を伴うため、lint のたびに
+  コンパイルコストを払う。ci-check が重い主因のひとつ
+
+### 実は中身はほぼ構文解析だった
+
+- `port-adaptor-boundary-lint` は内部で syn（`syn::File` / `ItemStruct` /
+  `visit::Visit` / `UseTree`）を使ってファイルを再パースしており、dylint は
+  「どのファイルを検査するか」の入口として使われているに過ぎない
+- `cfg-std-forbid` や `module-wiring` も SourceFile のテキストと行オフセットを読んで
+  コメントや属性を判定しており、意味解析への依存は薄い
+
+### lint 別の syn 移植判定
+
+| lint | 判定 | 根拠 |
+|---|---|---|
+| mod-file / module-examples | ◎ syn 不要（ファイルシステム判定） | パスと配置のルール |
+| type-per-file / tests-location / use-placement | ◎ syn で十分 | 公開型の数、cfg(test) 位置、use の位置は構文で決まる |
+| ambiguous-suffix / rustdoc | ◎ syn で十分 | 識別子名と doc コメントのテキスト判定 |
+| module-wiring / port-adaptor-boundary | ◎ syn で十分 | 後者は現行でも内部が syn 実装 |
+| cfg-std-forbid | ○ syn で可 | `std::` パスの出現判定が本質。ただし別名再エクスポート経由は盲点になる |
+| redundant-fqcn | △ syn で近似 | use のスコープと名前衝突の扱いで偽陽性のリスク。スコープモデルを丁寧に作る必要がある |
+| let-underscore-forbid | ✕ syn では不可 | `Result` 型かどうかの型情報が要る。ただし workspace 未登録であり、本体は clippy の `let_underscore_must_use = deny` で代替できるため落としてよい |
+
+### ng での形（案）
+
+- 11本の別クレートにせず、**単一の checker バイナリ**にする。ファイルを1回
+  `syn::parse_file` して全ルールを visitor として回す。ファイル単位で並列化でき、
+  変更ファイルだけの増分実行も可能
+- stable toolchain で動く（nightly 固定の理由が消える）。コンパイルを伴わないので
+  秒オーダーで終わる見込み
+- 失うもの：型情報、マクロ展開後の姿、名前解決。マクロ生成コードと cfg の扱いは
+  近似になる、という限界は明記して引き継ぐ
+- 検証はスパイク向きの題材：代表3本（type-per-file / mod-file /
+  port-adaptor-boundary）を syn checker に移植し、旧 fraktor-rs のコードベースで
+  dylint との検出一致と実行時間を比べれば、方針の成否が数字で決まる
