@@ -90,6 +90,11 @@
   `docs/decisions/ownership-model-arc-overhead.md`（accepted）。
   Arc / Rc は、どうしても共有せざるを得ない場所（制御プレーン、スレッド境界の
   送信端、Weak による戻り辺）に限定する
+- **型付けの順序は untyped 先行で確定とする**（2026-11-11、ユーザー）。
+  untyped（classic）レイヤーを先に作り、typed レイヤーはその上に作る。
+  Pekko 自身の構成の踏襲であり、台帳でも `actor-typed` は `actor` に依存し、
+  `actor-typed-tests` は `actor` にも直接依存する。Fable 提案の前提分岐のうち
+  typed を正とする分岐（G0b-T / G0c-T）は採らない
 
 方向が出たもの（スパイク第2弾、2026-11-11。詳細は所有権モデル文書）:
 
@@ -103,7 +108,6 @@
 残る要決定の束:
 - 同期 / 非同期: アクターの実行基盤を独自スケジューラで持つか、tokio 等に載せるか
 - no_std 対応を初期から要求するか（旧 fraktor-rs は kernel の分離で狙っていた）
-- メッセージパッシングの型付け: untyped 先行か、typed を正とするか
 - Pekko の設定体系（HOCON / reference.conf 相当）をどこまで再現するか
 
 ### 3.5 ライセンス・運用
