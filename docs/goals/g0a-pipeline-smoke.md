@@ -65,10 +65,11 @@ Mac 上の clone で、最新を取り込んでから発行する。フラグの
 cd /Users/j5ik2o/Sources/github.com/j5ik2o/fraktor-ng-rs
 git pull
 
-takt --pipeline --skip-git -w pekko-porting -t "docs/goals/g0a-pipeline-smoke.md のゴール定義に従って G0a を実施してください。完了条件は同文書の機械判定4項目です。対象ノード以外の台帳変更と、範囲外のクレート新設は禁止です。"
+takt --pipeline --skip-git -w pekko-porting-ng -t "docs/goals/g0a-pipeline-smoke.md のゴール定義に従って G0a を実施してください。完了条件は同文書の機械判定4項目です。対象ノード以外の台帳変更と、範囲外のクレート新設は禁止です。"
 ```
 
-`pekko-porting` ワークフローが解決できない場合は `-w default` に読み替える。
+ワークフロー `pekko-porting-ng` は `docs/decisions/takt-workflow-design.md` の
+設計が固まってから `.takt/workflows/` に置く。それまでは発行しない。
 `.takt/config.yaml` は最小構成（provider: codex、concurrency: 1、base_branch: main）
 を置いてある。
 
