@@ -1,7 +1,7 @@
 name: pekko-port-node
 description: >-
   ゴールのノードを1件だけ移植するサブワークフロー。
-  triage →（除外提案があれば人間確認）→ テスト移植 → red 確認（system step）
+  triage → テスト移植 → red 確認（system step）
   → 実装とレビュー（builtin の mini-core に委譲）→ 機械ゲート（system step）
   → 等価性レビュー → 台帳更新、の順で処理し、結果を return ラベルで親へ返す。
   実装⇄レビュー⇄修正のループ品質は takt の builtin 資産（mini-core）が担い、
@@ -37,40 +37,16 @@ steps:
       - pekko-porting-rules
     instruction: pekko-triage
     rules:
-      - condition: 前提が揃っており、除外提案がない
+      - condition: 前提が揃っており、未承認の除外提案がない（承認済みの除外は台帳の cases.excluded に記録されている）
         next: port-test
-      - condition: 除外提案がある（ケース除外または do_not_port の提案）
-        next: human-checkpoint
+      - condition: 未承認の除外提案がある（ケース除外または do_not_port の提案）
+        return: needs_human
       - condition: 前提基盤が未 green、または Pekko 原典を参照できない
         next: ABORT
     output_contracts:
       report:
         - name: triage-report.md
           format: triage-report
-  - name: human-checkpoint
-    edit: false
-    persona: supervisor
-    knowledge:
-      - pekko-porting-rules
-    requires_user_input: true
-    input_reports:
-      from_step: triage
-      reports:
-        - triage-report.md
-    instruction: pekko-human-checkpoint
-    rules:
-      - condition: ユーザーが除外提案を承認した
-        next: port-test
-        requires_user_input: true
-        interactive_only: true
-      - condition: ユーザーが除外提案を却下した
-        return: needs_human
-        requires_user_input: true
-        interactive_only: true
-    output_contracts:
-      report:
-        - name: human-checkpoint-report.md
-          format: verify-report
   - name: port-test
     edit: true
     persona: coder
@@ -84,10 +60,6 @@ steps:
       - from_step: triage
         reports:
           - triage-report.md
-      - from_step: human-checkpoint
-        reports:
-          - human-checkpoint-report.md
-        optional_if_unrun: true
     instruction: pekko-port-test
     rules:
       - condition: テストの移植が完了した（除外は承認済みの提案だけを反映）

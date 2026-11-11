@@ -12,6 +12,12 @@ Apache Pekko v1.7.1 のテストスイートを正として Rust へ移植する
   ノードは 1 件ずつ処理する
 - 状態遷移は unported → red → green の順だけ。`do_not_port` とケース除外は
   人間だけが決める。エージェントは提案までで、承認なく台帳に書かない
+- 人間の判断は run の外で受ける（TAKT は HOTL の道具で、run の途中に
+  同期的な判断は差し込まない）。未承認の除外提案が出たら、run は提案を
+  triage レポートに残して needs_human で終わる。人間が承認した場合、
+  その記録は台帳の対象ノードの `cases.excluded` に人間自身が書く。
+  `cases.excluded` に項目があることは「承認済み」を意味し、再 run では
+  その除外を反映して進めてよい。`do_not_port` も人間が status に直接書く
 - ケース数は近似ではなく実数を数えて `cases` に記録する
 - ゴールの完了判定は `python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml
   --goal <ゴールID>` の終了コードで行う

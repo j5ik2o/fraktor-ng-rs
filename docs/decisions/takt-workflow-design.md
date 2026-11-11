@@ -21,9 +21,9 @@ persona と policy は標準ファセットをそのまま使う。
   返し、`when(...)` のルールで遷移する。直前ステップの対象（ノード、
   クレート、テストファイル）は `TAKT_PREVIOUS_RESPONSE_FILE` 経由で渡る。
   分類できない場合だけ、軽量な agent step（classify-red）に落ちる（決定 d の形）
-- **人間チェックポイントは子の中の step に**：triage の除外提案は、
-  子の human-checkpoint step（`requires_user_input`）で承認／却下を確認する。
-  却下なら子は needs_human を返し、root が ABORT して人間に上がる
+- **人間の判断は run の外で受ける**：triage の未承認の除外提案は、
+  子が needs_human を返して run が終わる。承認は人間が台帳の
+  `cases.excluded` に記録し、再 run がそれを見て進む（第3節）
 - **設定の置き場所**：system step のコマンド実行許可
   （`workflow_system_commands.custom_scripts: true`）を `.takt/config.yaml` に
   追加した。provider やモデルの割り当ては workflow YAML には書かず、
@@ -46,7 +46,7 @@ persona と policy は標準ファセットをそのまま使う。
   各ステップに規約が届く。プロジェクト専用の implement instruction は
   持たない（mini-core の implement は標準 instruction 固定のため）
 - プロジェクト側に残るのは、台帳と原典と機械判定にまつわる部分だけ：
-  triage、人間チェックポイント、テスト移植、verify の system step、
+  triage、テスト移植、verify の system step、
   等価性レビュー（原典との忠実さは builtin レビューの守備範囲外なので
   独立ステップとして残す。指摘は develop の再呼び出しで直す）、台帳更新
 - ファセットは `{extends:...}` で標準を継承する形にした：
@@ -82,8 +82,8 @@ G0a の発行コマンドで参照した旧 fraktor-rs の
 - Pekko の原典テストと実装を読み、ケースの実数、needs（TestKit 能力・前提フラグ）、
   infra 辺（前提基盤が green か）を確認する。出力は triage レポート
 - 分岐：前提基盤が未 green → ABORT（ゴール選定の誤りとして manager に返す）。
-  除外提案（ケース除外・do_not_port）がある → 人間確認待ちで停止。
-  問題なし → port-test へ
+  未承認の除外提案（ケース除外・do_not_port）がある → needs_human で
+  終了（判断は run の外、第3節）。問題なし → port-test へ
 - provider: クラウド上位モデル（解釈と判断が重い工程）
 
 ### 2.2 port-test（編集可、テストファイルのみ）
@@ -130,12 +130,24 @@ G0a の発行コマンドで参照した旧 fraktor-rs の
 - `ledger/tools/rollup.py --goal <ID>` で完了判定する。未完なら次のノードの
   triage へ戻る。全ノード完了で COMPLETE
 
-## 3. 人間チェックポイント
+## 3. 人間の判断の受け方（HOTL 前提）
 
-- triage の除外提案（ケース除外、`do_not_port` の提案）
-- 差し戻しループの上限到達（verify 系、review 系とも）
+TAKT は HOTL（Human on the Loop）の道具であり、run の途中に同期的な
+人間の判断は差し込まない。判断が要る場面では、run は提案と根拠を
+レポートに残して終わり、判断は run の外（manager との会話、台帳への
+記録）で行われる。再 run は、台帳に記録された判断を見て進む。
+
+- triage の除外提案（ケース除外、`do_not_port` の提案）：run は
+  needs_human で終了する。承認の記録先は台帳の `cases.excluded`
+  （人間が書く。項目があることが承認済みを意味する）。`do_not_port` は
+  人間が status に直接書く
+- 差し戻しループの上限到達（verify 系、review 系とも）：ABORT して
+  manager に上がる
 - `write_scope` の拡張が必要になった場合（前提基盤の追加実装が要る等）。
   スコープ変更は manager と人間の判断であり、run の裁量にしない
+
+（旧案の「ワークフロー内に人間チェックポイントの step を置く」形は、
+この前提と合わないため廃止した。2026-11-11、ユーザー指摘による）
 
 ## 4. provider 配分の原則
 
@@ -154,7 +166,7 @@ G0a の発行コマンドで参照した旧 fraktor-rs の
 - implement ステップからテストファイルの編集権限を外した
 - 除外判断のエスカレーションをステップの分岐として明示した
 
-## 6. 判断ポイント（未決定）
+## 6. 判断ポイント（すべて決定済み）
 
 a. ワークフローは全ゴール共通の1本か、基盤用／量産用に分けるか。
    **決定済み（2026-11-11、ユーザー）：当面1本**。provider の切り替えは
@@ -163,7 +175,7 @@ b. equivalence-review の2観点を、並列2ステップにするか統合1本�
    **決定済み（2026-11-11、ユーザー）：基盤期は統合1本**、量産期に分離を検討する
 c. 差し戻しループ上限の初期値。
    **決定済み（2026-11-11、ユーザー）：verify 系は 5 回、review 系は 3 回**。
-   上限到達時は人間チェックポイントへ上げる
+   上限到達時は ABORT して manager に上げる
 d. verify-red で「失敗理由が想定どおりか」の判定を機械だけで閉じるか、
    軽量モデルの判定を挟むか。
    **決定済み（2026-11-11、ユーザー）：機械判定を既定とし、分類できない場合のみ
