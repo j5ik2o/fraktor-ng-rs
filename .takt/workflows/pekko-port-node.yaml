@@ -7,6 +7,12 @@ description: >-
   実装⇄レビュー⇄修正のループ品質は takt の builtin 資産（mini-core）が担い、
   このワークフローは台帳・原典・機械判定というドメイン固有の部分を持つ。
   設計の正は docs/decisions/takt-workflow-design.md。
+all_steps:
+  rules:
+    - ref: findings-handling
+      position: before_instruction
+    - ref: plain-terminology
+      position: before_instruction
 subworkflow:
   callable: true
   visibility: internal
@@ -16,12 +22,25 @@ subworkflow:
     - needs_human
 initial_step: triage
 loop_monitors:
-  # 等価性レビューの差し戻しは 3 回まで（決定 c）
+  # 等価性レビューの差し戻し上限（決定 c）。連続 3 回目の指摘で judge が判定する。
+  # 実際の経路は develop → verify_green → equivalence-review → develop で、
+  # takt は完了したステップの並びをそのまま照合する。verify_green を照合から
+  # 外し、レビューが develop へ差し戻す時点で judge を呼ぶ。
+  # verify_green の失敗で develop をやり直すと連続は切れる（仕様として受け入れた）。
+  # 全体の上限は親ワークフローの max_steps が持つ
   - cycle:
-      - equivalence-review
       - develop
+      - equivalence-review
+    ignore_steps:
+      - verify_green
     threshold: 3
     judge:
+      input_reports:
+        - from_step: equivalence-review
+          reports:
+            - equivalence-review.md
+          history:
+            previous: 2
       persona: supervisor
       instruction: pekko-loop-judge
       rules:
@@ -32,7 +51,7 @@ loop_monitors:
 steps:
   - name: triage
     edit: false
-    persona: research-analyzer
+    persona: research-digger
     knowledge:
       - pekko-porting-rules
     instruction: pekko-triage
@@ -48,29 +67,28 @@ steps:
         - name: triage-report.md
           format: triage-report
   - name: port-test
-    edit: true
-    persona: coder
-    policy:
-      - coding
-      - testing
-      - pekko-coding-rules
-    knowledge:
-      - pekko-porting-rules
-    required_permission_mode: edit
+    description: Pekko 原典のテストを移植する（実装より先に書く）
+    uses: development-core-write-tests
+    with:
+      testing_policy:
+        - coding
+        - testing
+        - pekko-coding-rules
+      testing_knowledge:
+        - pekko-porting-rules
+      testing_instruction: pekko-port-test
+      testing_report_format: test-report
     input_reports:
       - from_step: triage
         reports:
           - triage-report.md
-    instruction: pekko-port-test
     rules:
       - condition: テストの移植が完了した（除外は承認済みの提案だけを反映）
         next: verify_red
+      - condition: 未承認の除外提案がある（移植できないケースが見つかり、人間の承認が要る）
+        return: needs_human
       - condition: 移植を進行できない
         next: ABORT
-    output_contracts:
-      report:
-        - name: port-test-report.md
-          format: verify-report
   - name: verify_red
     kind: system
     system_inputs:
@@ -116,7 +134,8 @@ steps:
       移植済みテストを通す実装を、builtin の mini-core（plan → implement →
       並列レビュー → 修正ループ）に委譲する。ドメイン規約は knowledge として
       注入され、mini-core 内の implement、supervisor、fix の各ステップに届く。
-      テストファイルの凍結も knowledge `pekko-porting-rules` が宣言する
+      テストファイルの凍結も knowledge `pekko-porting-rules` が宣言する。
+      knowledge は先頭 2,000 字だけが本文に載るので、移植規約を先頭に置く
     kind: workflow_call
     call: mini-core
     args:
@@ -124,22 +143,22 @@ steps:
         - design-planning
         - pekko-coding-rules
       plan_knowledge:
-        - architecture
         - pekko-porting-rules
+        - architecture
       development_policy:
         - coding
         - testing
         - pekko-coding-rules
       development_knowledge:
-        - architecture
         - pekko-porting-rules
+        - architecture
     input_reports:
       - from_step: triage
         reports:
           - triage-report.md
       - from_step: port-test
         reports:
-          - port-test-report.md
+          - test-report.md
       - from_step: equivalence-review
         reports:
           - equivalence-review.md
@@ -163,26 +182,35 @@ steps:
       - condition: when(true)
         next: develop
   - name: equivalence-review
-    edit: false
-    persona: testing-reviewer
-    policy:
-      - review
-      - ai-antipattern
+    description: 移植したテストと実装を Pekko 原典と突き合わせ、等価性の問題を報告する
+    uses: development-testing-reviewer
+    with:
+      review_policy_additions:
+        - ai-antipattern
+      review_knowledge_additions: []
+      testing_review_instruction: pekko-review-equivalence
+    # takt は knowledge を連結して先頭 2,000 字だけを本文に載せ、残りは
+    # スナップショットファイルを読ませる。fragment の並び（unit-testing、
+    # e2e-testing、追加分）のままだと移植規約が本文から外れるので、
+    # 移植規約を先頭に置いた並びで上書きする
     knowledge:
       - pekko-porting-rules
+      - unit-testing
+      - e2e-testing
     input_reports:
       - from_step: port-test
         reports:
-          - port-test-report.md
+          - test-report.md
       - from_step: develop
         reports: all
         optional_if_unrun: true
-    instruction: pekko-review-equivalence
     rules:
       - condition: 指摘なし（原典との等価性に問題がない）
         next: ledger-update
       - condition: 指摘あり（原典側の根拠つき）
         next: develop
+      - condition: 指摘はないが、原典または移植側を確認できず、等価性を判断できない
+        next: ABORT
     output_contracts:
       report:
         - name: equivalence-review.md
