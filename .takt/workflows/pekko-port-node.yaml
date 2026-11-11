@@ -7,6 +7,12 @@ description: >-
   実装⇄レビュー⇄修正のループ品質は takt の builtin 資産（mini-core）が担い、
   このワークフローは台帳・原典・機械判定というドメイン固有の部分を持つ。
   設計の正は docs/decisions/takt-workflow-design.md。
+all_steps:
+  rules:
+    - ref: findings-handling
+      position: before_instruction
+    - ref: plain-terminology
+      position: before_instruction
 subworkflow:
   callable: true
   visibility: internal
@@ -22,6 +28,12 @@ loop_monitors:
       - develop
     threshold: 3
     judge:
+      input_reports:
+        - from_step: equivalence-review
+          reports:
+            - equivalence-review.md
+          history:
+            previous: 2
       persona: supervisor
       instruction: pekko-loop-judge
       rules:
