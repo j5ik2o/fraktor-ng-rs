@@ -59,7 +59,7 @@ JSON の出力は次の形である。
 | `module-examples` | module-examples-lint | ライブラリのクレートの `examples/` に置いた example | 変わる | [notes/module-examples.md](notes/module-examples.md) |
 | `type-per-file` | type-per-file-lint | 1 ファイルに 2 つ以上ある `pub` の struct、enum、trait | 変わらない | [notes/type-per-file.md](notes/type-per-file.md) |
 | `tests-location` | tests-location-lint | 本番ファイルの中のテスト（`mod tests { }`、`#[cfg(test)]` のアイテム、`#[test]`） | 変わらない | [notes/tests-location.md](notes/tests-location.md) |
-| `use-placement` | use-placement-lint | ファイルやモジュールの冒頭に無い `use` と `mod`、関数内の `use`。テストとベンチのファイルは対象外 | 変わらない | [notes/use-placement.md](notes/use-placement.md) |
+| `use-placement` | use-placement-lint | ファイルやモジュールの冒頭に無い `use` と `mod`、関数内の `use`。テスト、ベンチ、example のファイルは対象外 | 変わらない | [notes/use-placement.md](notes/use-placement.md) |
 | `ambiguous-suffix` | ambiguous-suffix-lint | Manager、Util、Facade、Service、Runtime、Engine で終わる名前 | 変わらない | [notes/ambiguous-suffix.md](notes/ambiguous-suffix.md) |
 | `rustdoc` | rustdoc-lint | doc コメントの中の日本語と、`ignore` つきのコードフェンス | 変わらない | [notes/rustdoc.md](notes/rustdoc.md) |
 | `module-wiring` | module-wiring-lint | 末端モジュールの直属親以外での再エクスポート、末端モジュールの `pub mod`、`#[path]`、`include!` | 変わらない | [notes/module-wiring.md](notes/module-wiring.md) |
@@ -210,7 +210,7 @@ syn は構文だけを見る。次のものは見えない。
    - type-per-file と ambiguous-suffix は、旧実装がテスト側のパスを除外しているので、そのまま除外する。
    - cfg-std-forbid は、旧実装が `cfg(test)` を例外にしているので、`#[cfg(test)]` で宣言されたファイルも例外にした。
    - module-wiring は、`cfg(test)` だけの子モジュールを末端判定で数えない。
-   - use-placement は、テストとベンチのファイルを対象外にした（`tests/` の下、`benches/` の下、`*_test.rs`）。旧実装に除外は無いが、旧 CI がそのファイルを検査していなかったので、実効の挙動に合わせた（2026-11-11 の決定）。
+   - use-placement は、テスト、ベンチ、example のファイルを対象外にした（`tests/`、`benches/`、`examples/` の下と、`tests.rs`、`*_test.rs`、`*_tests.rs`）。旧実装に除外は無いが、旧 CI がそのファイルを検査していなかったので、実効の挙動に合わせた（2026-11-11 の決定）。対象のファイルにある `#[cfg(test)]` のコードと、`tests/ui/` の下は対象のままである。
    - rustdoc と module-wiring の宣言の判定は、旧実装に除外が無いので、テストコードにも適用する。
 5. **ng の配置。** kernel を `src/kernel.rs` と `src/kernel/**`、adaptor を `src/adaptor.rs` と `src/adaptor/**` と仮定した。G0a でワークスペースの骨格ができた時点で、実際の配置と合わせる必要がある。
 6. **verify_green の起動方法。** `cargo run --release --locked` にした。対象は `cargo metadata` で引いたクレートのディレクトリである。ビルド済みのバイナリを置く形もありうる。
@@ -224,7 +224,7 @@ syn は構文だけを見る。次のものは見えない。
 | `mod-file` | `tests/common/mod.rs` のようなテスト補助を違反にするか |
 | `module-examples` | ng で `crates/<crate>/examples/` を禁止するか。旧 `showcases/` に当たる置き場所が ng に無い |
 | `tests-location` | sibling `*_test.rs` の規約を ng でも使うか。テキスト走査の癖（コメントや文字列の中も拾う）を残すか |
-| `use-placement` | テストとベンチのファイルを対象外にすることは決定済み。残るのは、`tests.rs`、`*_tests.rs`、`examples/` を対象外に加えるかと、対象のファイルにある `#[cfg(test)]` のコードを対象外にするか |
+| `use-placement` | なし。テストコードの扱いは 2026-11-11 に決定済み |
 | `ambiguous-suffix` | 大文字で始まる名前だけのパターンをパスとみなす近似。引数位置の `impl Trait` を検査するか |
 | `rustdoc` | テキスト走査の癖（文字列の中の行頭 `///` も拾う）を残すか |
 | `module-wiring` | クレートのルートを判定する近似。`#[cfg_attr(..., path = "...")]` を `#[path]` とみなすこと |

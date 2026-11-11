@@ -20,10 +20,11 @@ pub(crate) fn is_test_or_build_output(path: &Path) -> bool {
         return true;
     }
 
-    if is_under_tests_dir(path) {
-        return true;
-    }
+    is_under_tests_dir(path) || is_test_file_name(path)
+}
 
+/// Whether the file name marks a test file: `tests.rs`, `*_test.rs`, `*_tests.rs`.
+pub(crate) fn is_test_file_name(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| {

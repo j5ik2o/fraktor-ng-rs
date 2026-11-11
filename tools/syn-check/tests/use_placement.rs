@@ -29,14 +29,17 @@ fn nested_modules_and_impl_bodies_are_checked() {
     );
 }
 
-/// `tests/` の下、`benches/` の下、`*_test.rs` は対象外。3 つのファイルは
-/// `src/tests.rs` と同じ内容で、対象にすると 3 行目と 6 行目が違反になる。
+/// テスト、ベンチ、example のファイルは対象外。どのファイルも `src/gadget.rs` と同じ内容で、
+/// 対象にすると 3 行目と 6 行目が違反になる。
 #[test]
-fn test_and_bench_files_are_out_of_scope() {
+fn test_bench_and_example_files_are_out_of_scope() {
     for file in [
         "tests/port.rs",
         "benches/throughput.rs",
+        "examples/demo.rs",
+        "src/tests.rs",
         "src/widget_test.rs",
+        "src/widget_tests.rs",
     ] {
         assert_eq!(
             violation_lines(&format!("{SAMPLE_CRATE}/{file}")),
@@ -46,12 +49,21 @@ fn test_and_bench_files_are_out_of_scope() {
     }
 }
 
-/// 対象外にするのは上の 3 つのパスだけ。`tests.rs` という名前のファイルは対象のまま。
+/// 上の 6 つと同じ内容を lib 側のファイルに置くと違反になる。
 /// 3: fn の後にある use。6: 関数本体の use。
 #[test]
-fn a_file_named_tests_rs_is_still_checked() {
+fn the_same_code_in_a_lib_file_is_checked() {
     assert_eq!(
-        violation_lines(&format!("{SAMPLE_CRATE}/src/tests.rs")),
+        violation_lines(&format!("{SAMPLE_CRATE}/src/gadget.rs")),
+        vec![3, 6]
+    );
+}
+
+/// `tests/ui/` の下は対象のまま（フィクスチャを検査するため）。
+#[test]
+fn a_file_under_tests_ui_is_still_checked() {
+    assert_eq!(
+        violation_lines(&format!("{SAMPLE_CRATE}/tests/ui/case.rs")),
         vec![3, 6]
     );
 }
