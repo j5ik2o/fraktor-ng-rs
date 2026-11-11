@@ -1,0 +1,15 @@
+[package]
+name = "syn-check"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Static checker for fraktor-ng-rs structure rules. Parses with syn and never compiles the target code."
+
+[dependencies]
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+serde_json = "1"
+syn = { version = "2", features = ["full", "visit"] }
+
+# 独立したワークスペースにする。ライブラリのワークスペースができても、そこには入らない。
+[workspace]
