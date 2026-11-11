@@ -39,3 +39,21 @@ pub(crate) fn is_test_or_build_output(path: &Path) -> bool {
             name == "tests.rs" || name.ends_with("_test.rs") || name.ends_with("_tests.rs")
         })
 }
+
+/// Whether `path` is `crates/<crate>/src/<module>.rs` or under `crates/<crate>/src/<module>/`.
+///
+/// In fraktor-ng-rs a crate keeps its platform-independent code in the `kernel`
+/// module and its std implementation in the `adaptor` module.
+pub(crate) fn is_ng_module_source(path: &Path, module: &str) -> bool {
+    let components: Vec<&str> = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect();
+    let file = format!("{module}.rs");
+    components.windows(4).enumerate().any(|(index, window)| {
+        let is_last = index + 4 == components.len();
+        window[0] == "crates"
+            && window[2] == "src"
+            && ((window[3] == file && is_last) || (window[3] == module && !is_last))
+    })
+}

@@ -10,8 +10,8 @@ use syn::{
 };
 
 use crate::{
-    ast, check_context::CheckContext, layout::Layout, position::Position, rule::Rule, sink::Sink,
-    source_file::SourceFile, workspace::Workspace,
+    ast, check_context::CheckContext, layout::Layout, paths, position::Position, rule::Rule,
+    sink::Sink, source_file::SourceFile, workspace::Workspace,
 };
 
 /// Forbids `#[cfg(feature = "std")]` and `use std::...` in platform-independent
@@ -30,7 +30,7 @@ impl Rule for CfgStdForbid {
         };
         let in_scope = match cx.layout {
             Layout::Legacy => lint_enabled_for(file, cx.workspace),
-            Layout::Ng => is_ng_module_source(file.path(), "kernel"),
+            Layout::Ng => paths::is_ng_module_source(file.path(), "kernel"),
         };
         if !in_scope || declared_only_for_tests(file.path(), cx.workspace) {
             return;
@@ -135,34 +135,74 @@ fn attr_enables_lint(attr: &Attribute) -> bool {
     }
 }
 
-/// Whether the parent module, or one of its ancestors, declares this file with
-/// `#[cfg(test)] mod <name>;`.
+/// Whether the module in this file, or one of its ancestors, is declared under
+/// `#[cfg(test)]`.
 ///
 /// rustc did not compile such a file into the old lint's view unless tests were
 /// built, and a `cfg(test)` inline module was exempt. The exemption is carried
 /// across the file boundary here.
 fn declared_only_for_tests(path: &Path, workspace: &Workspace) -> bool {
     let mut current = path.to_path_buf();
-    while let Some((name, children_dir)) = module_of(&current) {
-        let Some(parent) = parent_module_file(&children_dir, workspace) else {
-            return false;
-        };
-        let Some(declaration) = parent.ast().and_then(|ast| {
-            ast.items.iter().find_map(|item| match item {
-                Item::Mod(module) if module.content.is_none() && module.ident == name => {
-                    Some(module)
-                }
-                _ => None,
-            })
-        }) else {
-            return false;
-        };
-        if declaration.attrs.iter().any(attr_is_cfg_test) {
+    while let Some((declaring_file, under_cfg_test)) = declaration_of(&current, workspace) {
+        if under_cfg_test {
             return true;
         }
-        current = parent.path().to_path_buf();
+        current = declaring_file;
     }
     false
+}
+
+/// The file that declares the module in `path`, and whether that declaration
+/// is under `cfg(test)`. `None` for a crate root or a file nothing declares.
+fn declaration_of(path: &Path, workspace: &Workspace) -> Option<(PathBuf, bool)> {
+    if let Some(hook) = sibling_test_hook(path, workspace) {
+        return Some(hook);
+    }
+    let (name, children_dir) = module_of(path)?;
+    let parent = parent_module_file(&children_dir, workspace)?;
+    let declaration = parent.ast()?.items.iter().find_map(|item| match item {
+        Item::Mod(module) if module.content.is_none() && module.ident == name => Some(module),
+        _ => None,
+    })?;
+    Some((
+        parent.path().to_path_buf(),
+        declaration.attrs.iter().any(attr_is_cfg_test),
+    ))
+}
+
+/// The declaration `#[path = "<module>_test.rs"] mod tests;` in the sibling
+/// `<module>.rs`. This is the form the `tests-location` rule asks for, so a
+/// test file is usually declared this way and not by its own name.
+fn sibling_test_hook(path: &Path, workspace: &Workspace) -> Option<(PathBuf, bool)> {
+    let file_name = path.file_name()?.to_str()?;
+    let module = file_name.strip_suffix("_test.rs")?;
+    let sibling = path.with_file_name(format!("{module}.rs"));
+    let source = workspace.source(&sibling)?;
+    let declaration = source.ast()?.items.iter().find_map(|item| match item {
+        Item::Mod(module)
+            if module.content.is_none()
+                && path_attribute(&module.attrs).as_deref() == Some(file_name) =>
+        {
+            Some(module)
+        }
+        _ => None,
+    })?;
+    Some((sibling, declaration.attrs.iter().any(attr_is_cfg_test)))
+}
+
+fn path_attribute(attrs: &[Attribute]) -> Option<String> {
+    attrs.iter().find_map(|attr| match &attr.meta {
+        Meta::NameValue(name_value) if name_value.path.is_ident("path") => {
+            match &name_value.value {
+                Expr::Lit(literal) => match &literal.lit {
+                    Lit::Str(value) => Some(value.value()),
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
+        _ => None,
+    })
 }
 
 /// The module name of a file, and the directory its parent module's children live in.
@@ -190,21 +230,6 @@ fn parent_module_file(children_dir: &Path, workspace: &Workspace) -> Option<Rc<S
     candidates
         .iter()
         .find_map(|candidate| workspace.source(candidate))
-}
-
-/// Whether `path` is `crates/<crate>/src/<module>.rs` or under `crates/<crate>/src/<module>/`.
-fn is_ng_module_source(path: &Path, module: &str) -> bool {
-    let components: Vec<&str> = path
-        .components()
-        .filter_map(|component| component.as_os_str().to_str())
-        .collect();
-    let file = format!("{module}.rs");
-    components.windows(4).enumerate().any(|(index, window)| {
-        let is_last = index + 4 == components.len();
-        window[0] == "crates"
-            && window[2] == "src"
-            && ((window[3] == file && is_last) || (window[3] == module && !is_last))
-    })
 }
 
 fn attr_is_cfg_test(attr: &Attribute) -> bool {

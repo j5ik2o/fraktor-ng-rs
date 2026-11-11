@@ -6,7 +6,7 @@ use syn::{
 };
 
 use crate::{
-    ast, check_context::CheckContext, layout::Layout, rule::Rule, sink::Sink,
+    ast, check_context::CheckContext, layout::Layout, paths, rule::Rule, sink::Sink,
     source_file::SourceFile,
 };
 
@@ -212,23 +212,8 @@ fn is_adaptor_source(path: &Path, layout: Layout) -> bool {
             let normalized = format!("/{}", path.to_string_lossy().replace('\\', "/"));
             normalized.contains("/modules/") && normalized.contains("-adaptor-std/src/")
         }
-        Layout::Ng => is_ng_module_source(path, "adaptor"),
+        Layout::Ng => paths::is_ng_module_source(path, "adaptor"),
     }
-}
-
-/// Whether `path` is `crates/<crate>/src/<module>.rs` or under `crates/<crate>/src/<module>/`.
-fn is_ng_module_source(path: &Path, module: &str) -> bool {
-    let components: Vec<&str> = path
-        .components()
-        .filter_map(|component| component.as_os_str().to_str())
-        .collect();
-    let file = format!("{module}.rs");
-    components.windows(4).enumerate().any(|(index, window)| {
-        let is_last = index + 4 == components.len();
-        window[0] == "crates"
-            && window[2] == "src"
-            && ((window[3] == file && is_last) || (window[3] == module && !is_last))
-    })
 }
 
 struct CoreImport {

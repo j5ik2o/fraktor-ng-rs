@@ -157,3 +157,17 @@ fn ng_does_not_need_a_lint_level() {
         Vec::<usize>::new()
     );
 }
+
+#[test]
+fn ng_sibling_test_hook_files_are_exempt() {
+    // `#[cfg(test)] #[path = "timer_test.rs"] mod tests;` で宣言されたテストファイルは対象外。
+    assert_eq!(
+        lines(Layout::Ng, "crates/actor/src/kernel/timer_test.rs"),
+        Vec::<usize>::new()
+    );
+    // cfg(test) の無い `#[path]` 宣言は例外にならない。
+    assert_eq!(
+        lines(Layout::Ng, "crates/actor/src/kernel/ungated_test.rs"),
+        vec![1]
+    );
+}

@@ -31,6 +31,9 @@
   またインラインの `#[cfg(test)] mod tests { ... }` は旧 lint でも許されていた。この例外が無いと、
   `<module>/tests.rs` に置くテスト（tests-location の規約）がすべて違反になる。親は `<dir>.rs`、`<dir>/mod.rs`、
   `src` 直下なら `lib.rs` か `main.rs` を探す。ファイル直下の `mod` 宣言だけを見る
+- 同じ例外を、sibling test hook にも適用した。`<module>_test.rs` は、隣の `<module>.rs` にある
+  `#[cfg(test)] #[path = "<module>_test.rs"] mod tests;` で宣言されていれば丸ごと許す。tests-location が求める形が
+  これなので、テストファイルはふつう自分の名前では宣言されない。`cfg(test)` の無い `#[path]` 宣言は例外にしない
 - 旧 lint が `#[allow(cfg_std_forbid)]` を見たとき、その属性以降を囲むアイテムの終わりまで許していた挙動は、コメント指定に置き換えた（下記）
 - lint レベルの近似で拾えないもの：`Cargo.toml` の `[lints]`、`RUSTFLAGS` や dylint の設定、`#![cfg_attr(..., deny(cfg_std_forbid))]`、
   親モジュールの `#[deny(cfg_std_forbid)] mod x;`、アイテムの外側属性の `#[deny]`。どれも 1 ファイルの構文からは決まらない
@@ -53,7 +56,7 @@
 - cfg の条件式は評価しない。`feature = "std"` を含むかどうかを構文で見るだけである
 - `#[cfg(test)]` が付いた impl のメソッドやトレイトのメソッドは syn のアイテムではないので、例外にならない。
   その本体の `use std::...` は違反になる（旧 lint と同じ）
-- インラインモジュールの中の `#[cfg(test)] mod x;` が宣言するファイル（`mod a { #[cfg(test)] mod tests; }` の先）と、`#[path]` で指すファイルは、ファイルをまたぐ例外の対象にならない
+- インラインモジュールの中の `#[cfg(test)] mod x;` が宣言するファイル（`mod a { #[cfg(test)] mod tests; }` の先）と、上の sibling test hook 以外の `#[path]` で指すファイルは、ファイルをまたぐ例外の対象にならない
 
 ## 要判断
 
