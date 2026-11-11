@@ -163,3 +163,28 @@ dylint は処理が重い）。旧 lints/ を精査した結果、この方針�
 - 検証はスパイク向きの題材：代表3本（type-per-file / mod-file /
   port-adaptor-boundary）を syn checker に移植し、旧 fraktor-rs のコードベースで
   dylint との検出一致と実行時間を比べれば、方針の成否が数字で決まる
+
+### スパイク結果（2026-11-11 実施）
+
+実施場所はリポジトリ外（`~/workspace/spikes/syn-lint/`）。単一バイナリ
+（syn 2.0.119、full + visit、stable toolchain）で type-per-file / mod-file /
+use-placement の3ルールを実装し、旧 fraktor-rs の `modules/` に適用した。
+
+- 対象ファイル 2,689件、syn パース失敗 0件。**対象コードのコンパイルなしに完走した**
+- checker 実行時間は約2.26秒（wall clock、最終版）。checker 自体のビルドは
+  初回36.3秒・増分2.2秒。dylint 側は実測していないが、「コンパイルなし・秒オーダー」
+  という構造差は事実として確認できた
+- 違反件数：mod-file 4件（すべて `tests/common/mod.rs` 等のテスト補助。
+  旧側でも例外扱い相当）、type-per-file 14件、use-placement 3件
+- **一番の発見**：use-placement を素朴に実装すると偽陽性が 3,358件出たが、
+  旧 dylint のアイテム分類（Use / Mod は配置対象、ExternCrate / Type /
+  インライン Mod は対象外）を syn に忠実移植すると 3件に落ちた。
+  ルールの意味は rustc の意味解析ではなく分類ロジックが運んでおり、それは移植可能
+- 残る偽陽性クラス：cfg 切り替えの同名 alias を重複して数える件
+  （`utils-core/src/sync.rs` で6型と報告）。例外規定で潰す必要がある
+- 関数本体内の use の検出は未移植（その分だけ検出は過少）
+
+結論：**syn 化は進めてよい（条件付き）**。
+(1) ルールごとに旧 lint の分類・例外を先に読み取って忠実に移植すること
+(2) cfg 重複などの偽陽性クラスを例外規定で潰すこと
+(3) 型情報が要るルールは対象外とし clippy に寄せること
