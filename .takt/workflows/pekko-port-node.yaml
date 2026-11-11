@@ -48,6 +48,51 @@ loop_monitors:
           next: develop
         - condition: 非生産的（同じ指摘が繰り返される）
           next: ABORT
+  # verify_red の差し戻し上限（決定 c の verify 系 5 回）。移植したテストが想定どおりの
+  # red にならず port-test へ差し戻される。連続 5 回目の差し戻しで judge が判定する。
+  # classify-red を経由した差し戻しも数えるので、classify-red を照合から外す
+  - cycle:
+      - port-test
+      - verify_red
+    ignore_steps:
+      - classify-red
+    threshold: 5
+    judge:
+      input_reports:
+        - from_step: port-test
+          reports:
+            - test-report.md
+          history:
+            previous: 2
+      persona: supervisor
+      instruction: pekko-verify-red-loop-judge
+      rules:
+        - condition: 健全（red にならない理由が変わり、テストの修正が前進している）
+          next: port-test
+        - condition: 非生産的（同じ理由で red にならない状態が繰り返される）
+          next: ABORT
+  # verify_green の差し戻し上限（決定 c の verify 系 5 回）。機械ゲートが落ちて develop へ
+  # 差し戻される。連続 5 回目の差し戻しで judge が判定する。ゲートを通って
+  # equivalence-review に進むと連続は切れる
+  - cycle:
+      - develop
+      - verify_green
+    threshold: 5
+    judge:
+      input_reports:
+        # 名前で選ぶと、mini-core がその報告を書かずに終わった回に judge の準備が
+        # 失敗する。all なら、その回に実際に書かれた報告だけが渡る
+        - from_step: develop
+          reports: all
+          history:
+            previous: 2
+      persona: supervisor
+      instruction: pekko-verify-green-loop-judge
+      rules:
+        - condition: 健全（落ちるゲートや理由が変わり、修正が前進している）
+          next: develop
+        - condition: 非生産的（同じゲートが同じ理由で落ち続ける）
+          next: ABORT
 steps:
   - name: triage
     edit: false
