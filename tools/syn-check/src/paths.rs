@@ -20,17 +20,8 @@ pub(crate) fn is_test_or_build_output(path: &Path) -> bool {
         return true;
     }
 
-    let mut components = path.components().peekable();
-    while let Some(component) = components.next() {
-        if component.as_os_str() == "tests" {
-            if components
-                .peek()
-                .is_some_and(|next| next.as_os_str() == "ui")
-            {
-                continue;
-            }
-            return true;
-        }
+    if is_under_tests_dir(path) {
+        return true;
     }
 
     path.file_name()
@@ -38,6 +29,24 @@ pub(crate) fn is_test_or_build_output(path: &Path) -> bool {
         .is_some_and(|name| {
             name == "tests.rs" || name.ends_with("_test.rs") || name.ends_with("_tests.rs")
         })
+}
+
+/// Whether a `tests` directory is on the path.
+///
+/// A `tests` directory directly followed by `ui` does not count, so that the
+/// rules still run on their own UI fixtures.
+pub(crate) fn is_under_tests_dir(path: &Path) -> bool {
+    let mut components = path.components().peekable();
+    while let Some(component) = components.next() {
+        if component.as_os_str() == "tests"
+            && components
+                .peek()
+                .is_none_or(|next| next.as_os_str() != "ui")
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Whether `path` is `crates/<crate>/src/<module>.rs` or under `crates/<crate>/src/<module>/`.

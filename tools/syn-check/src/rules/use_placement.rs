@@ -1,10 +1,16 @@
+use std::path::Path;
+
 use syn::{Item, visit::Visit};
 
-use crate::{ast, check_context::CheckContext, rule::Rule, sink::Sink, source_file::SourceFile};
+use crate::{
+    ast, check_context::CheckContext, paths, rule::Rule, sink::Sink, source_file::SourceFile,
+};
 
 /// Requires `use` and `mod` declarations at the top of a file or module, and
 /// forbids `use` inside functions and blocks. Ported from the old
 /// `use-placement-lint` (`use_mod_placement`), which already ran on syn.
+///
+/// Test and bench files are out of scope, see [`is_test_file`].
 pub(crate) struct UsePlacement;
 
 impl Rule for UsePlacement {
@@ -13,10 +19,31 @@ impl Rule for UsePlacement {
     }
 
     fn check(&self, file: &SourceFile, _cx: &CheckContext<'_>, sink: &mut Sink) {
+        if is_test_file(file.path()) {
+            return;
+        }
         if let Some(ast) = file.ast() {
             enforce_module_items(&ast.items, sink);
         }
     }
+}
+
+/// Whether the file holds test or bench code, judged from its path alone:
+/// anything under a `tests` or `benches` directory, and `*_test.rs`.
+///
+/// The old lint had no such exemption, but the old CI ran it on the lib target
+/// only, so it never visited a file that is compiled only for tests or benches.
+/// `#[cfg(test)]` code inside any other file is still checked: the old lint
+/// re-read every file it visited with syn, which does not evaluate `cfg`.
+fn is_test_file(path: &Path) -> bool {
+    paths::is_under_tests_dir(path)
+        || path
+            .components()
+            .any(|component| component.as_os_str() == "benches")
+        || path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with("_test.rs"))
 }
 
 fn enforce_module_items(items: &[Item], sink: &mut Sink) {

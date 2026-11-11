@@ -59,7 +59,7 @@ JSON の出力は次の形である。
 | `module-examples` | module-examples-lint | ライブラリのクレートの `examples/` に置いた example | 変わる | [notes/module-examples.md](notes/module-examples.md) |
 | `type-per-file` | type-per-file-lint | 1 ファイルに 2 つ以上ある `pub` の struct、enum、trait | 変わらない | [notes/type-per-file.md](notes/type-per-file.md) |
 | `tests-location` | tests-location-lint | 本番ファイルの中のテスト（`mod tests { }`、`#[cfg(test)]` のアイテム、`#[test]`） | 変わらない | [notes/tests-location.md](notes/tests-location.md) |
-| `use-placement` | use-placement-lint | ファイルやモジュールの冒頭に無い `use` と `mod`、関数内の `use` | 変わらない | [notes/use-placement.md](notes/use-placement.md) |
+| `use-placement` | use-placement-lint | ファイルやモジュールの冒頭に無い `use` と `mod`、関数内の `use`。テストとベンチのファイルは対象外 | 変わらない | [notes/use-placement.md](notes/use-placement.md) |
 | `ambiguous-suffix` | ambiguous-suffix-lint | Manager、Util、Facade、Service、Runtime、Engine で終わる名前 | 変わらない | [notes/ambiguous-suffix.md](notes/ambiguous-suffix.md) |
 | `rustdoc` | rustdoc-lint | doc コメントの中の日本語と、`ignore` つきのコードフェンス | 変わらない | [notes/rustdoc.md](notes/rustdoc.md) |
 | `module-wiring` | module-wiring-lint | 末端モジュールの直属親以外での再エクスポート、末端モジュールの `pub mod`、`#[path]`、`include!` | 変わらない | [notes/module-wiring.md](notes/module-wiring.md) |
@@ -125,7 +125,7 @@ pub enum Second {}
 |---|---|---|---|
 | mod-file | 4 件 | 4 件 | 同じ 4 ファイル（`tests/common/mod.rs` が 3 件、`tests/support/mod.rs` が 1 件） |
 | type-per-file | 14 ファイル | 4 ファイル | 下の表 |
-| use-placement | 3 件 | 248 件 | 3 件はスパイクと同じ箇所。245 件は、スパイクが写していなかった「関数内の `use`」の検出である。248 件すべてがテストかベンチのファイルにある |
+| use-placement | 3 件 | 0 件 | 旧 lint の文面どおりにテストも検査すると 248 件になる。3 件はスパイクと同じ箇所で、245 件はスパイクが写していなかった「関数内の `use`」の検出である。248 件すべてがテストかベンチのファイルにあり、そのファイルを対象外にしたので 0 件になった |
 
 type-per-file の 14 ファイルの内訳は次のとおりである。
 
@@ -143,17 +143,17 @@ type-per-file の 14 ファイルの内訳は次のとおりである。
 | `module-examples` | 0 | 0 | 0 | |
 | `type-per-file` | 4 | 0 | 4 | 旧コードが `#![allow(multiple_type_definitions)]` で許可していた 4 ファイル |
 | `tests-location` | 0 | 0 | 0 | |
-| `use-placement` | 248 | 248 | 0 | |
+| `use-placement` | 0 | 0 | 0 | テストとベンチの 908 ファイルは対象外。対象の 1,781 ファイルで 0 件 |
 | `ambiguous-suffix` | 4 | 4 | 0 | |
 | `rustdoc` | 64 | 61 | 3 | `cfg(feature = "compression")` で宣言されたファイル 1 つ |
 | `module-wiring` | 49 | 44 | 5 | 2 件は旧コードが `#![allow(no_parent_reexport)]` で許可。3 件は `cfg(feature = "compression")` の下 |
 | `port-adaptor-boundary` | 0 | 0 | 0 | |
 | `cfg-std-forbid` | 7 | 1 | 6 | 6 件とも旧コードが `#[allow(cfg_std_forbid)]` で許可 |
-| 合計 | 380 | 362 | 18 | |
+| 合計 | 132 | 114 | 18 | |
 
 読み方は次のとおりである。
 
-- 旧 CI は lib ターゲットだけを lint の対象にしていた。旧 `scripts/ci-check.sh` の dylint の箇所に「既定の `cargo dylint` は cargo check の既定ターゲット（lib のみ）で走るため、`#[cfg(test)]` モジュール（兄弟 `tests.rs` を含む）はどの lint からも visit されない」とある。テスト側のパスの 362 件は、旧 lint が見ていなかったコードにある。
+- 旧 CI は lib ターゲットだけを lint の対象にしていた。旧 `scripts/ci-check.sh` の dylint の箇所に「既定の `cargo dylint` は cargo check の既定ターゲット（lib のみ）で走るため、`#[cfg(test)]` モジュール（兄弟 `tests.rs` を含む）はどの lint からも visit されない」とある。テスト側のパスの 114 件は、旧 lint が見ていなかったコードにある。
 - それ以外の 18 件のうち 12 件は、旧コードが属性で明示的に許可していた箇所である。新チェッカーは `#[allow]` 属性を読まないので報告する。
 - 残る 6 件は `compression` フィーチャの下にある。このフィーチャは既定で無効なので、既定のビルドではコンパイルされない。旧 CI がこのフィーチャを有効にして lint を走らせたかどうかは確かめていない。
 - 旧 CI が検査していたコードで、上のどれにも当てはまらない違反は 0 件である。
@@ -210,7 +210,8 @@ syn は構文だけを見る。次のものは見えない。
    - type-per-file と ambiguous-suffix は、旧実装がテスト側のパスを除外しているので、そのまま除外する。
    - cfg-std-forbid は、旧実装が `cfg(test)` を例外にしているので、`#[cfg(test)]` で宣言されたファイルも例外にした。
    - module-wiring は、`cfg(test)` だけの子モジュールを末端判定で数えない。
-   - use-placement、rustdoc、module-wiring の宣言の判定は、旧実装に除外が無いので、テストコードにも適用する。
+   - use-placement は、テストとベンチのファイルを対象外にした（`tests/` の下、`benches/` の下、`*_test.rs`）。旧実装に除外は無いが、旧 CI がそのファイルを検査していなかったので、実効の挙動に合わせた（2026-11-11 の決定）。
+   - rustdoc と module-wiring の宣言の判定は、旧実装に除外が無いので、テストコードにも適用する。
 5. **ng の配置。** kernel を `src/kernel.rs` と `src/kernel/**`、adaptor を `src/adaptor.rs` と `src/adaptor/**` と仮定した。G0a でワークスペースの骨格ができた時点で、実際の配置と合わせる必要がある。
 6. **verify_green の起動方法。** `cargo run --release --locked` にした。対象は `cargo metadata` で引いたクレートのディレクトリである。ビルド済みのバイナリを置く形もありうる。
 
@@ -223,7 +224,7 @@ syn は構文だけを見る。次のものは見えない。
 | `mod-file` | `tests/common/mod.rs` のようなテスト補助を違反にするか |
 | `module-examples` | ng で `crates/<crate>/examples/` を禁止するか。旧 `showcases/` に当たる置き場所が ng に無い |
 | `tests-location` | sibling `*_test.rs` の規約を ng でも使うか。テキスト走査の癖（コメントや文字列の中も拾う）を残すか |
-| `use-placement` | テストコードの関数内 `use` を違反にするか |
+| `use-placement` | テストとベンチのファイルを対象外にすることは決定済み。残るのは、`tests.rs`、`*_tests.rs`、`examples/` を対象外に加えるかと、対象のファイルにある `#[cfg(test)]` のコードを対象外にするか |
 | `ambiguous-suffix` | 大文字で始まる名前だけのパターンをパスとみなす近似。引数位置の `impl Trait` を検査するか |
 | `rustdoc` | テキスト走査の癖（文字列の中の行頭 `///` も拾う）を残すか |
 | `module-wiring` | クレートのルートを判定する近似。`#[cfg_attr(..., path = "...")]` を `#[path]` とみなすこと |
