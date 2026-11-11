@@ -1,9 +1,11 @@
 use crate::spec::LintSpec;
 
-// 未移植。移植したら rules にルール id を入れ、必要なら adaptations と differences を書く。
 pub(crate) const SPEC: LintSpec = LintSpec {
     dir: "module-wiring",
-    rules: &[],
-    adaptations: &[],
+    rules: &["module-wiring"],
+    adaptations: &[(
+        "allow_comment_ok.rs",
+        "12 行目の旧コメント `// allow module_wiring::no_parent_reexport` を `// syn-check: allow(module-wiring)` に置き換えた。15 行目は行末の旧コメントで許可していたので、直前の空行（14 行目）を同じコメント指定に置き換えた。15 行目の行末コメントは残したが、新チェッカーは読まない",
+    )],
     differences: &[],
 };
