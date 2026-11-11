@@ -19,12 +19,26 @@ import subprocess
 
 
 def parse_crate() -> str | None:
+    # 1. 直前レスポンスの `crate:` 行（あれば最優先）
     path = os.environ.get("TAKT_PREVIOUS_RESPONSE_FILE", "")
     if path and os.path.exists(path):
         text = open(path, encoding="utf-8").read()
         m = re.search(r"^crate:\s*(\S+)\s*$", text, re.MULTILINE)
         if m:
             return m.group(1)
+    # 2. 台帳で status が red のノード（処理中の1件）の rust.crate
+    ledger = "ledger/nodes.yaml"
+    if os.path.exists(ledger):
+        try:
+            import yaml
+            data = yaml.safe_load(open(ledger, encoding="utf-8"))
+            for node in data.get("nodes", []):
+                if node.get("status") == "red":
+                    crate = (node.get("rust") or {}).get("crate")
+                    if crate:
+                        return crate
+        except Exception:
+            pass
     return None
 
 

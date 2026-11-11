@@ -7,7 +7,8 @@
    - `status`: `green`
    - `cases`: triage で数えた実数（`total`）、移植した数（`ported`）、
      通過した数（`passing`）。承認済みの除外がある場合のみ `excluded`
-   - `rust`: `crate` と `test_file`（実際のパス）
+   - `rust`: `crate` と `test_file`（port-test が記録済みのものを確認し、
+     実際のパスとずれていれば直す）
    - `goal`: 処理中のゴール ID
 2. 完了判定を実行する
    `python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal <ゴールID>`

@@ -30,6 +30,32 @@ persona と policy は標準ファセットをそのまま使う。
   runtime.yaml／config 側で持つ（0.74.0 の流儀）
 - 標準 persona の改名に追随：等価性レビューの persona は `qa-reviewer`
   （旧）ではなく `testing-reviewer` を使う
+
+### builtin 資産の活用（v3、2026-11-11）
+
+実装⇄レビュー⇄修正のループは自前で組み直さず、builtin の **mini-core** に
+委譲する形へ再構成した（backend-cqrs が development-core へドメイン
+ファセットを注入するのと同じ流儀）。品質の核は takt の資産が担い、
+プロジェクト側はドメイン固有の部分だけを持つ。
+
+- 子ワークフローの develop ステップが `workflow_call` で mini-core を呼ぶ。
+  plan → implement → 並列レビュー（AI アンチパターン＋supervisor の要件照合）
+  → 修正ループ（履歴つき loop monitor）が mini-core の内側で回る
+- ドメイン規約は引数で注入する：`plan_knowledge` と `development_knowledge`
+  に `pekko-porting-rules` を加える。これで implement、supervisor、fix の
+  各ステップに規約が届く。プロジェクト専用の implement instruction は
+  持たない（mini-core の implement は標準 instruction 固定のため）
+- プロジェクト側に残るのは、台帳と原典と機械判定にまつわる部分だけ：
+  triage、人間チェックポイント、テスト移植、verify の system step、
+  等価性レビュー（原典との忠実さは builtin レビューの守備範囲外なので
+  独立ステップとして残す。指摘は develop の再呼び出しで直す）、台帳更新
+- ファセットは `{extends:...}` で標準を継承する形にした：
+  pekko-port-test は write-tests-first を、pekko-review-equivalence は
+  testing-review を継承し、差分だけを書く。triage は、継承候補の
+  research-analyze が調査反復型で意味が合わないため、独立のままにする
+- 大きな基盤ゴール（G0b の TestKit 等）では、testing 工程と companion、
+  レビュースイートを持つ development-core への格上げを検討する。
+  その場合も引数の注入で切り替える
 G0a の発行コマンドで参照した旧 fraktor-rs の
 `pekko-porting` ワークフローをそのまま使う前提は置き直す。ng の決定済み設計から
 ワークフローを設計し直すための叩き台であり、決定ではない。
@@ -155,8 +181,8 @@ output-contract は、ゼロから書かず **TAKT の標準ファセットを�
 | ステップ | 継承する標準ファセット | ng 固有の差分 |
 |---|---|---|
 | triage | persona: research-analyzer 系 | knowledge: 台帳スキーマと triage の観点 |
-| port-test | persona: coder | instruction 差分：出典ヘッダ、1ノード1ファイル |
-| implement | persona: coder | knowledge: 所有権モデル、P&A 段階1、クレート規則 |
+| port-test | persona: coder | instruction は write-tests-first を継承＋差分：出典ヘッダ、1ノード1ファイル |
+| implement | mini-core 内蔵（persona: coder、標準 instruction） | プロジェクト instruction は持たず、knowledge 注入で規約を届ける |
 | equivalence-review | persona: testing-reviewer（旧 qa-reviewer）、policy に ai-antipattern | instruction 差分：Pekko 原典との突き合わせ観点 |
 | ledger-update | 標準の最小 persona | policy: 台帳の遷移規則と write_scope |
 

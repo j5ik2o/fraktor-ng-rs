@@ -1,8 +1,11 @@
 name: pekko-port-node
 description: >-
   ゴールのノードを1件だけ移植するサブワークフロー。
-  triage → テスト移植 → red 確認（system step）→ 実装 → 機械ゲート（system step）
+  triage →（除外提案があれば人間確認）→ テスト移植 → red 確認（system step）
+  → 実装とレビュー（builtin の mini-core に委譲）→ 機械ゲート（system step）
   → 等価性レビュー → 台帳更新、の順で処理し、結果を return ラベルで親へ返す。
+  実装⇄レビュー⇄修正のループ品質は takt の builtin 資産（mini-core）が担い、
+  このワークフローは台帳・原典・機械判定というドメイン固有の部分を持つ。
   設計の正は docs/decisions/takt-workflow-design.md。
 subworkflow:
   callable: true
@@ -13,17 +16,17 @@ subworkflow:
     - needs_human
 initial_step: triage
 loop_monitors:
-  # equivalence-review の差し戻しは 3 回まで（決定 c）
+  # 等価性レビューの差し戻しは 3 回まで（決定 c）
   - cycle:
       - equivalence-review
-      - implement
+      - develop
     threshold: 3
     judge:
       persona: supervisor
       instruction: pekko-loop-judge
       rules:
         - condition: 健全（指摘数が減少、修正が反映されている）
-          next: implement
+          next: develop
         - condition: 非生産的（同じ指摘が繰り返される）
           next: ABORT
 steps:
@@ -105,9 +108,9 @@ steps:
         output: json
     rules:
       - condition: when(context.verify_red.result.json.classification == "expected_compile_error")
-        next: implement
+        next: develop
       - condition: when(context.verify_red.result.json.classification == "expected_assertion")
-        next: implement
+        next: develop
       - condition: when(context.verify_red.result.json.classification == "unexpected_pass")
         next: port-test
       - condition: when(context.verify_red.result.json.classification == "unclassifiable")
@@ -126,7 +129,7 @@ steps:
       - "対象コマンドの出力（末尾）: {context:verify_red.result.stdout} {context:verify_red.result.stderr}"
     rules:
       - condition: 想定どおりの失敗であり、台帳の status を red に更新した
-        next: implement
+        next: develop
       - condition: 想定外の失敗、または最初から成功していた
         next: port-test
       - condition: 判断できない
@@ -135,15 +138,25 @@ steps:
       report:
         - name: classify-red-report.md
           format: verify-report
-  - name: implement
-    edit: true
-    persona: coder
-    policy:
-      - coding
-    knowledge:
-      - pekko-porting-rules
-    required_permission_mode: edit
+  - name: develop
+    description: >-
+      移植済みテストを通す実装を、builtin の mini-core（plan → implement →
+      並列レビュー → 修正ループ）に委譲する。ドメイン規約は knowledge として
+      注入され、mini-core 内の implement、supervisor、fix の各ステップに届く。
+      テストファイルの凍結も knowledge `pekko-porting-rules` が宣言する
+    kind: workflow_call
+    call: mini-core
+    args:
+      plan_knowledge:
+        - architecture
+        - pekko-porting-rules
+      development_knowledge:
+        - architecture
+        - pekko-porting-rules
     input_reports:
+      - from_step: triage
+        reports:
+          - triage-report.md
       - from_step: port-test
         reports:
           - port-test-report.md
@@ -151,24 +164,11 @@ steps:
         reports:
           - equivalence-review.md
         optional_if_unrun: true
-    instruction: pekko-implement
     rules:
-      - condition: 実装が完了した（テストファイルは変更していない）
+      - condition: COMPLETE
         next: verify_green
-      - condition: write_scope の拡張が必要
-        next: implement
-        requires_user_input: true
-        interactive_only: true
-      - condition: テスト自体の不備が判明した
-        next: triage
-      - condition: 実装を進行できない
+      - condition: ABORT
         next: ABORT
-    output_contracts:
-      report:
-        - name: coder-scope.md
-          format: coder-scope
-        - name: coder-decisions.md
-          format: coder-decisions
   - name: verify_green
     kind: system
     system_inputs:
@@ -181,7 +181,7 @@ steps:
       - condition: when(context.verify_green.result.json.all_pass == true)
         next: equivalence-review
       - condition: when(true)
-        next: implement
+        next: develop
   - name: equivalence-review
     edit: false
     persona: testing-reviewer
@@ -194,16 +194,15 @@ steps:
       - from_step: port-test
         reports:
           - port-test-report.md
-      - from_step: implement
-        reports:
-          - coder-scope.md
-          - coder-decisions.md
+      - from_step: develop
+        reports: all
+        optional_if_unrun: true
     instruction: pekko-review-equivalence
     rules:
       - condition: 指摘なし（原典との等価性に問題がない）
         next: ledger-update
       - condition: 指摘あり（原典側の根拠つき）
-        next: implement
+        next: develop
     output_contracts:
       report:
         - name: equivalence-review.md
