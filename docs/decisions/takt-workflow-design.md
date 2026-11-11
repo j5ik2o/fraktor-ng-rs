@@ -1,11 +1,35 @@
 # TAKT ワークフロー設計（移植パイプライン）
 
 状態: **設計決定済み（2026-11-11、判断ポイント a〜d はすべて決定、ファセットは
-標準継承の方針）**。YAML 実装済み：`.takt/workflows/pekko-porting-ng.yaml` と
-`.takt/facets/`（knowledge 1、instructions 7、output-contracts 4）。
+標準継承の方針）**。YAML 実装済み（下記「現行仕様への適合」参照）。
 persona と policy は標準ファセットをそのまま使う。
 なお差し戻し上限（決定 c）は、TAKT の loop_monitors（cycle＋threshold＋judge）で
 表現した。judge が非生産的と判定したら ABORT し、人間に上がる。
+
+### 現行仕様への適合（2026-11-11、takt 0.74.0 で再構成）
+
+初版 YAML は旧版 takt の同梱資料を下敷きにしていたため、0.74.0 の仕様に
+合わせて再構成した。検証は `takt workflow doctor` で両ワークフローとも OK。
+
+- **サブワークフロー化**：root の `pekko-porting-ng` はゴール単位の薄い
+  ループ（`workflow_call` でノード処理を繰り返す）とし、ノード1件の処理は
+  callable な子 `pekko-port-node`（`subworkflow.returns` で
+  node_green／goal_complete／needs_human を返す）に分けた
+- **verify は system step 化**：verify_red／verify_green は agent step では
+  なく、固定コマンドを実行する system step とした。実体は
+  `ledger/tools/verify_red.py`／`verify_green.py` で、分類・合否は JSON で
+  返し、`when(...)` のルールで遷移する。直前ステップの対象（ノード、
+  クレート、テストファイル）は `TAKT_PREVIOUS_RESPONSE_FILE` 経由で渡る。
+  分類できない場合だけ、軽量な agent step（classify-red）に落ちる（決定 d の形）
+- **人間チェックポイントは子の中の step に**：triage の除外提案は、
+  子の human-checkpoint step（`requires_user_input`）で承認／却下を確認する。
+  却下なら子は needs_human を返し、root が ABORT して人間に上がる
+- **設定の置き場所**：system step のコマンド実行許可
+  （`workflow_system_commands.custom_scripts: true`）を `.takt/config.yaml` に
+  追加した。provider やモデルの割り当ては workflow YAML には書かず、
+  runtime.yaml／config 側で持つ（0.74.0 の流儀）
+- 標準 persona の改名に追随：等価性レビューの persona は `qa-reviewer`
+  （旧）ではなく `testing-reviewer` を使う
 G0a の発行コマンドで参照した旧 fraktor-rs の
 `pekko-porting` ワークフローをそのまま使う前提は置き直す。ng の決定済み設計から
 ワークフローを設計し直すための叩き台であり、決定ではない。
@@ -133,7 +157,7 @@ output-contract は、ゼロから書かず **TAKT の標準ファセットを�
 | triage | persona: research-analyzer 系 | knowledge: 台帳スキーマと triage の観点 |
 | port-test | persona: coder | instruction 差分：出典ヘッダ、1ノード1ファイル |
 | implement | persona: coder | knowledge: 所有権モデル、P&A 段階1、クレート規則 |
-| equivalence-review | persona: qa-reviewer ＋ ai-antipattern-reviewer の観点 | instruction 差分：Pekko 原典との突き合わせ観点 |
+| equivalence-review | persona: testing-reviewer（旧 qa-reviewer）、policy に ai-antipattern | instruction 差分：Pekko 原典との突き合わせ観点 |
 | ledger-update | 標準の最小 persona | policy: 台帳の遷移規則と write_scope |
 
 ng 固有の規約は各 instruction に散らさず、knowledge ファセット

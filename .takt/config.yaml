@@ -2,3 +2,7 @@ provider: codex
 language: ja
 concurrency: 1
 base_branch: main
+
+# ワークフロー内の system step が固定コマンド（台帳ツール）を実行するために必要
+workflow_system_commands:
+  custom_scripts: true
