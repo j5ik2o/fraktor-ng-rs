@@ -5,10 +5,13 @@
     python3 convert_baseline.py --baseline docs/baseline/pekko-v1.7.1/ledger.yaml \
         [--module actor-tests] [--limit N] > out.yaml
 
-変換できない欄（needs.testkit / premise_flags のクラス単位の値）は null（未抽出）のまま出す。
+id は Pekko リポジトリ相対のファイルパスで、一意キーである。name は表示名で、一意ではない。
+変換できない欄（triage、needs、kind の fixture 判定、cases）は既定値か null（未抽出）のまま出す。
+id が重複するか、id が所属モジュールのディレクトリで始まらないときは、何も出さずに失敗する。
 詳細は docs/decisions/ledger-schema-draft.md を参照。
 """
 import argparse
+import collections
 import sys
 
 import yaml
@@ -31,11 +34,12 @@ def main() -> int:
         for tc in mod.get("test_classes", []):
             nodes.append(
                 {
-                    "id": f"{mod['directory']}:{tc['name']}",
+                    "id": tc["file"],
+                    "name": f"{mod['directory']}:{tc['name']}",
+                    "kind": "test",
                     "pekko": {
                         "module": mod["directory"],
                         "class": tc["name"],
-                        "file": tc["file"],
                         "test_cases_approx": tc.get("test_cases_approx", 0),
                     },
                     "status": "unported",
@@ -45,6 +49,7 @@ def main() -> int:
                         "modules": tc.get("referenced_modules", []),
                         "coverage": "approx",
                     },
+                    "cases": {"total": None, "ported": None, "passing": None, "excluded": []},
                     "rust": {"crate": None, "test_file": None},
                     "goal": None,
                 }
@@ -53,6 +58,14 @@ def main() -> int:
                 break
         if args.limit and len(nodes) >= args.limit:
             break
+
+    id_counts = collections.Counter(n["id"] for n in nodes)
+    duplicated = sorted(i for i, count in id_counts.items() if count > 1)
+    misplaced = [n["id"] for n in nodes if not n["id"].startswith(n["pekko"]["module"] + "/")]
+    if duplicated or misplaced:
+        print(f"id が重複: {duplicated}", file=sys.stderr)
+        print(f"id が所属モジュールのディレクトリで始まらない: {misplaced}", file=sys.stderr)
+        return 1
 
     yaml.safe_dump(
         {"nodes": nodes},
