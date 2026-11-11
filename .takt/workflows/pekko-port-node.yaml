@@ -22,10 +22,12 @@ subworkflow:
     - needs_human
 initial_step: triage
 loop_monitors:
-  # 等価性レビューの差し戻しは 3 回まで（決定 c）。
+  # 等価性レビューの差し戻し上限（決定 c）。連続 3 回目の指摘で judge が判定する。
   # 実際の経路は develop → verify_green → equivalence-review → develop で、
   # takt は完了したステップの並びをそのまま照合する。verify_green を照合から
-  # 外し、レビューが develop へ差し戻す時点（連続 3 回目の指摘）で judge を呼ぶ
+  # 外し、レビューが develop へ差し戻す時点で judge を呼ぶ。
+  # verify_green の失敗で develop をやり直すと連続は切れる（仕様として受け入れた）。
+  # 全体の上限は親ワークフローの max_steps が持つ
   - cycle:
       - develop
       - equivalence-review

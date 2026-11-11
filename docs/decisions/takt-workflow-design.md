@@ -121,21 +121,37 @@ takt 0.74.0 は、1 ステップの knowledge を連結した文字列の先頭 
 - policy `pekko-coding-rules`（2,456 字）は、どのステップでも本文に載って
   いない。builtin の fragment が `contract-change` を先頭に固定するためで、
   引数の並びでは変えられない。スナップショットファイル経由では届く。
-  本文に載せたい場合の手当ては未決定（要判断）
+  本文に載せる手当ては、builtin 再利用とは別件として切り出す
+  （2026-11-11、ユーザー決定）。この PR では現状のままにする
 
-**ループ監視の修正（PR #2 のレビュー指摘）**
+**ループ上限の効き方（PR #2 のレビュー指摘、2026-11-11 のユーザー決定）**
 
 main の loop monitor（cycle が equivalence-review、develop の順）は発動しなかった。
 実際の経路は develop、verify_green、equivalence-review、develop の順で、takt は
 完了したステップの並びをそのまま照合するためである。次のとおりに直した。
 
 - cycle を develop、equivalence-review の順にし、`ignore_steps` で verify_green を
-  照合から外す。レビューが develop へ差し戻す時点で、連続 3 回目の指摘なら
-  judge が呼ばれる。judge の遷移（健全なら develop、非生産的なら ABORT）は
-  変えていない。judge が健全と判定すると回数は 0 に戻る
-- verify_green の失敗で develop をやり直すと、それより前の指摘は連続に
-  数えられない。全体の上限は親の `max_steps` が持つ
-- verify 系の上限（決定 c の 5 回）を表す loop monitor は無い（要判断）
+  照合から外す。judge の遷移（健全なら develop、非生産的なら ABORT）は
+  変えていない
+- review 系の上限 3 回（決定 c）は「連続 3 回目の指摘で judge が判定する」
+  という意味である。3 回差し戻した後に判定するのではない。judge が健全と
+  判定すると回数は 0 に戻り、次の判定はそこから連続 3 回目の指摘になる
+
+次の 2 点は仕様として受け入れた（後で誤解しないために明記する）。
+
+- 連続が切れる場合がある。verify_green の失敗で develop をやり直すと、
+  それより前の指摘は連続に数えられない。例：2 回目のラウンドで verify_green が
+  1 度落ちると、judge が呼ばれるのは 3 回目ではなく 4 回目の指摘になる。
+  takt の照合は並びの完全一致で、設定では避けられない
+- 全体の上限は `max_steps` が持つ。親 `pekko-porting-ng` の `max_steps: 80` が
+  run 全体の予算で、子ワークフローと mini-core の中のステップも同じ予算から
+  引かれる。エージェントステップ、system step、judge の呼び出しが 1 ずつ
+  消費し、`workflow_call` 自体は消費しない。予算に達すると run は止まる
+  （Max steps reached）。連続が切れて judge が呼ばれない場合も、ここで止まる
+
+verify 系の上限（決定 c の 5 回）を表す loop monitor は、この PR には無い。
+別 PR で足す（2026-11-11、ユーザー決定）。それまで verify 系の差し戻しを
+止めるのは `max_steps` だけである。
 
 G0a の発行コマンドで参照した旧 fraktor-rs の
 `pekko-porting` ワークフローをそのまま使う前提は置き直す。ng の決定済み設計から
@@ -228,8 +244,8 @@ TAKT は HOTL（Human on the Loop）の道具であり、run の途中に同期�
   needs_human で終了する。承認の記録先は台帳の `cases.excluded`
   （人間が書く。項目があることが承認済みを意味する）。`do_not_port` は
   人間が status に直接書く
-- 差し戻しループの上限到達（verify 系、review 系とも）：ABORT して
-  manager に上がる
+- 差し戻しループの上限到達（verify 系、review 系とも）：judge が非生産的と
+  判定したら ABORT して manager に上がる
 - `write_scope` の拡張が必要になった場合（前提基盤の追加実装が要る等）。
   スコープ変更は manager と人間の判断であり、run の裁量にしない
 
@@ -262,7 +278,9 @@ b. equivalence-review の2観点を、並列2ステップにするか統合1本�
    **決定済み（2026-11-11、ユーザー）：基盤期は統合1本**、量産期に分離を検討する
 c. 差し戻しループ上限の初期値。
    **決定済み（2026-11-11、ユーザー）：verify 系は 5 回、review 系は 3 回**。
-   上限到達時は ABORT して manager に上げる
+   上限に達すると judge が判定し、非生産的なら ABORT して manager に上げる。
+   review 系の 3 回は「連続 3 回目の指摘で判定」の意味である（2026-11-11、
+   ユーザー確認）。数え方と受け入れた制限は「ループ上限の効き方」に書いた
 d. verify-red で「失敗理由が想定どおりか」の判定を機械だけで閉じるか、
    軽量モデルの判定を挟むか。
    **決定済み（2026-11-11、ユーザー）：機械判定を既定とし、分類できない場合のみ
