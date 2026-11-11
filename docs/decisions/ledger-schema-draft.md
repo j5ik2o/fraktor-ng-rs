@@ -134,5 +134,10 @@
 
 - 同じ baseline からは同じ内容が出る。ただし生成は初回の種まきである。run が状態を
   書き込んだ後に同じコマンドで上書きすると、進捗が消える。以後の更新は run が行う
+- 状態保持つきの再生成（2026-11-11 に変換器を改修済み）：baseline を差し替える
+  必要が生じたら、`--existing ledger/nodes.yaml` を付けて変換し、出力で置き換える。
+  baseline 由来の欄は作り直され、運用で育つ欄（kind、status、triage、needs、
+  cases、rust、goal）は id 一致で引き継がれる。状態を持つノードが新しい baseline に
+  存在しない場合は、変換器は黙って落とさず、その id を出して失敗する
 - `ledger/sample-actor-tests.yaml` は actor-tests の先頭 5 ノードのサンプルである
   （同じ変換器に `--module actor-tests --limit 5` を付けた出力）
