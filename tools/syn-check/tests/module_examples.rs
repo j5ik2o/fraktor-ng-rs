@@ -123,6 +123,14 @@ fn a_file_without_items_is_not_flagged() {
 }
 
 #[test]
+fn a_file_with_only_a_macro_definition_is_flagged() {
+    assert_eq!(
+        violations("ng_macro_rules", "crates", Layout::Ng),
+        vec![at("crates/actor-core/examples/macro_rules_only.rs")]
+    );
+}
+
+#[test]
 fn legacy_layout_flags_files_under_module_examples() {
     assert_eq!(
         violations("legacy_violation", "modules", Layout::Legacy),

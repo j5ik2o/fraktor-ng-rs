@@ -17,7 +17,8 @@
   桁は rustc と同じく文字数で数える（バイトではない）
 - 旧 lint はアイテム（`check_item`、`check_trait_item`、`check_impl_item`、`check_foreign_item`）を訪れたときに
   そのファイルを 1 度だけ解析した。アイテムが 1 つも無いファイルは解析されない。同じ条件を、
-  トップレベルにアイテムがあることとして写した。`macro_rules!` の定義は HIR に残らないので数えない
+  トップレベルにアイテムがあることとして写した。`macro_rules!` の定義も HIR のアイテムなので数える
+  （旧 ambiguous-suffix の UI が `macro` を種別として報告していることから分かる）
 
 ## テキスト走査を選んだ理由
 

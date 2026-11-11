@@ -1,7 +1,5 @@
 use std::path::{Component, Path};
 
-use syn::Item;
-
 use crate::{
     check_context::CheckContext, layout::Layout, position::Position, rule::Rule, sink::Sink,
     source_file::SourceFile,
@@ -35,7 +33,7 @@ impl Rule for ModuleExamples {
         let Some(ast) = file.ast() else {
             return;
         };
-        if !declares_item(&ast.items) {
+        if ast.items.is_empty() {
             return;
         }
         sink.report(Position::START, message);
@@ -68,15 +66,5 @@ fn is_example_file(path: &Path, crates_dir: &str) -> bool {
                 Component::Normal(_file_name),
             ] if *first == crates_dir && *examples == "examples"
         )
-    })
-}
-
-/// Whether rustc would see at least one item in the file.
-///
-/// `macro_rules!` definitions are expanded away before HIR, so they do not count.
-fn declares_item(items: &[Item]) -> bool {
-    items.iter().any(|item| match item {
-        Item::Macro(item) => !item.mac.path.is_ident("macro_rules"),
-        _ => true,
     })
 }

@@ -1,5 +1,3 @@
-use syn::Item;
-
 use crate::{
     check_context::CheckContext, position::Position, rule::Rule, sink::Sink,
     source_file::SourceFile,
@@ -23,7 +21,7 @@ impl Rule for Rustdoc {
             return;
         };
         // 旧 lint はアイテムを訪れたときにそのファイルを 1 度だけ解析した。アイテムの無いファイルは見ない。
-        if !declares_item(&ast.items) {
+        if ast.items.is_empty() {
             return;
         }
         let lines: Vec<&str> = file.text().lines().collect();
@@ -31,16 +29,6 @@ impl Rule for Rustdoc {
             analyze_doc_block(&block, sink);
         }
     }
-}
-
-/// Whether rustc would see at least one item in the file.
-///
-/// `macro_rules!` definitions are expanded away before HIR, so they do not count.
-fn declares_item(items: &[Item]) -> bool {
-    items.iter().any(|item| match item {
-        Item::Macro(item) => !item.mac.path.is_ident("macro_rules"),
-        _ => true,
-    })
 }
 
 /// One line of a doc comment block, with the text after the marker.

@@ -182,6 +182,11 @@ fn a_file_without_items_is_not_scanned() {
 }
 
 #[test]
+fn a_macro_definition_counts_as_an_item() {
+    assert_eq!(findings("only_macro_rules.rs"), vec![english(1, 5)]);
+}
+
+#[test]
 fn a_macro_call_counts_as_an_item() {
     assert_eq!(findings("only_macro_call.rs"), vec![english(1, 5)]);
 }
