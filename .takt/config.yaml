@@ -1,0 +1,4 @@
+provider: codex
+language: ja
+concurrency: 1
+base_branch: main

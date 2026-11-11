@@ -55,3 +55,27 @@
 - ActorSystem、TestKit、executor の実装（G0b の仕事）
 - 他のクレートの新設、台帳スキーマの変更
 - 旧 fraktor-rs からのコードの持ち込み
+
+## 発行コマンド
+
+Mac 上の clone で、最新を取り込んでから発行する。フラグの形は旧 fraktor-rs の
+実績（`--pipeline --skip-git -w <workflow> -t <task>`）に合わせた。
+
+```sh
+cd /Users/j5ik2o/Sources/github.com/j5ik2o/fraktor-ng-rs
+git pull
+
+takt --pipeline --skip-git -w pekko-porting -t "docs/goals/g0a-pipeline-smoke.md のゴール定義に従って G0a を実施してください。完了条件は同文書の機械判定4項目です。対象ノード以外の台帳変更と、範囲外のクレート新設は禁止です。"
+```
+
+`pekko-porting` ワークフローが解決できない場合は `-w default` に読み替える。
+`.takt/config.yaml` は最小構成（provider: codex、concurrency: 1、base_branch: main）
+を置いてある。
+
+run の後に人間が確認するコマンド：
+
+```sh
+cargo test -p fraktor-actor
+python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0a
+git diff --stat ledger/nodes.yaml
+```
