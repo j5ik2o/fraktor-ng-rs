@@ -33,6 +33,74 @@ const ROOT: &str = "tests/ui/legacy";
 /// A reported or expected location: the path under the fixture directory, and the line.
 type Location = (String, usize);
 
+const SPECS: [&LintSpec; 9] = [
+    &mod_file::SPEC,
+    &module_examples::SPEC,
+    &type_per_file::SPEC,
+    &use_placement::SPEC,
+    &ambiguous_suffix::SPEC,
+    &rustdoc::SPEC,
+    &module_wiring::SPEC,
+    &port_adaptor_boundary::SPEC,
+    &cfg_std_forbid::SPEC,
+];
+
+/// Keeps `tests/ui/legacy/SUMMARY.md`, the one-row-per-lint overview, up to date.
+#[test]
+fn summary() {
+    let mut rows = Vec::new();
+    let mut totals = [0usize; 3];
+    for spec in SPECS {
+        let (_, _, counts) = evaluate(spec);
+        for (total, count) in totals.iter_mut().zip(counts) {
+            *total += count;
+        }
+        rows.push(format!(
+            "| [`{dir}`]({dir}/RESULTS.md) | {rules} | {} | {} | {} | {} |",
+            counts[0],
+            counts[1],
+            counts[2],
+            spec.adaptations.len(),
+            dir = spec.dir,
+            rules = spec
+                .rules
+                .iter()
+                .map(|rule| format!("`{rule}`"))
+                .collect::<Vec<_>>()
+                .join("、"),
+        ));
+    }
+    let markdown = format!(
+        "# 旧 UI テストとの対応（まとめ）\n\n\
+         旧 fraktor-rs の dylint 9 本の UI テストを、新チェッカーで判定した結果である。行は、ケースと、\
+         フィクスチャを変更した補助ファイルを数える。\n\
+         tests-location の UI テストは同梱されていなかったので、ここには無い。\n\
+         このファイルは `SYN_CHECK_BLESS=1 cargo test --test legacy_ui` が生成する。手で編集しない。\n\n\
+         | 旧 lint | 新ルール | 一致 | 差異あり（意図どおり） | 不一致 | 変更したフィクスチャ |\n\
+         |---|---|---|---|---|---|\n\
+         {rows}\n\
+         | 合計 | | {} | {} | {} | {} |\n",
+        totals[0],
+        totals[1],
+        totals[2],
+        SPECS
+            .iter()
+            .map(|spec| spec.adaptations.len())
+            .sum::<usize>(),
+        rows = rows.join("\n"),
+    );
+    let path = Path::new(ROOT).join("SUMMARY.md");
+    if env::var_os("SYN_CHECK_BLESS").is_some() {
+        fs::write(&path, &markdown).expect("write SUMMARY.md");
+    }
+    let committed = fs::read_to_string(&path).unwrap_or_default();
+    assert!(
+        committed == markdown,
+        "{} が古い。`SYN_CHECK_BLESS=1 cargo test --test legacy_ui` で更新すること",
+        path.display()
+    );
+}
+
 #[test]
 fn mod_file() {
     check(&mod_file::SPEC);
@@ -79,11 +147,12 @@ fn cfg_std_forbid() {
 }
 
 fn check(spec: &LintSpec) {
-    if spec.rules.is_empty() {
-        eprintln!("{}: 未移植のため判定しない", spec.dir);
-        return;
-    }
-    let (markdown, problems) = evaluate(spec);
+    assert!(
+        !spec.rules.is_empty(),
+        "{}: ルールが割り当てられていない",
+        spec.dir
+    );
+    let (markdown, problems, _) = evaluate(spec);
     let results_path = Path::new(ROOT).join(spec.dir).join("RESULTS.md");
     if env::var_os("SYN_CHECK_BLESS").is_some() {
         fs::write(&results_path, &markdown).expect("write RESULTS.md");
@@ -102,7 +171,9 @@ fn check(spec: &LintSpec) {
     );
 }
 
-fn evaluate(spec: &LintSpec) -> (String, Vec<String>) {
+/// The table for one lint, what does not match, and the counts of matching,
+/// intentionally differing, and mismatching rows.
+fn evaluate(spec: &LintSpec) -> (String, Vec<String>, [usize; 3]) {
     let dir = Path::new(ROOT).join(spec.dir);
     let options = Options {
         layout: Layout::Legacy,
@@ -272,7 +343,12 @@ fn evaluate(spec: &LintSpec) -> (String, Vec<String>) {
         differing = count("差異あり（意図どおり）"),
         mismatched = count("不一致"),
     );
-    (markdown, problems)
+    let counts = [
+        count("一致"),
+        count("差異あり（意図どおり）"),
+        count("不一致"),
+    ];
+    (markdown, problems, counts)
 }
 
 /// The top-level `.rs` files of a fixture directory. Each one was a UI test case.
