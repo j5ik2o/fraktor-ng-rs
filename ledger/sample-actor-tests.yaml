@@ -1,0 +1,101 @@
+nodes:
+- id: actor-tests:AbstractFSMActorTest
+  pekko:
+    module: actor-tests
+    class: AbstractFSMActorTest
+    file: actor-tests/src/test/java/org/apache/pekko/actor/AbstractFSMActorTest.java
+    test_cases_approx: 1
+  status: unported
+  triage:
+    kind: pending
+    reason: null
+  needs:
+    testkit: null
+    premise_flags: null
+  depends_on_impl:
+    modules: []
+    coverage: approx
+  rust:
+    crate: null
+    test_file: null
+  goal: null
+- id: actor-tests:AbstractFSMWithStashActorTest
+  pekko:
+    module: actor-tests
+    class: AbstractFSMWithStashActorTest
+    file: actor-tests/src/test/java/org/apache/pekko/actor/AbstractFSMWithStashActorTest.java
+    test_cases_approx: 1
+  status: unported
+  triage:
+    kind: pending
+    reason: null
+  needs:
+    testkit: null
+    premise_flags: null
+  depends_on_impl:
+    modules: []
+    coverage: approx
+  rust:
+    crate: null
+    test_file: null
+  goal: null
+- id: actor-tests:ActorConfigurationVerificationSpec
+  pekko:
+    module: actor-tests
+    class: ActorConfigurationVerificationSpec
+    file: actor-tests/src/test/scala/org/apache/pekko/actor/ActorConfigurationVerificationSpec.scala
+    test_cases_approx: 10
+  status: unported
+  triage:
+    kind: pending
+    reason: null
+  needs:
+    testkit: null
+    premise_flags: null
+  depends_on_impl:
+    modules: []
+    coverage: approx
+  rust:
+    crate: null
+    test_file: null
+  goal: null
+- id: actor-tests:ActorCreationPerfSpec
+  pekko:
+    module: actor-tests
+    class: ActorCreationPerfSpec
+    file: actor-tests/src/test/scala/org/apache/pekko/actor/ActorCreationPerfSpec.scala
+    test_cases_approx: 0
+  status: unported
+  triage:
+    kind: pending
+    reason: null
+  needs:
+    testkit: null
+    premise_flags: null
+  depends_on_impl:
+    modules: []
+    coverage: approx
+  rust:
+    crate: null
+    test_file: null
+  goal: null
+- id: actor-tests:ActorCreationTest
+  pekko:
+    module: actor-tests
+    class: ActorCreationTest
+    file: actor-tests/src/test/java/org/apache/pekko/actor/ActorCreationTest.java
+    test_cases_approx: 17
+  status: unported
+  triage:
+    kind: pending
+    reason: null
+  needs:
+    testkit: null
+    premise_flags: null
+  depends_on_impl:
+    modules: []
+    coverage: approx
+  rust:
+    crate: null
+    test_file: null
+  goal: null

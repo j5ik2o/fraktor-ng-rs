@@ -1,7 +1,12 @@
 # ledger — リポジトリ台帳（進捗の正）
 
 ここが fraktor-ng-rs の進捗の正になる場所である。まだ台帳本体は置いていない
-（スキーマが未決定のため）。
+（スキーマは叩き台段階のため）。
+
+スキーマの叩き台は `docs/decisions/ledger-schema-draft.md`。
+変換サンプルは `sample-actor-tests.yaml`（actor-tests の先頭5クラス）、
+変換器は `tools/convert_baseline.py`。全クラス分の生成は粒度の判断が
+確定してから行う。
 
 ## 位置づけ
 
