@@ -70,3 +70,7 @@ provider:
         internal_agents:
           loop-judge:
             profile: cloud-claude
+  # worktree 限定: この作業コピーでの run は codex 上限中の暫定 assignment を使う
+  # （takt resume は --runtime-assignment を復元しないため directories で固定する）
+  directories:
+    /Users/j5ik2o/orca/workspaces/fraktor-ng-rs/g0a-pipeline-smoke: interim-claude
