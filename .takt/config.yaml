@@ -20,4 +20,4 @@ manager:
   workflows:
     - default
     - simple
-    - pekko-porting-ng
+    - pekko-porting-ng: 台帳のゴール（ノードの集合）を、Pekko のテストから 1 件ずつ移植する
