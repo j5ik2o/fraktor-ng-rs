@@ -55,7 +55,7 @@
 | 3. 種別 `test` と `fixture` | `kind` |
 | 4. ケース単位の除外はノード属性、決めるのは人間だけ | `cases.excluded` と、勘定に要る `cases.total`、`cases.ported`、`cases.passing` |
 | 8. import 近似は順序付けに使わない | `depends_on_impl.modules` はヒントである。ゲートにしない |
-| 20. `docs` は保留 | `docs` の 173 ノードは `unported` のまま分母に残す |
+| 20. `docs` は do_not_port（2026-11-13 決定） | `docs` の 173 ノードは `do_not_port`。rollup は除外率に計上し、合格率の分母から除く |
 
 ## 欄の規則
 
