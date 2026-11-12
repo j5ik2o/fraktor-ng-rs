@@ -203,6 +203,78 @@ instruction、output-contract（`test-report`、`testing-review`）、workflow r
 | system step の結果を、次のステップと judge に渡す仕組み | verify のツールが出力の全文をファイルに残し、そのパスを JSON に入れる | 今は末尾だけが残り、直近の 1 回分しか渡らない。verify_green が落ちた理由は develop に渡っていない。台帳ツールの変更が要る |
 | 成果を捨てないための回避策（上の 1 から 3） | 1 と 2 を採り、3 は triage の明記までにする | 1 と 2 は takt の仕組みで成果を残せる。red から始める分岐は遷移の追加で、G0a の実走を見てから決める |
 
+### 前提・依存・bootstrap の扱い（v5、2026-11-12）
+
+G0a の実走 2 run で、前提・依存・bootstrap の扱いに 4 つの問題（P1〜P4）を
+踏んだ。run 20261112-050935 は step 1 の triage で codex が rate_limited
+（retry after Nov 17th, 2026 4:52 PM）となり、fallback 未設定のため 5.1 秒で
+全体が終了した。run 20261112-052011 は triage 自体は成功した（対象 2 件の
+ケース実数 15／4 を原典から実測、台帳近似との差 0、必要 API を原典の行番号
+つきで特定）が、旧規則「前提基盤が未 green、または Pekko 原典を参照できない」に
+該当して 59.7 秒で ABORT した。crates/fraktor-actor の未作成は G0a では
+write_scope 内の仕事（骨格作成は develop の仕事）であり、bootstrap と
+順序ミスを区別する経路が無かった。
+
+**P1: triage の遷移を 5 条件に分割**
+
+旧規則が 1 条件にまとめていた「前提基盤が未 green」と「原典を参照できない」を
+別の ABORT に分け、中止理由を切り分け可能にした。bootstrap の判定は
+ゴール定義文書の write_scope との突き合わせで行う。前提基盤が未作成または
+未 green でも、その作成が本ゴールの write_scope 内なら bootstrap として
+port-test へ進む。write_scope 外なら順序ミスとして ABORT する。前提は、
+発行コマンドの -t がゴール定義文書のパスを含み、triage がそれを読めること
+である（run 20261112-052011 で triage が実際に読めたことを確認済み）。
+発行手順の要件として明記する。
+
+**P2: rate_limit_fallback.switch_chain の設定**
+
+`.takt/config.yaml` に rate_limit_fallback.switch_chain を設定した
+（takt 0.75.0 の機能。rate limit 時に chain を順に試す）。chain は同格
+クラウドの claude 1 段のみとする。DGX への切替は fallback に入れない。
+triage・equivalence-review の判断系が無断降格するためで、承認済み論点 19 の
+配分を守る。chain が尽きた run は失敗で止まり、成果は `.takt/runs/` と
+作業ツリーに残り、takt resume で保存位置から再開できる。provider の変更
+（今回の G0a 再発行での worktree 限定 opencode/dgx 切替のような）は人間が
+config を書き換えて行う。恒常化の要否はオーナーへ question 済みである
+（推奨: 恒常化しない）。
+
+**P3: 原典を作業ツリー内 pekko/ に置く**
+
+takt は opencode に external_directory: deny を固定している（0.75.0 の
+dist/infra/opencode/v2-config.js:28、v2-transport.js の session.update、
+server-pool.js:114 で確認）。opencode や takt の設定では外せない。
+run 20261112-052011 では triage が bash 経由で ../pekko を読めたが、
+read ツールは拒否されており、回避策頼みは fragile である。恒久対処として、
+原典は作業ツリー直下の `pekko/`（git 管理外）に置く前提に変更した。
+provider に依存せず成立する。`../pekko` は後方互換として triage が探す。
+
+**P4: needs の形の決定（抽出の実作業は別タスク）**
+
+needs の形は既存スキーマ（`ledger-schema-draft.md` の needs.testkit／
+needs.premise_flags）を正とする。null は未抽出、[] はなし（確認済み）、
+配列は能力 ID の一覧である。語彙の正は
+`docs/baseline/pekko-v1.7.1/supplement-recount.md` §2「TestKit の能力」の
+能力表と、前提フラグ（Thread.sleep、Random、eventually、時間 API 等）である。
+seed は抽出スクリプトの拡張（別タスク）で一括記入し、run の中では triage が
+原典から実測して報告、ledger-update が green の記録と同時に実測値で確定する
+（triage の edit: false は維持）。ゴール発行時の閉性判定の形は、能力→提供元
+（ゴールまたはクレート）の対応を `ledger/capabilities.yaml`（新設、別タスク）に
+持ち、「対象ノードの needs の各能力について、提供元が green か本ゴールの
+write_scope 内にあること」を機械判定する。triage は台帳の needs（seed）と
+実測の差を報告して台帳の正を保つ。
+
+**突き合わせ観点の結果**
+
+1. pekko-triage instruction と yaml の齟齬は、欄名（pekko.test_cases_approx）と
+   原典の場所の記述を直した。前提の扱いの文言は 5 条件のラベルに揃えた
+2. ゴール文書の write_scope は、発行コマンドの -t でパスが渡り、triage が
+   読める形になっている（実走で確認）。P1 の修正はこの前提に依存するため、
+   発行手順の要件として明記する
+3. ABORT／needs_human の成果保全は実物で確認した。run 20261112-050935 と
+   20261112-052011 の両方で、`.takt/runs/<run>/` に trace.md・reports
+   （triage-report.md は完全な内容）・logs が残り、作業ツリーの差分も
+   保持された。「run を捨てない」方針と整合する
+
 ### builtin 資産の活用（v3、2026-11-11）
 
 実装⇄レビュー⇄修正のループは自前で組み直さず、builtin の **mini-core** に
