@@ -47,7 +47,8 @@ impl Default for ChannelBoundary {
 
 impl ShardBoundary for ChannelBoundary {
   fn post(&self, envelope: Envelope) {
-    if !*self.lock_open() {
+    let open = self.lock_open();
+    if !*open {
       return;
     }
     let _ = self.sender.send(envelope);

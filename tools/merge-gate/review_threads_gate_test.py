@@ -7,7 +7,7 @@
 gh と git の呼び出しをスタブに置き換え、次の 3 通りを確かめる。
   1. 未解決が無い             exit 0、stdout の JSON（pr_number、unresolved_count=0）
   2. 未解決が有る（2 ページ） exit 1、stderr に件数と全スレッドの URL、cursor の受け渡し
-  3. 件数を取得できない       exit 2、stderr に理由
+  3. 件数を取得できない       exit 2、stderr に理由（同じ endCursor が返り続ける場合も含む）
 解決済みや未解決が無いスレッドを数えないこと、作者（bot と人間の両方）で絞らないことも、
 2 の応答に混ぜて確かめる。
 """
@@ -275,6 +275,37 @@ def test_unknown_count_aborts() -> None:
         assert_unknown_counts_as_failure(code, err, label)
 
 
+def test_repeated_end_cursor_aborts() -> None:
+    # hasNextPage が true のままで endCursor が進まない応答は、取得失敗として止める。
+    # 同じ cursor で引き直すと同じページを取り続け、件数も増え続ける。
+    stuck = page([thread(6, resolved=False, author="alice")], has_next=True, cursor="stuck")
+
+    class Fake(GitGhStub):
+        def dispatch(self, command, cwd):
+            if command[0] == "git":
+                if command[1:3] == ["symbolic-ref", "--short"]:
+                    return gh_ok(HEAD_BRANCH + "\n")
+                if command[1:3] == ["rev-parse", "HEAD"]:
+                    return gh_ok(HEAD_SHA + "\n")
+                if command[1:3] == ["config", "--get"]:
+                    return gh_ok(HEAD_URL + "\n")
+            if command[0] == "gh":
+                if command[1:2] == ["api"]:
+                    return gh_ok(json.dumps(stuck))
+                if command[1:3] == ["pr", "list"]:
+                    return gh_ok(json.dumps([{"number": 42, "headRefOid": HEAD_SHA}]))
+            return super().dispatch(command, cwd)
+
+    stub = Fake()
+    with GateRunner(stub) as runner:
+        code = runner.run([])
+        err = runner.stderr.getvalue()
+    assert_unknown_counts_as_failure(code, err, "repeated endCursor")
+    graphql_calls = [c for c in stub.calls if c[0][1:2] == ["api"]]
+    # 1 ページ目は cursor なし、"stuck" で 1 回。3 回目で同じ cursor を検出して止まる。
+    assert len(graphql_calls) <= 3, f"repeated endCursor: must stop early, got {len(graphql_calls)} call(s)"
+
+
 def test_pr_cannot_be_identified() -> None:
     """PR を 1 件に特定できなければ、取得失敗として止める（取り違えない）。"""
     for label, listed in {
@@ -341,6 +372,7 @@ def main() -> int:
         test_zero_unresolved_merge_allowed,
         test_unresolved_aborts_with_count_and_urls,
         test_unknown_count_aborts,
+        test_repeated_end_cursor_aborts,
         test_pr_cannot_be_identified,
         test_explicit_repo_and_pr_are_honoured,
     ]
