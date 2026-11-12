@@ -14,6 +14,12 @@ rate_limit_fallback:
   switch_chain:
     - provider: claude
 
+# マージ用タスク（takt_merge_goal_pr の until: merge）が使うワークフロー。builtin の
+# merge-review-fix-simple は caccia が skipped のとき未解決スレッドがあっても merge へ進む。
+# 未解決レビュースレッドが 0 件のときだけ merge する関門を足したワークフローを指定する
+merge:
+  workflow: merge-review-fix-simple-thread-gate
+
 # manager（ゴール管理）がタスクに使ってよいワークフロー。未設定だと default と simple
 # だけになり、移植パイプラインをゴールのタスクとして積めない（G0b の投入時に判明）
 manager:
