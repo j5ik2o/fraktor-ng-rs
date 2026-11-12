@@ -1,0 +1,35 @@
+name: Review Thread Resolution
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  issue_comment:
+    types: [created, edited, deleted]
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to refresh. Leave empty to refresh all open main PRs.
+        required: false
+        type: string
+
+jobs:
+  refresh:
+    uses: j5ik2o/ci/.github/workflows/review-thread-resolution.yml@v1
+    permissions:
+      contents: read
+      checks: write
+      statuses: write
+      issues: read
+      pull-requests: read
+    with:
+      pr_number: ${{ inputs.pr_number }}
+      base_branch: main
+      required_context: Check unresolved comments
+      wait_for_other_checks: "false"
+      ci_ref: v1
