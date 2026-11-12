@@ -215,6 +215,11 @@ G0a の実走 2 run で、前提・依存・bootstrap の扱いに 4 つの問�
 write_scope 内の仕事（骨格作成は develop の仕事）であり、bootstrap と
 順序ミスを区別する経路が無かった。
 
+その後、オーナーの追補（2026-11-12）で P5「ビルトイン資産の棚卸し」が加わり、
+問題は P1〜P5 の 5 件になった。P5 の趣旨は、rate_limit_fallback のように
+takt 0.75.0 にビルトインの仕組みがあるのに使っていないケースを、今回の
+範囲内で洗い出すことである。
+
 **P1: triage の遷移を 5 条件に分割**
 
 旧規則が 1 条件にまとめていた「前提基盤が未 green」と「原典を参照できない」を
@@ -228,6 +233,9 @@ port-test へ進む。write_scope 外なら順序ミスとして ABORT する。
 
 **P2: rate_limit_fallback.switch_chain の設定**
 
+問題の正確な記述は「fallback の設計が無い」ではなく「takt 0.75.0 に
+ビルトインの rate_limit_fallback があるのに未使用」である
+（P5 のオーナー指摘）。
 `.takt/config.yaml` に rate_limit_fallback.switch_chain を設定した
 （takt 0.75.0 の機能。rate limit 時に chain を順に試す）。chain は同格
 クラウドの claude 1 段のみとする。DGX への切替は fallback に入れない。
@@ -265,6 +273,32 @@ seed は抽出スクリプトの拡張（別タスク）で一括記入し、run
 持ち、「対象ノードの needs の各能力について、提供元が green か本ゴールの
 write_scope 内にあること」を機械判定する。triage は台帳の needs（seed）と
 実測の差を報告して台帳の正を保つ。
+
+**P5: ビルトイン資産の棚卸し（前提・依存・bootstrap と障害・再開の範囲）**
+
+棚卸しの正は takt 0.75.0 のインストール済みパッケージ（dist の設定スキーマと
+実装）と公式ドキュメント（nrslib/takt v0.75.0 の docs/configuration.md、
+docs/workflows.md）である。範囲は今回の再考（前提・依存・bootstrap、
+provider 障害・再開）に関わる機構に限る。
+
+| 機構 | 今回の範囲との関係 | 現状 | 判断 |
+|---|---|---|---|
+| `rate_limit_fallback.switch_chain` | provider の上限到達時の切替（P2） | 未使用だった。本 PR で使用 | 使用 |
+| `provider_routing`（personas、tags、steps）と runtime.yaml の `provider.targets`（personas、tags、steps、internal_agents） | 判断系はクラウド上位、量産系は DGX という承認済み配分（論点 19、設計文書 §4）をステップ・ペルソナ単位で表現するビルトイン | 未使用。runtime.yaml 自体が未作成で、loop judge 用の internal_agents 割り当ても未設定（judge は既定 provider で動く） | 量産期（port-test、implement を DGX に下ろすとき）はこれで表現する。`persona_providers` は deprecated なので使わない |
+| `auto_routing`（router モデルによる候補プールからの自動選択） | provider 選択 | 未使用 | 使わない。承認済み論点 19 の固定配分（工程ごとに provider を固定する）と矛盾するため |
+| `workflow_config.runtime.prepare`（run 前に走る準備スクリプト。カスタムスクリプトは `workflow_runtime_prepare.custom_scripts: true` が必要） | 前提整備の機械化。原典 `pekko/` の存在確認を run 開始前に fail-fast できる候補（P1・P3 の前提） | 未使用 | 検討（別タスク）。準備スクリプトが失敗したときの run の挙動が文書化されておらず、実走で確かめてから入れる。当面は triage の「原典を参照できない → ABORT」と発行手順が前提を守る |
+| step 単位の `quality_gates`（`type: command` の機械ゲート。失敗すると同じステップに詳細を戻して再実行させる） | 機械検証 | 未使用（verify_red と verify_green は独自の system step） | system step を維持する。verify は分類結果（expected_compile_error 等）で遷移先を分ける必要があり、quality_gates は遷移を持たず同一ステップへの差し戻しだけである。また system step と workflow_call ステップには quality_gates を付けられない（公式ドキュメントの記載） |
+| `takt resume`、`auto_requeue_max_attempts`（既定 0）、`sync_project_local_takt_on_retry`（既定 true） | 止まった run の再開（P2） | resume は設計済み・実走未確認（G0a の実走確認項目 2）。auto_requeue は未使用 | resume は G0a 再発行で検証する。auto_requeue は発行経路を manager 経由に決めた場合に検討する |
+| `ignore_exceed`（max_steps 超過の無視。既定 false） | run の予算 | 未使用 | 使わない。全体予算は max_steps が持つ設計（v4 の「ループ上限の効き方」）のため |
+| `provider_options.<provider>.guards.call_timeout_ms`（無応答ガード。既定 60 分） | provider 障害 | 既定値で有効 | 既定のまま |
+
+rate_limit_fallback の補足は次の 3 点である。
+
+- 一時的な 429 のリトライは組み込みで設定不可である（codex は最大 8 回、
+  opencode は最大 2 回）
+- 使用量・クレジット上限の到達はリトライせず、直ちに switch_chain に進む
+  （G0a の失敗はこちら）
+- 切替先の provider は保存セッションを引き継がない（公式ドキュメントの記載）
 
 **突き合わせ観点の結果**
 
