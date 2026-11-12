@@ -363,6 +363,26 @@ runtime モードでも効く（execution-preparation.js で確認）ため残�
    （triage-report.md は完全な内容）・logs が残り、作業ツリーの差分も
    保持された。「run を捨てない」方針と整合する
 
+**G0a 実走で見つけた verify_green の欠陥と修正（2026-11-12）**
+
+run 20261112-071144（24 分で ABORT）の経緯。1 ノード目は port-test から
+verify_red まで正常に進んだ。verify_green が対象クレートの特定に二重に
+失敗して all_pass=false を返し、mini-core の 2 巡目に入った plan が
+修正対象を write_scope 外と判断して ABORT した。
+
+根因は 2 点。第一に、verify 系 system step のコマンドが素の python3 で、
+PyYAML の無い環境では台帳フォールバックの import yaml が
+ModuleNotFoundError になる。第二に、verify_green.py の台帳フォールバックが
+`except Exception: pass` でその例外を握りつぶし、台帳に red ノードと
+crate があるのに理由なしで None を返した。
+
+修正は 3 点。verify 系 system step を文書の rollup 呼び出しと同じ
+`uv run --with pyyaml` に統一した。verify_green.py は crate 特定の失敗理由を
+notes として集め、JSON の detail に全部載せる形にした。port-test の
+instruction に、作成・変更したテストファイルへ rustfmt を適用して
+完了とする項目を加えた（verify_green の `cargo fmt --check` 対策）。
+オーナー承認 2026-11-12。
+
 ### builtin 資産の活用（v3、2026-11-11）
 
 実装⇄レビュー⇄修正のループは自前で組み直さず、builtin の **mini-core** に

@@ -26,6 +26,10 @@
 - 台帳の対象ノードの `rust.crate` と `rust.test_file` を記録する
   （後段の機械ゲートが台帳から対象を引くため。status など他の欄は
   変更しない）
+- 作成・変更したテストファイルには rustfmt を適用して整形を済ませる
+  （例: `rustfmt --edition <ルート Cargo.toml の edition> <ファイル>`）。
+  後段の機械ゲート verify_green は `cargo fmt --check` を含むため、
+  自分のファイルが整形差分を出さない状態で完了とする
 
 ## レポート（test-report）への書き方
 
