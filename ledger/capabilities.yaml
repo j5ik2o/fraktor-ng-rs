@@ -85,7 +85,7 @@ capabilities:
   label: awaitAssert
   category: classic
   regex: \bawaitAssert\b
-  provided_by: null
+  provided_by: G0c
 - id: await-cond
   label: awaitCond
   category: classic
@@ -95,7 +95,7 @@ capabilities:
   label: fishForMessage
   category: classic
   regex: \bfishForMessage\b
-  provided_by: null
+  provided_by: G0c
 - id: receive-while
   label: receiveWhile
   category: classic
@@ -115,7 +115,7 @@ capabilities:
   label: ignoreMsg
   category: classic
   regex: \bignoreMsg\b
-  provided_by: null
+  provided_by: G0c
 - id: test-actor-ref
   label: TestActorRef
   category: classic
