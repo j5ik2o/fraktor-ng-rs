@@ -56,6 +56,22 @@
 - 他のクレートの新設、台帳スキーマの変更
 - 旧 fraktor-rs からのコードの持ち込み
 
+## 発行時の台帳前処理
+
+発行の直前に、対象2ノード（ActorPathSpec、RelativeActorPathSpec）の `goal: null` を
+`goal: G0a` に書き換える。台帳の差分はこの2行のみとする。
+
+タグ付けは決定ゲート承認後の手順固定タスクとして実施し、main へ push 済みである。
+
+検証は次のコマンドが「ノード 2 件、status 内訳 {'unported': 2}」で exit 1 になること
+（発行前なので unported のみで正しい）。
+
+```sh
+uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0a
+```
+
+タグの除去や付け替え（中止時）は人間のみが決める。
+
 ## 発行コマンド
 
 Mac 上の clone で、最新を取り込んでから発行する。フラグの形は旧 fraktor-rs の

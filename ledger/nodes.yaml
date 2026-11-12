@@ -837,7 +837,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0a
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorRefSpec.scala
   name: actor-tests:ActorRefSpec
   kind: test
@@ -4069,7 +4069,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0a
 - id: actor-tests/src/test/scala/org/apache/pekko/routing/ResizerSpec.scala
   name: actor-tests:ResizerSpec
   kind: test
