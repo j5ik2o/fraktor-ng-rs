@@ -229,7 +229,11 @@ takt 0.75.0 にビルトインの仕組みがあるのに使っていないケ�
 port-test へ進む。write_scope 外なら順序ミスとして ABORT する。前提は、
 発行コマンドの -t がゴール定義文書のパスを含み、triage がそれを読めること
 である（run 20261112-052011 で triage が実際に読めたことを確認済み）。
-発行手順の要件として明記する。
+発行手順の要件として明記する。複数の条件に該当する場合の優先順位は、
+原典参照不能、順序ミス（write_scope 外の未整備基盤が 1 つでもあれば
+ABORT）、未承認の除外提案（needs_human）、bootstrap、通常進行の順である。
+bootstrap の条件は「未承認の除外提案がない」ことを含み、除外の人間ゲートを
+飛ばさない（PR #7 のレビュー指摘で追加）。
 
 **P2: rate_limit_fallback.switch_chain の設定**
 
@@ -241,7 +245,8 @@ port-test へ進む。write_scope 外なら順序ミスとして ABORT する。
 クラウドの claude 1 段のみとする。DGX への切替は fallback に入れない。
 triage・equivalence-review の判断系が無断降格するためで、承認済み論点 19 の
 配分を守る。chain が尽きた run は失敗で止まり、成果は `.takt/runs/` と
-作業ツリーに残り、takt resume で保存位置から再開できる。provider の変更
+作業ツリーに残り、直接実行の run は takt resume で保存位置から再開できる
+（manager タスクは requeue）。provider の変更
 （今回の G0a 再発行での worktree 限定 opencode/dgx 切替のような）は人間が
 config を書き換えて行う。次の 2 点は 2026-11-12 にオーナーが承認した。
 fallback は claude 1 段のみで DGX は chain に入れない（人間の config 変更に
@@ -531,7 +536,8 @@ G0a の発行コマンドで参照した旧 fraktor-rs の
   write_scope 内なら bootstrap として port-test へ進む。write_scope の外なら
   ABORT（ゴール選定の順序ミスとして manager に返す）。Pekko 原典を
   参照できない → ABORT。未承認の除外提案（ケース除外・do_not_port）が
-  ある → needs_human で終了（判断は run の外、第3節）。問題なし → port-test へ
+  ある → needs_human で終了（判断は run の外、第3節）。未承認の除外提案は
+  bootstrap に優先する（除外の判断は人間だけが行うため）。問題なし → port-test へ
 - provider: クラウド上位モデル（解釈と判断が重い工程）
 
 ### 2.2 port-test（編集可、テストファイルのみ）

@@ -14,7 +14,7 @@
 
 ## 前提基盤
 - 必要な基盤: {一覧}
-- 状態: {すべて green ／ bootstrap（未作成または未 green だが、作成が本ゴールの write_scope 内）／ 前提不足（未 green のものとその id。作成は write_scope 外）}
+- 状態: {すべて green ／ bootstrap（未整備の基盤がすべて本ゴールの write_scope 内）／ 前提不足（write_scope 外の未整備基盤とその id）}
 
 ## 除外提案
 {なし、または「ケース名 — 理由」の一覧。人間の承認待ちであることを明記}
