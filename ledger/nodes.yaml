@@ -32777,7 +32777,7 @@ nodes:
     module: testkit
     class: DefaultTimeoutSpec
     test_cases_approx: 1
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -32788,13 +32788,13 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 1
+    ported: 1
+    passing: 1
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-testkit
+    test_file: crates/fraktor-testkit/tests/default_timeout_spec.rs
   goal: G0b
 - id: testkit/src/test/scala/org/apache/pekko/testkit/ExplicitlyTriggeredSchedulerSpec.scala
   name: testkit:ExplicitlyTriggeredSchedulerSpec
@@ -32829,7 +32829,7 @@ nodes:
     module: testkit
     class: ImplicitSenderSpec
     test_cases_approx: 1
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -32840,13 +32840,13 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 1
+    ported: 1
+    passing: 1
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-testkit
+    test_file: crates/fraktor-testkit/tests/implicit_sender_spec.rs
   goal: G0b
 - id: testkit/src/test/scala/org/apache/pekko/testkit/metrics/MetricsKitSpec.scala
   name: testkit:MetricsKitSpec
@@ -32881,7 +32881,7 @@ nodes:
     module: testkit
     class: PekkoSpec
     test_cases_approx: 0
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -32892,13 +32892,13 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 0
+    ported: 0
+    passing: 0
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-testkit
+    test_file: crates/fraktor-testkit/src/pekkospec/pekko_spec.rs
   goal: G0b
 - id: testkit/src/test/scala/org/apache/pekko/testkit/PekkoSpecSpec.scala
   name: testkit:PekkoSpecSpec
@@ -32959,7 +32959,7 @@ nodes:
     module: testkit
     class: TestActorsSpec
     test_cases_approx: 2
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -32970,13 +32970,13 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 2
+    ported: 2
+    passing: 2
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-testkit
+    test_file: crates/fraktor-testkit/tests/test_actors_spec.rs
   goal: G0b
 - id: testkit/src/test/scala/org/apache/pekko/testkit/TestEventListenerSpec.scala
   name: testkit:TestEventListenerSpec

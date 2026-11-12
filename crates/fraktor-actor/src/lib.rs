@@ -1,4 +1,6 @@
 //! Actor core for fraktor-ng-rs.
 
-mod adaptor;
+extern crate alloc;
+
+pub mod adaptor;
 pub mod kernel;
