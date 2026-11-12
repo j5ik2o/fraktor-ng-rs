@@ -222,11 +222,12 @@ instruction、output-contract（`test-report`、`testing-review`）、workflow r
   triage、テスト移植、verify の system step、
   等価性レビュー（原典との忠実さは builtin レビューの守備範囲外なので
   独立ステップとして残す。指摘は develop の再呼び出しで直す）、台帳更新
-- チェッカーのルールは policy としても事前提示する（後出しの回避）：
-  syn チェッカーの判定項目は、policy `pekko-coding-rules` として
-  mini-core の plan / development ポリシーと port-test のポリシーに加え、
-  実装する側が書く時点で見えるようにする。チェッカーは事後の裏付けであり、
-  ルールの正はチェッカー側の定義に置き、policy はその要約とする
+- チェッカーのルールは事前提示する（後出しの回避）：
+  syn チェッカーの判定項目は、workflow-wide rule `pekko-coding-rules` として
+  `pekko-port-node` の `all_steps.rules` に置き、実装する側が書く時点で
+  見えるようにする（当初は policy だった。理由は v4 の「facet の並び順」）。
+  チェッカーは事後の裏付けであり、ルールの正はチェッカー側の定義に置き、
+  この rule はその要約とする
 - ファセットは `{extends:...}` で標準を継承する形にした：
   pekko-port-test は write-tests-first を、pekko-review-equivalence は
   testing-review を継承し、差分だけを書く。triage は、継承候補の
@@ -271,7 +272,7 @@ instruction、output-contract（`test-report`、`testing-review`）、workflow r
 | instruction `pekko-triage`、output-contract `triage-report` | 台帳のノード 1 件について、原典のケース実数、needs、前提基盤、除外提案を確かめる工程である。builtin には台帳も、人間だけが承認する除外も無い。近い instruction のうち `research-*` は計画、分解、分析を別ステップで回す調査用で、`plan` は実装方針の立案用（mini-core が内側で行う）である。fragment `development-core-plan` はレポート名が `plan.md` に固定で、mini-core が書く `plan.md` と同名になる。`triage-report` の欄は遷移条件と後段が読む固定欄で、`research-report` には無い |
 | instruction `pekko-classify-red`、output-contract `verify-report` | 固有の機械ゲート verify_red が分類できなかった出力を読み、想定どおりの red かを判定して台帳の `status` を書く工程である。builtin の検証系 instruction（`verify-fix`、`apply-fix-verification`、`merge-ci-investigate`）は `fix-plan.md` や CI の収集結果など、このワークフローに無い入力を前提にしている |
 | instruction `pekko-ledger-update`、output-contract `ledger-report` | 台帳への green の記録と、`rollup.py` による完了判定である。builtin に対応する工程が無い |
-| knowledge `pekko-porting-rules`、policy `pekko-coding-rules` | 決定文書（台帳の規則、クレート構成、所有権モデル）と syn チェッカーのルールの要約である。builtin の `architecture` や `coding` を置き換えるものではなく、並べて注入する |
+| knowledge `pekko-porting-rules`、workflow-wide rule `pekko-coding-rules` | 決定文書（台帳の規則、クレート構成、所有権モデル）と syn チェッカーのルールの要約である。builtin の `architecture` や `coding` を置き換えるものではなく、並べて注入する |
 
 ワークフロー 2 本（`pekko-porting-ng`、`pekko-port-node`）も独自である。
 ゴールとノードの繰り返し、verify の system step、return ラベルは台帳の
@@ -291,11 +292,26 @@ takt 0.74.0 は、1 ステップの knowledge を連結した文字列の先頭 
   fragment の並びを上書きしている
 - `pekko-porting-rules` は 2,000 字以内に保つ。超えると末尾の
   「移植の作法」（テストファイルの凍結を含む）から本文に載らなくなる
-- policy `pekko-coding-rules`（2,617 字）は、どのステップでも本文に載って
-  いない。builtin の fragment が `contract-change` を先頭に固定するためで、
-  引数の並びでは変えられない。スナップショットファイル経由では届く。
-  本文に載せる手当ては、builtin 再利用とは別件として切り出す
-  （2026-11-11、ユーザー決定）。この PR では現状のままにする
+- syn チェッカーのルールの要約 `pekko-coding-rules` は、policy では本文に
+  載らなかった。builtin の fragment（`development-core-plan`、
+  `development-core-implement`、`development-core-write-tests`）と mini-core の
+  修正ステップは、policy の先頭に `contract-change`（約 4,400 字）を固定する。
+  引数の並びでは変えられず、2,617 字の要約は 1 行も本文に載らなかった
+  （2026-11-11 に別件として切り出し、2026-11-12 のオーナー判断で対応した）
+- 対応として、要約を policy から workflow-wide rule に移した。実体は
+  `.takt/workflows/rules/pekko-coding-rules.md` で、`pekko-port-node` の
+  `all_steps.rules` が参照する。workflow-wide rule は字数で切られず、全文が
+  本文に載る。`workflow_call` で呼ぶ mini-core の各ステップ（plan、implement、
+  レビュー、修正）にも引き継がれる。plan、implement、port-test の本文に載る
+  ことは、`takt prompt` と mock provider の実走で確かめた
+- workflow-wide rule は `pekko-port-node` の全ステップに載る（triage、
+  classify-red、等価性レビュー、台帳更新を含む）。冒頭の一文で「Rust の
+  コードを計画、実装、修正、レビューする場合」に限っている。builtin の
+  `findings-handling` と同じ書き方である
+- policy のまま残す案、knowledge に移す案は採らなかった。knowledge は
+  `pekko-porting-rules`（1,942 字）で上限近くまで埋まっている。`contract-change`
+  を project 側の同名 facet で上書きする案は、builtin の意味を全体で
+  変えるので採らなかった
 
 **ループ上限の効き方（PR #2 のレビュー指摘、2026-11-11 のユーザー決定）**
 

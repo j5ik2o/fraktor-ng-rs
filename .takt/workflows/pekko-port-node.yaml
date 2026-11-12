@@ -13,6 +13,13 @@ all_steps:
       position: before_instruction
     - ref: plain-terminology
       position: before_instruction
+    # syn チェッカーのルールの要約（.takt/workflows/rules/pekko-coding-rules.md）。
+    # policy と knowledge は連結した先頭 2,000 字だけが本文に載り、builtin の
+    # fragment は policy の先頭に contract-change（約 4,400 字）を固定する。
+    # workflow-wide rule は全文が本文に載り、workflow_call で呼ぶ mini-core の
+    # 各ステップにも引き継がれる
+    - ref: pekko-coding-rules
+      position: before_instruction
 subworkflow:
   callable: true
   visibility: internal
@@ -120,7 +127,6 @@ steps:
       testing_policy:
         - coding
         - testing
-        - pekko-coding-rules
       testing_knowledge:
         - pekko-porting-rules
       testing_instruction: pekko-port-test
@@ -188,14 +194,12 @@ steps:
     args:
       plan_policy:
         - design-planning
-        - pekko-coding-rules
       plan_knowledge:
         - pekko-porting-rules
         - architecture
       development_policy:
         - coding
         - testing
-        - pekko-coding-rules
       development_knowledge:
         - pekko-porting-rules
         - architecture
