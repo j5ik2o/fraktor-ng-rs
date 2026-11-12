@@ -2869,7 +2869,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0c
 - id: actor-tests/src/test/scala/org/apache/pekko/util/FrequencyListSpec.scala
   name: actor-tests:FrequencyListSpec
   kind: test
@@ -33081,7 +33081,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0c
 - id: testkit/src/test/scala/org/apache/pekko/testkit/TestTimeSpec.scala
   name: testkit:TestTimeSpec
   kind: test
