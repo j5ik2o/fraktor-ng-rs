@@ -32,6 +32,27 @@
 - タグ付け後に `rollup.py --goal <ID>` で対象ノード数と status 内訳を確認する
 - タグの除去・付け替えは人間のみが決める
 
+## needs の抽出と閉性判定
+
+各ノードの `needs.testkit` は、Pekko 原典ファイルが使う TestKit の能力 id のリストである。
+能力語彙と提供元の対応は `capabilities.yaml` にある（語彙の正は
+`docs/baseline/pekko-v1.7.1/supplement-recount.md` §2）。
+
+- `null` は未抽出、`[]` はその能力を使っていない、配列は一致した能力 id（一致順）
+- `needs.premise_flags` は前提フラグ（Java 直列化、`Thread.sleep` など）の一致リストで、
+  閉性判定には使わない
+- 抽出は存在判定（正規表現が 1 回以上一致するか）であり、継承やヘルパ経由の利用は見えない
+
+```sh
+# 抽出（nodes.yaml の needs 配下の 2 行だけを書き換える。再実行は冪等）
+uv run --with pyyaml python3 ledger/tools/extract_needs.py \
+  --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --pekko pekko
+
+# ゴールの needs 閉性判定（provided_by が自身か green 済みゴールなら充足）
+uv run --with pyyaml python3 ledger/tools/check_needs.py \
+  --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0b
+```
+
 ## 未決定
 
 - 台帳スキーマの欄の名前と並び（叩き台のまま。粒度、ID、種別、ケース単位の除外は承認済み）
