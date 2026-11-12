@@ -306,7 +306,8 @@ takt 0.74.0 は、1 ステップの knowledge を連結した文字列の先頭 
   ことは、`takt prompt` と mock provider の実走で確かめた
 - workflow-wide rule は `pekko-port-node` の全ステップに載る（triage、
   classify-red、等価性レビュー、台帳更新を含む）。冒頭の一文で「Rust の
-  コードを計画、実装、修正、レビューする場合」に限っている。builtin の
+  コードやテストを計画、移植、作成、実装、修正、またはレビューする場合」に
+  限っている。builtin の
   `findings-handling` と同じ書き方である
 - policy のまま残す案、knowledge に移す案は採らなかった。knowledge は
   `pekko-porting-rules`（1,942 字）で上限近くまで埋まっている。`contract-change`
