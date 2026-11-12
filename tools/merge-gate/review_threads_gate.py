@@ -124,6 +124,7 @@ def resolve_target(argv: list[str]) -> tuple[str, str, int]:
 def fetch_unresolved_thread_urls(owner: str, name: str, number: int) -> list[str]:
     unresolved: list[str] = []
     cursor = None
+    seen_cursors: set[str] = set()
     while True:
         command = ["gh", "api", "graphql", "-f", f"query={REVIEW_THREADS_QUERY}",
                    "-F", f"owner={owner}", "-F", f"name={name}", "-F", f"number={number}"]
@@ -154,6 +155,9 @@ def fetch_unresolved_thread_urls(owner: str, name: str, number: int) -> list[str
         cursor = page_info.get("endCursor")
         if not cursor:
             raise GateError("hasNextPage が true ですが endCursor がありません")
+        if cursor in seen_cursors:
+            raise GateError(f"hasNextPage が true ですが endCursor が進みません: {cursor!r}")
+        seen_cursors.add(cursor)
     return unresolved
 
 
