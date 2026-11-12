@@ -1,4 +1,5 @@
-provider: codex
+provider: opencode
+model: dgx/deepseek-v4.1-flash
 language: ja
 concurrency: 1
 base_branch: main
