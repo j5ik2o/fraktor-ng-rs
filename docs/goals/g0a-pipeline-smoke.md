@@ -81,8 +81,12 @@ Mac 上の clone で、最新を取り込んでから発行する。フラグの
 cd /Users/j5ik2o/Sources/github.com/j5ik2o/fraktor-ng-rs
 git pull
 
-takt --pipeline --skip-git -w pekko-porting-ng -t "docs/goals/g0a-pipeline-smoke.md のゴール定義に従って G0a を実施してください。完了条件は同文書の機械判定4項目です。対象ノード以外の台帳変更と、範囲外のクレート新設は禁止です。"
+takt --runtime-assignment standard --pipeline --skip-git -w pekko-porting-ng -t "docs/goals/g0a-pipeline-smoke.md のゴール定義に従って G0a を実施してください。完了条件は同文書の機械判定4項目です。対象ノード以外の台帳変更と、範囲外のクレート新設は禁止です。"
 ```
+
+provider の割り当ては `.takt/runtime.yaml` の assignment で選ぶ。codex の
+使用量上限中は `--runtime-assignment interim-claude` を使う（2026-11-12 の
+割り当て原則に沿った暫定）。
 
 ワークフロー `pekko-porting-ng` は `.takt/workflows/` に実装済み
 （設計は `docs/decisions/takt-workflow-design.md`）。
