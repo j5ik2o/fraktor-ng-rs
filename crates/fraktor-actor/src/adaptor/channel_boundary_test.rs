@@ -2,6 +2,8 @@
 
 use core::time::Duration;
 use std::sync::Arc;
+use std::sync::Barrier;
+use std::thread;
 
 use crate::kernel::actor::Actor;
 use crate::kernel::actor::ActorContext;
@@ -56,4 +58,52 @@ fn polling_within_finds_a_message_that_tell_posted() {
   recipient.tell(Message::new("hello"), recipient.clone());
 
   assert!(boundary.poll_within(Duration::from_millis(10)).is_some());
+}
+
+#[test]
+fn posting_after_close_is_discarded() {
+  let boundary = Arc::new(ChannelBoundary::new());
+  let mut system = system_on(&boundary);
+  let recipient = system.actor_of(Props::new(|| Sink));
+
+  boundary.close();
+  recipient.tell(Message::new("hello"), recipient.clone());
+
+  assert!(boundary.poll().is_none());
+}
+
+#[test]
+fn a_post_racing_close_leaves_nothing_after_the_drain() {
+  const POSTERS: usize = 4;
+  const POSTS_PER_POSTER: usize = 200;
+  const ROUNDS: usize = 200;
+
+  for _ in 0..ROUNDS {
+    let boundary = Arc::new(ChannelBoundary::new());
+    let mut system = system_on(&boundary);
+    let recipient = system.actor_of(Props::new(|| Sink));
+    let barrier = Arc::new(Barrier::new(POSTERS + 1));
+
+    let mut posters = Vec::with_capacity(POSTERS);
+    for _ in 0..POSTERS {
+      let recipient = recipient.clone();
+      let barrier = Arc::clone(&barrier);
+      posters.push(thread::spawn(move || {
+        barrier.wait();
+        for _ in 0..POSTS_PER_POSTER {
+          recipient.tell(Message::new("racing"), recipient.clone());
+        }
+      }));
+    }
+
+    barrier.wait();
+    boundary.close();
+    while boundary.poll().is_some() {}
+
+    for poster in posters {
+      poster.join().unwrap();
+    }
+
+    assert!(boundary.poll().is_none());
+  }
 }

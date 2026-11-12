@@ -21,4 +21,13 @@ pub trait ShardBoundary: Send + Sync {
 
   /// Waits at most `max` for one envelope.
   fn poll_within(&self, max: Duration) -> Option<Envelope>;
+
+  /// Stops the boundary from taking new envelopes.
+  ///
+  /// After this call, `post` discards the envelope instead of handing it on,
+  /// so a terminated shard cannot accumulate messages that would keep its
+  /// handles, and through them the boundary, alive. Envelopes already waiting
+  /// can still be taken by `poll`, so the shard can drain them before it goes
+  /// away.
+  fn close(&self);
 }
