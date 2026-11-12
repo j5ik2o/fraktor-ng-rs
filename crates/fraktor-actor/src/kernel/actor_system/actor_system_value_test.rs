@@ -42,6 +42,8 @@ impl ShardBoundary for QueueBoundary {
   fn poll_within(&self, _max: Duration) -> Option<Envelope> {
     self.poll()
   }
+
+  fn close(&self) {}
 }
 
 fn system(name: &str) -> ActorSystem {
@@ -120,6 +122,8 @@ impl ShardBoundary for EndlessBoundary {
   fn poll_within(&self, _max: Duration) -> Option<Envelope> {
     self.poll()
   }
+
+  fn close(&self) {}
 }
 
 struct Recorder {
@@ -255,6 +259,23 @@ fn dropping_the_system_releases_the_boundary_and_its_queued_messages() {
 
   recipient.tell("hello", recipient.clone());
   assert!(weak.upgrade().is_some());
+
+  drop(system);
+  drop(recipient);
+  drop(boundary);
+
+  assert!(weak.upgrade().is_none());
+}
+
+#[test]
+fn terminating_then_telling_then_dropping_every_handle_releases_the_boundary() {
+  let boundary = Arc::new(ChannelBoundary::new());
+  let mut system = ActorSystem::new("ChannelBoundarySpec", Arc::clone(&boundary) as Arc<_>);
+  let recipient = system.actor_of(Props::new(|| NoOp));
+  let weak = Arc::downgrade(&boundary);
+
+  system.terminate();
+  recipient.tell("hello", recipient.clone());
 
   drop(system);
   drop(recipient);

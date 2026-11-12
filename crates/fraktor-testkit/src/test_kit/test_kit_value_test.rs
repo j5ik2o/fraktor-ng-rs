@@ -4,6 +4,7 @@ use std::panic::catch_unwind;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use std::time::Instant;
 
 use fraktor_actor::adaptor::ChannelBoundary;
@@ -12,12 +13,43 @@ use fraktor_actor::kernel::actor::ActorContext;
 use fraktor_actor::kernel::actor::Props;
 use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::actor_system::ActorSystem;
+use fraktor_actor::kernel::executor::ShardBoundary;
+use fraktor_actor::kernel::message::Envelope;
 use fraktor_actor::kernel::message::Message;
 
 use super::TestKit;
 
 fn test_kit() -> TestKit {
   TestKit::new(ActorSystem::new("TestKitSpec", Arc::new(ChannelBoundary::new())))
+}
+
+struct SlowBoundary {
+  inner: ChannelBoundary,
+}
+
+impl SlowBoundary {
+  fn new() -> Self {
+    Self { inner: ChannelBoundary::new() }
+  }
+}
+
+impl ShardBoundary for SlowBoundary {
+  fn post(&self, envelope: Envelope) {
+    self.inner.post(envelope);
+  }
+
+  fn poll(&self) -> Option<Envelope> {
+    None
+  }
+
+  fn poll_within(&self, max: Duration) -> Option<Envelope> {
+    std::thread::sleep(max);
+    self.inner.poll()
+  }
+
+  fn close(&self) {
+    self.inner.close();
+  }
 }
 
 struct GreetThenBurst {
@@ -79,6 +111,17 @@ fn expect_msg_times_out_when_nothing_arrives() {
   let mut kit = test_kit();
 
   kit.expect_msg("hello");
+}
+
+#[test]
+fn expect_msg_receives_a_message_that_arrives_at_the_deadline() {
+  let mut kit = TestKit::new(ActorSystem::new("TestKitSpec", Arc::new(SlowBoundary::new())));
+  let test_actor = kit.test_actor();
+  test_actor.tell("hello", test_actor.clone());
+
+  let received = kit.expect_msg("hello");
+
+  assert_eq!(received, *"hello");
 }
 
 #[test]
