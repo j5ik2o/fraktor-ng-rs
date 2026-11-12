@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "fraktor-actor"
 version = "0.0.0"
+
+[[package]]
+name = "fraktor-testkit"
+version = "0.0.0"
+dependencies = [
+ "fraktor-actor",
+]

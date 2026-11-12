@@ -1,0 +1,8 @@
+[package]
+name = "fraktor-testkit"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+fraktor-actor = { path = "../fraktor-actor" }
