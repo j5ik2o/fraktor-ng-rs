@@ -112,9 +112,13 @@ steps:
     rules:
       - condition: 前提が揃っており、未承認の除外提案がない（承認済みの除外は台帳の cases.excluded に記録されている）
         next: port-test
+      - condition: 前提基盤が未作成または未 green だが、その作成が本ゴールの write_scope 内にある（bootstrap）
+        next: port-test
       - condition: 未承認の除外提案がある（ケース除外または do_not_port の提案）
         return: needs_human
-      - condition: 前提基盤が未 green、または Pekko 原典を参照できない
+      - condition: 依存する前提基盤が未 green で、その作成が本ゴールの write_scope の外にある（ゴール選定の順序ミス）
+        next: ABORT
+      - condition: Pekko 原典を参照できない
         next: ABORT
     output_contracts:
       report:

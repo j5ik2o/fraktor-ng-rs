@@ -418,9 +418,11 @@ G0a の発行コマンドで参照した旧 fraktor-rs の
 
 - Pekko の原典テストと実装を読み、ケースの実数、needs（TestKit 能力・前提フラグ）、
   infra 辺（前提基盤が green か）を確認する。出力は triage レポート
-- 分岐：前提基盤が未 green → ABORT（ゴール選定の誤りとして manager に返す）。
-  未承認の除外提案（ケース除外・do_not_port）がある → needs_human で
-  終了（判断は run の外、第3節）。問題なし → port-test へ
+- 分岐：前提基盤が未作成または未 green でも、その作成が本ゴールの
+  write_scope 内なら bootstrap として port-test へ進む。write_scope の外なら
+  ABORT（ゴール選定の順序ミスとして manager に返す）。Pekko 原典を
+  参照できない → ABORT。未承認の除外提案（ケース除外・do_not_port）が
+  ある → needs_human で終了（判断は run の外、第3節）。問題なし → port-test へ
 - provider: クラウド上位モデル（解釈と判断が重い工程）
 
 ### 2.2 port-test（編集可、テストファイルのみ）
