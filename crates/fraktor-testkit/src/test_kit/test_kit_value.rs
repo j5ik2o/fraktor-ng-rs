@@ -79,7 +79,6 @@ impl TestKit {
     let max = settings.dilated(settings.single_expect_default_timeout());
     let deadline = Instant::now() + max;
     loop {
-      self.system.run_until_idle();
       match self.queue.try_recv() {
         | Ok(message) => {
           assert!(message == *expected, "expected {expected:?}, found {message:?}");
@@ -90,7 +89,9 @@ impl TestKit {
           if remaining == Duration::ZERO {
             panic!("timeout ({max:?}) during expectMsg while waiting for {expected:?}");
           }
-          self.system.await_envelope(remaining);
+          if !self.system.run_one() {
+            self.system.await_envelope(remaining);
+          }
         },
         | Err(TryRecvError::Disconnected) => {
           panic!("the test actor stopped while expectMsg was waiting for {expected:?}");

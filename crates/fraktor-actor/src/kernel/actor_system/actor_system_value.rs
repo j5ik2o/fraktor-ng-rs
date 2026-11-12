@@ -41,13 +41,25 @@ impl ActorSystem {
   ///
   /// Each call hands out a handle with a fresh identifier and generation zero,
   /// so handles of different actors compare unequal.
+  ///
+  /// Panics once the system has been terminated, with the same cause as Pekko,
+  /// which throws `IllegalStateException` from `attachChild` when a defunct
+  /// guardian cannot create children.
   pub fn actor_of(&mut self, props: Props) -> ActorRef {
+    assert!(!self.terminated, "cannot create children while terminating or terminated");
     self.executor.spawn(props)
   }
 
   /// Delivers every message that is waiting until nothing is left.
   pub fn run_until_idle(&mut self) {
     self.executor.run_until_idle();
+  }
+
+  /// Delivers at most one message and returns whether it delivered one, so a
+  /// caller can check a deadline between messages instead of waiting for the
+  /// whole queue to drain.
+  pub fn run_one(&mut self) -> bool {
+    self.executor.run_one()
   }
 
   /// Waits at most `max` for one message from the boundary and moves it onto
@@ -68,6 +80,12 @@ impl ActorSystem {
   /// Returns whether the system has been terminated.
   pub fn is_terminated(&self) -> bool {
     self.terminated
+  }
+}
+
+impl Drop for ActorSystem {
+  fn drop(&mut self) {
+    self.terminate();
   }
 }
 
