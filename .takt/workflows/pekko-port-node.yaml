@@ -155,7 +155,7 @@ steps:
     system_inputs:
       - type: command
         as: result
-        command: python3 ledger/tools/verify_red.py
+        command: uv run --with pyyaml python3 ledger/tools/verify_red.py
         timeout_ms: 600000
         output: json
     rules:
@@ -232,7 +232,7 @@ steps:
     system_inputs:
       - type: command
         as: result
-        command: python3 ledger/tools/verify_green.py
+        command: uv run --with pyyaml python3 ledger/tools/verify_green.py
         timeout_ms: 900000
         output: json
     rules:

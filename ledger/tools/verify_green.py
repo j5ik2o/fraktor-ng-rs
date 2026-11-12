@@ -26,17 +26,26 @@ from pathlib import Path
 SYN_CHECK_MANIFEST = Path(__file__).resolve().parents[2] / "tools" / "syn-check" / "Cargo.toml"
 
 
-def parse_crate() -> str | None:
+def parse_crate() -> tuple[str | None, list[str]]:
+    """対象クレート名と、特定できなかった場合の理由の一覧を返す。"""
+    notes: list[str] = []
     # 1. 直前レスポンスの `crate:` 行（あれば最優先）
     path = os.environ.get("TAKT_PREVIOUS_RESPONSE_FILE", "")
-    if path and os.path.exists(path):
+    if not path:
+        notes.append("TAKT_PREVIOUS_RESPONSE_FILE is not set")
+    elif not os.path.exists(path):
+        notes.append(f"previous response file not found: {path}")
+    else:
         text = open(path, encoding="utf-8").read()
         m = re.search(r"^crate:\s*(\S+)\s*$", text, re.MULTILINE)
         if m:
-            return m.group(1)
+            return m.group(1), notes
+        notes.append("previous response lacks a crate line")
     # 2. 台帳で status が red のノード（処理中の1件）の rust.crate
     ledger = "ledger/nodes.yaml"
-    if os.path.exists(ledger):
+    if not os.path.exists(ledger):
+        notes.append(f"ledger not found: {ledger}")
+    else:
         try:
             import yaml
             data = yaml.safe_load(open(ledger, encoding="utf-8"))
@@ -44,10 +53,11 @@ def parse_crate() -> str | None:
                 if node.get("status") == "red":
                     crate = (node.get("rust") or {}).get("crate")
                     if crate:
-                        return crate
-        except Exception:
-            pass
-    return None
+                        return crate, notes
+            notes.append("ledger has no red node with rust.crate")
+        except Exception as e:
+            notes.append(f"ledger fallback failed: {type(e).__name__}: {e}")
+    return None, notes
 
 
 def run(cmd: list[str], timeout: int = 840) -> dict:
@@ -99,10 +109,10 @@ def run_syn_checker(crate: str) -> dict:
 
 
 def main() -> int:
-    crate = parse_crate()
+    crate, notes = parse_crate()
     if not crate:
         print(json.dumps({"all_pass": False,
-                          "detail": "previous response lacks a crate line"}))
+                          "detail": "cannot determine target crate: " + "; ".join(notes)}))
         return 0
 
     gates = {
