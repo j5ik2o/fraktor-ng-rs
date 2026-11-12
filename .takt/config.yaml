@@ -8,7 +8,7 @@ workflow_system_commands:
 
 # provider が rate limit に達したときの切替先（順に試す）。同格のクラウド provider に
 # 限る。判断系ステップを無断で DGX へ降格させないため、DGX への切替は fallback では
-# なく人間が provider: を書き換えて行う。chain が尽きた run は失敗で止まり、成果は
+# なく runtime.yaml の assignment で行う。chain が尽きた run は失敗で止まり、成果は
 # .takt/runs/ と作業ツリーに残る（直接実行の run は takt resume、manager タスクは requeue で再開）
 rate_limit_fallback:
   switch_chain:

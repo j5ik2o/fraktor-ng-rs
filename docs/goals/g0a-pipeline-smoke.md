@@ -90,8 +90,8 @@ provider の割り当ては `.takt/runtime.yaml` の assignment で選ぶ。code
 
 ワークフロー `pekko-porting-ng` は `.takt/workflows/` に実装済み
 （設計は `docs/decisions/takt-workflow-design.md`）。
-`.takt/config.yaml` は最小構成（provider: codex、concurrency: 1、base_branch: main）
-を置いてある。
+`.takt/config.yaml` は最小構成（concurrency: 1、base_branch: main 等）で、
+provider の割り当ては `.takt/runtime.yaml` の assignment が持つ。
 
 前提として、run から Pekko v1.7.1 のソースを参照できること。作業ツリー直下に
 `pekko/`（git 管理外、`.gitignore` 済み）としてタグ `v1.7.1` をチェックアウト
