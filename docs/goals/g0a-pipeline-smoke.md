@@ -46,7 +46,7 @@
 ## 完了条件（機械判定できる形）
 
 - `cargo test -p fraktor-actor` が通る
-- `python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0a` が 0 を返す
+- `uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0a` が 0 を返す
 - 台帳の差分が対象2ノードに限られる
 - 2ノードの `cases.total` が実数で記録されている（近似のままにしない）
 
@@ -81,6 +81,6 @@ run の後に人間が確認するコマンド：
 
 ```sh
 cargo test -p fraktor-actor
-python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0a
+uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0a
 git diff --stat ledger/nodes.yaml
 ```
