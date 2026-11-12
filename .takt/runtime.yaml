@@ -1,0 +1,63 @@
+version: 1
+provider:
+  profiles:
+    # 強いモデル（クラウド上位の既定）。計画・設計・レビューが使う
+    cloud-codex:
+      provider: codex
+    # 強いモデルの代替。codex の使用量上限中の暫定 assignment が使う
+    cloud-claude:
+      provider: claude-sdk
+    # 弱いモデル（DGX）。実装・テスト・台帳記録が使う。opencode は model 必須
+    dgx-flash:
+      provider: opencode
+      model: dgx/deepseek-v4.1-flash
+  defaults:
+    assignment: standard
+  assignments:
+    # 割り当て原則（2026-11-12 オーナー指示）: 計画・設計・レビューは強いモデル、
+    # 実装・テストは弱いモデル。やり直し（差し戻し後の再実行）は ladder の次の段へ
+    # 上がる（昇格の宣言はワークフロー側の promotion {at: N}）
+    standard:
+      defaults:
+        profile: cloud-codex
+      targets:
+        personas:
+          # 実装・テスト系（port-test、mini-core の implement、ledger-update 等）。
+          # 初回は弱いモデル、promotion を宣言したステップは 2 回目から強いモデル
+          coder:
+            ladder:
+              - dgx-flash
+              - cloud-codex
+        steps:
+          # classify-red は persona が coder だが判断系なので強いモデルに上書き
+          pekko-port-node/classify-red:
+            profile: cloud-codex
+          # mini-core 内のレビュー後の再実装は一段強いモデル
+          mini-core/ai-antipattern-fix:
+            profile: cloud-codex
+          mini-core/supervise_fix:
+            profile: cloud-codex
+        internal_agents:
+          loop-judge:
+            profile: cloud-codex
+    # codex の使用量上限（2026-11-17 回復見込み）中の暫定。strong を claude に
+    # 置き換えた standard。発行時に --runtime-assignment interim-claude で選ぶ
+    interim-claude:
+      defaults:
+        profile: cloud-claude
+      targets:
+        personas:
+          coder:
+            ladder:
+              - dgx-flash
+              - cloud-claude
+        steps:
+          pekko-port-node/classify-red:
+            profile: cloud-claude
+          mini-core/ai-antipattern-fix:
+            profile: cloud-claude
+          mini-core/supervise_fix:
+            profile: cloud-claude
+        internal_agents:
+          loop-judge:
+            profile: cloud-claude
