@@ -12,7 +12,7 @@ provider:
       provider: opencode
       model: dgx/deepseek-v4.1-flash
   defaults:
-    assignment: standard
+    assignment: interim-claude
   assignments:
     # 割り当て原則（2026-11-12 オーナー指示）: 計画・設計・レビューは強いモデル、
     # 実装・テストは弱いモデル。やり直し（差し戻し後の再実行）は ladder の次の段へ
