@@ -13,3 +13,11 @@ workflow_system_commands:
 rate_limit_fallback:
   switch_chain:
     - provider: claude
+
+# manager（ゴール管理）がタスクに使ってよいワークフロー。未設定だと default と simple
+# だけになり、移植パイプラインをゴールのタスクとして積めない（G0b の投入時に判明）
+manager:
+  workflows:
+    - default
+    - simple
+    - pekko-porting-ng: 台帳のゴール（ノードの集合）を、Pekko のテストから 1 件ずつ移植する
