@@ -32795,7 +32795,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0b
 - id: testkit/src/test/scala/org/apache/pekko/testkit/ExplicitlyTriggeredSchedulerSpec.scala
   name: testkit:ExplicitlyTriggeredSchedulerSpec
   kind: test
@@ -32847,7 +32847,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0b
 - id: testkit/src/test/scala/org/apache/pekko/testkit/metrics/MetricsKitSpec.scala
   name: testkit:MetricsKitSpec
   kind: test
@@ -32876,7 +32876,7 @@ nodes:
   goal: null
 - id: testkit/src/test/scala/org/apache/pekko/testkit/PekkoSpec.scala
   name: testkit:PekkoSpec
-  kind: test
+  kind: fixture
   pekko:
     module: testkit
     class: PekkoSpec
@@ -32899,7 +32899,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0b
 - id: testkit/src/test/scala/org/apache/pekko/testkit/PekkoSpecSpec.scala
   name: testkit:PekkoSpecSpec
   kind: test
@@ -32977,7 +32977,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0b
 - id: testkit/src/test/scala/org/apache/pekko/testkit/TestEventListenerSpec.scala
   name: testkit:TestEventListenerSpec
   kind: test
