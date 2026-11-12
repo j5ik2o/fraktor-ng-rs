@@ -289,7 +289,7 @@ provider 障害・再開）に関わる機構に限る。
 | 機構 | 今回の範囲との関係 | 現状 | 判断 |
 |---|---|---|---|
 | `rate_limit_fallback.switch_chain` | provider の上限到達時の切替（P2） | 未使用だった。本 PR で使用 | 使用 |
-| `provider_routing`（personas、tags、steps）と runtime.yaml の `provider.targets`（personas、tags、steps、internal_agents） | 判断系はクラウド上位、量産系は DGX という承認済み配分（論点 19、設計文書 §4）をステップ・ペルソナ単位で表現するビルトイン | 未使用。runtime.yaml 自体が未作成で、loop judge 用の internal_agents 割り当ても未設定（judge は既定 provider で動く） | 量産期（port-test、implement を DGX に下ろすとき）はこれで表現する。`persona_providers` は deprecated なので使わない |
+| `provider_routing`（personas、tags、steps）と runtime.yaml の `provider.targets`（personas、tags、steps、internal_agents） | 判断系はクラウド上位、量産系は DGX という承認済み配分（論点 19、設計文書 §4）をステップ・ペルソナ単位で表現するビルトイン | 本 PR で前倒し採用（.takt/runtime.yaml、2026-11-12 オーナー指示） | 採用済み。割り当ての正は runtime.yaml に一本化。`persona_providers` は deprecated なので使わない |
 | `auto_routing`（router モデルによる候補プールからの自動選択） | provider 選択 | 未使用 | 使わない。承認済み論点 19 の固定配分（工程ごとに provider を固定する）と矛盾するため |
 | `workflow_config.runtime.prepare`（run 前に走る準備スクリプト。カスタムスクリプトは `workflow_runtime_prepare.custom_scripts: true` が必要） | 前提整備の機械化。原典 `pekko/` の存在確認を run 開始前に fail-fast できる候補（P1・P3 の前提） | 未使用 | 検討（別タスク）。準備スクリプトが失敗したときの run の挙動が文書化されておらず、実走で確かめてから入れる。当面は triage の「原典を参照できない → ABORT」と発行手順が前提を守る |
 | step 単位の `quality_gates`（`type: command` の機械ゲート。失敗すると同じステップに詳細を戻して再実行させる） | 機械検証 | 未使用（verify_red と verify_green は独自の system step） | system step を維持する。verify は分類結果（expected_compile_error 等）で遷移先を分ける必要があり、quality_gates は遷移を持たず同一ステップへの差し戻しだけである。また system step と workflow_call ステップには quality_gates を付けられない（公式ドキュメントの記載） |
@@ -304,6 +304,52 @@ rate_limit_fallback の補足は次の 3 点である。
 - 使用量・クレジット上限の到達はリトライせず、直ちに switch_chain に進む
   （G0a の失敗はこちら）
 - 切替先の provider は保存セッションを引き継がない（公式ドキュメントの記載）
+
+**runtime.yaml の前倒し採用と割り当て原則（2026-11-12、オーナー指示）**
+
+量産期の採用予定としていた runtime.yaml の `provider.targets` を、本 PR で
+前倒しで採用した。割り当て原則は「計画・設計・レビューは強いモデル、
+実装・テストは弱いモデル。レビューを受けての再実装は一段強いモデル」である。
+強いモデルに当たるのは triage、classify-red、equivalence-review、
+supervisor／judge 系、mini-core の plan（persona planner）とレビューである。
+弱いモデルに当たるのは port-test、mini-core の implement、ledger-update で
+ある。verify 系は system step でモデルを使わない。
+
+表現は profiles 3 本（cloud-codex、cloud-claude、dgx-flash）で行う。既定
+assignment `standard` は defaults=cloud-codex とし、persona coder に ladder
+[dgx-flash, cloud-codex] を与え、classify-red と mini-core の fix 系 4 ステップ（単独 2、fix_both の並列 2）を
+steps で cloud に上書きし、loop-judge は internal_agents で cloud に割り当てる。
+`interim-claude` は codex の使用量上限中の暫定で、strong を claude-sdk に
+置き換えたものである（発行時に --runtime-assignment interim-claude で選ぶ）。
+
+段付きの仕組みは 2 つの宣言からなる。ladder は runtime.yaml 側の宣言で、
+profile 名の順序配列であり、先頭が初回の割り当てになる。昇格の宣言は
+ワークフロー側の promotion {at: N} で、stepIteration >= at を満たすと段が
+進む。port-test に {at: 2} を置き、verify_red 差し戻しの 2 回目以降を一段
+上げた。
+
+原則と合わない点と表現の限界は次の 3 点である（オーナーへの報告事項）。
+
+- 承認済み論点 19 の「基盤ゴールは全工程クラウド」と原則が衝突する。最新
+  指示の原則を優先し、G0a（基盤ゴール）でも実装・テストは弱いモデルで走る。
+  基盤ゴールだけ全クラウドに戻すなら assignment を 1 本足せば表現できる
+- mini-core の implement は、verify_green や equivalence-review の差し戻しで
+  mini-core が呼び直されると呼び出しごとに iteration が新しくなるため、
+  promotion では段が持ち越せない。また promotion はワークフロー YAML 側の
+  宣言が必要で、builtin の mini-core には eject しないと足せない
+  （builtin-first 原則に反するためオーナー判断）。代替として、レビュー後の
+  再実装の実体である mini-core の fix 系 4 ステップ（単独 2、fix_both の並列 2）を steps target で強い
+  モデルに固定した
+- 2026-11-12 に承認された「worktree 限定 opencode 切替の再利用」（全工程
+  DGX）は、原則（判断系は強いモデル）と合わなくなったため、interim-claude
+  （strong=claude、weak=DGX）に置き換えた
+
+runtime モードの制約は 2 点である。config.yaml の provider: 等と併存できず、
+起動前に mixed-config エラーで止まる（legacy-signals.js で確認）ため、
+config.yaml から provider: を撤去した。rate_limit_fallback は対象外で
+runtime モードでも効く（execution-preparation.js で確認）ため残した。judge の
+割り当ては internal_agents の loop-judge で行い、v4 までの「runtime の設定で
+割り当てる」の記述はこれで実体を持った。
 
 **突き合わせ観点の結果**
 

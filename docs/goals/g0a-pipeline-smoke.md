@@ -81,13 +81,17 @@ Mac 上の clone で、最新を取り込んでから発行する。フラグの
 cd /Users/j5ik2o/Sources/github.com/j5ik2o/fraktor-ng-rs
 git pull
 
-takt --pipeline --skip-git -w pekko-porting-ng -t "docs/goals/g0a-pipeline-smoke.md のゴール定義に従って G0a を実施してください。完了条件は同文書の機械判定4項目です。対象ノード以外の台帳変更と、範囲外のクレート新設は禁止です。"
+takt --runtime-assignment standard --pipeline --skip-git -w pekko-porting-ng -t "docs/goals/g0a-pipeline-smoke.md のゴール定義に従って G0a を実施してください。完了条件は同文書の機械判定4項目です。対象ノード以外の台帳変更と、範囲外のクレート新設は禁止です。"
 ```
+
+provider の割り当ては `.takt/runtime.yaml` の assignment で選ぶ。codex の
+使用量上限中は `--runtime-assignment interim-claude` を使う（2026-11-12 の
+割り当て原則に沿った暫定）。
 
 ワークフロー `pekko-porting-ng` は `.takt/workflows/` に実装済み
 （設計は `docs/decisions/takt-workflow-design.md`）。
-`.takt/config.yaml` は最小構成（provider: codex、concurrency: 1、base_branch: main）
-を置いてある。
+`.takt/config.yaml` は最小構成（concurrency: 1、base_branch: main 等）で、
+provider の割り当ては `.takt/runtime.yaml` の assignment が持つ。
 
 前提として、run から Pekko v1.7.1 のソースを参照できること。作業ツリー直下に
 `pekko/`（git 管理外、`.gitignore` 済み）としてタグ `v1.7.1` をチェックアウト

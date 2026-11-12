@@ -139,6 +139,10 @@ steps:
       - from_step: triage
         reports:
           - triage-report.md
+    # verify_red の差し戻しによる 2 回目以降の実行は、runtime.yaml の ladder の
+    # 次の段（強いモデル）で行う（2026-11-12 オーナー指示の段付き）
+    promotion:
+      - at: 2
     rules:
       - condition: テストの移植が完了した（除外は承認済みの提案だけを反映）
         next: verify_red
