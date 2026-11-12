@@ -32,10 +32,15 @@ provider:
           # classify-red は persona が coder だが判断系なので強いモデルに上書き
           pekko-port-node/classify-red:
             profile: cloud-codex
-          # mini-core 内のレビュー後の再実装は一段強いモデル
+          # mini-core 内のレビュー後の再実装は一段強いモデル。fix_both の並列
+          # sub-step 2 本も同じ経路（両レビュー REJECT 時の主経路）なので含める
           mini-core/ai-antipattern-fix:
             profile: cloud-codex
           mini-core/supervise_fix:
+            profile: cloud-codex
+          mini-core/ai-antipattern-fix-parallel:
+            profile: cloud-codex
+          mini-core/supervise_fix_parallel:
             profile: cloud-codex
         internal_agents:
           loop-judge:
@@ -57,6 +62,10 @@ provider:
           mini-core/ai-antipattern-fix:
             profile: cloud-claude
           mini-core/supervise_fix:
+            profile: cloud-claude
+          mini-core/ai-antipattern-fix-parallel:
+            profile: cloud-claude
+          mini-core/supervise_fix_parallel:
             profile: cloud-claude
         internal_agents:
           loop-judge:

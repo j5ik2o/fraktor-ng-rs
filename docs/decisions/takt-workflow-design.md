@@ -317,7 +317,7 @@ supervisor／judge 系、mini-core の plan（persona planner）とレビュー�
 
 表現は profiles 3 本（cloud-codex、cloud-claude、dgx-flash）で行う。既定
 assignment `standard` は defaults=cloud-codex とし、persona coder に ladder
-[dgx-flash, cloud-codex] を与え、classify-red と mini-core の fix 2 ステップを
+[dgx-flash, cloud-codex] を与え、classify-red と mini-core の fix 系 4 ステップ（単独 2、fix_both の並列 2）を
 steps で cloud に上書きし、loop-judge は internal_agents で cloud に割り当てる。
 `interim-claude` は codex の使用量上限中の暫定で、strong を claude-sdk に
 置き換えたものである（発行時に --runtime-assignment interim-claude で選ぶ）。
@@ -338,7 +338,7 @@ profile 名の順序配列であり、先頭が初回の割り当てになる。
   promotion では段が持ち越せない。また promotion はワークフロー YAML 側の
   宣言が必要で、builtin の mini-core には eject しないと足せない
   （builtin-first 原則に反するためオーナー判断）。代替として、レビュー後の
-  再実装の実体である mini-core の fix 2 ステップを steps target で強い
+  再実装の実体である mini-core の fix 系 4 ステップ（単独 2、fix_both の並列 2）を steps target で強い
   モデルに固定した
 - 2026-11-12 に承認された「worktree 限定 opencode 切替の再利用」（全工程
   DGX）は、原則（判断系は強いモデル）と合わなくなったため、interim-claude
