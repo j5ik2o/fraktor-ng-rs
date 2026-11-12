@@ -57,3 +57,15 @@ fn polling_within_finds_a_message_that_tell_posted() {
 
   assert!(boundary.poll_within(Duration::from_millis(10)).is_some());
 }
+
+#[test]
+fn posting_after_close_is_discarded() {
+  let boundary = Arc::new(ChannelBoundary::new());
+  let mut system = system_on(&boundary);
+  let recipient = system.actor_of(Props::new(|| Sink));
+
+  boundary.close();
+  recipient.tell(Message::new("hello"), recipient.clone());
+
+  assert!(boundary.poll().is_none());
+}

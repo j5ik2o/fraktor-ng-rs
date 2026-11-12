@@ -20,17 +20,22 @@ mod tests;
 pub struct ChannelBoundary {
   sender: Sender<Envelope>,
   receiver: Mutex<Receiver<Envelope>>,
+  open: Mutex<bool>,
 }
 
 impl ChannelBoundary {
   /// Creates a boundary whose two ends are held by this one object.
   pub fn new() -> Self {
     let (sender, receiver) = mpsc::channel();
-    Self { sender, receiver: Mutex::new(receiver) }
+    Self { sender, receiver: Mutex::new(receiver), open: Mutex::new(true) }
   }
 
   fn lock_receiver(&self) -> std::sync::MutexGuard<'_, Receiver<Envelope>> {
     self.receiver.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+  }
+
+  fn lock_open(&self) -> std::sync::MutexGuard<'_, bool> {
+    self.open.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
   }
 }
 
@@ -42,6 +47,9 @@ impl Default for ChannelBoundary {
 
 impl ShardBoundary for ChannelBoundary {
   fn post(&self, envelope: Envelope) {
+    if !*self.lock_open() {
+      return;
+    }
     let _ = self.sender.send(envelope);
   }
 
@@ -51,5 +59,9 @@ impl ShardBoundary for ChannelBoundary {
 
   fn poll_within(&self, max: Duration) -> Option<Envelope> {
     self.lock_receiver().recv_timeout(max).ok()
+  }
+
+  fn close(&self) {
+    *self.lock_open() = false;
   }
 }

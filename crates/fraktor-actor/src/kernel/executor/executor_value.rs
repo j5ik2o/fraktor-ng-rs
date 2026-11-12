@@ -90,7 +90,13 @@ impl Executor {
   }
 
   /// Drops the actors and every queued message.
+  ///
+  /// The boundary is closed first, so an `ActorRef` that is still around cannot
+  /// put a message back into it after it has been drained; otherwise the queued
+  /// envelope would keep the boundary alive through the handle's `Arc` and the
+  /// system would never be released.
   pub(crate) fn stop_all(&mut self) {
+    self.boundary.close();
     self.cells.clear();
     self.local_queue.clear();
     while self.boundary.poll().is_some() {}
