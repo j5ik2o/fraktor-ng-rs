@@ -235,8 +235,11 @@ triage・equivalence-review の判断系が無断降格するためで、承認�
 配分を守る。chain が尽きた run は失敗で止まり、成果は `.takt/runs/` と
 作業ツリーに残り、takt resume で保存位置から再開できる。provider の変更
 （今回の G0a 再発行での worktree 限定 opencode/dgx 切替のような）は人間が
-config を書き換えて行う。恒常化の要否はオーナーへ question 済みである
-（推奨: 恒常化しない）。
+config を書き換えて行う。次の 2 点は 2026-11-12 にオーナーが承認した。
+fallback は claude 1 段のみで DGX は chain に入れない（人間の config 変更に
+限る）。worktree 限定の opencode 切替は恒常化しない。codex 回復後は main を
+codex＋claude fallback に戻し、回復前の再発行では worktree 限定切替を
+再利用する。
 
 **P3: 原典を作業ツリー内 pekko/ に置く**
 
