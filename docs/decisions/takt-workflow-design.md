@@ -203,6 +203,120 @@ instruction、output-contract（`test-report`、`testing-review`）、workflow r
 | system step の結果を、次のステップと judge に渡す仕組み | verify のツールが出力の全文をファイルに残し、そのパスを JSON に入れる | 今は末尾だけが残り、直近の 1 回分しか渡らない。verify_green が落ちた理由は develop に渡っていない。台帳ツールの変更が要る |
 | 成果を捨てないための回避策（上の 1 から 3） | 1 と 2 を採り、3 は triage の明記までにする | 1 と 2 は takt の仕組みで成果を残せる。red から始める分岐は遷移の追加で、G0a の実走を見てから決める |
 
+### 前提・依存・bootstrap の扱い（v5、2026-11-12）
+
+G0a の実走 2 run で、前提・依存・bootstrap の扱いに 4 つの問題（P1〜P4）を
+踏んだ。run 20261112-050935 は step 1 の triage で codex が rate_limited
+（retry after Nov 17th, 2026 4:52 PM）となり、fallback 未設定のため 5.1 秒で
+全体が終了した。run 20261112-052011 は triage 自体は成功した（対象 2 件の
+ケース実数 15／4 を原典から実測、台帳近似との差 0、必要 API を原典の行番号
+つきで特定）が、旧規則「前提基盤が未 green、または Pekko 原典を参照できない」に
+該当して 59.7 秒で ABORT した。crates/fraktor-actor の未作成は G0a では
+write_scope 内の仕事（骨格作成は develop の仕事）であり、bootstrap と
+順序ミスを区別する経路が無かった。
+
+その後、オーナーの追補（2026-11-12）で P5「ビルトイン資産の棚卸し」が加わり、
+問題は P1〜P5 の 5 件になった。P5 の趣旨は、rate_limit_fallback のように
+takt 0.75.0 にビルトインの仕組みがあるのに使っていないケースを、今回の
+範囲内で洗い出すことである。
+
+**P1: triage の遷移を 5 条件に分割**
+
+旧規則が 1 条件にまとめていた「前提基盤が未 green」と「原典を参照できない」を
+別の ABORT に分け、中止理由を切り分け可能にした。bootstrap の判定は
+ゴール定義文書の write_scope との突き合わせで行う。前提基盤が未作成または
+未 green でも、その作成が本ゴールの write_scope 内なら bootstrap として
+port-test へ進む。write_scope 外なら順序ミスとして ABORT する。前提は、
+発行コマンドの -t がゴール定義文書のパスを含み、triage がそれを読めること
+である（run 20261112-052011 で triage が実際に読めたことを確認済み）。
+発行手順の要件として明記する。複数の条件に該当する場合の優先順位は、
+原典参照不能、順序ミス（write_scope 外の未整備基盤が 1 つでもあれば
+ABORT）、未承認の除外提案（needs_human）、bootstrap、通常進行の順である。
+bootstrap の条件は「未承認の除外提案がない」ことを含み、除外の人間ゲートを
+飛ばさない（PR #7 のレビュー指摘で追加）。
+
+**P2: rate_limit_fallback.switch_chain の設定**
+
+問題の正確な記述は「fallback の設計が無い」ではなく「takt 0.75.0 に
+ビルトインの rate_limit_fallback があるのに未使用」である
+（P5 のオーナー指摘）。
+`.takt/config.yaml` に rate_limit_fallback.switch_chain を設定した
+（takt 0.75.0 の機能。rate limit 時に chain を順に試す）。chain は同格
+クラウドの claude 1 段のみとする。DGX への切替は fallback に入れない。
+triage・equivalence-review の判断系が無断降格するためで、承認済み論点 19 の
+配分を守る。chain が尽きた run は失敗で止まり、成果は `.takt/runs/` と
+作業ツリーに残り、直接実行の run は takt resume で保存位置から再開できる
+（manager タスクは requeue）。provider の変更
+（今回の G0a 再発行での worktree 限定 opencode/dgx 切替のような）は人間が
+config を書き換えて行う。次の 2 点は 2026-11-12 にオーナーが承認した。
+fallback は claude 1 段のみで DGX は chain に入れない（人間の config 変更に
+限る）。worktree 限定の opencode 切替は恒常化しない。codex 回復後は main を
+codex＋claude fallback に戻し、回復前の再発行では worktree 限定切替を
+再利用する。
+
+**P3: 原典を作業ツリー内 pekko/ に置く**
+
+takt は opencode に external_directory: deny を固定している（0.75.0 の
+dist/infra/opencode/v2-config.js:28、v2-transport.js の session.update、
+server-pool.js:114 で確認）。opencode や takt の設定では外せない。
+run 20261112-052011 では triage が bash 経由で ../pekko を読めたが、
+read ツールは拒否されており、回避策頼みは fragile である。恒久対処として、
+原典は作業ツリー直下の `pekko/`（git 管理外）に置く前提に変更した。
+provider に依存せず成立する。`../pekko` は後方互換として triage が探す。
+
+**P4: needs の形の決定（抽出の実作業は別タスク）**
+
+needs の形は既存スキーマ（`ledger-schema-draft.md` の needs.testkit／
+needs.premise_flags）を正とする。null は未抽出、[] はなし（確認済み）、
+配列は能力 ID の一覧である。語彙の正は
+`docs/baseline/pekko-v1.7.1/supplement-recount.md` §2「TestKit の能力」の
+能力表と、前提フラグ（Thread.sleep、Random、eventually、時間 API 等）である。
+seed は抽出スクリプトの拡張（別タスク）で一括記入し、run の中では triage が
+原典から実測して報告、ledger-update が green の記録と同時に実測値で確定する
+（triage の edit: false は維持）。ゴール発行時の閉性判定の形は、能力→提供元
+（ゴールまたはクレート）の対応を `ledger/capabilities.yaml`（新設、別タスク）に
+持ち、「対象ノードの needs の各能力について、提供元が green か本ゴールの
+write_scope 内にあること」を機械判定する。triage は台帳の needs（seed）と
+実測の差を報告して台帳の正を保つ。
+
+**P5: ビルトイン資産の棚卸し（前提・依存・bootstrap と障害・再開の範囲）**
+
+棚卸しの正は takt 0.75.0 のインストール済みパッケージ（dist の設定スキーマと
+実装）と公式ドキュメント（nrslib/takt v0.75.0 の docs/configuration.md、
+docs/workflows.md）である。範囲は今回の再考（前提・依存・bootstrap、
+provider 障害・再開）に関わる機構に限る。
+
+| 機構 | 今回の範囲との関係 | 現状 | 判断 |
+|---|---|---|---|
+| `rate_limit_fallback.switch_chain` | provider の上限到達時の切替（P2） | 未使用だった。本 PR で使用 | 使用 |
+| `provider_routing`（personas、tags、steps）と runtime.yaml の `provider.targets`（personas、tags、steps、internal_agents） | 判断系はクラウド上位、量産系は DGX という承認済み配分（論点 19、設計文書 §4）をステップ・ペルソナ単位で表現するビルトイン | 未使用。runtime.yaml 自体が未作成で、loop judge 用の internal_agents 割り当ても未設定（judge は既定 provider で動く） | 量産期（port-test、implement を DGX に下ろすとき）はこれで表現する。`persona_providers` は deprecated なので使わない |
+| `auto_routing`（router モデルによる候補プールからの自動選択） | provider 選択 | 未使用 | 使わない。承認済み論点 19 の固定配分（工程ごとに provider を固定する）と矛盾するため |
+| `workflow_config.runtime.prepare`（run 前に走る準備スクリプト。カスタムスクリプトは `workflow_runtime_prepare.custom_scripts: true` が必要） | 前提整備の機械化。原典 `pekko/` の存在確認を run 開始前に fail-fast できる候補（P1・P3 の前提） | 未使用 | 検討（別タスク）。準備スクリプトが失敗したときの run の挙動が文書化されておらず、実走で確かめてから入れる。当面は triage の「原典を参照できない → ABORT」と発行手順が前提を守る |
+| step 単位の `quality_gates`（`type: command` の機械ゲート。失敗すると同じステップに詳細を戻して再実行させる） | 機械検証 | 未使用（verify_red と verify_green は独自の system step） | system step を維持する。verify は分類結果（expected_compile_error 等）で遷移先を分ける必要があり、quality_gates は遷移を持たず同一ステップへの差し戻しだけである。また system step と workflow_call ステップには quality_gates を付けられない（公式ドキュメントの記載） |
+| `takt resume`、`auto_requeue_max_attempts`（既定 0）、`sync_project_local_takt_on_retry`（既定 true） | 止まった run の再開（P2） | resume は設計済み・実走未確認（G0a の実走確認項目 2）。auto_requeue は未使用 | resume は G0a 再発行で検証する。auto_requeue は発行経路を manager 経由に決めた場合に検討する |
+| `ignore_exceed`（max_steps 超過の無視。既定 false） | run の予算 | 未使用 | 使わない。全体予算は max_steps が持つ設計（v4 の「ループ上限の効き方」）のため |
+| `provider_options.<provider>.guards.call_timeout_ms`（無応答ガード。既定 60 分） | provider 障害 | 既定値で有効 | 既定のまま |
+
+rate_limit_fallback の補足は次の 3 点である。
+
+- 一時的な 429 のリトライは組み込みで設定不可である（codex は最大 8 回、
+  opencode は最大 2 回）
+- 使用量・クレジット上限の到達はリトライせず、直ちに switch_chain に進む
+  （G0a の失敗はこちら）
+- 切替先の provider は保存セッションを引き継がない（公式ドキュメントの記載）
+
+**突き合わせ観点の結果**
+
+1. pekko-triage instruction と yaml の齟齬は、欄名（pekko.test_cases_approx）と
+   原典の場所の記述を直した。前提の扱いの文言は 5 条件のラベルに揃えた
+2. ゴール文書の write_scope は、発行コマンドの -t でパスが渡り、triage が
+   読める形になっている（実走で確認）。P1 の修正はこの前提に依存するため、
+   発行手順の要件として明記する
+3. ABORT／needs_human の成果保全は実物で確認した。run 20261112-050935 と
+   20261112-052011 の両方で、`.takt/runs/<run>/` に trace.md・reports
+   （triage-report.md は完全な内容）・logs が残り、作業ツリーの差分も
+   保持された。「run を捨てない」方針と整合する
+
 ### builtin 資産の活用（v3、2026-11-11）
 
 実装⇄レビュー⇄修正のループは自前で組み直さず、builtin の **mini-core** に
@@ -418,9 +532,12 @@ G0a の発行コマンドで参照した旧 fraktor-rs の
 
 - Pekko の原典テストと実装を読み、ケースの実数、needs（TestKit 能力・前提フラグ）、
   infra 辺（前提基盤が green か）を確認する。出力は triage レポート
-- 分岐：前提基盤が未 green → ABORT（ゴール選定の誤りとして manager に返す）。
-  未承認の除外提案（ケース除外・do_not_port）がある → needs_human で
-  終了（判断は run の外、第3節）。問題なし → port-test へ
+- 分岐：前提基盤が未作成または未 green でも、その作成が本ゴールの
+  write_scope 内なら bootstrap として port-test へ進む。write_scope の外なら
+  ABORT（ゴール選定の順序ミスとして manager に返す）。Pekko 原典を
+  参照できない → ABORT。未承認の除外提案（ケース除外・do_not_port）が
+  ある → needs_human で終了（判断は run の外、第3節）。未承認の除外提案は
+  bootstrap に優先する（除外の判断は人間だけが行うため）。問題なし → port-test へ
 - provider: クラウド上位モデル（解釈と判断が重い工程）
 
 ### 2.2 port-test（編集可、テストファイルのみ）

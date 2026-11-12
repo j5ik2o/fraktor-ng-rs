@@ -89,9 +89,10 @@ takt --pipeline --skip-git -w pekko-porting-ng -t "docs/goals/g0a-pipeline-smoke
 `.takt/config.yaml` は最小構成（provider: codex、concurrency: 1、base_branch: main）
 を置いてある。
 
-前提として、run から Pekko v1.7.1 のソースを参照できること。clone の隣に
-`../pekko` としてタグ `v1.7.1` をチェックアウトしておく（triage が原典を
-参照できなければ ABORT して報告する）。
+前提として、run から Pekko v1.7.1 のソースを参照できること。作業ツリー直下に
+`pekko/`（git 管理外、`.gitignore` 済み）としてタグ `v1.7.1` をチェックアウト
+しておく。後方互換として `../pekko` も探す（triage が原典を参照できなければ
+ABORT して報告する）。
 
 run の後に人間が確認するコマンド：
 
