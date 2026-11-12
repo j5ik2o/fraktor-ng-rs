@@ -3,6 +3,8 @@
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::Ordering;
 use core::time::Duration;
 
 use std::sync::Mutex;
@@ -16,6 +18,7 @@ use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
 
 use super::ActorSystem;
+use crate::adaptor::ChannelBoundary;
 
 struct QueueBoundary {
   queue: Mutex<VecDeque<Envelope>>,
@@ -82,6 +85,40 @@ impl Actor for Relay {
     if let Some(forward) = message.downcast_ref::<ForwardTo>() {
       forward.target.forward(Message::new("forwarded"), context);
     }
+  }
+}
+
+struct EndlessBoundary {
+  polls: AtomicUsize,
+  sink: Arc<Mutex<Vec<&'static str>>>,
+  cap: usize,
+  target: Mutex<Option<ActorRef>>,
+}
+
+impl EndlessBoundary {
+  fn new(sink: Arc<Mutex<Vec<&'static str>>>, cap: usize) -> Self {
+    Self { polls: AtomicUsize::new(0), sink, cap, target: Mutex::new(None) }
+  }
+}
+
+impl ShardBoundary for EndlessBoundary {
+  fn post(&self, _envelope: Envelope) {}
+
+  fn poll(&self) -> Option<Envelope> {
+    let polls = self.polls.fetch_add(1, Ordering::SeqCst);
+    if self.sink.lock().unwrap().is_empty() && polls < self.cap {
+      let target = self.target.lock().unwrap().clone();
+      match target {
+        | Some(target) => Some(Envelope::new(target.clone(), Message::new("queued"), target)),
+        | None => None,
+      }
+    } else {
+      None
+    }
+  }
+
+  fn poll_within(&self, _max: Duration) -> Option<Envelope> {
+    self.poll()
   }
 }
 
@@ -196,4 +233,56 @@ fn forward_keeps_the_original_sender() {
   system.run_until_idle();
 
   assert_eq!(*seen.lock().unwrap(), alloc::vec![sender]);
+}
+
+#[test]
+fn first_actors_of_two_systems_are_distinct() {
+  let mut first_system = system("PekkoCustomSpec");
+  let mut second_system = system("PekkoCustomSpec");
+
+  let first = first_system.actor_of(Props::new(|| NoOp));
+  let second = second_system.actor_of(Props::new(|| NoOp));
+
+  assert_ne!(first, second);
+}
+
+#[test]
+fn dropping_the_system_releases_the_boundary_and_its_queued_messages() {
+  let boundary = Arc::new(ChannelBoundary::new());
+  let mut system = ActorSystem::new("ChannelBoundarySpec", Arc::clone(&boundary) as Arc<_>);
+  let recipient = system.actor_of(Props::new(|| NoOp));
+  let weak = Arc::downgrade(&boundary);
+
+  recipient.tell("hello", recipient.clone());
+  assert!(weak.upgrade().is_some());
+
+  drop(system);
+  drop(recipient);
+  drop(boundary);
+
+  assert!(weak.upgrade().is_none());
+}
+
+#[test]
+#[should_panic(expected = "terminat")]
+fn actor_of_after_terminate_is_rejected() {
+  let mut system = system("PekkoCustomSpec");
+
+  system.terminate();
+  system.actor_of(Props::new(|| NoOp));
+}
+
+#[test]
+fn run_until_idle_delivers_from_the_boundary_while_the_queue_keeps_filling() {
+  let received = Arc::new(Mutex::new(Vec::new()));
+  let observer = Arc::clone(&received);
+  let boundary = Arc::new(EndlessBoundary::new(Arc::clone(&received), 1000));
+  let mut system = ActorSystem::new("PekkoCustomSpec", Arc::clone(&boundary) as Arc<_>);
+  let sink = system.actor_of(Props::new(move || Sink { received: Arc::clone(&observer) }));
+  *boundary.target.lock().unwrap() = Some(sink.clone());
+
+  system.run_until_idle();
+
+  assert_eq!(*received.lock().unwrap(), alloc::vec!["queued"]);
+  assert!(boundary.polls.load(Ordering::SeqCst) < 1000, "the sink was starved by the boundary");
 }
