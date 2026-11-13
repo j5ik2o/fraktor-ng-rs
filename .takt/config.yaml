@@ -13,6 +13,10 @@ workflow_system_commands:
 rate_limit_fallback:
   switch_chain:
     - provider: claude
+    # Ollama Cloud の Opus 級（2026-11-13 窓口決定）。Claude の週次制限に当たった run を
+    # 止めずに判断級の作業を続けるための受け皿
+    - provider: opencode
+      model: ollama/glm-5.3:cloud
 
 # マージ用タスク（takt_merge_goal_pr の until: merge）が使うワークフロー。builtin の
 # merge-review-fix-simple は caccia が skipped のとき未解決スレッドがあっても merge へ進む。
