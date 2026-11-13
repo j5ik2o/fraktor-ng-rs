@@ -24,6 +24,7 @@ pub(crate) struct ActorCell {
   props: Props,
   strategy: SupervisorStrategy,
   restart_count: u32,
+  post_stop_suppressed: bool,
 }
 
 impl ActorCell {
@@ -35,7 +36,7 @@ impl ActorCell {
     props: Props,
     strategy: SupervisorStrategy,
   ) -> Self {
-    Self { behavior: None, self_ref, parent, props, strategy, restart_count: 0 }
+    Self { behavior: None, self_ref, parent, props, strategy, restart_count: 0, post_stop_suppressed: false }
   }
 
   /// Returns whether this cell is the actor that `recipient` addresses.
@@ -112,5 +113,20 @@ impl ActorCell {
     if let Some(behavior) = self.behavior.as_mut() {
       behavior.post_stop();
     }
+  }
+
+  /// Records that the stop path must not run this instance's `post_stop` again.
+  ///
+  /// The default `preRestart` already runs `post_stop` on the old instance, as
+  /// Pekko's does. When the restart fails after that, the cell is still the old
+  /// instance and the stop path would run its `post_stop` a second time; this
+  /// marks that it already ran, so the stop finishes without repeating it.
+  pub(crate) fn suppress_post_stop(&mut self) {
+    self.post_stop_suppressed = true;
+  }
+
+  /// Returns whether the stop path must skip this instance's `post_stop`.
+  pub(crate) fn post_stop_suppressed(&self) -> bool {
+    self.post_stop_suppressed
   }
 }

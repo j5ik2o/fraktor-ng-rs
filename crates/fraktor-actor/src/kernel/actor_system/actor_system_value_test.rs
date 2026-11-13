@@ -756,3 +756,131 @@ fn a_child_whose_factory_fails_on_restart_is_stopped() {
   assert_eq!(seen.len(), 1, "the watcher did not receive exactly one Terminated");
   assert!(seen[0].existence_confirmed(), "a stopping failure was reported as a late watch");
 }
+
+/// Counts its own `post_stop`, so a restart that fails can show how often the
+/// stopped old instance ran it. The default `pre_restart` runs `post_stop`, so a
+/// stop path that runs it once more makes the old instance run it twice.
+struct CountsPostStopOnRestartFailure {
+  post_stops: Arc<AtomicUsize>,
+}
+
+impl Actor for CountsPostStopOnRestartFailure {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
+    if message.downcast_ref::<&'static str>() == Some(&"boom") {
+      panic!("simulated failure");
+    }
+  }
+
+  fn post_stop(&mut self) {
+    self.post_stops.fetch_add(1, Ordering::SeqCst);
+  }
+}
+
+struct CountsPostStopAndPanicsOnRestart {
+  post_stops: Arc<AtomicUsize>,
+}
+
+impl Actor for CountsPostStopAndPanicsOnRestart {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
+    if message.downcast_ref::<&'static str>() == Some(&"boom") {
+      panic!("simulated failure");
+    }
+  }
+
+  fn post_restart(&mut self) {
+    panic!("simulated failure of postRestart");
+  }
+
+  fn post_stop(&mut self) {
+    self.post_stops.fetch_add(1, Ordering::SeqCst);
+  }
+}
+
+#[test]
+fn a_child_whose_factory_fails_on_restart_runs_post_stop_once() {
+  let creations = Arc::new(AtomicUsize::new(0));
+  let post_stops = Arc::new(AtomicUsize::new(0));
+  let observed = Arc::new(Mutex::new(Vec::<Terminated>::new()));
+  let watched = Arc::new(Mutex::new(None));
+  let boundary: Arc<dyn ShardBoundary> = Arc::new(QueueBoundary::new());
+  let mut system =
+    ActorSystem::with_failure_catcher("PekkoCustomSpec", boundary, Arc::new(crate::adaptor::UnwindCatcher));
+  let watcher = system.actor_of(Props::new({
+    let observed = Arc::clone(&observed);
+    let watched = Arc::clone(&watched);
+    move || StopWatcher { observed: Arc::clone(&observed), watched: Arc::clone(&watched) }
+  }));
+  let parent = system.actor_of(Props::new(|| NoOp));
+  let child = system.downgrade().spawn_child(
+    &parent,
+    Props::new({
+      let creations = Arc::clone(&creations);
+      let post_stops = Arc::clone(&post_stops);
+      move || {
+        let created = creations.fetch_add(1, Ordering::SeqCst);
+        if created >= 1 {
+          panic!("simulated failure of the recipe");
+        }
+        CountsPostStopOnRestartFailure { post_stops: Arc::clone(&post_stops) }
+      }
+    }),
+    Some("child"),
+    crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+  );
+  *watched.lock().unwrap() = Some(child.clone());
+  system.watch(&watcher, &child);
+
+  child.tell("boom", watcher.clone());
+  let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| system.run_until_idle()));
+
+  assert!(outcome.is_ok(), "the failure of the recipe escaped the catcher");
+  assert_eq!(creations.load(Ordering::SeqCst), 2, "the child was not re-created once after the failed message");
+  assert_eq!(
+    post_stops.load(Ordering::SeqCst),
+    1,
+    "the old instance ran post_stop more than once when the recipe failed on restart"
+  );
+  let seen = observed.lock().unwrap();
+  assert_eq!(seen.len(), 1, "the watcher did not receive exactly one Terminated");
+  assert!(seen[0].existence_confirmed(), "a stopping failure was reported as a late watch");
+}
+
+#[test]
+fn a_child_whose_post_restart_fails_runs_post_stop_once() {
+  let post_stops = Arc::new(AtomicUsize::new(0));
+  let observed = Arc::new(Mutex::new(Vec::<Terminated>::new()));
+  let watched = Arc::new(Mutex::new(None));
+  let boundary: Arc<dyn ShardBoundary> = Arc::new(QueueBoundary::new());
+  let mut system =
+    ActorSystem::with_failure_catcher("PekkoCustomSpec", boundary, Arc::new(crate::adaptor::UnwindCatcher));
+  let watcher = system.actor_of(Props::new({
+    let observed = Arc::clone(&observed);
+    let watched = Arc::clone(&watched);
+    move || StopWatcher { observed: Arc::clone(&observed), watched: Arc::clone(&watched) }
+  }));
+  let parent = system.actor_of(Props::new(|| NoOp));
+  let child = system.downgrade().spawn_child(
+    &parent,
+    Props::new({
+      let post_stops = Arc::clone(&post_stops);
+      move || CountsPostStopAndPanicsOnRestart { post_stops: Arc::clone(&post_stops) }
+    }),
+    Some("child"),
+    crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+  );
+  *watched.lock().unwrap() = Some(child.clone());
+  system.watch(&watcher, &child);
+
+  child.tell("boom", watcher.clone());
+  let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| system.run_until_idle()));
+
+  assert!(outcome.is_ok(), "the failure of postRestart escaped the catcher");
+  assert_eq!(
+    post_stops.load(Ordering::SeqCst),
+    1,
+    "the old instance ran post_stop more than once when postRestart failed on restart"
+  );
+  let seen = observed.lock().unwrap();
+  assert_eq!(seen.len(), 1, "the watcher did not receive exactly one Terminated");
+  assert!(seen[0].existence_confirmed(), "a stopping failure was reported as a late watch");
+}
