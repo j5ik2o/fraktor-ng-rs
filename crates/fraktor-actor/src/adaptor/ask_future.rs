@@ -98,12 +98,13 @@ impl AskFuture {
   /// Panics with the elapsed time when no reply has arrived within `max`,
   /// mirroring the `TimeoutException` that `Await.result` throws.
   pub fn await_result(&self, max: Duration) -> Message {
+    let started = Instant::now();
     let slot = self.slot.clone();
     let key = self.driver_key;
     if crate::adaptor::ask_driver::drive_until(key, max, || lock(&slot.0).reply.is_some()) {
       return lock(&self.slot.0).reply.as_ref().expect("a driven wait completed with a reply").clone();
     }
-    let deadline = Instant::now() + max;
+    let deadline = started + max;
     let mut guard = lock(&self.slot.0);
     loop {
       if let Some(message) = guard.reply.as_ref() {

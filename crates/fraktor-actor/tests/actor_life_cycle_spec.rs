@@ -10,10 +10,11 @@
 // and the intercepted log event, keep their order and values.
 
 use core::any::Any;
-use core::cell::RefCell;
+use core::sync::atomic::AtomicI32;
+use core::sync::atomic::Ordering;
 use core::time::Duration;
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use fraktor_actor::kernel::actor::{Actor, ActorContext, Props};
 use fraktor_actor::kernel::actor_ref::ActorRef;
@@ -35,24 +36,22 @@ fn default_timeout() -> Duration {
 //
 // The port keeps one counter per test and hands its handle to every factory, so
 // the initial creation and each restart read-and-increment the same value, as
-// the original does. The counter is only touched from the test thread that
-// builds the actor, so a `RefCell` is enough and needs no atomics.
+// the original does. A recipe travels as a message, and a message must be
+// `Send + Sync`, so the factory may capture only `Send + Sync` data; the
+// counter is therefore an atomic, as the original's `AtomicInteger` is.
 #[derive(Clone)]
 struct GenerationCounter {
-  current: Rc<RefCell<i32>>,
+  current: Arc<AtomicI32>,
 }
 
 impl GenerationCounter {
   fn new() -> Self {
-    Self { current: Rc::new(RefCell::new(0)) }
+    Self { current: Arc::new(AtomicI32::new(0)) }
   }
 
   // Original: `generationProvider.getAndIncrement()`
   fn next(&self) -> i32 {
-    let mut current = self.current.borrow_mut();
-    let generation = *current;
-    *current += 1;
-    generation
+    self.current.fetch_add(1, Ordering::SeqCst)
   }
 }
 

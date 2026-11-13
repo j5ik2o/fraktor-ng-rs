@@ -21,17 +21,19 @@ mod tests;
 /// with the recipe for the child it creates. A `Message` must be `Send + Sync`,
 /// so the recipe must be too.
 pub struct Props {
-  factory: Arc<dyn Fn() -> Box<dyn Actor>>,
+  factory: Arc<dyn Fn() -> Box<dyn Actor> + Send + Sync>,
 }
 
 impl Props {
   /// Creates a recipe from a factory.
   ///
   /// The factory is wrapped so that a recipe can travel as a message and be
-  /// cloned, which a shared `Arc` gives for free.
+  /// cloned, which a shared `Arc` gives for free. A recipe inherits the
+  /// `Send + Sync` bound of `Message`, so the factory must satisfy it: a
+  /// recipe that crosses a shard boundary is created on the receiving thread.
   pub fn new<F, A>(factory: F) -> Self
   where
-    F: Fn() -> A + 'static,
+    F: Fn() -> A + Send + Sync + 'static,
     A: Actor + 'static,
   {
     Self { factory: Arc::new(move || Box::new(factory())) }
@@ -47,16 +49,3 @@ impl Clone for Props {
     Self { factory: Arc::clone(&self.factory) }
   }
 }
-
-// SAFETY: the factory behind the `Arc` is called only from the executor that
-// owns the actors of one shard, and this port drives a shard from a single
-// thread. A recipe travels as a message only so that a test supervisor can
-// answer with it, and the receiving side hands it back to the same executor.
-// Nothing in the factory is run on another thread, so sharing the `Arc` across
-// threads is sound even though the closure itself is not `Send`.
-unsafe impl Send for Props {}
-
-// SAFETY: see the `Send` implementation above. No thread calls the factory
-// concurrently; the `Sync` marker only lets the recipe be carried inside a
-// `Message`, whose payload is shared between the sender and the queue.
-unsafe impl Sync for Props {}
