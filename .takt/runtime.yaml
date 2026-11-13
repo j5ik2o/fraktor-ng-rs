@@ -11,6 +11,19 @@ provider:
     dgx-flash:
       provider: opencode
       model: dgx/deepseek-v4.1-flash
+    # Ollama Cloud（Max プラン。月 300 ドル、30 日リセット、同時 10 は DGX の 16 と独立）。
+    # 弱いモデルの Cloud 版。手順を固定できる作業で DGX の代わりや溢れ分に使う
+    ollama-flash:
+      provider: opencode
+      model: ollama/deepseek-v4.1-flash:cloud
+    # 強いモデル（Opus 級）の Cloud 版。Claude の週次制限中に判断級の作業を止めない受け皿
+    ollama-strong:
+      provider: opencode
+      model: ollama/glm-5.3:cloud
+    # 強いモデルの Cloud 版の別系統（Kimi）。ollama-strong と並べて使える
+    ollama-strong-kimi:
+      provider: opencode
+      model: ollama/kimi-k3:cloud
   defaults:
     assignment: interim-claude
   assignments:
@@ -70,3 +83,28 @@ provider:
         internal_agents:
           loop-judge:
             profile: cloud-claude
+    # 強いモデルを Ollama Cloud（ollama-strong）にした interim-claude の対（2026-11-13 窓口決定）。
+    # Claude の週次制限中に、発行時の --runtime-assignment interim-ollama で選ぶ。既定は変えない
+    interim-ollama:
+      defaults:
+        profile: ollama-strong
+      targets:
+        personas:
+          coder:
+            ladder:
+              - dgx-flash
+              - ollama-strong
+        steps:
+          pekko-port-node/classify-red:
+            profile: ollama-strong
+          mini-core/ai-antipattern-fix:
+            profile: ollama-strong
+          mini-core/supervise_fix:
+            profile: ollama-strong
+          mini-core/ai-antipattern-fix-parallel:
+            profile: ollama-strong
+          mini-core/supervise_fix_parallel:
+            profile: ollama-strong
+        internal_agents:
+          loop-judge:
+            profile: ollama-strong
