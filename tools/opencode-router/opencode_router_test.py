@@ -12,11 +12,12 @@
   2. 混んでいる                       waiting 3、しきい値 0 で dgx の接続先を Cloud に向ける
   3. しきい値を変える                 -1 なら waiting 0 でも Cloud、5 なら waiting 3 で DGX。
                                       未設定なら既定値で判定し、整数でなければ DGX
-  4. 判定に失敗した                   接続できない・時間切れ・形式が違う、いずれも DGX
-  5. --version                        本物と同じ出力・終了コード。metrics を読まず、記録もしない
-  6. 引数・標準入出力・終了コード・PID  そのまま本物に渡り、exec でプロセスが置き換わる
-  7. 記録                            1 行ずつ追記され、環境変数で場所を変えられる。失敗しても起動する
-  8. 秘密                             OPENCODE_PASSWORD も content の apiKey も記録に出さない
+  4. 判定に失敗した                   接続できない・時間切れ・形式が違う・URL が不正、いずれも DGX
+  5. 時間制限が不正                    数値でない・0 以下・非有限、いずれも DGX で reason は invalid_timeout
+  6. --version                        本物と同じ出力・終了コード。metrics を読まず、記録もしない
+  7. 引数・標準入出力・終了コード・PID  そのまま本物に渡り、exec でプロセスが置き換わる
+  8. 記録                            1 行ずつ追記され、環境変数で場所を変えられる。失敗しても起動する
+  9. 秘密                             OPENCODE_PASSWORD も content の apiKey も記録に出さない
 """
 import json
 import os
@@ -41,7 +42,6 @@ TEST_TIMEOUT_SECONDS = 30
 TARGET_MODEL = "deepseek-v4.1-flash"
 CLOUD_MODEL_ID = "deepseek-v4.1-flash:cloud"
 CLOUD_BASE_URL = "http://localhost:11434/v1"
-DGX_BASE_URL = "http://10.0.1.60:8000/v1"
 REAL_VERSION = "opencode v2.2.5"
 FAKE_EXIT_CODE = 7
 
@@ -404,6 +404,37 @@ def test_failures_fall_open_to_dgx() -> None:
         assert (entry["route"], entry["reason"]) == ("dgx", "format_error"), entry
 
 
+def test_invalid_metrics_url_falls_open_to_dgx() -> None:
+    # urlopen は空文字列や ':' を含まないスキームなし値で ValueError を送出する。
+    # 判定の失敗なので、異常終了せず DGX で起動し connect_error を記録する。
+    for label, metrics_url in [("empty", ""), ("no-scheme", "not-a-url"), ("host-only", "10.0.1.60")]:
+        with tempfile.TemporaryDirectory() as directory:
+            case = RouterCase(Path(directory))
+            original = takt_config_content()
+            env = case.env(metrics_url, {"OPENCODE_CONFIG_CONTENT": json.dumps(original)})
+            completed = case.run(env, ["serve", "--port=1"])
+
+            assert completed.returncode == FAKE_EXIT_CODE, f"{label}: {completed.stderr}"
+            assert json.loads(case.fake_record()["config_content"]) == original, f"{label}: content must be untouched"
+            (entry,) = case.records()
+            assert (entry["route"], entry["reason"], entry["waiting"]) == ("dgx", "connect_error", None), f"{label}: {entry}"
+
+
+def test_invalid_metrics_timeout_falls_open_to_dgx() -> None:
+    # 非数値（float() の ValueError）と 0 以下（socket の時間制限に使えない）は invalid_timeout で DGX。
+    for label, timeout in [("non-numeric", "abc"), ("empty", ""), ("negative", "-1"), ("zero", "0")]:
+        with tempfile.TemporaryDirectory() as directory, MetricsServer(BUSY_METRICS) as server:
+            case = RouterCase(Path(directory))
+            original = takt_config_content()
+            env = case.env(server.url, {"OPENCODE_CONFIG_CONTENT": json.dumps(original), "OPENCODE_ROUTER_METRICS_TIMEOUT": timeout})
+            completed = case.run(env, ["serve", "--port=1"])
+
+            assert completed.returncode == FAKE_EXIT_CODE, f"{label}: {completed.stderr}"
+            assert json.loads(case.fake_record()["config_content"]) == original, f"{label}: content must be untouched"
+            (entry,) = case.records()
+            assert (entry["route"], entry["reason"], entry["waiting"]) == ("dgx", "invalid_timeout", None), f"{label}: {entry}"
+
+
 def test_version_is_passed_through_without_probe() -> None:
     with tempfile.TemporaryDirectory() as directory, MetricsServer(BUSY_METRICS) as server:
         case = RouterCase(Path(directory))
@@ -534,6 +565,8 @@ def main() -> int:
         test_non_routed_models_are_passed_through_without_probe,
         test_threshold_boundary_and_override,
         test_failures_fall_open_to_dgx,
+        test_invalid_metrics_url_falls_open_to_dgx,
+        test_invalid_metrics_timeout_falls_open_to_dgx,
         test_version_is_passed_through_without_probe,
         test_argv_stdio_exit_code_and_exec_are_preserved,
         test_records_append_and_location_is_configurable,

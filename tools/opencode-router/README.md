@@ -48,19 +48,21 @@ opencode 2.2.5 は、設定を `OPENCODE_CONFIG`（ファイル）と `OPENCODE_
 |------|----------|--------|
 | metrics の URL | `OPENCODE_ROUTER_METRICS_URL` | `http://10.0.1.60:8000/metrics` |
 | しきい値 | `OPENCODE_ROUTER_THRESHOLD` | `0`（整数。負の値も可。`waiting > しきい値` で Cloud） |
-| 時間制限（秒） | `OPENCODE_ROUTER_METRICS_TIMEOUT` | `1.5` |
+| 時間制限（秒） | `OPENCODE_ROUTER_METRICS_TIMEOUT` | `1.5`（正の数。数値でない・0 以下は `invalid_timeout` で DGX） |
 | 記録先 | `OPENCODE_ROUTER_LOG` | `${XDG_STATE_HOME:-$HOME/.local/state}/opencode-router/route.log` |
 | 本物の opencode | `OPENCODE_ROUTER_REAL_OPENCODE` | `$HOME/.nix-profile/bin/opencode` |
 
 しきい値の既定値を `0` にした根拠は、`vllm:num_requests_waiting` が「実行枠が埋まって
 順番を待っている要求の数」であり、1 件でも待ちがあれば新しい要求はすぐには処理されない
 ためです。2026-11-13 の実測は waiting 0 / running 1 でした。整数でない値を設定した場合は
-DGX で起動し、記録の reason を `invalid_threshold` にします。
+DGX で起動し、記録の reason を `invalid_threshold` にします。時間制限に数値でない値や 0 以下の値を
+設定した場合も DGX で起動し、reason を `invalid_timeout` にします。`/metrics` の URL が
+空文字列やスキームの無い値で取得できない場合も、DGX で起動し reason を `connect_error` にします。
 
 記録は 1 行 1 JSON で、`time`（ISO8601 UTC）、`waiting`、`threshold`、`route`
 （`dgx` か `cloud`）、`reason` を持ちます。reason は `below_or_equal_threshold`、
 `above_threshold`、`connect_error`、`timeout`、`format_error`、`invalid_threshold`、
-`invalid_config_content` のいずれかです。秘密の値（`OPENCODE_PASSWORD`、設定の本文、
+`invalid_timeout`、`invalid_config_content` のいずれかです。秘密の値（`OPENCODE_PASSWORD`、設定の本文、
 API キー）は記録しません。記録に失敗しても起動は止めません。
 
 ## 実測の手順

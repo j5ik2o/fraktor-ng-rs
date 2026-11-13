@@ -23,7 +23,7 @@ TAKT は opencode を `TAKT_OPENCODE_PATH` から起動し、まず `--version` 
 環境変数（既定値）:
   OPENCODE_ROUTER_METRICS_URL      http://10.0.1.60:8000/metrics
   OPENCODE_ROUTER_THRESHOLD        0（整数。負の値も可。超えたら Cloud）
-  OPENCODE_ROUTER_METRICS_TIMEOUT  1.5（秒）
+  OPENCODE_ROUTER_METRICS_TIMEOUT  1.5（秒。数値でない・0 以下なら invalid_timeout で DGX）
   OPENCODE_ROUTER_LOG              ${XDG_STATE_HOME:-$HOME/.local/state}/opencode-router/route.log
   OPENCODE_ROUTER_REAL_OPENCODE    $HOME/.nix-profile/bin/opencode
 """
@@ -67,6 +67,7 @@ REASON_CONNECT_ERROR = "connect_error"
 REASON_TIMEOUT = "timeout"
 REASON_FORMAT_ERROR = "format_error"
 REASON_INVALID_THRESHOLD = "invalid_threshold"
+REASON_INVALID_TIMEOUT = "invalid_timeout"
 REASON_INVALID_CONFIG = "invalid_config_content"
 
 
@@ -84,6 +85,19 @@ def parse_threshold(raw: str | None) -> int | None:
         return int(raw)
     except ValueError:
         return None
+
+
+def parse_timeout(raw: str | None) -> float | None:
+    """時間制限を読む。未設定は既定値、数値でない・0 以下は None（socket の時間制限に使えない）。"""
+    if raw is None:
+        return DEFAULT_METRICS_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return value
 
 
 def load_config_content(raw: str | None) -> dict | None:
@@ -143,7 +157,9 @@ def probe_waiting(url: str, timeout: float) -> tuple[str | None, float | None]:
         return REASON_CONNECT_ERROR, None
     except TimeoutError:
         return REASON_TIMEOUT, None
-    except OSError:
+    except (OSError, ValueError):
+        # OSError は接続の失敗。ValueError は urlopen が URL を解釈できないとき（空文字列や
+        # スキームの無い値）に送出する。どちらも判定の失敗なので fail-open に倒す。
         return REASON_CONNECT_ERROR, None
     return parse_waiting(body)
 
@@ -156,7 +172,9 @@ def decide() -> tuple[str, float | None, object, str]:
         return "dgx", None, raw_threshold, REASON_INVALID_THRESHOLD
 
     url = os.environ.get(METRICS_URL_ENV, DEFAULT_METRICS_URL)
-    timeout = float(os.environ.get(METRICS_TIMEOUT_ENV, str(DEFAULT_METRICS_TIMEOUT_SECONDS)))
+    timeout = parse_timeout(os.environ.get(METRICS_TIMEOUT_ENV))
+    if timeout is None:
+        return "dgx", None, threshold, REASON_INVALID_TIMEOUT
     reason, waiting = probe_waiting(url, timeout)
     if reason is not None:
         return "dgx", None, threshold, reason
