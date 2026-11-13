@@ -25,7 +25,7 @@ provider:
       provider: opencode
       model: ollama/kimi-k3:cloud
   defaults:
-    assignment: interim-claude
+    assignment: interim-ollama
   assignments:
     # 割り当て原則（2026-11-12 オーナー指示）: 計画・設計・レビューは強いモデル、
     # 実装・テストは弱いモデル。やり直し（差し戻し後の再実行）は ladder の次の段へ
