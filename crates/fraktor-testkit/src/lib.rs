@@ -6,6 +6,7 @@
 //! actor system and its test actor.
 
 pub mod default_timeout;
+pub mod event_filter;
 pub mod fraktorspec;
 pub mod implicit_sender;
 pub mod test_actors;

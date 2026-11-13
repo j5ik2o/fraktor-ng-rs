@@ -741,7 +741,7 @@ nodes:
     module: actor-tests
     class: ActorLifeCycleSpec
     test_cases_approx: 7
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -752,13 +752,13 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 7
+    ported: 7
+    passing: 7
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/actor_life_cycle_spec.rs
   goal: G0d
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorMailboxSpec.scala
   name: actor-tests:ActorMailboxSpec
@@ -32985,7 +32985,7 @@ nodes:
     module: testkit
     class: TestEventListenerSpec
     test_cases_approx: 9
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -32996,13 +32996,13 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 9
+    ported: 9
+    passing: 9
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-testkit
+    test_file: crates/fraktor-testkit/tests/test_event_listener_spec.rs
   goal: G0d
 - id: testkit/src/test/scala/org/apache/pekko/testkit/TestFSMRefSpec.scala
   name: testkit:TestFSMRefSpec

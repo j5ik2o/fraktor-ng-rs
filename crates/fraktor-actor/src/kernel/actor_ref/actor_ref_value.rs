@@ -54,6 +54,12 @@ impl ActorRef {
     &self.boundary
   }
 
+  /// Returns the identity of the shard this handle posts to, for a wait that
+  /// drives that shard.
+  pub(crate) fn boundary_key(&self) -> usize {
+    Arc::as_ptr(&self.boundary) as *const () as usize
+  }
+
   pub(crate) fn shares_boundary_with(&self, boundary: &Arc<dyn ShardBoundary>) -> bool {
     Arc::ptr_eq(&self.boundary, boundary)
   }
