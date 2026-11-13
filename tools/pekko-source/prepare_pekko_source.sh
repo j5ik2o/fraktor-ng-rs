@@ -4,6 +4,14 @@
 # （init と各ステップの前）。stdout は TAKT が KEY=VALUE として読むため、何も出さない。
 set -euo pipefail
 
+# TAKT は親の環境をそのまま渡すため、git hook から起動されると GIT_DIR などで
+# repo の場所が差し替えられ、pekko/ ではなく呼び出し元の repo を照合してしまう。
+# repo の場所を指す変数だけを消す。GIT_CONFIG* と GIT_ALLOW_PROTOCOL は設定の
+# 受け渡しに使うため残す。
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE \
+  GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS \
+  GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR GIT_NAMESPACE
+
 target="$PWD/pekko"
 local_repo="${PEKKO_SOURCE_LOCAL_REPO:-/Users/j5ik2o/Sources/github.com/j5ik2o/pekko}"
 upstream_url="${PEKKO_SOURCE_UPSTREAM_URL:-https://github.com/apache/pekko}"
@@ -42,5 +50,8 @@ fi
 head=$(git -C "$target" rev-parse --verify HEAD^{commit})
 if [ "$head" != "$expected" ]; then
   echo "pekko/: HEAD is $head, expected $expected" >&2
+  # ここへ来る clone はこの実行で prepare が作ったものだけ。残すと、原典を直して
+  # 再実行しても既存 repo として拒否され、自動準備に戻れなくなる。
+  rm -rf "$target"
   exit 1
 fi

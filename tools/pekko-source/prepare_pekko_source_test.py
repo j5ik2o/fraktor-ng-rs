@@ -43,10 +43,21 @@ MISSING_UPSTREAM = "/nonexistent/pekko-upstream-for-test"
 DEFAULT_UPSTREAM = "https://github.com/apache/pekko"
 
 
+def clean_env(source: dict[str, str] | None = None) -> dict[str, str]:
+    """GIT_* を除いた環境を返す。
+
+    Git の hook から起動されると GIT_DIR などが設定されている。そのまま git を
+    呼ぶと、一時ディレクトリではなく呼び出し元の repo を操作してしまう。
+    """
+    source = os.environ if source is None else source
+    return {k: v for k, v in source.items() if not k.startswith("GIT_")}
+
+
 def git(*args: str, cwd: str | Path, check: bool = True) -> str:
     result = subprocess.run(
         ["git", *GIT_IDENTITY, *args],
         cwd=str(cwd),
+        env=clean_env(),
         capture_output=True,
         text=True,
         timeout=60,
@@ -64,6 +75,21 @@ def make_repo(path: str | Path) -> str:
     marker.write_text("v1.7.1\n", encoding="utf-8")
     git("add", "marker.txt", cwd=path)
     git("commit", "-q", "-m", "v1.7.1", cwd=path)
+    return git("rev-parse", "HEAD", cwd=path)
+
+
+def make_distinct_repo(path: str | Path, label: str) -> str:
+    """make_repo とは異なる commit を持つ repo を作る。
+
+    make_repo は同じ identity とメッセージを使うため commit が決定的になり、
+    別ディレクトリでも同じ hash になる。呼び出し元 repo を別 commit にして、
+    GIT_DIR が漏れたときに hash の一致で見逃さないようにする。
+    """
+    make_repo(path)
+    extra = Path(path) / "caller-marker.txt"
+    extra.write_text(f"{label}\n", encoding="utf-8")
+    git("add", extra.name, cwd=path)
+    git("commit", "-q", "-m", label, cwd=path)
     return git("rev-parse", "HEAD", cwd=path)
 
 
@@ -94,7 +120,7 @@ def make_worktree(root: str | Path) -> str:
 
 
 def base_env(**overrides: str) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if k != "HOME"}
+    env = clean_env({k: v for k, v in os.environ.items() if k != "HOME"})
     env.update(
         {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -235,6 +261,78 @@ def test_source_tag_pointing_elsewhere_fails_after_prepare() -> None:
         )
         assert result.returncode != 0, "wrong tag: expected a non-zero exit, got 0"
         assert_silent_stdout(result, "wrong tag")
+        # この実行で作った pekko/ を残すと、原典を直しても既存 repo として拒否され、
+        # 自動準備に戻れなくなる。
+        assert not (Path(worktree) / "pekko").exists(), (
+            "wrong tag: the pekko/ cloned by this run must be removed when verification fails"
+        )
+
+        # 原典を直して再実行すると、自動準備で成功する。
+        git("tag", "-f", "v1.7.1", cwd=source)
+        result2 = run_script(
+            worktree,
+            base_env(PEKKO_SOURCE_LOCAL_REPO=str(source), PEKKO_SOURCE_EXPECTED_COMMIT=expected),
+        )
+        assert result2.returncode == 0, (
+            f"wrong tag: after fixing the source a re-run must succeed, got {result2.returncode}; stderr={result2.stderr!r}"
+        )
+        assert_silent_stdout(result2, "wrong tag re-run")
+        assert_pekko_at(worktree, expected, "wrong tag re-run")
+
+
+def test_inherited_git_dir_does_not_leak_into_test_repos() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        caller = Path(root) / "caller"
+        caller_head = make_distinct_repo(caller, "caller")
+        saved = {k: os.environ[k] for k in ("GIT_DIR", "GIT_INDEX_FILE") if k in os.environ}
+        os.environ["GIT_DIR"] = str(caller / ".git")
+        os.environ["GIT_INDEX_FILE"] = str(caller / ".git" / "index")
+        try:
+            fresh = Path(root) / "fresh"
+            created = make_repo(fresh)
+        finally:
+            for key in ("GIT_DIR", "GIT_INDEX_FILE"):
+                os.environ.pop(key, None)
+            os.environ.update(saved)
+
+        assert git("rev-parse", "HEAD", cwd=caller) == caller_head, (
+            "inherited GIT_DIR: the caller repo must keep its HEAD"
+        )
+        assert git("for-each-ref", "--format=%(refname)", cwd=caller).count("\n") == 0, (
+            "inherited GIT_DIR: the caller repo must not gain refs"
+        )
+        assert created and created != caller_head, (
+            "inherited GIT_DIR: make_repo must create a commit in the new repo, not the caller repo"
+        )
+        assert git("rev-parse", "HEAD", cwd=fresh) == created, (
+            "inherited GIT_DIR: the new repo must hold the commit it reported"
+        )
+
+
+def test_inherited_git_dir_does_not_affect_script() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        source = Path(root) / "source"
+        expected = make_source(source)
+        caller = Path(root) / "caller"
+        caller_head = make_distinct_repo(caller, "caller")
+        worktree = make_worktree(root)
+
+        result = run_script(
+            worktree,
+            base_env(
+                PEKKO_SOURCE_LOCAL_REPO=str(source),
+                PEKKO_SOURCE_EXPECTED_COMMIT=expected,
+                GIT_DIR=str(caller / ".git"),
+            ),
+        )
+        assert result.returncode == 0, (
+            f"inherited GIT_DIR: expected 0, got {result.returncode}; stderr={result.stderr!r}"
+        )
+        assert_silent_stdout(result, "inherited GIT_DIR")
+        assert_pekko_at(worktree, expected, "inherited GIT_DIR")
+        assert git("rev-parse", "HEAD", cwd=caller) == caller_head, (
+            "inherited GIT_DIR: the script must not change the repo GIT_DIR points at"
+        )
 
 
 def test_broken_empty_directory_is_rebuilt() -> None:
@@ -379,6 +477,8 @@ def main() -> int:
         test_present_and_correct_is_noop,
         test_existing_pekko_with_other_head_is_not_removed,
         test_source_tag_pointing_elsewhere_fails_after_prepare,
+        test_inherited_git_dir_does_not_leak_into_test_repos,
+        test_inherited_git_dir_does_not_affect_script,
         test_broken_empty_directory_is_rebuilt,
         test_broken_repo_without_head_is_rebuilt,
         test_broken_local_source_falls_back_to_upstream,
