@@ -13300,10 +13300,10 @@ nodes:
     module: docs
     class: AbstractJavaTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -13326,10 +13326,10 @@ nodes:
     module: docs
     class: ActorDocSpec
     test_cases_approx: 21
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'test-actor', 'expect-msg', 'test-probe', 'expect-terminated', 'last-sender', 'event-filter']
     premise_flags: []
@@ -13353,10 +13353,10 @@ nodes:
     module: docs
     class: ActorDocTest
     test_cases_approx: 15
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg', 'expect-no-message', 'expect-terminated', 'last-sender']
     premise_flags: []
@@ -13380,10 +13380,10 @@ nodes:
     module: docs
     class: BackoffSupervisorDocSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -13406,10 +13406,10 @@ nodes:
     module: docs
     class: BackoffSupervisorDocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -13433,10 +13433,10 @@ nodes:
     module: docs
     class: BidiFlowDocSpec
     test_cases_approx: 3
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -13460,10 +13460,10 @@ nodes:
     module: docs
     class: BidiFlowDocTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -13488,10 +13488,10 @@ nodes:
     module: docs
     class: BlockingDispatcherTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -13514,10 +13514,10 @@ nodes:
     module: docs
     class: BuncherTest
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg', 'expect-no-message']
     premise_flags: []
@@ -13540,10 +13540,10 @@ nodes:
     module: docs
     class: ByteBufferSerializerDocSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -13566,10 +13566,10 @@ nodes:
     module: docs
     class: ByteBufferSerializerDocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -13593,10 +13593,10 @@ nodes:
     module: docs
     class: CircuitBreakerDocSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -13620,10 +13620,10 @@ nodes:
     module: docs
     class: ClusterDocSpec
     test_cases_approx: 3
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -13646,10 +13646,10 @@ nodes:
     module: docs
     class: ClusterDocTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -13673,10 +13673,10 @@ nodes:
     module: docs
     class: ClusterShardingTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -13702,10 +13702,10 @@ nodes:
     module: docs
     class: CompileOnlySpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -13728,10 +13728,10 @@ nodes:
     module: docs
     class: CompositionDocSpec
     test_cases_approx: 8
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -13756,10 +13756,10 @@ nodes:
     module: docs
     class: CompositionDocTest
     test_cases_approx: 8
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -13784,10 +13784,10 @@ nodes:
     module: docs
     class: ConfigDocSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['actor-test-kit']
     premise_flags: []
@@ -13811,10 +13811,10 @@ nodes:
     module: docs
     class: ConfigDocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['actor-test-kit']
     premise_flags: []
@@ -13838,10 +13838,10 @@ nodes:
     module: docs
     class: ConsistentHashingRouterDocSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'implicit-sender', 'expect-msg']
     premise_flags: []
@@ -13864,10 +13864,10 @@ nodes:
     module: docs
     class: ConsistentHashingRouterDocTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg']
     premise_flags: []
@@ -13891,10 +13891,10 @@ nodes:
     module: docs
     class: CoordinatedActorShutdownSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['receive-message']
     premise_flags: []
@@ -13918,10 +13918,10 @@ nodes:
     module: docs
     class: CoordinatedActorShutdownTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -13946,10 +13946,10 @@ nodes:
     module: docs
     class: CustomRouterDocSpec
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'implicit-sender', 'expect-msg']
     premise_flags: []
@@ -13973,10 +13973,10 @@ nodes:
     module: docs
     class: CustomRouterDocTest
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg']
     premise_flags: []
@@ -14000,10 +14000,10 @@ nodes:
     module: docs
     class: DependencyInjectionDocTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg']
     premise_flags: []
@@ -14027,10 +14027,10 @@ nodes:
     module: docs
     class: DeviceGroupQuerySpec
     test_cases_approx: 5
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['actor-test-kit', 'expect-message']
     premise_flags: []
@@ -14053,10 +14053,10 @@ nodes:
     module: docs
     class: DeviceGroupQueryTest
     test_cases_approx: 5
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-probe', 'expect-message', 'receive-message']
     premise_flags: []
@@ -14079,10 +14079,10 @@ nodes:
     module: docs
     class: DeviceGroupSpec
     test_cases_approx: 5
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['actor-test-kit', 'expect-no-message', 'expect-terminated', 'await-assert', 'expect-message', 'receive-message']
     premise_flags: []
@@ -14105,10 +14105,10 @@ nodes:
     module: docs
     class: DeviceGroupSpec
     test_cases_approx: 6
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['actor-test-kit', 'expect-no-message', 'expect-terminated', 'await-assert', 'expect-message', 'receive-message']
     premise_flags: []
@@ -14131,10 +14131,10 @@ nodes:
     module: docs
     class: DeviceGroupTest
     test_cases_approx: 5
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['expect-no-message', 'test-probe', 'expect-terminated', 'await-assert', 'receive-message']
     premise_flags: []
@@ -14157,10 +14157,10 @@ nodes:
     module: docs
     class: DeviceGroupTest
     test_cases_approx: 6
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['expect-no-message', 'test-probe', 'expect-terminated', 'await-assert', 'receive-message']
     premise_flags: []
@@ -14183,10 +14183,10 @@ nodes:
     module: docs
     class: DeviceManagerSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['actor-test-kit', 'receive-message']
     premise_flags: []
@@ -14209,10 +14209,10 @@ nodes:
     module: docs
     class: DeviceManagerSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['actor-test-kit', 'receive-message']
     premise_flags: []
@@ -14235,10 +14235,10 @@ nodes:
     module: docs
     class: DeviceManagerTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-probe', 'receive-message']
     premise_flags: []
@@ -14261,10 +14261,10 @@ nodes:
     module: docs
     class: DeviceManagerTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-probe', 'receive-message']
     premise_flags: []
@@ -14287,10 +14287,10 @@ nodes:
     module: docs
     class: DeviceSpec
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['actor-test-kit', 'expect-message', 'receive-message']
     premise_flags: []
@@ -14313,10 +14313,10 @@ nodes:
     module: docs
     class: DeviceSpec
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['actor-test-kit', 'expect-message', 'receive-message']
     premise_flags: []
@@ -14339,10 +14339,10 @@ nodes:
     module: docs
     class: DeviceSpec
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['actor-test-kit', 'expect-message', 'receive-message']
     premise_flags: []
@@ -14365,10 +14365,10 @@ nodes:
     module: docs
     class: DeviceTest
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-probe', 'receive-message']
     premise_flags: []
@@ -14391,10 +14391,10 @@ nodes:
     module: docs
     class: DeviceTest
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-probe', 'receive-message']
     premise_flags: []
@@ -14417,10 +14417,10 @@ nodes:
     module: docs
     class: DeviceTest
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-probe', 'receive-message']
     premise_flags: []
@@ -14443,10 +14443,10 @@ nodes:
     module: docs
     class: DispatcherDocSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -14470,10 +14470,10 @@ nodes:
     module: docs
     class: DispatcherDocSpec
     test_cases_approx: 14
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'expect-msg']
     premise_flags: []
@@ -14497,10 +14497,10 @@ nodes:
     module: docs
     class: DispatcherDocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -14523,10 +14523,10 @@ nodes:
     module: docs
     class: DispatcherDocTest
     test_cases_approx: 11
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['pekko-spec', 'test-kit', 'expect-msg']
     premise_flags: []
@@ -14550,10 +14550,10 @@ nodes:
     module: docs
     class: DistributedDataDocSpec
     test_cases_approx: 16
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'expect-msg', 'test-probe']
     premise_flags: []
@@ -14577,10 +14577,10 @@ nodes:
     module: docs
     class: DistributedDataDocTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -14603,10 +14603,10 @@ nodes:
     module: docs
     class: DnsCompileOnlyDocSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -14630,10 +14630,10 @@ nodes:
     module: docs
     class: DnsCompileOnlyDocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -14657,10 +14657,10 @@ nodes:
     module: docs
     class: DnsDiscoveryDocSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -14683,10 +14683,10 @@ nodes:
     module: docs
     class: DnsDiscoveryDocTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -14710,10 +14710,10 @@ nodes:
     module: docs
     class: EventBusDocSpec
     test_cases_approx: 4
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'test-actor', 'expect-msg', 'expect-no-message', 'test-probe']
     premise_flags: ['current-time-millis']
@@ -14737,10 +14737,10 @@ nodes:
     module: docs
     class: EventBusDocTest
     test_cases_approx: 4
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg', 'expect-no-message']
     premise_flags: ['current-time-millis']
@@ -14764,10 +14764,10 @@ nodes:
     module: docs
     class: ExtensionDocSpec
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -14791,10 +14791,10 @@ nodes:
     module: docs
     class: ExtensionDocTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -14817,10 +14817,10 @@ nodes:
     module: docs
     class: FSMDocSpec
     test_cases_approx: 3
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['pekko-spec', 'test-actor', 'expect-msg', 'expect-no-message']
     premise_flags: []
@@ -14844,10 +14844,10 @@ nodes:
     module: docs
     class: FSMDocTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg']
     premise_flags: []
@@ -14870,10 +14870,10 @@ nodes:
     module: docs
     class: FaultHandlingDocSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'test-actor', 'implicit-sender', 'expect-msg', 'event-filter']
     premise_flags: []
@@ -14897,10 +14897,10 @@ nodes:
     module: docs
     class: FaultHandlingTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg', 'test-probe', 'event-filter']
     premise_flags: []
@@ -14924,10 +14924,10 @@ nodes:
     module: docs
     class: FlowDocSpec
     test_cases_approx: 10
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -14952,10 +14952,10 @@ nodes:
     module: docs
     class: FlowDocTest
     test_cases_approx: 9
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -14979,10 +14979,10 @@ nodes:
     module: docs
     class: FlowErrorDocSpec
     test_cases_approx: 6
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -15006,10 +15006,10 @@ nodes:
     module: docs
     class: FlowErrorDocTest
     test_cases_approx: 6
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -15034,10 +15034,10 @@ nodes:
     module: docs
     class: FlowParallelismDocSpec
     test_cases_approx: 4
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -15062,10 +15062,10 @@ nodes:
     module: docs
     class: FlowParallelismDocTest
     test_cases_approx: 4
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -15089,10 +15089,10 @@ nodes:
     module: docs
     class: FlowStreamRefsDocSpec
     test_cases_approx: 3
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'expect-msg']
     premise_flags: []
@@ -15117,10 +15117,10 @@ nodes:
     module: docs
     class: FlowStreamRefsDocTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg']
     premise_flags: []
@@ -15144,10 +15144,10 @@ nodes:
     module: docs
     class: FutureDocSpec
     test_cases_approx: 26
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: ['thread-sleep', 'eventually']
@@ -15171,10 +15171,10 @@ nodes:
     module: docs
     class: FutureDocTest
     test_cases_approx: 3
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['pekko-spec']
     premise_flags: ['thread-sleep']
@@ -15198,10 +15198,10 @@ nodes:
     module: docs
     class: GraphCyclesDocTest
     test_cases_approx: 5
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -15226,10 +15226,10 @@ nodes:
     module: docs
     class: GraphCyclesSpec
     test_cases_approx: 5
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -15252,10 +15252,10 @@ nodes:
     module: docs
     class: GraphDSLDocSpec
     test_cases_approx: 5
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -15279,10 +15279,10 @@ nodes:
     module: docs
     class: GraphStageDocSpec
     test_cases_approx: 14
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'test-latch', 'stream-testkit']
     premise_flags: []
@@ -15306,10 +15306,10 @@ nodes:
     module: docs
     class: GraphStageDocTest
     test_cases_approx: 8
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'stream-testkit']
     premise_flags: []
@@ -15333,10 +15333,10 @@ nodes:
     module: docs
     class: GraphStageLoggingDocSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'event-filter']
     premise_flags: []
@@ -15359,10 +15359,10 @@ nodes:
     module: docs
     class: GraphStageLoggingDocTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -15386,10 +15386,10 @@ nodes:
     module: docs
     class: HubDocTest
     test_cases_approx: 6
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -15414,10 +15414,10 @@ nodes:
     module: docs
     class: HubsDocSpec
     test_cases_approx: 6
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'test-actor', 'expect-msg']
     premise_flags: []
@@ -15441,10 +15441,10 @@ nodes:
     module: docs
     class: IODocSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'test-actor', 'expect-msg', 'expect-terminated']
     premise_flags: []
@@ -15467,10 +15467,10 @@ nodes:
     module: docs
     class: IODocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -15494,10 +15494,10 @@ nodes:
     module: docs
     class: IODocTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['pekko-spec', 'test-kit', 'expect-msg', 'expect-terminated']
     premise_flags: []
@@ -15521,10 +15521,10 @@ nodes:
     module: docs
     class: InitializationDocSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'implicit-sender', 'expect-msg', 'expect-no-message']
     premise_flags: []
@@ -15547,10 +15547,10 @@ nodes:
     module: docs
     class: InitializationDocTest
     test_cases_approx: 4
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg', 'expect-no-message']
     premise_flags: []
@@ -15574,10 +15574,10 @@ nodes:
     module: docs
     class: IntegrationDocSpec
     test_cases_approx: 13
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'expect-msg', 'test-probe', 'receive-n']
     premise_flags: ['thread-sleep']
@@ -15602,10 +15602,10 @@ nodes:
     module: docs
     class: IntegrationDocTest
     test_cases_approx: 13
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg', 'test-probe', 'receive-n']
     premise_flags: ['thread-sleep']
@@ -15629,10 +15629,10 @@ nodes:
     module: docs
     class: JavaUdpMulticastTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg']
     premise_flags: ['random']
@@ -15655,10 +15655,10 @@ nodes:
     module: docs
     class: KillSwitchDocSpec
     test_cases_approx: 4
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -15681,10 +15681,10 @@ nodes:
     module: docs
     class: KillSwitchDocTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -15709,10 +15709,10 @@ nodes:
     module: docs
     class: LambdaPersistenceDocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: ['current-time-millis']
@@ -15736,10 +15736,10 @@ nodes:
     module: docs
     class: LambdaPersistencePluginDocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -15765,10 +15765,10 @@ nodes:
     module: docs
     class: LeaseDocSpec
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -15792,10 +15792,10 @@ nodes:
     module: docs
     class: LeaseDocTest
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -15819,10 +15819,10 @@ nodes:
     module: docs
     class: LeveldbPersistenceQueryDocSpec
     test_cases_approx: 4
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -15848,10 +15848,10 @@ nodes:
     module: docs
     class: LeveldbPersistenceQueryDocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -15878,10 +15878,10 @@ nodes:
     module: docs
     class: LoggingDocSpec
     test_cases_approx: 7
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -15905,10 +15905,10 @@ nodes:
     module: docs
     class: LoggingDocTest
     test_cases_approx: 7
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -15932,10 +15932,10 @@ nodes:
     module: docs
     class: ParentChildSpec
     test_cases_approx: 6
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg', 'test-probe']
     premise_flags: []
@@ -15959,10 +15959,10 @@ nodes:
     module: docs
     class: ParentChildTest
     test_cases_approx: 5
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg', 'test-probe']
     premise_flags: []
@@ -15986,10 +15986,10 @@ nodes:
     module: docs
     class: PersistenceDocSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: ['current-time-millis']
@@ -16012,10 +16012,10 @@ nodes:
     module: docs
     class: PersistenceEventAdapterDocSpec
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'expect-msg', 'test-probe']
     premise_flags: []
@@ -16038,10 +16038,10 @@ nodes:
     module: docs
     class: PersistenceEventAdapterDocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -16064,10 +16064,10 @@ nodes:
     module: docs
     class: PersistenceInitSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['actor-test-kit']
     premise_flags: []
@@ -16090,10 +16090,10 @@ nodes:
     module: docs
     class: PersistenceInitTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -16116,10 +16116,10 @@ nodes:
     module: docs
     class: PersistenceMultiDocSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -16142,10 +16142,10 @@ nodes:
     module: docs
     class: PersistenceMultiDocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -16169,10 +16169,10 @@ nodes:
     module: docs
     class: PersistencePluginDocSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -16197,10 +16197,10 @@ nodes:
     module: docs
     class: PersistenceQueryDocSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -16223,10 +16223,10 @@ nodes:
     module: docs
     class: PersistenceQueryDocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -16252,10 +16252,10 @@ nodes:
     module: docs
     class: PersistenceSchemaEvolutionDocSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -16278,10 +16278,10 @@ nodes:
     module: docs
     class: PersistenceSchemaEvolutionDocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -16305,10 +16305,10 @@ nodes:
     module: docs
     class: PersistenceSerializerDocSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -16331,10 +16331,10 @@ nodes:
     module: docs
     class: PersistenceTestKitPolicySampleTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -16358,10 +16358,10 @@ nodes:
     module: docs
     class: PersistenceTestKitSampleTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -16386,10 +16386,10 @@ nodes:
     module: docs
     class: PlainWordSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'implicit-sender', 'expect-msg']
     premise_flags: []
@@ -16412,10 +16412,10 @@ nodes:
     module: docs
     class: PropsEdgeCaseSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -16438,10 +16438,10 @@ nodes:
     module: docs
     class: QuickStartDocSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -16464,10 +16464,10 @@ nodes:
     module: docs
     class: QuickStartDocTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -16491,10 +16491,10 @@ nodes:
     module: docs
     class: RateTransformationDocSpec
     test_cases_approx: 6
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'test-latch', 'stream-testkit']
     premise_flags: ['random']
@@ -16517,10 +16517,10 @@ nodes:
     module: docs
     class: RateTransformationDocTest
     test_cases_approx: 6
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'test-latch', 'stream-testkit']
     premise_flags: ['random']
@@ -16545,10 +16545,10 @@ nodes:
     module: docs
     class: ReactiveStreamsDocSpec
     test_cases_approx: 6
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'stream-testkit']
     premise_flags: []
@@ -16572,10 +16572,10 @@ nodes:
     module: docs
     class: ReactiveStreamsDocTest
     test_cases_approx: 6
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg', 'test-probe']
     premise_flags: []
@@ -16599,10 +16599,10 @@ nodes:
     module: docs
     class: RecipeAdhocSourceTest
     test_cases_approx: 6
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-no-message', 'stream-testkit']
     premise_flags: ['thread-sleep']
@@ -16627,10 +16627,10 @@ nodes:
     module: docs
     class: RecipeMultiGroupByTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -16655,10 +16655,10 @@ nodes:
     module: docs
     class: RecipeReduceByKeyTest
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -16683,10 +16683,10 @@ nodes:
     module: docs
     class: RecipeSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -16709,10 +16709,10 @@ nodes:
     module: docs
     class: RecipeTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -16735,10 +16735,10 @@ nodes:
     module: docs
     class: RemoteDeploymentDocSpec
     test_cases_approx: 3
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'implicit-sender', 'expect-msg']
     premise_flags: []
@@ -16761,10 +16761,10 @@ nodes:
     module: docs
     class: RemoteDeploymentDocTest
     test_cases_approx: 3
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['pekko-spec']
     premise_flags: []
@@ -16789,10 +16789,10 @@ nodes:
     module: docs
     class: RestartDocSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -16816,10 +16816,10 @@ nodes:
     module: docs
     class: RestartDocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -16844,10 +16844,10 @@ nodes:
     module: docs
     class: RouterDocSpec
     test_cases_approx: 7
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'implicit-sender', 'expect-terminated', 'receive-n']
     premise_flags: []
@@ -16871,10 +16871,10 @@ nodes:
     module: docs
     class: RouterDocTest
     test_cases_approx: 9
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-terminated', 'receive-n']
     premise_flags: []
@@ -16899,10 +16899,10 @@ nodes:
     module: docs
     class: SampleActorTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg', 'expect-no-message']
     premise_flags: []
@@ -16925,10 +16925,10 @@ nodes:
     module: docs
     class: ScalaUdpMulticastSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'test-actor', 'expect-msg']
     premise_flags: ['random']
@@ -16951,10 +16951,10 @@ nodes:
     module: docs
     class: SchedulerDocSpec
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'test-actor', 'expect-msg']
     premise_flags: ['current-time-millis']
@@ -16977,10 +16977,10 @@ nodes:
     module: docs
     class: SchedulerDocTest
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['pekko-spec', 'test-actor']
     premise_flags: ['current-time-millis']
@@ -17004,10 +17004,10 @@ nodes:
     module: docs
     class: SerializationDocSpec
     test_cases_approx: 5
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -17031,10 +17031,10 @@ nodes:
     module: docs
     class: SerializationDocTest
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -17058,10 +17058,10 @@ nodes:
     module: docs
     class: SettingsExtensionDocSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -17085,10 +17085,10 @@ nodes:
     module: docs
     class: SettingsExtensionDocTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -17112,10 +17112,10 @@ nodes:
     module: docs
     class: SharedMutableStateDocSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -17138,10 +17138,10 @@ nodes:
     module: docs
     class: SharedMutableStateDocSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -17164,10 +17164,10 @@ nodes:
     module: docs
     class: SharedMutableStateDocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -17191,10 +17191,10 @@ nodes:
     module: docs
     class: SinkRecipeDocSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -17217,10 +17217,10 @@ nodes:
     module: docs
     class: SinkRecipeDocTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -17245,10 +17245,10 @@ nodes:
     module: docs
     class: StreamBuffersRateDocTest
     test_cases_approx: 4
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -17272,10 +17272,10 @@ nodes:
     module: docs
     class: StreamBuffersRateSpec
     test_cases_approx: 4
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -17299,10 +17299,10 @@ nodes:
     module: docs
     class: StreamFileDocSpec
     test_cases_approx: 3
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: ['thread-sleep']
@@ -17326,10 +17326,10 @@ nodes:
     module: docs
     class: StreamFileDocTest
     test_cases_approx: 3
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
@@ -17354,10 +17354,10 @@ nodes:
     module: docs
     class: StreamPartialGraphDSLDocSpec
     test_cases_approx: 5
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'test-actor', 'expect-msg']
     premise_flags: []
@@ -17380,10 +17380,10 @@ nodes:
     module: docs
     class: StreamPartialGraphDSLDocTest
     test_cases_approx: 5
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg']
     premise_flags: []
@@ -17407,10 +17407,10 @@ nodes:
     module: docs
     class: StreamTcpDocSpec
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'expect-msg', 'test-probe']
     premise_flags: []
@@ -17435,10 +17435,10 @@ nodes:
     module: docs
     class: StreamTcpDocTest
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg', 'test-probe']
     premise_flags: []
@@ -17463,10 +17463,10 @@ nodes:
     module: docs
     class: StreamTestKitDocSpec
     test_cases_approx: 10
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'expect-msg', 'expect-no-message', 'test-probe', 'stream-testkit']
     premise_flags: []
@@ -17489,10 +17489,10 @@ nodes:
     module: docs
     class: StreamTestKitDocTest
     test_cases_approx: 10
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg', 'expect-no-message', 'stream-testkit']
     premise_flags: []
@@ -17516,10 +17516,10 @@ nodes:
     module: docs
     class: SubstreamDocSpec
     test_cases_approx: 3
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -17543,10 +17543,10 @@ nodes:
     module: docs
     class: SubstreamDocTest
     test_cases_approx: 3
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: ['thread-sleep']
@@ -17570,10 +17570,10 @@ nodes:
     module: docs
     class: SupervisedAskSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -17597,10 +17597,10 @@ nodes:
     module: docs
     class: TestKitDocTest
     test_cases_approx: 21
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'test-actor', 'expect-msg', 'expect-no-message', 'test-probe', 'event-filter', 'within', 'await-assert', 'await-cond', 'receive-while', 'receive-n', 'ignore-msg', 'test-actor-ref', 'calling-thread-dispatcher', 'set-auto-pilot']
     premise_flags: []
@@ -17624,10 +17624,10 @@ nodes:
     module: docs
     class: TestKitSampleTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'expect-msg', 'expect-no-message', 'within', 'await-cond']
     premise_flags: []
@@ -17651,10 +17651,10 @@ nodes:
     module: docs
     class: TestKitUsageSpec
     test_cases_approx: 4
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit', 'test-actor', 'implicit-sender', 'default-timeout', 'expect-msg', 'expect-no-message', 'within', 'receive-while', 'ignore-msg']
     premise_flags: ['random']
@@ -17677,10 +17677,10 @@ nodes:
     module: docs
     class: TestkitDocSpec
     test_cases_approx: 18
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'test-kit', 'test-actor', 'implicit-sender', 'default-timeout', 'expect-msg', 'expect-no-message', 'test-probe', 'expect-terminated', 'event-filter', 'within', 'receive-n', 'test-actor-ref', 'test-fsm-ref', 'calling-thread-dispatcher']
     premise_flags: ['thread-sleep']
@@ -17704,10 +17704,10 @@ nodes:
     module: docs
     class: TimerDocSpec
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -17730,10 +17730,10 @@ nodes:
     module: docs
     class: TimerDocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -17757,10 +17757,10 @@ nodes:
     module: docs
     class: TwitterStreamQuickstartDocSpec
     test_cases_approx: 8
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: ['thread-sleep', 'current-time-millis']
@@ -17783,10 +17783,10 @@ nodes:
     module: docs
     class: TwitterStreamQuickstartDocTest
     test_cases_approx: 6
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: ['thread-sleep', 'current-time-millis']
@@ -17810,10 +17810,10 @@ nodes:
     module: docs
     class: UdpConnectedDocTest
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -17837,10 +17837,10 @@ nodes:
     module: docs
     class: UdpDocSpec
     test_cases_approx: 3
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'expect-msg', 'expect-no-message', 'test-probe', 'expect-terminated', 'last-sender']
     premise_flags: ['thread-sleep']
@@ -17864,10 +17864,10 @@ nodes:
     module: docs
     class: UdpDocTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: []
     premise_flags: []
@@ -17891,10 +17891,10 @@ nodes:
     module: docs
     class: WithContextSpec
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -17918,10 +17918,10 @@ nodes:
     module: docs
     class: WithContextTest
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
   needs:
     testkit: ['test-kit']
     premise_flags: []
