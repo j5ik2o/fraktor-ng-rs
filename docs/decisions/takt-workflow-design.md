@@ -14,7 +14,7 @@ persona と policy は標準ファセットをそのまま使う。
 
 **確認した結果（takt 0.75.0）**
 
-- `takt workflow doctor` は、`pekko-porting-ng` と `pekko-port-node` の両方が OK
+- `takt workflow doctor` は、`fraktor-porting-ng` と `fraktor-port-node` の両方が OK
 - `takt workflow inspect` の出力は、0.74.0 と 0.75.0 で一致する（参照先のパスを除く）。
   ステップ、遷移条件、return、loop monitor、facet の解決先に差は無い
 - `takt prompt` で組み立てたプロンプトには、プロジェクト facet の全行が本文に載る。
@@ -23,9 +23,9 @@ persona と policy は標準ファセットをそのまま使う。
 
 **0.74.0 で再構成した点（0.75.0 でも変更不要）**
 
-- **サブワークフロー化**：root の `pekko-porting-ng` はゴール単位の薄い
+- **サブワークフロー化**：root の `fraktor-porting-ng` はゴール単位の薄い
   ループ（`workflow_call` でノード処理を繰り返す）とし、ノード1件の処理は
-  callable な子 `pekko-port-node`（`subworkflow.returns` で
+  callable な子 `fraktor-port-node`（`subworkflow.returns` で
   node_green／goal_complete／needs_human を返す）に分けた
 - **verify は system step 化**：verify_red／verify_green は agent step では
   なく、固定コマンドを実行する system step とした。実体は
@@ -56,7 +56,7 @@ persona と policy は標準ファセットをそのまま使う。
 
 | | manager の巡回 | ワークフローの loop monitor |
 |---|---|---|
-| 動く場所 | daemon。run の外 | run の中。子ワークフロー `pekko-port-node` |
+| 動く場所 | daemon。run の外 | run の中。子ワークフロー `fraktor-port-node` |
 | きっかけ | 既定 1,800 秒ごと（`manager.patrol_interval`）。活動中のゴールがあるリポジトリだけを見る。人のマージを待つだけのゴールは除く | 差し戻しが連続した回数。review 系は 3 回目、verify 系は 5 回目 |
 | 見るもの | 実行中のタスクの報告、レビュー指摘、修正計画が、指示と受け入れ条件の範囲内か。経過時間や繰り返し回数では判定しない | judge が、差し戻しが前進しているかを判定する |
 | 結果 | manager が次の手を決める | 健全なら差し戻しを続け、非生産的なら run を ABORT する |
@@ -82,14 +82,14 @@ instruction、output-contract（`test-report`、`testing-review`）、workflow r
 **manager 経由でゴールを発行する場合に要るもの（発行経路は未決定）**
 
 - manager が新しい開発タスクに選べるワークフローは、既定では `default` と `simple`
-  だけである。`pekko-porting-ng` を使わせるには、`.takt/config.yaml` の
+  だけである。`fraktor-porting-ng` を使わせるには、`.takt/config.yaml` の
   `manager.workflows` に登録する。一覧を書くと、既定の候補は置き換わる。
   手動の CLI、既存タスクの再開、子ワークフローの呼び出しは制限されない
 
   ```yaml
   manager:
     workflows:
-      - pekko-porting-ng: 台帳のゴール（ノードの集合）を、Pekko のテストから1件ずつ移植する
+      - fraktor-porting-ng: 台帳のゴール（ノードの集合）を、Pekko のテストから1件ずつ移植する
   ```
 
 - コードを変えるゴールには Gherkin 仕様が付く。G0a のゴール定義に足す案は次のとおり
@@ -265,7 +265,7 @@ read ツールは拒否されており、回避策頼みは fragile である。
 provider に依存せず成立する。`../pekko` は後方互換として triage が探す。
 
 この前提を機械で整えるため、`tools/pekko-source/prepare_pekko_source.sh` を
-ワークフロー `pekko-porting-ng` の `workflow_config.runtime.prepare` に登録した。
+ワークフロー `fraktor-porting-ng` の `workflow_config.runtime.prepare` に登録した。
 新しい作業ツリーで run が始まるとき、原典が無ければ用意される。
 
 - スクリプトの動作: 作業ツリー直下の `pekko/` の HEAD が 9a54d129…（v1.7.1）なら
@@ -278,16 +278,16 @@ provider に依存せず成立する。`../pekko` は後方互換として triag
 - 置き場所: `tools/` の下は merge-gate など「作業を助ける道具とテスト」の場所で、
   manager が手で実行することもあるため `tools/pekko-source/` に置く。`.takt/` は
   TAKT の設定と、TAKT が作るもの（`runs/`、`.runtime/`）の場所である。
-- 登録先: 原典が要るのは移植の系統（`pekko-porting-ng` とその呼び先）だけなので、
+- 登録先: 原典が要るのは移植の系統（`fraktor-porting-ng` とその呼び先）だけなので、
   ワークフロー側に置く。プロジェクト全体の `runtime.prepare` に置くと、default や
   マージ用の run でも init と各ステップの前に clone が走り、原典が要らない run まで
   ローカル原典の不在やネットワークの失敗で止まる。ワークフロー側に `prepare` が
   1 件でもあればプロジェクト側は使われない（TAKT 0.75.0 の
   `core/runtime/runtime-environment.js` の `resolveRuntimeConfig`）。
-- 呼び先への効き方: 呼び先 `pekko-port-node` は子 engine として同じ cwd で動く。
+- 呼び先への効き方: 呼び先 `fraktor-port-node` は子 engine として同じ cwd で動く。
   子の yaml には `runtime.prepare` が無いので子のステップの前には走らないが、親が
   init と各 `port_node` ステップ（=`workflow_call`）の前に実行するため、呼び先が
-  始まる時点で `pekko/` は揃っている。`pekko-port-node` を親なしで直接実行したときは
+  始まる時点で `pekko/` は揃っている。`fraktor-port-node` を親なしで直接実行したときは
   prepare が走らない。
 - custom_scripts: スクリプトは preset（`gradle`、`node`）ではないため、プロジェクト
   設定の `workflow_runtime_prepare.custom_scripts: true` が要る（`.takt/config.yaml`）。
@@ -381,7 +381,7 @@ runtime モードでも効く（execution-preparation.js で確認）ため残�
 
 **突き合わせ観点の結果**
 
-1. pekko-triage instruction と yaml の齟齬は、欄名（pekko.test_cases_approx）と
+1. fraktor-triage instruction と yaml の齟齬は、欄名（pekko.test_cases_approx）と
    原典の場所の記述を直した。前提の扱いの文言は 5 条件のラベルに揃えた
 2. ゴール文書の write_scope は、発行コマンドの -t でパスが渡り、triage が
    読める形になっている（実走で確認）。P1 の修正はこの前提に依存するため、
@@ -422,7 +422,7 @@ instruction に、作成・変更したテストファイルへ rustfmt を適�
   plan → implement → 並列レビュー（AI アンチパターン＋supervisor の要件照合）
   → 修正ループ（履歴つき loop monitor）が mini-core の内側で回る
 - ドメイン規約は引数で注入する：`plan_knowledge` と `development_knowledge`
-  に `pekko-porting-rules` を加える（配列の先頭に置く。理由は v4 の
+  に `fraktor-porting-rules` を加える（配列の先頭に置く。理由は v4 の
   「facet の並び順」）。これで implement、supervisor、fix の
   各ステップに規約が届く。プロジェクト専用の implement instruction は
   持たない（mini-core の implement は標準 instruction 固定のため）
@@ -431,13 +431,13 @@ instruction に、作成・変更したテストファイルへ rustfmt を適�
   等価性レビュー（原典との忠実さは builtin レビューの守備範囲外なので
   独立ステップとして残す。指摘は develop の再呼び出しで直す）、台帳更新
 - チェッカーのルールは事前提示する（後出しの回避）：
-  syn チェッカーの判定項目は、workflow-wide rule `pekko-coding-rules` として
-  `pekko-port-node` の `all_steps.rules` に置き、実装する側が書く時点で
+  syn チェッカーの判定項目は、workflow-wide rule `fraktor-coding-rules` として
+  `fraktor-port-node` の `all_steps.rules` に置き、実装する側が書く時点で
   見えるようにする（当初は policy だった。理由は v4 の「facet の並び順」）。
   チェッカーは事後の裏付けであり、ルールの正はチェッカー側の定義に置き、
   この rule はその要約とする
 - ファセットは `{extends:...}` で標準を継承する形にした：
-  pekko-port-test は write-tests-first を、pekko-review-equivalence は
+  fraktor-port-test は write-tests-first を、fraktor-review-equivalence は
   testing-review を継承し、差分だけを書く。triage は、継承候補の
   research-analyze が調査反復型で意味が合わないため、独立のままにする
 - 大きな基盤ゴール（G0b の TestKit 等）では、testing 工程と companion、
@@ -467,22 +467,22 @@ instruction に、作成・変更したテストファイルへ rustfmt を適�
 
 | プロジェクト facet | 親（builtin） | 差分 |
 |---|---|---|
-| instruction `pekko-port-test` | `write-tests-first` | 原典の移植であること、置き場所、ケースの扱い、test-report への書き方、機械判定が読む 3 行 |
-| instruction `pekko-review-equivalence` | `testing-review` | 原典との突き合わせの 3 観点 |
-| instruction `pekko-loop-judge` | `loop-monitor-reviewers-fix` | 選べる結果が 2 つであること、標準の語（収束中、停滞または発散）との対応、非生産的と判定したときの人間向け要約 |
-| instruction `pekko-verify-red-loop-judge`、`pekko-verify-green-loop-judge` | `loop-monitor-reviewers-fix` | 選べる結果が 2 つであること、標準の語との対応、直近の system step の出力、非生産的と判定したときの人間向け要約 |
+| instruction `fraktor-port-test` | `write-tests-first` | 原典の移植であること、置き場所、ケースの扱い、test-report への書き方、機械判定が読む 3 行 |
+| instruction `fraktor-review-equivalence` | `testing-review` | 原典との突き合わせの 3 観点 |
+| instruction `fraktor-loop-judge` | `loop-monitor-reviewers-fix` | 選べる結果が 2 つであること、標準の語（収束中、停滞または発散）との対応、非生産的と判定したときの人間向け要約 |
+| instruction `fraktor-verify-red-loop-judge`、`fraktor-verify-green-loop-judge` | `loop-monitor-reviewers-fix` | 選べる結果が 2 つであること、標準の語との対応、直近の system step の出力、非生産的と判定したときの人間向け要約 |
 | output-contract `equivalence-review` | `testing-review` | 対象、原典側の根拠、深刻度、追加の 3 観点、結果と遷移条件の対応、未確認範囲が残る間は APPROVE にしないこと、指摘と未確認範囲の両方があるときは REJECT を優先すること |
 
 **独自のまま残すもの**
 
 | プロジェクト facet | builtin で表現できない理由 |
 |---|---|
-| instruction `pekko-triage`、output-contract `triage-report` | 台帳のノード 1 件について、原典のケース実数、needs、前提基盤、除外提案を確かめる工程である。builtin には台帳も、人間だけが承認する除外も無い。近い instruction のうち `research-*` は計画、分解、分析を別ステップで回す調査用で、`plan` は実装方針の立案用（mini-core が内側で行う）である。fragment `development-core-plan` はレポート名が `plan.md` に固定で、mini-core が書く `plan.md` と同名になる。`triage-report` の欄は遷移条件と後段が読む固定欄で、`research-report` には無い |
-| instruction `pekko-classify-red`、output-contract `verify-report` | 固有の機械ゲート verify_red が分類できなかった出力を読み、想定どおりの red かを判定して台帳の `status` を書く工程である。builtin の検証系 instruction（`verify-fix`、`apply-fix-verification`、`merge-ci-investigate`）は `fix-plan.md` や CI の収集結果など、このワークフローに無い入力を前提にしている |
-| instruction `pekko-ledger-update`、output-contract `ledger-report` | 台帳への green の記録と、`rollup.py` による完了判定である。builtin に対応する工程が無い |
-| knowledge `pekko-porting-rules`、workflow-wide rule `pekko-coding-rules` | 決定文書（台帳の規則、クレート構成、所有権モデル）と syn チェッカーのルールの要約である。builtin の `architecture` や `coding` を置き換えるものではなく、並べて注入する |
+| instruction `fraktor-triage`、output-contract `triage-report` | 台帳のノード 1 件について、原典のケース実数、needs、前提基盤、除外提案を確かめる工程である。builtin には台帳も、人間だけが承認する除外も無い。近い instruction のうち `research-*` は計画、分解、分析を別ステップで回す調査用で、`plan` は実装方針の立案用（mini-core が内側で行う）である。fragment `development-core-plan` はレポート名が `plan.md` に固定で、mini-core が書く `plan.md` と同名になる。`triage-report` の欄は遷移条件と後段が読む固定欄で、`research-report` には無い |
+| instruction `fraktor-classify-red`、output-contract `verify-report` | 固有の機械ゲート verify_red が分類できなかった出力を読み、想定どおりの red かを判定して台帳の `status` を書く工程である。builtin の検証系 instruction（`verify-fix`、`apply-fix-verification`、`merge-ci-investigate`）は `fix-plan.md` や CI の収集結果など、このワークフローに無い入力を前提にしている |
+| instruction `fraktor-ledger-update`、output-contract `ledger-report` | 台帳への green の記録と、`rollup.py` による完了判定である。builtin に対応する工程が無い |
+| knowledge `fraktor-porting-rules`、workflow-wide rule `fraktor-coding-rules` | 決定文書（台帳の規則、クレート構成、所有権モデル）と syn チェッカーのルールの要約である。builtin の `architecture` や `coding` を置き換えるものではなく、並べて注入する |
 
-ワークフロー 2 本（`pekko-porting-ng`、`pekko-port-node`）も独自である。
+ワークフロー 2 本（`fraktor-porting-ng`、`fraktor-port-node`）も独自である。
 ゴールとノードの繰り返し、verify の system step、return ラベルは台帳の
 進め方そのもので、builtin のワークフローには無い。
 
@@ -494,31 +494,31 @@ takt 0.74.0 は、1 ステップの knowledge を連結した文字列の先頭 
 2,000 字を超えるものが多い（`architecture` は約 12,000 字）ので、builtin を
 先に並べるとプロジェクトの規約は本文に 1 行も載らない。
 
-- knowledge `pekko-porting-rules`（1,935 字）は、配列の先頭に置く。
+- knowledge `fraktor-porting-rules`（1,935 字）は、配列の先頭に置く。
   mini-core への引数（`plan_knowledge`、`development_knowledge`）と、
   equivalence-review の knowledge が該当する。equivalence-review は
   fragment の並びを上書きしている
-- `pekko-porting-rules` は 2,000 字以内に保つ。超えると末尾の
+- `fraktor-porting-rules` は 2,000 字以内に保つ。超えると末尾の
   「移植の作法」（テストファイルの凍結を含む）から本文に載らなくなる
-- syn チェッカーのルールの要約 `pekko-coding-rules` は、policy では本文に
+- syn チェッカーのルールの要約 `fraktor-coding-rules` は、policy では本文に
   載らなかった。builtin の fragment（`development-core-plan`、
   `development-core-implement`、`development-core-write-tests`）と mini-core の
   修正ステップは、policy の先頭に `contract-change`（約 4,400 字）を固定する。
   引数の並びでは変えられず、2,617 字の要約は 1 行も本文に載らなかった
   （2026-11-11 に別件として切り出し、2026-11-12 のオーナー判断で対応した）
 - 対応として、要約を policy から workflow-wide rule に移した。実体は
-  `.takt/workflows/rules/pekko-coding-rules.md` で、`pekko-port-node` の
+  `.takt/workflows/rules/fraktor-coding-rules.md` で、`fraktor-port-node` の
   `all_steps.rules` が参照する。workflow-wide rule は字数で切られず、全文が
   本文に載る。`workflow_call` で呼ぶ mini-core の各ステップ（plan、implement、
   レビュー、修正）にも引き継がれる。plan、implement、port-test の本文に載る
   ことは、`takt prompt` と mock provider の実走で確かめた
-- workflow-wide rule は `pekko-port-node` の全ステップに載る（triage、
+- workflow-wide rule は `fraktor-port-node` の全ステップに載る（triage、
   classify-red、等価性レビュー、台帳更新を含む）。冒頭の一文で「Rust の
   コードやテストを計画、移植、作成、実装、修正、またはレビューする場合」に
   限っている。builtin の
   `findings-handling` と同じ書き方である
 - policy のまま残す案、knowledge に移す案は採らなかった。knowledge は
-  `pekko-porting-rules`（1,942 字）で上限近くまで埋まっている。`contract-change`
+  `fraktor-porting-rules`（1,942 字）で上限近くまで埋まっている。`contract-change`
   を project 側の同名 facet で上書きする案は、builtin の意味を全体で
   変えるので採らなかった
 
@@ -541,7 +541,7 @@ main の loop monitor（cycle が equivalence-review、develop の順）は発�
   それより前の指摘は連続に数えられない。例：2 回目のラウンドで verify_green が
   1 度落ちると、judge が呼ばれるのは 3 回目ではなく 4 回目の指摘になる。
   takt の照合は並びの完全一致で、設定では避けられない
-- 全体の上限は `max_steps` が持つ。親 `pekko-porting-ng` の `max_steps: 80` が
+- 全体の上限は `max_steps` が持つ。親 `fraktor-porting-ng` の `max_steps: 80` が
   run 全体の予算で、子ワークフローと mini-core の中のステップも同じ予算から
   引かれる。エージェントステップ、system step、judge の呼び出しが 1 ずつ
   消費し、`workflow_call` 自体は消費しない。予算に達すると run は止まる
@@ -602,7 +602,7 @@ review 系と同じく judge が判定する（2026-11-11、ユーザー決定�
   1 回 2 ステップで、39 回前後になる
 
 G0a の発行コマンドで参照した旧 fraktor-rs の
-`pekko-porting` ワークフローをそのまま使う前提は置き直す。ng の決定済み設計から
+旧移植ワークフローをそのまま使う前提は置き直す。ng の決定済み設計から
 ワークフローを設計し直すための叩き台であり、決定ではない。
 なお旧ワークフローのステップ定義自体は旧リポジトリには無く（persona の割り当てが
 `.takt/config-claude.yaml` に残るのみ）、本書は ng の要件からの新規設計である。
@@ -670,8 +670,8 @@ G0a の発行コマンドで参照した旧 fraktor-rs の
   移植の忠実さ（テストの弱体化、ケースの取りこぼし、近似の混入）と、
   振る舞い互換（API と意味論が Pekko とず
 れていないか）
-- 旧 fraktor-rs の persona 名（pekko-porting-qa-reviewer、
-  pekko-porting-compat-reviewer）を踏襲する
+- 旧 fraktor-rs の persona 名（移植 QA レビューと互換レビューの 2 つの
+  persona）を踏襲する
 - provider: 実装者と別系統のクラウド上位モデル固定
 - 指摘あり → implement へ差し戻し（ループ上限つき）。なし → ledger-update へ。
   指摘はないが、原典または移植側を確認できず等価性を判断できない → ABORT
@@ -713,7 +713,7 @@ TAKT は HOTL（Human on the Loop）の道具であり、run の途中に同期�
   全ステップをクラウドで回し、手順が固まってから下ろす
 - 機械系（verify-red、verify-green、rollup）はモデルを使わない
 
-## 5. 旧 fraktor-rs の pekko-porting との違い
+## 5. 旧 fraktor-rs の移植ワークフローとの違い
 
 - 検証器が dylint から syn checker に替わる（決定済み）。aislop は継続する
 - 進捗の正が gap-analysis 文書から台帳に替わり、状態遷移と完了判定が
@@ -758,4 +758,4 @@ output-contract は、ゼロから書かず **TAKT の標準ファセットを�
 | ループ判定（review 系 1 本、verify 系 2 本） | persona: supervisor | instruction は loop-monitor-reviewers-fix を継承＋差分：人間向け要約。verify 系は直近の system step の出力も渡す |
 
 ng 固有の規約は各 instruction に散らさず、knowledge ファセット
-（例：`pekko-porting-rules`）に集約し、必要なステップから参照する。
+（例：`fraktor-porting-rules`）に集約し、必要なステップから参照する。

@@ -36,7 +36,7 @@ Apache Pekko v1.7.1 のテストスイートを正として Rust へ移植する
   勝手に広げず報告して止まる
 - 静的チェック（syn ベースの単一チェッカー、tools/syn-check）のルールは、
   検証ゲートで初めて知る「後出し」にしない。同じ内容を workflow rule
-  `pekko-coding-rules` として実装前に提示し、チェッカーは事後の裏付けと
+  `fraktor-coding-rules` として実装前に提示し、チェッカーは事後の裏付けと
   して使う。ルールの正はチェッカー側の定義
 
 ## 所有権モデル（accepted）

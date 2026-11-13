@@ -10,14 +10,14 @@ use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::actor_system::ActorSystem;
 use fraktor_actor::kernel::message::Message;
 
-use crate::pekkospec::pekko_spec_hooks::PekkoSpecHooks;
+use crate::fraktorspec::fraktor_spec_hooks::FraktorSpecHooks;
 use crate::test_kit::expected_messages::ClassOf;
 use crate::test_kit::AutoPilot;
 use crate::test_kit::TestKit;
 use crate::test_kit_extension::TestKitSettings;
 
 #[cfg(test)]
-#[path = "pekko_spec_test.rs"]
+#[path = "fraktor_spec_test.rs"]
 mod tests;
 
 /// Owns the actor system of a test and stops it when the test is done.
@@ -35,16 +35,16 @@ mod tests;
 /// The system is created with a panic catcher, so a failing actor of the test
 /// becomes a supervisor decision instead of unwinding through the test. Pekko
 /// gets the same behaviour from its dispatcher.
-pub struct PekkoSpec {
+pub struct FraktorSpec {
   test_kit: TestKit,
-  hooks: Box<dyn PekkoSpecHooks>,
+  hooks: Box<dyn FraktorSpecHooks>,
   terminated: bool,
 }
 
-impl PekkoSpec {
+impl FraktorSpec {
   /// Creates the actor system with the given name, its test kit, and the test
   /// actor, then runs `at_startup`.
-  pub fn with_hooks(system_name: &str, hooks: Box<dyn PekkoSpecHooks>) -> Self {
+  pub fn with_hooks(system_name: &str, hooks: Box<dyn FraktorSpecHooks>) -> Self {
     let system =
       ActorSystem::with_failure_catcher(system_name, Arc::new(ChannelBoundary::new()), Arc::new(UnwindCatcher));
     let mut spec = Self { test_kit: TestKit::new(system), hooks, terminated: false };
@@ -175,4 +175,4 @@ impl PekkoSpec {
 
 struct NoHooks;
 
-impl PekkoSpecHooks for NoHooks {}
+impl FraktorSpecHooks for NoHooks {}

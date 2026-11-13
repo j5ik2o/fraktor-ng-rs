@@ -9,8 +9,8 @@ use crate::test_kit::TestKit;
 /// `atStartup` runs inside `beforeAll`, and `beforeTermination` and
 /// `afterTermination` run inside `afterAll` around `shutdown`. Pekko inherits
 /// and overrides them; the port takes the overrides as one object because a
-/// Rust type cannot inherit from `PekkoSpec` and override its methods.
-pub trait PekkoSpecHooks {
+/// Rust type cannot inherit from `FraktorSpec` and override its methods.
+pub trait FraktorSpecHooks {
   /// Runs after the actor system and the test kit are ready.
   fn at_startup(&mut self, test_kit: &mut TestKit) {
     let _ = test_kit;

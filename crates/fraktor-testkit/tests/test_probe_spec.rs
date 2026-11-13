@@ -13,7 +13,7 @@ use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::actor_system::ActorSystem;
 use fraktor_actor::kernel::message::Message;
 use fraktor_actor::kernel::supervision::SupervisorStrategy;
-use fraktor_testkit::pekkospec::PekkoSpec;
+use fraktor_testkit::fraktorspec::FraktorSpec;
 use fraktor_testkit::test_actors::echo_actor_props;
 use fraktor_testkit::test_kit::{expected_messages::ClassOf, AutoPilot, AutoPilotControl, TestProbe};
 
@@ -32,46 +32,42 @@ fn one_second() -> Duration {
 }
 
 struct TestProbeSpecCase {
-  pekko_spec: PekkoSpec,
+  fraktor_spec: FraktorSpec,
 }
 
 impl TestProbeSpecCase {
   fn new() -> Self {
-    Self { pekko_spec: PekkoSpec::new(CUSTOM_SPEC_SYSTEM_NAME) }
+    Self { fraktor_spec: FraktorSpec::new(CUSTOM_SPEC_SYSTEM_NAME) }
   }
 
   fn test_probe(&mut self) -> TestProbe {
-    TestProbe::new(self.pekko_spec.system_mut())
+    TestProbe::new(self.fraktor_spec.system_mut())
   }
 
   fn test_probe_named(&mut self, name: &str) -> TestProbe {
-    TestProbe::with_name(self.pekko_spec.system_mut(), name)
+    TestProbe::with_name(self.fraktor_spec.system_mut(), name)
   }
 
   fn system(&mut self) -> &mut ActorSystem {
-    self.pekko_spec.system_mut()
+    self.fraktor_spec.system_mut()
   }
 
   fn test_actor(&self) -> ActorRef {
-    self.pekko_spec.test_actor()
+    self.fraktor_spec.test_actor()
   }
 
   fn expect_msg(&mut self, expected: &str) {
-    self.pekko_spec.expect_msg(expected);
-  }
-
-  fn expect_msg_within(&mut self, within: Duration, expected: &str) {
-    self.pekko_spec.expect_msg_within(within, expected);
+    self.fraktor_spec.expect_msg(expected);
   }
 
   fn ignore_msg(&mut self, filter: impl Fn(&Message) -> bool + Send + Sync + 'static) {
-    self.pekko_spec.test_kit_mut().ignore_msg(filter);
+    self.fraktor_spec.test_kit_mut().ignore_msg(filter);
   }
 }
 
 impl Drop for TestProbeSpecCase {
   fn drop(&mut self) {
-    self.pekko_spec.terminate();
+    self.fraktor_spec.terminate();
   }
 }
 
@@ -189,7 +185,7 @@ fn restart_a_failing_child_if_the_given_supervisor_says_so() {
     SupervisorStrategy::default_strategy(),
   );
 
-  spec.pekko_spec.await_assert(Duration::from_secs(3), Duration::from_millis(100), || {
+  spec.fraktor_spec.await_assert(Duration::from_secs(3), Duration::from_millis(100), || {
     child.tell("hello", child.clone());
     assert!(restarts.load(Ordering::SeqCst) > 1, "the failing child was not restarted");
   });
@@ -260,13 +256,13 @@ fn be_able_to_expect_primitive_types() {
   for _ in 1..=7 {
     test_actor.tell(42_i32, test_actor.clone());
   }
-  assert_eq!(spec.pekko_spec.expect_msg_type::<i32>(), 42);
-  assert_eq!(spec.pekko_spec.expect_msg_any_class_of(&[ClassOf::of::<i32>()]), 42);
-  assert_eq!(spec.pekko_spec.expect_msg_all_class_of(&[ClassOf::of::<i32>()]), vec![42]);
-  assert_eq!(spec.pekko_spec.expect_msg_all_conforming_of(&[ClassOf::of::<i32>()]), vec![42]);
-  assert_eq!(spec.pekko_spec.expect_msg_all_conforming_of_within(five_seconds(), &[ClassOf::of::<i32>()]), vec![42]);
-  assert_eq!(spec.pekko_spec.expect_msg_all_class_of(&[ClassOf::of::<i32>()]), vec![42]);
-  assert_eq!(spec.pekko_spec.expect_msg_all_class_of_within(five_seconds(), &[ClassOf::of::<i32>()]), vec![42]);
+  assert_eq!(spec.fraktor_spec.expect_msg_type::<i32>(), 42);
+  assert_eq!(spec.fraktor_spec.expect_msg_any_class_of(&[ClassOf::of::<i32>()]), 42);
+  assert_eq!(spec.fraktor_spec.expect_msg_all_class_of(&[ClassOf::of::<i32>()]), vec![42]);
+  assert_eq!(spec.fraktor_spec.expect_msg_all_conforming_of(&[ClassOf::of::<i32>()]), vec![42]);
+  assert_eq!(spec.fraktor_spec.expect_msg_all_conforming_of_within(five_seconds(), &[ClassOf::of::<i32>()]), vec![42]);
+  assert_eq!(spec.fraktor_spec.expect_msg_all_class_of(&[ClassOf::of::<i32>()]), vec![42]);
+  assert_eq!(spec.fraktor_spec.expect_msg_all_class_of_within(five_seconds(), &[ClassOf::of::<i32>()]), vec![42]);
 }
 
 // "A TestProbe" must { "be able to fish for messages" in { ... } }
@@ -360,7 +356,7 @@ fn expect_no_message_should_pull_the_thingy() {
   probe.ref_handle().tell("nein", probe.ref_handle());
   probe.ref_handle().tell("nie", probe.ref_handle());
 
-  spec.pekko_spec.eventually(Duration::from_secs(3), Duration::from_millis(50), || {
+  spec.fraktor_spec.eventually(Duration::from_secs(3), Duration::from_millis(50), || {
     probe.expect_no_message(Duration::from_millis(100));
   });
 
