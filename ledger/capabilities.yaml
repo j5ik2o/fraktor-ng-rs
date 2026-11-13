@@ -70,7 +70,7 @@ capabilities:
   label: EventFilter
   category: classic
   regex: \b(EventFilter|filterEvents|filterException)\b
-  provided_by: null
+  provided_by: G0d
 - id: test-latch
   label: TestLatch
   category: classic
