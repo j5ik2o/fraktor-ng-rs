@@ -11,8 +11,11 @@ mod tests;
 /// Mirrors `org.apache.pekko.actor.SupervisorStrategy` for the strategies that
 /// the ported tests need:
 ///
-/// - `default_strategy`, which restarts every failed child without a limit,
-///   and `stopping_strategy`, which stops it, as the test probe uses them;
+/// - `default_strategy`, which restarts every failed child without a limit but
+///   stops it when the failure is an initialization failure or a `Kill`, as the
+///   default decider does for `ActorInitializationException` and
+///   `ActorKilledException`, and `stopping_strategy`, which stops it, as the
+///   test probe uses them;
 /// - `one_for_one`, which restarts a failed child until its retry count runs
 ///   out and then stops it;
 /// - `one_for_one_restarting_initialization_failures`, which applies the same
@@ -31,7 +34,9 @@ pub struct SupervisorStrategy {
 /// The internal decision rule of a [`SupervisorStrategy`].
 #[derive(Clone, Copy)]
 enum Policy {
-  /// Restart every failure, as `SupervisorStrategy.defaultStrategy`.
+  /// Restart every failure except an initialization failure or a `Kill`, which
+  /// it stops, as `SupervisorStrategy.defaultStrategy` with Pekko's default
+  /// decider does.
   RestartAlways,
   /// Stop every failure, as `SupervisorStrategy.stoppingStrategy`.
   StopAlways,
@@ -88,14 +93,18 @@ impl SupervisorStrategy {
   /// Returns the action to take for a failed child.
   ///
   /// `restart_count` is the number of restart requests this child has already
-  /// made. Mirrors `FaultHandling.requestRestartPermission`: the request adds
-  /// one and is allowed while the result does not exceed the maximum.
-  pub(crate) fn decide(&self, restart_count: u32, initialization_failed: bool) -> Directive {
+  /// made. `failure` is the kind of failure the child raised. Mirrors
+  /// `FaultHandling.requestRestartPermission`: the request adds one and is
+  /// allowed while the result does not exceed the maximum.
+  pub(crate) fn decide(&self, restart_count: u32, failure: FailureKind) -> Directive {
     match self.policy {
-      | Policy::RestartAlways => Directive::Restart,
+      | Policy::RestartAlways => match failure {
+        | FailureKind::MessageHandling => Directive::Restart,
+        | FailureKind::Initialization | FailureKind::Killed => Directive::Stop,
+      },
       | Policy::StopAlways => Directive::Stop,
       | Policy::OneForOne { max_retries, restart_initialization_failures } => {
-        if initialization_failed && !restart_initialization_failures {
+        if failure == FailureKind::Initialization && !restart_initialization_failures {
           return Directive::Stop;
         }
         let count = restart_count.saturating_add(1);
@@ -107,6 +116,22 @@ impl SupervisorStrategy {
       },
     }
   }
+}
+
+/// The kind of failure a child raised, as the default decider distinguishes it.
+///
+/// Mirrors the parts of `org.apache.pekko.actor.FaultHandling.defaultDecider`
+/// that the strategies of this goal need: a failure during startup maps to
+/// `Stop`, a `Kill` maps to `Stop`, and any other failure maps to `Restart`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FailureKind {
+  /// The child failed while it was being created or in `preStart`, which Pekko
+  /// wraps in `ActorInitializationException`.
+  Initialization,
+  /// The child received `Kill`, which Pekko raises as `ActorKilledException`.
+  Killed,
+  /// The child threw while handling a message.
+  MessageHandling,
 }
 
 impl core::fmt::Debug for SupervisorStrategy {

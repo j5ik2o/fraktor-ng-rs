@@ -20,6 +20,7 @@ use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
 use crate::kernel::supervision::Directive;
 use crate::kernel::supervision::FailureCatcher;
+use crate::kernel::supervision::FailureKind;
 use crate::kernel::supervision::RunOutcome;
 use crate::kernel::supervision::SupervisorStrategy;
 
@@ -203,7 +204,7 @@ impl Executor {
           self.publish_child_failure(&self_ref, ACTOR_INITIALIZATION_CAUSE, &message);
           let strategy = *self.cells[index].strategy();
           let count = self.cells[index].restart_count();
-          match strategy.decide(count, true) {
+          match strategy.decide(count, FailureKind::Initialization) {
             | Directive::Restart => self.cells[index].record_restart_request(),
             | Directive::Stop => {
               self.stop_as_never_started(&self_ref);
@@ -483,7 +484,7 @@ impl Executor {
     self.publish_child_failure(target, cause_name, message);
     let strategy = *cell.strategy();
     let count = cell.restart_count();
-    match strategy.decide(count, false) {
+    match strategy.decide(count, FailureKind::MessageHandling) {
       | Directive::Restart => {
         cell.record_restart_request();
         self.restart_cell(target, cell, cause_name, message);
@@ -536,13 +537,14 @@ impl Executor {
   }
 
   /// Handles a `Kill`: the instance fails with `ActorKilledException` and the
-  /// supervisor decides as for any other failure.
+  /// supervisor decides for a killed child, which the default decider maps to
+  /// `Stop`.
   fn handle_kill(&mut self, index: usize, recipient: &ActorRef) {
     self.publish_child_failure(recipient, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE);
     let mut cell = self.cells.remove(index);
     let strategy = *cell.strategy();
     let count = cell.restart_count();
-    match strategy.decide(count, false) {
+    match strategy.decide(count, FailureKind::Killed) {
       | Directive::Restart => {
         cell.record_restart_request();
         self.restart_cell(recipient, cell, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE);
