@@ -21,6 +21,11 @@ impl ActorPath {
     Self { root, elements }
   }
 
+  /// Returns the root path of an actor system, with no child elements.
+  pub(crate) fn from_root(root: RootActorPath) -> Self {
+    Self::new(root, Vec::new())
+  }
+
   /// Parses an actor path, returning `None` when the string is malformed.
   pub fn from_string(s: &str) -> Option<Self> {
     let parts = UriParts::parse(s)?;
@@ -76,6 +81,28 @@ impl ActorPath {
     } else {
       self.elements.clone()
     }
+  }
+
+  /// Returns the name of the last path element, or the root name when the
+  /// path has no elements.
+  ///
+  /// Mirrors `org.apache.pekko.actor.ActorPath.name`, which a test compares
+  /// with the name an actor was created under.
+  pub fn name(&self) -> &str {
+    match self.elements.last() {
+      | Some(name) => name.as_str(),
+      | None => self.root.name(),
+    }
+  }
+
+  /// Returns the path without its last element, or this path when it has no
+  /// element.
+  ///
+  /// Mirrors `org.apache.pekko.actor.ActorPath.parent`.
+  pub fn parent(&self) -> Self {
+    let mut elements = self.elements.clone();
+    elements.pop();
+    Self::new(self.root.clone(), elements)
   }
 
   /// Returns the path elements joined as `/a/b`, or `/` for the root.

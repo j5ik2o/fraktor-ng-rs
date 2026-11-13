@@ -5,3 +5,6 @@ edition = "2021"
 publish = false
 
 [dependencies]
+
+[dev-dependencies]
+fraktor-testkit = { path = "../fraktor-testkit" }

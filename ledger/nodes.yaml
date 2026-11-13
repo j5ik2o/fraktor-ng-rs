@@ -2851,7 +2851,7 @@ nodes:
     module: actor-tests
     class: ForwardActorSpec
     test_cases_approx: 2
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -2862,13 +2862,13 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 2
+    ported: 2
+    passing: 2
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/forward_actor_spec.rs
   goal: G0c
 - id: actor-tests/src/test/scala/org/apache/pekko/util/FrequencyListSpec.scala
   name: actor-tests:FrequencyListSpec
@@ -33063,7 +33063,7 @@ nodes:
     module: testkit
     class: TestProbeSpec
     test_cases_approx: 16
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -33074,13 +33074,13 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 16
+    ported: 16
+    passing: 16
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-testkit
+    test_file: crates/fraktor-testkit/tests/test_probe_spec.rs
   goal: G0c
 - id: testkit/src/test/scala/org/apache/pekko/testkit/TestTimeSpec.scala
   name: testkit:TestTimeSpec
