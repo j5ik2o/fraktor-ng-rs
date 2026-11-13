@@ -14,14 +14,29 @@ unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TRE
 
 # TAKT の runtime.prepare サンドボックスは XDG_CONFIG_HOME を作業ツリー内の空ディレクトリへ
 # 向ける。run 用 opencode サーバは provider 定義を利用者設定から解決するため、graft しないと
-# モデル解決が「Model unavailable」で失敗する。利用者設定が存在し、サンドボックス側の
-# opencode.json が無いか既に symlink のときだけ graft する（冪等、stdout へは出さない）。
-oc_user_cfg="${HOME:-}/.config/opencode/opencode.json"
+# モデル解決が「Model unavailable」で失敗する。利用者設定（opencode.json / opencode.jsonc）が
+# 存在し、サンドボックス側の同名ファイルが無いか既に symlink のときだけ graft する
+# （冪等、stdout へは出さない）。両方存在するときも両方 graft し、優先規則は OpenCode 本体の
+# 解決に委ねて利用者環境と同じ扱いにする。graft は file 単位のため、利用者設定内の相対
+# {file:...} 参照は graft 後はサンドボックス側のディレクトリ基準で解決される（この環境の
+# 利用者設定に {file:...} 参照が無いことは 2026-11-13 に確認済み）。
 oc_sb_dir="${XDG_CONFIG_HOME:-$PWD/.takt/.runtime/config}/opencode"
-if [ -f "$oc_user_cfg" ] && { [ ! -e "$oc_sb_dir/opencode.json" ] || [ -L "$oc_sb_dir/opencode.json" ]; }; then
-  mkdir -p "$oc_sb_dir"
-  ln -sfn "$oc_user_cfg" "$oc_sb_dir/opencode.json"
-fi
+for oc_name in opencode.json opencode.jsonc; do
+  oc_user_cfg="${HOME:-}/.config/opencode/$oc_name"
+  oc_sb_cfg="$oc_sb_dir/$oc_name"
+  # 同一ファイルを指すときは graft しない（非サンドボックス実行で自己参照 symlink を作らない）。
+  if [ "$oc_user_cfg" = "$oc_sb_cfg" ]; then
+    continue
+  fi
+  if [ -f "$oc_user_cfg" ] && { [ ! -e "$oc_sb_cfg" ] || [ -L "$oc_sb_cfg" ]; }; then
+    # 既に同じ利用者設定への symlink なら作り直さない。
+    if [ -L "$oc_sb_cfg" ] && [ "$(readlink "$oc_sb_cfg")" = "$oc_user_cfg" ]; then
+      continue
+    fi
+    mkdir -p "$oc_sb_dir"
+    ln -sfn "$oc_user_cfg" "$oc_sb_cfg"
+  fi
+done
 
 target="$PWD/pekko"
 local_repo="${PEKKO_SOURCE_LOCAL_REPO:-/Users/j5ik2o/Sources/github.com/j5ik2o/pekko}"
