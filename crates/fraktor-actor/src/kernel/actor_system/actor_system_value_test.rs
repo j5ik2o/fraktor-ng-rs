@@ -427,3 +427,332 @@ fn a_child_started_with_the_stopping_strategy_stops_and_tells_its_watcher() {
   assert!(seen[0].existence_confirmed(), "a stopped child was watched before it stopped");
   assert_eq!(failures.load(Ordering::SeqCst), 1, "the stopping strategy let the child run again");
 }
+
+#[test]
+fn a_function_ref_stops_running_its_handler_after_terminate() {
+  let seen = Arc::new(Mutex::new(Vec::new()));
+  let observer = Arc::clone(&seen);
+  let mut system = system("PekkoCustomSpec");
+  let test_actor = system.function_ref("testActor", move |_sender: &ActorRef, message: Message| {
+    if let Some(text) = message.downcast_ref::<&'static str>() {
+      observer.lock().unwrap().push(*text);
+    }
+  });
+
+  test_actor.tell("before", test_actor.clone());
+  let before = seen.lock().unwrap().len();
+
+  system.terminate();
+  test_actor.tell("after", test_actor.clone());
+
+  assert_eq!(before, 1, "the handler did not run before the terminate");
+  assert_eq!(*seen.lock().unwrap(), alloc::vec!["before"], "the handler ran after the terminate");
+}
+
+#[test]
+#[should_panic(expected = "terminat")]
+fn function_ref_after_terminate_is_rejected() {
+  let mut system = system("PekkoCustomSpec");
+  system.terminate();
+
+  system.function_ref("testActor", |_sender: &ActorRef, _message: Message| {});
+}
+
+#[test]
+#[should_panic(expected = "terminat")]
+fn weak_spawn_child_after_terminate_is_rejected() {
+  let mut system = system("PekkoCustomSpec");
+  let parent = system.actor_of(Props::new(|| NoOp));
+  let weak = system.downgrade();
+  system.terminate();
+
+  weak.spawn_child(
+    &parent,
+    Props::new(|| NoOp),
+    Some("late"),
+    crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+  );
+}
+
+#[test]
+#[should_panic(expected = "terminat")]
+fn weak_function_ref_after_terminate_is_rejected() {
+  let mut system = system("PekkoCustomSpec");
+  let weak = system.downgrade();
+  system.terminate();
+
+  weak.function_ref("late", |_sender: &ActorRef, _message: Message| {});
+}
+
+#[test]
+fn watching_a_live_function_ref_sends_no_terminated() {
+  let observed = Arc::new(Mutex::new(Vec::<Terminated>::new()));
+  let recorder = Arc::clone(&observed);
+  let mut system = system("PekkoCustomSpec");
+  let watcher = system.function_ref("watcher", move |_sender: &ActorRef, message: Message| {
+    if let Some(terminated) = message.downcast_ref::<Terminated>() {
+      recorder.lock().unwrap().push(terminated.clone());
+    }
+  });
+  let target = system.function_ref("target", |_sender: &ActorRef, _message: Message| {});
+
+  system.watch(&watcher, &target);
+  system.run_until_idle();
+
+  assert!(observed.lock().unwrap().is_empty(), "a live function reference was reported as terminated");
+}
+
+#[test]
+fn stopping_a_parent_stops_its_child_first_and_tells_the_child_watcher() {
+  let order = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+  let child_seen = Arc::new(Mutex::new(Vec::<Terminated>::new()));
+  let parent_seen = Arc::new(Mutex::new(Vec::<Terminated>::new()));
+  let mut system = system("PekkoCustomSpec");
+
+  let parent = system.actor_of(Props::new(|| NoOp));
+  let child = system.downgrade().spawn_child(
+    &parent,
+    Props::new({
+      let order = Arc::clone(&order);
+      move || OrderedSink { order: Arc::clone(&order), label: "child delivered" }
+    }),
+    Some("child"),
+    crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+  );
+
+  let child_watcher = system.actor_of(Props::new({
+    let order = Arc::clone(&order);
+    let child_seen = Arc::clone(&child_seen);
+    move || TerminatedSink { order: Arc::clone(&order), seen: Arc::clone(&child_seen), label: "child terminated" }
+  }));
+  let parent_watcher = system.actor_of(Props::new({
+    let order = Arc::clone(&order);
+    let parent_seen = Arc::clone(&parent_seen);
+    move || TerminatedSink { order: Arc::clone(&order), seen: Arc::clone(&parent_seen), label: "parent terminated" }
+  }));
+
+  system.watch(&child_watcher, &child);
+  system.watch(&parent_watcher, &parent);
+
+  system.stop(&parent);
+  child.tell("late", parent.clone());
+  system.run_until_idle();
+
+  assert_eq!(
+    *order.lock().unwrap(),
+    alloc::vec!["child terminated", "parent terminated"],
+    "the notices arrived in the wrong order"
+  );
+  let child_notices = child_seen.lock().unwrap();
+  assert_eq!(child_notices.len(), 1, "the child watcher was not told that the child stopped");
+  assert!(child_notices[0].existence_confirmed());
+  let parent_notices = parent_seen.lock().unwrap();
+  assert_eq!(parent_notices.len(), 1, "the parent watcher was not told that the parent stopped");
+  assert!(parent_notices[0].existence_confirmed());
+}
+
+struct OrderedSink {
+  order: Arc<Mutex<Vec<&'static str>>>,
+  label: &'static str,
+}
+
+#[test]
+fn stopping_a_watched_function_ref_tells_its_watcher_and_stops_its_handler() {
+  let observed = Arc::new(Mutex::new(Vec::<Terminated>::new()));
+  let handled = Arc::new(AtomicUsize::new(0));
+  let recorder = Arc::clone(&observed);
+  let mut system = system("PekkoCustomSpec");
+  let watcher = system.function_ref("watcher", move |_sender: &ActorRef, message: Message| {
+    if let Some(terminated) = message.downcast_ref::<Terminated>() {
+      recorder.lock().unwrap().push(terminated.clone());
+    }
+  });
+  let counted = Arc::clone(&handled);
+  let target = system.function_ref("target", move |_sender: &ActorRef, _message: Message| {
+    counted.fetch_add(1, Ordering::SeqCst);
+  });
+
+  system.watch(&watcher, &target);
+  system.run_until_idle();
+  assert!(observed.lock().unwrap().is_empty(), "a live function reference was reported as terminated");
+
+  system.stop(&target);
+  system.run_until_idle();
+
+  let notices = observed.lock().unwrap();
+  assert_eq!(notices.len(), 1, "the watcher of a stopped function reference was not told");
+  assert_eq!(notices[0].target(), &target);
+  assert!(notices[0].existence_confirmed(), "a watched function reference was stopped after the watch");
+  assert!(!notices[0].address_terminated());
+  drop(notices);
+
+  target.tell("after", target.clone());
+  assert_eq!(handled.load(Ordering::SeqCst), 0, "a stopped function reference still ran its handler");
+}
+
+#[test]
+fn stopping_a_function_ref_stops_its_child_first_and_tells_both_watchers() {
+  let order = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+  let child_seen = Arc::new(Mutex::new(Vec::<Terminated>::new()));
+  let target_seen = Arc::new(Mutex::new(Vec::<Terminated>::new()));
+  let mut system = system("PekkoCustomSpec");
+
+  let target = system.function_ref("target", |_sender: &ActorRef, _message: Message| {});
+  let child = system.downgrade().spawn_child(
+    &target,
+    Props::new(|| NoOp),
+    Some("child"),
+    crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+  );
+
+  let child_watcher = system.actor_of(Props::new({
+    let order = Arc::clone(&order);
+    let child_seen = Arc::clone(&child_seen);
+    move || TerminatedSink { order: Arc::clone(&order), seen: Arc::clone(&child_seen), label: "child terminated" }
+  }));
+  let target_watcher = system.actor_of(Props::new({
+    let order = Arc::clone(&order);
+    let target_seen = Arc::clone(&target_seen);
+    move || TerminatedSink { order: Arc::clone(&order), seen: Arc::clone(&target_seen), label: "target terminated" }
+  }));
+
+  system.watch(&child_watcher, &child);
+  system.watch(&target_watcher, &target);
+
+  system.stop(&target);
+  system.run_until_idle();
+
+  assert_eq!(
+    *order.lock().unwrap(),
+    alloc::vec!["child terminated", "target terminated"],
+    "a function reference stopped before its child"
+  );
+  let child_notices = child_seen.lock().unwrap();
+  assert_eq!(child_notices.len(), 1, "the child watcher was not told that the child stopped");
+  assert!(child_notices[0].existence_confirmed());
+  let target_notices = target_seen.lock().unwrap();
+  assert_eq!(target_notices.len(), 1, "the watcher of the function reference was not told");
+  assert!(target_notices[0].existence_confirmed());
+}
+
+impl Actor for OrderedSink {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {
+    self.order.lock().unwrap().push(self.label);
+  }
+}
+
+struct TerminatedSink {
+  order: Arc<Mutex<Vec<&'static str>>>,
+  seen: Arc<Mutex<Vec<Terminated>>>,
+  label: &'static str,
+}
+
+impl Actor for TerminatedSink {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
+    if let Some(terminated) = message.downcast_ref::<Terminated>() {
+      self.order.lock().unwrap().push(self.label);
+      self.seen.lock().unwrap().push(terminated.clone());
+    }
+  }
+}
+
+struct PanicsOnRestart;
+
+impl Actor for PanicsOnRestart {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
+    if message.downcast_ref::<&'static str>() == Some(&"boom") {
+      panic!("simulated failure");
+    }
+  }
+
+  fn post_restart(&mut self) {
+    panic!("simulated failure of postRestart");
+  }
+}
+
+/// Fails the first message, so the default strategy re-creates it; the recipe
+/// passed to `Props` then panics on the next creation, which puts the failure
+/// in the executor's restart path.
+struct FailsFirstMessage;
+
+impl Actor for FailsFirstMessage {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
+    if message.downcast_ref::<&'static str>() == Some(&"boom") {
+      panic!("simulated failure");
+    }
+  }
+}
+
+fn fails_first_message_or_panics_on_recreation(creations: Arc<AtomicUsize>) -> Props {
+  Props::new(move || {
+    let created = creations.fetch_add(1, Ordering::SeqCst);
+    if created >= 1 {
+      panic!("simulated failure of the recipe");
+    }
+    FailsFirstMessage
+  })
+}
+
+#[test]
+fn a_child_whose_post_restart_fails_is_stopped() {
+  let observed = Arc::new(Mutex::new(Vec::<Terminated>::new()));
+  let watched = Arc::new(Mutex::new(None));
+  let boundary: Arc<dyn ShardBoundary> = Arc::new(QueueBoundary::new());
+  let mut system =
+    ActorSystem::with_failure_catcher("PekkoCustomSpec", boundary, Arc::new(crate::adaptor::UnwindCatcher));
+  let watcher = system.actor_of(Props::new({
+    let observed = Arc::clone(&observed);
+    let watched = Arc::clone(&watched);
+    move || StopWatcher { observed: Arc::clone(&observed), watched: Arc::clone(&watched) }
+  }));
+  let parent = system.actor_of(Props::new(|| NoOp));
+  let child = system.downgrade().spawn_child(
+    &parent,
+    Props::new(|| PanicsOnRestart),
+    Some("child"),
+    crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+  );
+  *watched.lock().unwrap() = Some(child.clone());
+  system.watch(&watcher, &child);
+
+  child.tell("boom", watcher.clone());
+  let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| system.run_until_idle()));
+
+  assert!(outcome.is_ok(), "the failure of postRestart escaped the catcher");
+  let seen = observed.lock().unwrap();
+  assert_eq!(seen.len(), 1, "the watcher did not receive exactly one Terminated");
+  assert!(seen[0].existence_confirmed(), "a stopping failure was reported as a late watch");
+}
+
+#[test]
+fn a_child_whose_factory_fails_on_restart_is_stopped() {
+  let creations = Arc::new(AtomicUsize::new(0));
+  let observed = Arc::new(Mutex::new(Vec::<Terminated>::new()));
+  let watched = Arc::new(Mutex::new(None));
+  let boundary: Arc<dyn ShardBoundary> = Arc::new(QueueBoundary::new());
+  let mut system =
+    ActorSystem::with_failure_catcher("PekkoCustomSpec", boundary, Arc::new(crate::adaptor::UnwindCatcher));
+  let watcher = system.actor_of(Props::new({
+    let observed = Arc::clone(&observed);
+    let watched = Arc::clone(&watched);
+    move || StopWatcher { observed: Arc::clone(&observed), watched: Arc::clone(&watched) }
+  }));
+  let parent = system.actor_of(Props::new(|| NoOp));
+  let child = system.downgrade().spawn_child(
+    &parent,
+    fails_first_message_or_panics_on_recreation(Arc::clone(&creations)),
+    Some("child"),
+    crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+  );
+  *watched.lock().unwrap() = Some(child.clone());
+  system.watch(&watcher, &child);
+
+  child.tell("boom", watcher.clone());
+  let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| system.run_until_idle()));
+
+  assert!(outcome.is_ok(), "the failure of the recipe escaped the catcher");
+  assert_eq!(creations.load(Ordering::SeqCst), 2, "the child was not re-created once after the failed message");
+  let seen = observed.lock().unwrap();
+  assert_eq!(seen.len(), 1, "the watcher did not receive exactly one Terminated");
+  assert!(seen[0].existence_confirmed(), "a stopping failure was reported as a late watch");
+}

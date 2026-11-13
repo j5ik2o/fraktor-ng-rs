@@ -19,18 +19,39 @@ use crate::kernel::supervision::SupervisorStrategy;
 pub(crate) struct ActorCell {
   behavior: Box<dyn Actor>,
   self_ref: ActorRef,
+  parent: Option<ActorRef>,
   props: Props,
   strategy: SupervisorStrategy,
 }
 
 impl ActorCell {
-  pub(crate) fn new(behavior: Box<dyn Actor>, self_ref: ActorRef, props: Props, strategy: SupervisorStrategy) -> Self {
-    Self { behavior, self_ref, props, strategy }
+  pub(crate) fn new(
+    behavior: Box<dyn Actor>,
+    self_ref: ActorRef,
+    parent: Option<ActorRef>,
+    props: Props,
+    strategy: SupervisorStrategy,
+  ) -> Self {
+    Self { behavior, self_ref, parent, props, strategy }
   }
 
   /// Returns whether this cell is the actor that `recipient` addresses.
   pub(crate) fn accepts(&self, recipient: &ActorRef) -> bool {
     &self.self_ref == recipient
+  }
+
+  /// Returns the handle of the actor that this cell runs.
+  pub(crate) fn self_ref(&self) -> ActorRef {
+    self.self_ref.clone()
+  }
+
+  /// Returns whether this cell was started by `parent`.
+  ///
+  /// A child is told apart by the handle of its parent, not by the shape of its
+  /// path: two different parents may give a child the same name, and a path
+  /// prefix would then match the wrong actor.
+  pub(crate) fn is_child_of(&self, parent: &ActorRef) -> bool {
+    self.parent.as_ref() == Some(parent)
   }
 
   /// Returns the strategy this actor applies to its children.

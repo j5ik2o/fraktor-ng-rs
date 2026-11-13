@@ -22,6 +22,13 @@ pub(crate) type Handler = Arc<dyn Fn(&ActorRef, Message) + Send + Sync>;
 /// boundary, and posting to it calls the handler instead of queueing. Nothing
 /// is ever waiting here, so `poll` and `has_pending` report emptiness and the
 /// handler alone decides what the message does.
+///
+/// `post` reads `open` once and the handler runs to its end; `close` only stops
+/// a post that starts afterwards. A post that observed an open boundary before
+/// the close therefore still delivers, which is what Pekko does when a message
+/// is already being handled while the actor stops: the message in flight is
+/// finished, and its effect on the test actor's queue stays. The same holds for
+/// `ChannelBoundary`, where a post that takes the lock first is accepted.
 pub(crate) struct FunctionBoundary {
   handler: Handler,
   open: AtomicBool,

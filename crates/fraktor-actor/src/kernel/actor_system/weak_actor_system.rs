@@ -19,6 +19,11 @@ use crate::kernel::supervision::SupervisorStrategy;
 /// back-edge, which the ownership model permits. Calling it after the system
 /// is gone panics, so a probe used after its spec has been torn down fails
 /// loudly instead of silently doing nothing.
+///
+/// Once the system has been terminated, `spawn_child` and `function_ref` panic
+/// with the same cause as `ActorSystem::actor_of`, because the executor owns
+/// that state. Pekko's `attachChild` refuses a defunct guardian for the same
+/// reason (`pekko/actor/.../dungeon/Children.scala:313-314`).
 pub struct WeakActorSystem {
   name: String,
   executor: Weak<RefCell<Executor>>,
