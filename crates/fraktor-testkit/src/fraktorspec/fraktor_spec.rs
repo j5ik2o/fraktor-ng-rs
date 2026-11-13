@@ -10,6 +10,7 @@ use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::actor_system::ActorSystem;
 use fraktor_actor::kernel::message::Message;
 
+use crate::event_filter::EventSinkRegistry;
 use crate::fraktorspec::fraktor_spec_hooks::FraktorSpecHooks;
 use crate::test_kit::expected_messages::ClassOf;
 use crate::test_kit::AutoPilot;
@@ -47,6 +48,9 @@ impl FraktorSpec {
   pub fn with_hooks(system_name: &str, hooks: Box<dyn FraktorSpecHooks>) -> Self {
     let system =
       ActorSystem::with_failure_catcher(system_name, Arc::new(ChannelBoundary::new()), Arc::new(UnwindCatcher));
+    let registry = Arc::new(EventSinkRegistry::new());
+    system.set_event_sink(registry);
+    fraktor_actor::adaptor::attach_wait_driver(&system);
     let mut spec = Self { test_kit: TestKit::new(system), hooks, terminated: false };
     spec.hooks.at_startup(&mut spec.test_kit);
     spec

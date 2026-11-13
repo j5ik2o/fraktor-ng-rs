@@ -64,6 +64,15 @@ impl ActorSystem {
     system
   }
 
+  /// Installs `sink`, which receives the log events the system raises.
+  ///
+  /// Mirrors the role of Pekko's event stream for the failures of a faulty
+  /// actor: a test attaches a sink to watch the `Error` events of a stopped or
+  /// restarted child. A system created without a sink drops the events.
+  pub fn set_event_sink(&self, sink: Arc<dyn crate::kernel::actor::Logging::EventSink>) {
+    self.executor.borrow_mut().set_event_sink(sink);
+  }
+
   fn root_path(name: &str) -> ActorPath {
     let root = RootActorPath::new(Address::new(LOCAL_PROTOCOL, name));
     ActorPath::from_root(root)
@@ -159,6 +168,22 @@ impl ActorSystem {
   /// Returns whether the system has been terminated.
   pub fn is_terminated(&self) -> bool {
     self.executor.borrow().is_terminated()
+  }
+
+  /// Returns the identity of the shard boundary this system posts to.
+  ///
+  /// A waiting `ask` uses the same identity, taken from the recipient handle,
+  /// to find the step that drives this system.
+  pub fn shard_key(&self) -> usize {
+    self.executor.borrow().boundary_key()
+  }
+
+  /// Returns the event sink the system publishes to, if one was installed.
+  ///
+  /// The test kit reads it back to arm an `EventFilter` for the duration of an
+  /// `intercept`.
+  pub fn event_sink(&self) -> Option<Arc<dyn crate::kernel::actor::Logging::EventSink>> {
+    self.executor.borrow().event_sink()
   }
 }
 

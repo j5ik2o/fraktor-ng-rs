@@ -78,11 +78,12 @@ impl AskState {
 /// kernel may not use.
 pub struct AskFuture {
   slot: Arc<(Mutex<AskState>, Condvar)>,
+  driver_key: usize,
 }
 
 impl AskFuture {
-  fn new(slot: Arc<(Mutex<AskState>, Condvar)>) -> Self {
-    Self { slot }
+  fn new(slot: Arc<(Mutex<AskState>, Condvar)>, driver_key: usize) -> Self {
+    Self { slot, driver_key }
   }
 
   /// Returns whether a reply has arrived.
@@ -97,6 +98,11 @@ impl AskFuture {
   /// Panics with the elapsed time when no reply has arrived within `max`,
   /// mirroring the `TimeoutException` that `Await.result` throws.
   pub fn await_result(&self, max: Duration) -> Message {
+    let slot = self.slot.clone();
+    let key = self.driver_key;
+    if crate::adaptor::ask_driver::drive_until(key, max, || lock(&slot.0).reply.is_some()) {
+      return lock(&self.slot.0).reply.as_ref().expect("a driven wait completed with a reply").clone();
+    }
     let deadline = Instant::now() + max;
     let mut guard = lock(&self.slot.0);
     loop {
@@ -165,8 +171,9 @@ impl ActorRef {
       }
     };
     let replier = self.replier("ask", handler);
+    let driver_key = self.boundary_key();
     self.tell(Message::new(message), replier);
-    AskFuture::new(slot)
+    AskFuture::new(slot, driver_key)
   }
 
   fn replier<H>(&self, tag: &str, handler: H) -> ActorRef
