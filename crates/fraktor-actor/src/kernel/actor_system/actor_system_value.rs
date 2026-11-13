@@ -35,10 +35,13 @@ const LOCAL_PROTOCOL: &str = "pekko";
 /// can reach it after the guardian is gone. A `Weak` is the only shared
 /// pointer here; the executor stays singly owned by the system while the
 /// system is alive.
+///
+/// Whether the system has been terminated is kept by the executor, so a handle
+/// that reaches the system by its weak reference is refused in exactly the same
+/// way as this value.
 pub struct ActorSystem {
   name: String,
   executor: Rc<RefCell<Executor>>,
-  terminated: bool,
 }
 
 impl ActorSystem {
@@ -46,7 +49,7 @@ impl ActorSystem {
   /// `boundary` as the edge of their shard.
   pub fn new(name: &str, boundary: Arc<dyn ShardBoundary>) -> Self {
     let executor = Rc::new(RefCell::new(Executor::new(Self::root_path(name), boundary)));
-    Self { name: name.to_string(), executor, terminated: false }
+    Self { name: name.to_string(), executor }
   }
 
   /// Creates a running actor system that reports a failing actor to `catcher`.
@@ -82,7 +85,6 @@ impl ActorSystem {
   /// which throws `IllegalStateException` from `attachChild` when a defunct
   /// guardian cannot create children.
   pub fn actor_of(&mut self, props: Props) -> ActorRef {
-    self.assert_running();
     self.executor.borrow_mut().spawn_user(props)
   }
 
@@ -96,7 +98,12 @@ impl ActorSystem {
 
   /// Registers `watcher` to receive the `Terminated` notice of `target`.
   ///
-  /// Mirrors `ActorContext.watch` with the scope of the system's guardian.
+  /// Mirrors `ActorContext.watch` with the scope of the system's guardian. The
+  /// scope is the actors of this system and the function references that this
+  /// system made for its test actors. A target outside that scope, such as an
+  /// actor of another system, a reference that has already stopped, or the
+  /// reply address of an `ask`, is reported at once with `existence_confirmed =
+  /// false`; no later notice arrives for it, even if it stops afterwards.
   pub fn watch(&mut self, watcher: &ActorRef, target: &ActorRef) {
     self.executor.borrow_mut().watch(watcher, target);
   }
@@ -107,11 +114,14 @@ impl ActorSystem {
   /// calling-thread dispatcher: the handle shares no cell, and posting to it
   /// runs the handler before the sender returns. The path is
   /// `<root>/system/<name>`, mirroring `systemActorOf`.
+  ///
+  /// Panics once the system has been terminated, as `actor_of` does: Pekko's
+  /// `systemActorOf` asks the guardian for a child, so a defunct system refuses
+  /// it with the same cause.
   pub fn function_ref<H>(&mut self, name: &str, handler: H) -> ActorRef
   where
     H: Fn(&ActorRef, crate::kernel::message::Message) + Send + Sync + 'static,
   {
-    self.assert_running();
     self.executor.borrow_mut().function_ref(name, handler)
   }
 
@@ -141,19 +151,14 @@ impl ActorSystem {
 
   /// Stops the system. Calling it again is a no-op, as in Pekko.
   pub fn terminate(&mut self) {
-    if !self.terminated {
+    if !self.is_terminated() {
       self.executor.borrow_mut().stop_all();
-      self.terminated = true;
     }
   }
 
   /// Returns whether the system has been terminated.
   pub fn is_terminated(&self) -> bool {
-    self.terminated
-  }
-
-  fn assert_running(&self) {
-    assert!(!self.terminated, "cannot create children while terminating or terminated");
+    self.executor.borrow().is_terminated()
   }
 }
 
@@ -165,6 +170,6 @@ impl Drop for ActorSystem {
 
 impl fmt::Debug for ActorSystem {
   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-    formatter.debug_struct("ActorSystem").field("name", &self.name).field("terminated", &self.terminated).finish()
+    formatter.debug_struct("ActorSystem").field("name", &self.name).field("terminated", &self.is_terminated()).finish()
   }
 }

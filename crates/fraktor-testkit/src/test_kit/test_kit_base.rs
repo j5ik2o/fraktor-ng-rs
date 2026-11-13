@@ -187,6 +187,13 @@ impl TestKitBase {
   /// The message that fails the call is taken off the queue, so the next call
   /// checks the following period, but `lastMessage` is left untouched because
   /// Pekko only calls `queue.pop()` here and never `receiveOne`.
+  ///
+  /// `max` is used as given. Unlike `expectMsg`, Pekko does not dilate the
+  /// value of `expectNoMessage`; its own documentation says "Supplied value is
+  /// not dilated". This port has no argument-less `expectNoMessage` yet, so a
+  /// test that wants the dilated default computes it from the settings:
+  /// `let settings = TestKitSettings::from_system(system); settings.dilated(
+  /// settings.expect_no_message_default_timeout())`.
   pub(crate) fn expect_no_message(&mut self, max: Duration) {
     let start = Instant::now();
     let finish = start + max;
@@ -215,6 +222,12 @@ impl TestKitBase {
   /// whole call and hands the remaining time to `receiveOne` for each message,
   /// so every discarded message also updates `lastMessage`, and the call fails
   /// when the deadline passes before `predicate` accepts a message.
+  ///
+  /// Each iteration measures the remaining time again, as `fishForMessage`
+  /// does with `receiveOne(end - now)`. `receiveOne` still takes a message that
+  /// is already queued even when the remaining time is zero, which is what
+  /// Pekko's `pollFirst` does, so messages that are already waiting are never
+  /// abandoned at the deadline.
   pub(crate) fn fish_for_message(&mut self, max: Duration, predicate: impl Fn(&Message) -> bool) -> Message {
     let end = Instant::now() + max;
     loop {
@@ -233,6 +246,8 @@ impl TestKitBase {
   /// Mirrors `TestKitBase.fishForSpecificMessage`: like `fish_for_message`, it
   /// shares one deadline and updates `lastMessage` for each message it
   /// receives, and fails when the deadline passes before `pick` accepts one.
+  /// The remaining time is measured again on each iteration, and a message
+  /// that is already queued is still taken at the deadline.
   pub(crate) fn fish_for_specific_message<T>(&mut self, max: Duration, pick: impl Fn(&Message) -> Option<T>) -> T {
     let end = Instant::now() + max;
     loop {
@@ -272,6 +287,11 @@ impl TestKitBase {
 
   /// Runs `assertion` again and again until it stops failing or `max` has
   /// passed, mirroring ScalaTest's `Eventually`.
+  ///
+  /// The wait before the next attempt is `min(interval, remaining time)`, the
+  /// same shape as `awaitCond`: a long interval cannot use up the whole budget
+  /// after the first failure, and the last attempt still happens before the
+  /// deadline.
   pub(crate) fn eventually(&mut self, max: Duration, interval: Duration, mut assertion: impl FnMut()) {
     let stop = Instant::now() + max;
     loop {
@@ -279,10 +299,11 @@ impl TestKitBase {
       match std::panic::catch_unwind(attempt) {
         | Ok(()) => return,
         | Err(failure) => {
-          if Instant::now() + interval >= stop {
+          let remaining = stop.saturating_duration_since(Instant::now());
+          if remaining == Duration::ZERO {
             std::panic::resume_unwind(failure);
           }
-          self.drive_for(interval);
+          self.drive_for(remaining.min(interval));
         },
       }
     }

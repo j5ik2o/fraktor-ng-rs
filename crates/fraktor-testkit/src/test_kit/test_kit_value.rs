@@ -157,6 +157,12 @@ impl TestKit {
   }
 
   /// Waits until `max` for no message at all.
+  ///
+  /// `max` is used as given; Pekko's `expectNoMessage(max)` does not dilate its
+  /// argument either. The port has no argument-less `expectNoMessage` yet. For
+  /// the dilated default, compute it from the public settings:
+  /// `let settings = self.test_kit_settings(); settings.dilated(
+  /// settings.expect_no_message_default_timeout())`.
   pub fn expect_no_message(&mut self, max: Duration) {
     self.base.expect_no_message(max);
   }

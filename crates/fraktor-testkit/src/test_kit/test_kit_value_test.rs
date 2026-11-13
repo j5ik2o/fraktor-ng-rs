@@ -217,6 +217,20 @@ fn expect_no_message_times_out_while_an_actor_keeps_sending() {
   );
 }
 
+#[test]
+fn eventually_retries_within_the_remaining_time_when_the_interval_is_longer() {
+  let mut kit = test_kit();
+  let started = Instant::now();
+  let mut attempts = 0;
+
+  kit.eventually(Duration::from_millis(200), Duration::from_secs(1), || {
+    attempts += 1;
+    assert!(started.elapsed() >= Duration::from_millis(50), "the assertion held before the message could arrive");
+  });
+
+  assert!(attempts >= 2, "eventually failed before the remaining time could be retried");
+}
+
 fn failure_text(failure: Box<dyn core::any::Any + Send>) -> String {
   match failure.downcast::<String>() {
     | Ok(text) => *text,
