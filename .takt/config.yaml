@@ -6,6 +6,11 @@ base_branch: main
 workflow_system_commands:
   custom_scripts: true
 
+# pekko-porting-ng の runtime.prepare（tools/pekko-source/prepare_pekko_source.sh）は
+# preset ではないので、カスタムスクリプトの許可が要る（無いとワークフローの読み込みで失敗する）
+workflow_runtime_prepare:
+  custom_scripts: true
+
 # provider が rate limit に達したときの切替先（順に試す）。同格のクラウド provider に
 # 限る。判断系ステップを無断で DGX へ降格させないため、DGX への切替は fallback では
 # なく runtime.yaml の assignment で行う。chain が尽きた run は失敗で止まり、成果は

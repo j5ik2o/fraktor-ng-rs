@@ -264,6 +264,34 @@ read ツールは拒否されており、回避策頼みは fragile である。
 原典は作業ツリー直下の `pekko/`（git 管理外）に置く前提に変更した。
 provider に依存せず成立する。`../pekko` は後方互換として triage が探す。
 
+この前提を機械で整えるため、`tools/pekko-source/prepare_pekko_source.sh` を
+ワークフロー `pekko-porting-ng` の `workflow_config.runtime.prepare` に登録した。
+新しい作業ツリーで run が始まるとき、原典が無ければ用意される。
+
+- スクリプトの動作: 作業ツリー直下の `pekko/` の HEAD が 9a54d129…（v1.7.1）なら
+  何もしない。無ければローカルの原典（環境変数 `PEKKO_SOURCE_LOCAL_REPO`、既定は
+  `/Users/j5ik2o/Sources/github.com/j5ik2o/pekko`。HOME に依存しない）から
+  `git clone --branch v1.7.1` で用意し、無ければ
+  `https://github.com/apache/pekko` から `--depth 1 --branch v1.7.1` で用意する。
+  用意後に HEAD を照合し、違えば 0 以外で終わる。途中まで作られて壊れた `pekko/` は
+  作り直す。何度実行しても同じ結果になる（冪等）。
+- 置き場所: `tools/` の下は merge-gate など「作業を助ける道具とテスト」の場所で、
+  manager が手で実行することもあるため `tools/pekko-source/` に置く。`.takt/` は
+  TAKT の設定と、TAKT が作るもの（`runs/`、`.runtime/`）の場所である。
+- 登録先: 原典が要るのは移植の系統（`pekko-porting-ng` とその呼び先）だけなので、
+  ワークフロー側に置く。プロジェクト全体の `runtime.prepare` に置くと、default や
+  マージ用の run でも init と各ステップの前に clone が走り、原典が要らない run まで
+  ローカル原典の不在やネットワークの失敗で止まる。ワークフロー側に `prepare` が
+  1 件でもあればプロジェクト側は使われない（TAKT 0.75.0 の
+  `core/runtime/runtime-environment.js` の `resolveRuntimeConfig`）。
+- 呼び先への効き方: 呼び先 `pekko-port-node` は子 engine として同じ cwd で動く。
+  子の yaml には `runtime.prepare` が無いので子のステップの前には走らないが、親が
+  init と各 `port_node` ステップ（=`workflow_call`）の前に実行するため、呼び先が
+  始まる時点で `pekko/` は揃っている。`pekko-port-node` を親なしで直接実行したときは
+  prepare が走らない。
+- custom_scripts: スクリプトは preset（`gradle`、`node`）ではないため、プロジェクト
+  設定の `workflow_runtime_prepare.custom_scripts: true` が要る（`.takt/config.yaml`）。
+
 **P4: needs の形の決定（抽出の実作業は別タスク）**
 
 needs の形は既存スキーマ（`ledger-schema-draft.md` の needs.testkit／
