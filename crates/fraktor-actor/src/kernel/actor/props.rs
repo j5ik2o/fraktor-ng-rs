@@ -9,7 +9,8 @@ use crate::kernel::actor::Actor;
 /// Mirrors `org.apache.pekko.actor.Props`, which packages a factory, the actor
 /// class, and its arguments. The port keeps only the factory, because the
 /// executor of this milestone creates one actor per recipe and needs nothing
-/// else.
+/// else. A recipe is reusable: a supervisor restarts a failed child by
+/// building a fresh actor from the same recipe.
 pub struct Props {
   factory: Box<dyn Fn() -> Box<dyn Actor>>,
 }

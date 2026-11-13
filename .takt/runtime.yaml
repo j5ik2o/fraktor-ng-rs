@@ -43,7 +43,7 @@ provider:
               - cloud-codex
         steps:
           # classify-red は persona が coder だが判断系なので強いモデルに上書き
-          pekko-port-node/classify-red:
+          fraktor-port-node/classify-red:
             profile: cloud-codex
           # mini-core 内のレビュー後の再実装は一段強いモデル。fix_both の並列
           # sub-step 2 本も同じ経路（両レビュー REJECT 時の主経路）なので含める
@@ -70,7 +70,7 @@ provider:
               - dgx-flash
               - cloud-claude
         steps:
-          pekko-port-node/classify-red:
+          fraktor-port-node/classify-red:
             profile: cloud-claude
           mini-core/ai-antipattern-fix:
             profile: cloud-claude

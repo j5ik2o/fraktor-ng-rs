@@ -4,27 +4,27 @@
 // Original test names are kept as comments next to each ported case.
 
 use fraktor_actor::kernel::{actor_system::ActorSystem, timeout::Timeout};
-use fraktor_testkit::{default_timeout::DefaultTimeout, pekkospec::PekkoSpec};
+use fraktor_testkit::{default_timeout::DefaultTimeout, fraktorspec::FraktorSpec};
 
 const CUSTOM_SPEC_SYSTEM_NAME: &str = "PekkoCustomSpec";
 
 struct DefaultTimeoutSpecCase {
-  pekko_spec: PekkoSpec,
+  fraktor_spec: FraktorSpec,
 }
 
 impl DefaultTimeoutSpecCase {
   fn new() -> Self {
-    Self { pekko_spec: PekkoSpec::new(CUSTOM_SPEC_SYSTEM_NAME) }
+    Self { fraktor_spec: FraktorSpec::new(CUSTOM_SPEC_SYSTEM_NAME) }
   }
 
   fn system(&self) -> &ActorSystem {
-    self.pekko_spec.system()
+    self.fraktor_spec.system()
   }
 }
 
 impl Drop for DefaultTimeoutSpecCase {
   fn drop(&mut self) {
-    self.pekko_spec.terminate();
+    self.fraktor_spec.terminate();
   }
 }
 
@@ -35,7 +35,7 @@ fn use_timeout_from_settings() {
   let system: &ActorSystem = spec.system();
 
   let timeout: Timeout = DefaultTimeout::timeout(system);
-  let settings_default_timeout: Timeout = spec.pekko_spec.test_kit_settings().default_timeout();
+  let settings_default_timeout: Timeout = spec.fraktor_spec.test_kit_settings().default_timeout();
 
   assert_eq!(timeout, settings_default_timeout);
 }

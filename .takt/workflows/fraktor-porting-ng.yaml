@@ -1,13 +1,13 @@
-name: pekko-porting-ng
+name: fraktor-porting-ng
 description: >-
   fraktor-ng-rs の Pekko 移植パイプライン（ゴール単位）。
-  サブワークフロー pekko-port-node をノード1件ずつ呼び、ゴールが完了するまで
+  サブワークフロー fraktor-port-node をノード1件ずつ呼び、ゴールが完了するまで
   繰り返す。設計の正は docs/decisions/takt-workflow-design.md。
 # ノード数と差し戻しから決まる全体予算。子 workflow と共有される
 max_steps: 80
 # 移植の原典 pekko/ が要るのはこの系統だけなので、プロジェクト全体ではなくここに置く。
 # 親が init と各 port_node ステップの前に、作業ツリーを cwd にして実行する。
-# 呼び先の pekko-port-node は同じ cwd を使うため、子が始まる時点で pekko/ は揃っている。
+# 呼び先の fraktor-port-node は同じ cwd を使うため、子が始まる時点で pekko/ は揃っている。
 workflow_config:
   runtime:
     prepare:
@@ -17,7 +17,7 @@ steps:
   - name: port_node
     description: ノードを1件移植する（triage から台帳更新まで）
     kind: workflow_call
-    call: pekko-port-node
+    call: fraktor-port-node
     rules:
       - condition: node_green
         next: port_node

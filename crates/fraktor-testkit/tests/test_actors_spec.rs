@@ -5,42 +5,42 @@
 
 use fraktor_actor::kernel::{actor_ref::ActorRef, actor_system::ActorSystem};
 use fraktor_testkit::{
+  fraktorspec::FraktorSpec,
   implicit_sender::ImplicitSender,
-  pekkospec::PekkoSpec,
   test_actors::{echo_actor_props, forward_actor_props},
 };
 
 const CUSTOM_SPEC_SYSTEM_NAME: &str = "PekkoCustomSpec";
 
 struct TestActorsSpecCase {
-  pekko_spec: PekkoSpec,
+  fraktor_spec: FraktorSpec,
 }
 
 impl TestActorsSpecCase {
   fn new() -> Self {
-    Self { pekko_spec: PekkoSpec::new(CUSTOM_SPEC_SYSTEM_NAME) }
+    Self { fraktor_spec: FraktorSpec::new(CUSTOM_SPEC_SYSTEM_NAME) }
   }
 
   fn system(&mut self) -> &mut ActorSystem {
-    self.pekko_spec.system_mut()
+    self.fraktor_spec.system_mut()
   }
 
   fn test_actor(&self) -> ActorRef {
-    self.pekko_spec.test_actor()
+    self.fraktor_spec.test_actor()
   }
 
   fn self_actor_ref(&self) -> ActorRef {
-    ImplicitSender::self_actor_ref(&self.pekko_spec)
+    ImplicitSender::self_actor_ref(&self.fraktor_spec)
   }
 
   fn expect_msg(&mut self, expected: &str) {
-    self.pekko_spec.expect_msg(expected);
+    self.fraktor_spec.expect_msg(expected);
   }
 }
 
 impl Drop for TestActorsSpecCase {
   fn drop(&mut self) {
-    self.pekko_spec.terminate();
+    self.fraktor_spec.terminate();
   }
 }
 

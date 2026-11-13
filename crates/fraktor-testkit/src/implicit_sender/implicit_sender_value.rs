@@ -2,7 +2,7 @@
 
 use fraktor_actor::kernel::actor_ref::ActorRef;
 
-use crate::pekkospec::PekkoSpec;
+use crate::fraktorspec::FraktorSpec;
 
 /// Provides the sender that a test uses implicitly.
 ///
@@ -14,7 +14,7 @@ pub struct ImplicitSender;
 
 impl ImplicitSender {
   /// Returns the test actor of the given spec, which is the implicit sender.
-  pub fn self_actor_ref(spec: &PekkoSpec) -> ActorRef {
+  pub fn self_actor_ref(spec: &FraktorSpec) -> ActorRef {
     spec.test_actor()
   }
 }
