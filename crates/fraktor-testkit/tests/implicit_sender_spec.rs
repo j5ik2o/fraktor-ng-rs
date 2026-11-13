@@ -4,31 +4,31 @@
 // Original test names are kept as comments next to each ported case.
 
 use fraktor_actor::kernel::actor_ref::ActorRef;
-use fraktor_testkit::{implicit_sender::ImplicitSender, pekkospec::PekkoSpec};
+use fraktor_testkit::{fraktorspec::FraktorSpec, implicit_sender::ImplicitSender};
 
 const CUSTOM_SPEC_SYSTEM_NAME: &str = "PekkoCustomSpec";
 
 struct ImplicitSenderSpecCase {
-  pekko_spec: PekkoSpec,
+  fraktor_spec: FraktorSpec,
 }
 
 impl ImplicitSenderSpecCase {
   fn new() -> Self {
-    Self { pekko_spec: PekkoSpec::new(CUSTOM_SPEC_SYSTEM_NAME) }
+    Self { fraktor_spec: FraktorSpec::new(CUSTOM_SPEC_SYSTEM_NAME) }
   }
 
   fn test_actor(&self) -> ActorRef {
-    self.pekko_spec.test_actor()
+    self.fraktor_spec.test_actor()
   }
 
   fn self_actor_ref(&self) -> ActorRef {
-    ImplicitSender::self_actor_ref(&self.pekko_spec)
+    ImplicitSender::self_actor_ref(&self.fraktor_spec)
   }
 }
 
 impl Drop for ImplicitSenderSpecCase {
   fn drop(&mut self) {
-    self.pekko_spec.terminate();
+    self.fraktor_spec.terminate();
   }
 }
 

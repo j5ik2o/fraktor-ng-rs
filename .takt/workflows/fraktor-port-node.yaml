@@ -1,4 +1,4 @@
-name: pekko-port-node
+name: fraktor-port-node
 description: >-
   ゴールのノードを1件だけ移植するサブワークフロー。
   triage → テスト移植 → red 確認（system step）
@@ -13,12 +13,12 @@ all_steps:
       position: before_instruction
     - ref: plain-terminology
       position: before_instruction
-    # syn チェッカーのルールの要約（.takt/workflows/rules/pekko-coding-rules.md）。
+    # syn チェッカーのルールの要約（.takt/workflows/rules/fraktor-coding-rules.md）。
     # policy と knowledge は連結した先頭 2,000 字だけが本文に載り、builtin の
     # fragment は policy の先頭に contract-change（約 4,400 字）を固定する。
     # workflow-wide rule は全文が本文に載り、workflow_call で呼ぶ mini-core の
     # 各ステップにも引き継がれる
-    - ref: pekko-coding-rules
+    - ref: fraktor-coding-rules
       position: before_instruction
 subworkflow:
   callable: true
@@ -49,7 +49,7 @@ loop_monitors:
           history:
             previous: 2
       persona: supervisor
-      instruction: pekko-loop-judge
+      instruction: fraktor-loop-judge
       rules:
         - condition: 健全（指摘数が減少、修正が反映されている）
           next: develop
@@ -74,7 +74,7 @@ loop_monitors:
         # classify-red の報告は渡せない。takt は judge の入力を cycle の中の
         # ステップに限る（classify-red は照合から外したステップである）
       persona: supervisor
-      instruction: pekko-verify-red-loop-judge
+      instruction: fraktor-verify-red-loop-judge
       rules:
         - condition: 健全（修正がテストに反映され、状況が前進している）
           next: port-test
@@ -96,7 +96,7 @@ loop_monitors:
           history:
             previous: 2
       persona: supervisor
-      instruction: pekko-verify-green-loop-judge
+      instruction: fraktor-verify-green-loop-judge
       rules:
         - condition: 健全（失敗が減っている、または内容が変わり、修正が前進している）
           next: develop
@@ -107,8 +107,8 @@ steps:
     edit: false
     persona: research-digger
     knowledge:
-      - pekko-porting-rules
-    instruction: pekko-triage
+      - fraktor-porting-rules
+    instruction: fraktor-triage
     rules:
       - condition: 前提が揃っており、未承認の除外提案がない（承認済みの除外は台帳の cases.excluded に記録されている）
         next: port-test
@@ -132,8 +132,8 @@ steps:
         - coding
         - testing
       testing_knowledge:
-        - pekko-porting-rules
-      testing_instruction: pekko-port-test
+        - fraktor-porting-rules
+      testing_instruction: fraktor-port-test
       testing_report_format: test-report
     input_reports:
       - from_step: triage
@@ -174,10 +174,10 @@ steps:
     edit: true
     persona: coder
     knowledge:
-      - pekko-porting-rules
+      - fraktor-porting-rules
     required_permission_mode: edit
     instruction:
-      - pekko-classify-red
+      - fraktor-classify-red
       - "対象コマンドの出力（末尾）: {context:verify_red.result.stdout} {context:verify_red.result.stderr}"
     rules:
       - condition: 想定どおりの失敗であり、台帳の status を red に更新した
@@ -195,7 +195,7 @@ steps:
       移植済みテストを通す実装を、builtin の mini-core（plan → implement →
       並列レビュー → 修正ループ）に委譲する。ドメイン規約は knowledge として
       注入され、mini-core 内の implement、supervisor、fix の各ステップに届く。
-      テストファイルの凍結も knowledge `pekko-porting-rules` が宣言する。
+      テストファイルの凍結も knowledge `fraktor-porting-rules` が宣言する。
       knowledge は先頭 2,000 字だけが本文に載るので、移植規約を先頭に置く
     kind: workflow_call
     call: mini-core
@@ -203,13 +203,13 @@ steps:
       plan_policy:
         - design-planning
       plan_knowledge:
-        - pekko-porting-rules
+        - fraktor-porting-rules
         - architecture
       development_policy:
         - coding
         - testing
       development_knowledge:
-        - pekko-porting-rules
+        - fraktor-porting-rules
         - architecture
     input_reports:
       - from_step: triage
@@ -247,13 +247,13 @@ steps:
       review_policy_additions:
         - ai-antipattern
       review_knowledge_additions: []
-      testing_review_instruction: pekko-review-equivalence
+      testing_review_instruction: fraktor-review-equivalence
     # takt は knowledge を連結して先頭 2,000 字だけを本文に載せ、残りは
     # スナップショットファイルを読ませる。fragment の並び（unit-testing、
     # e2e-testing、追加分）のままだと移植規約が本文から外れるので、
     # 移植規約を先頭に置いた並びで上書きする
     knowledge:
-      - pekko-porting-rules
+      - fraktor-porting-rules
       - unit-testing
       - e2e-testing
     input_reports:
@@ -278,9 +278,9 @@ steps:
     edit: true
     persona: coder
     knowledge:
-      - pekko-porting-rules
+      - fraktor-porting-rules
     required_permission_mode: edit
-    instruction: pekko-ledger-update
+    instruction: fraktor-ledger-update
     rules:
       - condition: ゴール完了（rollup の完了判定が終了コード 0）
         return: goal_complete

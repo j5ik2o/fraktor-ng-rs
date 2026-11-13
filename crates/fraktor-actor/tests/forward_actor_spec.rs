@@ -8,7 +8,7 @@ use core::time::Duration;
 use fraktor_actor::kernel::actor::{Actor, ActorContext, Props};
 use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::message::Message;
-use fraktor_testkit::pekkospec::PekkoSpec;
+use fraktor_testkit::fraktorspec::FraktorSpec;
 
 const EXPECTED_MESSAGE: &str = "FOO";
 
@@ -39,7 +39,7 @@ impl Actor for Forwarder {
 }
 
 // Original: createForwardingChain(system) = mkforwarder(mkforwarder(mkforwarder(replier)))
-fn create_forwarding_chain(spec: &mut PekkoSpec) -> ActorRef {
+fn create_forwarding_chain(spec: &mut FraktorSpec) -> ActorRef {
   let replier = spec.system_mut().actor_of(Props::new(|| Replier));
   let inner = spec.system_mut().actor_of({
     let forward_to = replier.clone();
@@ -71,7 +71,7 @@ impl Actor for ReplyToTestActor {
 // "A Forward Actor" must { "forward actor reference when invoking forward on tell" in { ... } }
 #[test]
 fn forward_actor_reference_when_invoking_forward_on_tell() {
-  let mut spec = PekkoSpec::new(CUSTOM_SPEC_SYSTEM_NAME);
+  let mut spec = FraktorSpec::new(CUSTOM_SPEC_SYSTEM_NAME);
 
   let test_actor = spec.test_actor();
   let reply_to = spec.system_mut().actor_of(Props::new({
@@ -90,7 +90,7 @@ fn forward_actor_reference_when_invoking_forward_on_tell() {
 // "A Forward Actor" must { "forward actor reference when invoking forward on ask" in { ... } }
 #[test]
 fn forward_actor_reference_when_invoking_forward_on_ask() {
-  let mut spec = PekkoSpec::new(CUSTOM_SPEC_SYSTEM_NAME);
+  let mut spec = FraktorSpec::new(CUSTOM_SPEC_SYSTEM_NAME);
 
   let test_actor = spec.test_actor();
   let chain = create_forwarding_chain(&mut spec);

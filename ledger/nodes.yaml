@@ -32898,7 +32898,7 @@ nodes:
     excluded: []
   rust:
     crate: fraktor-testkit
-    test_file: crates/fraktor-testkit/src/pekkospec/pekko_spec.rs
+    test_file: crates/fraktor-testkit/src/fraktorspec/fraktor_spec.rs
   goal: G0b
 - id: testkit/src/test/scala/org/apache/pekko/testkit/PekkoSpecSpec.scala
   name: testkit:PekkoSpecSpec

@@ -1,17 +1,17 @@
-//! Unit tests for [`PekkoSpec`](super::PekkoSpec).
+//! Unit tests for [`FraktorSpec`](super::FraktorSpec).
 
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use super::PekkoSpec;
-use crate::pekkospec::PekkoSpecHooks;
+use super::FraktorSpec;
+use crate::fraktorspec::FraktorSpecHooks;
 use crate::test_kit::TestKit;
 
 struct RecordingHooks {
   events: Arc<Mutex<Vec<&'static str>>>,
 }
 
-impl PekkoSpecHooks for RecordingHooks {
+impl FraktorSpecHooks for RecordingHooks {
   fn at_startup(&mut self, _test_kit: &mut TestKit) {
     self.events.lock().unwrap().push("at_startup");
   }
@@ -32,7 +32,7 @@ fn with_hooks_runs_at_startup_once() {
   let events = Arc::new(Mutex::new(Vec::new()));
   let hooks = RecordingHooks { events: Arc::clone(&events) };
 
-  let _spec = PekkoSpec::with_hooks("PekkoSpecSpec", Box::new(hooks));
+  let _spec = FraktorSpec::with_hooks("PekkoSpecSpec", Box::new(hooks));
 
   assert_eq!(*events.lock().unwrap(), vec!["at_startup"]);
 }
@@ -41,7 +41,7 @@ fn with_hooks_runs_at_startup_once() {
 fn terminate_runs_the_hooks_in_order() {
   let events = Arc::new(Mutex::new(Vec::new()));
   let hooks = RecordingHooks { events: Arc::clone(&events) };
-  let mut spec = PekkoSpec::with_hooks("PekkoSpecSpec", Box::new(hooks));
+  let mut spec = FraktorSpec::with_hooks("PekkoSpecSpec", Box::new(hooks));
 
   spec.terminate();
 
@@ -52,7 +52,7 @@ fn terminate_runs_the_hooks_in_order() {
 fn a_second_terminate_does_nothing() {
   let events = Arc::new(Mutex::new(Vec::new()));
   let hooks = RecordingHooks { events: Arc::clone(&events) };
-  let mut spec = PekkoSpec::with_hooks("PekkoSpecSpec", Box::new(hooks));
+  let mut spec = FraktorSpec::with_hooks("PekkoSpecSpec", Box::new(hooks));
 
   spec.terminate();
   spec.terminate();
@@ -62,7 +62,7 @@ fn a_second_terminate_does_nothing() {
 
 #[test]
 fn new_creates_a_running_system() {
-  let spec = PekkoSpec::new("PekkoSpecSpec");
+  let spec = FraktorSpec::new("PekkoSpecSpec");
 
   assert!(!spec.system().is_terminated());
   assert_eq!(spec.system().name(), "PekkoSpecSpec");

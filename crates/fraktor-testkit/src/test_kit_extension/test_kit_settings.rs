@@ -23,7 +23,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 /// no configuration system. The values therefore do not depend on the actor
 /// system yet, but the constructor takes one so that the call sites mirror
 /// `TestKitExtension(system)` and keep a single entry point for both
-/// `DefaultTimeout` and `PekkoSpec::test_kit_settings`.
+/// `DefaultTimeout` and `FraktorSpec::test_kit_settings`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TestKitSettings {
   test_time_factor: f64,
@@ -45,33 +45,33 @@ impl TestKitSettings {
     }
   }
 
-  /// Returns `pekko.test.timefactor`.
+  /// Returns `fraktor.test.timefactor`.
   pub fn test_time_factor(&self) -> f64 {
     self.test_time_factor
   }
 
-  /// Returns `pekko.test.single-expect-default`.
+  /// Returns `fraktor.test.single-expect-default`.
   pub fn single_expect_default_timeout(&self) -> Duration {
     self.single_expect_default_timeout
   }
 
-  /// Returns `pekko.test.expect-no-message-default`.
+  /// Returns `fraktor.test.expect-no-message-default`.
   pub fn expect_no_message_default_timeout(&self) -> Duration {
     self.expect_no_message_default_timeout
   }
 
-  /// Returns `pekko.test.filter-leeway`.
+  /// Returns `fraktor.test.filter-leeway`.
   pub fn test_event_filter_leeway(&self) -> Duration {
     self.test_event_filter_leeway
   }
 
-  /// Returns `pekko.test.default-timeout`, the implicit timeout of
+  /// Returns `fraktor.test.default-timeout`, the implicit timeout of
   /// `DefaultTimeout`.
   pub fn default_timeout(&self) -> Timeout {
     self.default_timeout
   }
 
-  /// Multiplies `duration` by `pekko.test.timefactor`.
+  /// Multiplies `duration` by `fraktor.test.timefactor`.
   ///
   /// Mirrors `org.apache.pekko.testkit.TestKitSettings.dilated`, used by the
   /// test kit to scale every waiting time.
