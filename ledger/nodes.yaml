@@ -759,7 +759,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0d
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorMailboxSpec.scala
   name: actor-tests:ActorMailboxSpec
   kind: test
@@ -33003,7 +33003,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0d
 - id: testkit/src/test/scala/org/apache/pekko/testkit/TestFSMRefSpec.scala
   name: testkit:TestFSMRefSpec
   kind: test
