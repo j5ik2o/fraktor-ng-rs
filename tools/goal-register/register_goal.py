@@ -40,7 +40,7 @@ REPO = "/Users/j5ik2o/Sources/github.com/j5ik2o/fraktor-ng-rs"
 
 # Minimal self-contained takt-mcp client used only for verification reads.
 MCP_CLIENT = r'''
-import json, subprocess, threading, time
+import json, subprocess, sys, threading, time
 REPO = "/Users/j5ik2o/Sources/github.com/j5ik2o/fraktor-ng-rs"
 proc = subprocess.Popen(["takt-mcp"], cwd=REPO, stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -69,6 +69,9 @@ send({"jsonrpc": "2.0", "method": "notifications/initialized"})
 send({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
       "params": {"name": "takt_list_goals", "arguments": {"cwd": REPO}}})
 r = wait(2)
+if r is None or "result" not in r:
+    print("takt_list_goals failed", file=sys.stderr)
+    sys.exit(2)
 text = "".join(c.get("text", "") for c in r["result"]["content"] if c.get("type") == "text")
 for g in json.loads(text).get("goals", []):
     print(g["id"])
@@ -76,8 +79,10 @@ proc.kill()
 '''
 
 
-def ssh(cmd, timeout=60):
+def ssh(cmd, timeout=60, check=False):
     r = subprocess.run(SSH_BASE + [cmd], capture_output=True, text=True, timeout=timeout)
+    if check and r.returncode != 0:
+        raise SystemExit(f"command failed ({r.returncode}): {cmd}\n{r.stderr[-500:]}")
     return r.stdout
 
 
@@ -103,8 +108,11 @@ def list_goal_ids():
         subprocess.run(SCP_BASE + [path, "j5ik2o@100.106.166.1:/tmp/_goal_ids.py"], check=True)
         os.unlink(path)
         _client_uploaded = True
-    out = ssh('export PATH="$HOME/.local/share/mise/shims:$PATH"; python3 /tmp/_goal_ids.py', timeout=120)
-    return {line.strip() for line in out.splitlines() if line.strip()}
+    out = ssh('export PATH="$HOME/.local/share/mise/shims:$PATH"; python3 /tmp/_goal_ids.py', timeout=120, check=True)
+    ids = {line.strip() for line in out.splitlines() if line.strip()}
+    if not ids:
+        raise SystemExit("goal listing returned no goals; treating as failure, not as an empty registry")
+    return ids
 
 
 def main():
@@ -147,7 +155,7 @@ def main():
     log("dialog detected: UP once, then Enter (recorded procedure)")
     ssh('orca terminal send --terminal %s --text "$(printf "\\033[A")"' % args.terminal, timeout=60)
     time.sleep(1)
-    ssh('orca terminal send --terminal %s --text "$(printf "\\r")" --enter' % args.terminal, timeout=60)
+    ssh('orca terminal send --terminal %s --text "$(printf "\\r")"' % args.terminal, timeout=60)
 
     log("verifying registration via takt-mcp")
     for _ in range(12):
