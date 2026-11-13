@@ -12,6 +12,17 @@ unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TRE
   GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS \
   GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR GIT_NAMESPACE
 
+# TAKT の runtime.prepare サンドボックスは XDG_CONFIG_HOME を作業ツリー内の空ディレクトリへ
+# 向ける。run 用 opencode サーバは provider 定義を利用者設定から解決するため、graft しないと
+# モデル解決が「Model unavailable」で失敗する。利用者設定が存在し、サンドボックス側の
+# opencode.json が無いか既に symlink のときだけ graft する（冪等、stdout へは出さない）。
+oc_user_cfg="$HOME/.config/opencode/opencode.json"
+oc_sb_dir="${XDG_CONFIG_HOME:-$PWD/.takt/.runtime/config}/opencode"
+if [ -f "$oc_user_cfg" ] && { [ ! -e "$oc_sb_dir/opencode.json" ] || [ -L "$oc_sb_dir/opencode.json" ]; }; then
+  mkdir -p "$oc_sb_dir"
+  ln -sfn "$oc_user_cfg" "$oc_sb_dir/opencode.json"
+fi
+
 target="$PWD/pekko"
 local_repo="${PEKKO_SOURCE_LOCAL_REPO:-/Users/j5ik2o/Sources/github.com/j5ik2o/pekko}"
 upstream_url="${PEKKO_SOURCE_UPSTREAM_URL:-https://github.com/apache/pekko}"
