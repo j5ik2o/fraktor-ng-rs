@@ -1,3 +1,4 @@
 # Pekko v1.7.1 原典（作業ツリー内に置く。takt が opencode の sandbox に
 # external_directory: deny を固定し、../ の読み取りを拒むため）
 /pekko/
+/target
