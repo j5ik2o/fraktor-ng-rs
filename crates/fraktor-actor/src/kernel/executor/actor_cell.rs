@@ -1,6 +1,7 @@
 //! One actor inside the executor, with the behaviour it runs.
 
 use alloc::boxed::Box;
+use core::any::Any;
 
 use crate::kernel::actor::Actor;
 use crate::kernel::actor::ActorContext;
@@ -17,22 +18,25 @@ use crate::kernel::supervision::SupervisorStrategy;
 /// recipe and the strategy are kept so the cell can be re-created after a
 /// failure, as a parent does for its child.
 pub(crate) struct ActorCell {
-  behavior: Box<dyn Actor>,
+  behavior: Option<Box<dyn Actor>>,
   self_ref: ActorRef,
   parent: Option<ActorRef>,
   props: Props,
   strategy: SupervisorStrategy,
+  restart_count: u32,
+  post_stop_suppressed: bool,
 }
 
 impl ActorCell {
-  pub(crate) fn new(
-    behavior: Box<dyn Actor>,
+  /// Creates a cell before the actor exists, so the executor can build the
+  /// actor under a catcher that already belongs to a cell.
+  pub(crate) fn pending(
     self_ref: ActorRef,
     parent: Option<ActorRef>,
     props: Props,
     strategy: SupervisorStrategy,
   ) -> Self {
-    Self { behavior, self_ref, parent, props, strategy }
+    Self { behavior: None, self_ref, parent, props, strategy, restart_count: 0, post_stop_suppressed: false }
   }
 
   /// Returns whether this cell is the actor that `recipient` addresses.
@@ -55,17 +59,43 @@ impl ActorCell {
   }
 
   /// Returns the strategy this actor applies to its children.
-  pub(crate) fn strategy(&self) -> SupervisorStrategy {
-    self.strategy
+  pub(crate) fn strategy(&self) -> &SupervisorStrategy {
+    &self.strategy
+  }
+
+  /// Returns the number of restart requests this actor has already made.
+  pub(crate) fn restart_count(&self) -> u32 {
+    self.restart_count
+  }
+
+  /// Records one more restart request.
+  pub(crate) fn record_restart_request(&mut self) {
+    self.restart_count = self.restart_count.saturating_add(1);
+  }
+
+  /// Builds the behaviour from the recipe and runs its `pre_start`.
+  pub(crate) fn create(&mut self) {
+    let mut behavior = self.props.create_actor();
+    behavior.pre_start();
+    self.behavior = Some(behavior);
   }
 
   /// Hands one message to the behaviour.
   pub(crate) fn deliver(&mut self, context: &mut ActorContext<'_>, message: Message) {
-    self.behavior.receive(context, message);
+    if let Some(behavior) = self.behavior.as_mut() {
+      behavior.receive(context, message);
+    }
+  }
+
+  /// Runs `pre_restart` on the current behaviour.
+  pub(crate) fn pre_restart(&mut self, reason: &(dyn Any + Send)) {
+    if let Some(behavior) = self.behavior.as_mut() {
+      behavior.pre_restart(reason);
+    }
   }
 
   /// Replaces the behaviour with a fresh instance from the recipe and runs its
-  /// `post_restart`.
+  /// `pre_start`, which is what Pekko's default `postRestart` does.
   ///
   /// Mirrors what Pekko does for a restarted child: the old instance is
   /// discarded, the recipe creates the next one, and `postRestart` runs on it
@@ -75,6 +105,28 @@ impl ActorCell {
   pub(crate) fn restart(&mut self) {
     let mut behavior = self.props.create_actor();
     behavior.post_restart();
-    self.behavior = behavior;
+    self.behavior = Some(behavior);
+  }
+
+  /// Runs `post_stop` on the behaviour, if the actor was created.
+  pub(crate) fn post_stop(&mut self) {
+    if let Some(behavior) = self.behavior.as_mut() {
+      behavior.post_stop();
+    }
+  }
+
+  /// Records that the stop path must not run this instance's `post_stop` again.
+  ///
+  /// The default `preRestart` already runs `post_stop` on the old instance, as
+  /// Pekko's does. When the restart fails after that, the cell is still the old
+  /// instance and the stop path would run its `post_stop` a second time; this
+  /// marks that it already ran, so the stop finishes without repeating it.
+  pub(crate) fn suppress_post_stop(&mut self) {
+    self.post_stop_suppressed = true;
+  }
+
+  /// Returns whether the stop path must skip this instance's `post_stop`.
+  pub(crate) fn post_stop_suppressed(&self) -> bool {
+    self.post_stop_suppressed
   }
 }

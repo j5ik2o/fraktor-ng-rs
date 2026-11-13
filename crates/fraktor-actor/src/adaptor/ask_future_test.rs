@@ -4,11 +4,19 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use crate::adaptor::ChannelBoundary;
+use crate::kernel::actor::{Actor, ActorContext, Props};
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::actor_system::ActorSystem;
 use crate::kernel::message::Message;
 
 use super::AskFuture;
+
+/// An actor that ignores every message, so an `ask` it receives never replies.
+struct SilentActor;
+
+impl Actor for SilentActor {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+}
 
 /// Collects what a function reference receives, so a test can read it back.
 #[derive(Clone, Default)]
@@ -130,4 +138,23 @@ fn a_reply_to_the_piped_sender_is_dropped_and_the_result_is_unchanged() {
     "the responder should receive only the original question, never the piped reply"
   );
   assert_eq!(future.await_result(core::time::Duration::from_secs(1)), "answer");
+}
+
+#[test]
+fn an_unanswered_ask_on_a_registered_driver_times_out_within_max() {
+  let mut system = system();
+  // A driver is registered for this shard, so the wait drives the shard
+  // instead of only blocking on the condition variable.
+  crate::adaptor::attach_wait_driver(&system);
+  let silent = system.actor_of(Props::new(|| SilentActor));
+
+  let max = core::time::Duration::from_millis(300);
+  let started = std::time::Instant::now();
+  let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| silent.ask("question").await_result(max)));
+  let elapsed = started.elapsed();
+
+  assert!(outcome.is_err(), "an unanswered ask should panic with the timeout");
+  // `drive_until` spends up to `max` driving the shard; the fallback wait must
+  // reuse that budget, so the total stays close to `max`, not `2 * max`.
+  assert!(elapsed < max + core::time::Duration::from_millis(250), "waited {elapsed:?}, more than about one {max:?}");
 }

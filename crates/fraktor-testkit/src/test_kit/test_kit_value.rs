@@ -195,6 +195,29 @@ impl TestKit {
     self.base.watch(target);
   }
 
+  /// Waits at most `max` for the next message and returns it when it is a
+  /// `Terminated` message.
+  ///
+  /// Mirrors `TestKitBase.expectTerminated`: it takes the next message and
+  /// requires it to be the termination notice. The port keeps the direct form
+  /// that the ported test uses.
+  ///
+  /// # Panics
+  ///
+  /// Panics when no message arrives before `max`, or when the next message is not
+  /// a `Terminated`.
+  pub fn expect_msg_terminated(&mut self, max: Duration) -> fraktor_actor::kernel::actor::Terminated {
+    let max = self.base.settings().dilated(max);
+    let Some(received) = self.base.receive_one(max) else {
+      panic!("timeout ({max:?}) during expectMsg waiting for Terminated");
+    };
+    let found = received.message();
+    match found.downcast_ref::<fraktor_actor::kernel::actor::Terminated>() {
+      | Some(terminated) => terminated.clone(),
+      | None => panic!("expected Terminated, found {found:?}"),
+    }
+  }
+
   /// Stops the actor system, corresponding to Pekko's `shutdown()`.
   pub fn shutdown(&mut self) {
     self.system.terminate();

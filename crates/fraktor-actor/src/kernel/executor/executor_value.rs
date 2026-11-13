@@ -1,5 +1,6 @@
 //! The executor that owns one shard of actors and runs their messages.
 
+use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::AtomicU64;
@@ -7,6 +8,8 @@ use core::sync::atomic::Ordering;
 use core::time::Duration;
 
 use crate::kernel::actor::ActorContext;
+use crate::kernel::actor::Logging::Error;
+use crate::kernel::actor::Logging::EventSink;
 use crate::kernel::actor::Props;
 use crate::kernel::actor::Terminated;
 use crate::kernel::actor_path::ActorPath;
@@ -14,12 +17,38 @@ use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::ActorCell;
 use crate::kernel::executor::ShardQueue;
 use crate::kernel::message::Envelope;
+use crate::kernel::message::Message;
 use crate::kernel::supervision::Directive;
 use crate::kernel::supervision::FailureCatcher;
+use crate::kernel::supervision::FailureKind;
+use crate::kernel::supervision::RunOutcome;
 use crate::kernel::supervision::SupervisorStrategy;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 static NEXT_SPAWN: AtomicU64 = AtomicU64::new(0);
+
+/// The cause name Pekko reports when `Kill` ends an actor.
+const ACTOR_KILLED_CAUSE: &str = "ActorKilledException";
+
+/// The cause name Pekko reports when an actor fails during `preStart`.
+const ACTOR_INITIALIZATION_CAUSE: &str = "ActorInitializationException";
+
+/// The cause name Pekko reports when a message handler throws.
+const RUNTIME_CAUSE: &str = "RuntimeException";
+
+/// The cause name Pekko reports when `postStop` throws.
+const EXCEPTION_CAUSE: &str = "Exception";
+
+/// The message a `Kill` carries into the failure of the instance it ends.
+const ACTOR_KILLED_MESSAGE: &str = "Kill";
+
+/// The `PoisonPill` and `Kill` system messages, which the executor handles
+/// without delivering them to `receive`.
+const POISON_PILL: &str = "PoisonPill";
+const KILL: &str = "Kill";
+
+/// The log class the ported tests pass for an event an actor raises.
+const ACTOR_LOG_CLASS: i32 = 3;
 
 /// Creates one handle with a fresh identifier and generation zero.
 pub(crate) fn next_actor_ref(path: ActorPath, boundary: Arc<dyn crate::kernel::executor::ShardBoundary>) -> ActorRef {
@@ -36,6 +65,12 @@ pub(crate) fn next_spawn_name() -> u64 {
 ///
 /// Mirrors the `IllegalStateException` of `Children.attachChild`.
 pub(crate) const TERMINATED_MESSAGE: &str = "cannot create children while terminating or terminated";
+
+/// A reply to send to `reply_to` after the actor it was registered on stops.
+struct DeferredReply {
+  reply_to: ActorRef,
+  message: Message,
+}
 
 /// Creates actors of one shard, runs their messages, and owns their state.
 ///
@@ -56,6 +91,8 @@ pub(crate) struct Executor {
   watchers: Vec<(ActorRef, ActorRef)>,
   function_refs: Vec<ActorRef>,
   catcher: Option<Arc<dyn FailureCatcher>>,
+  event_sink: Option<Arc<dyn EventSink>>,
+  deferred_replies: Vec<(ActorRef, DeferredReply)>,
   terminated: bool,
 }
 
@@ -68,13 +105,15 @@ impl Executor {
       watchers: Vec::new(),
       function_refs: Vec::new(),
       catcher: None,
+      event_sink: None,
+      deferred_replies: Vec::new(),
       terminated: false,
     }
   }
 
   pub(crate) fn function_ref<H>(&mut self, name: &str, handler: H) -> ActorRef
   where
-    H: Fn(&ActorRef, crate::kernel::message::Message) + Send + Sync + 'static,
+    H: Fn(&ActorRef, Message) + Send + Sync + 'static,
   {
     self.assert_running();
     let path = self.root.with_child("system").with_child(name);
@@ -87,6 +126,14 @@ impl Executor {
 
   pub(crate) fn set_failure_catcher(&mut self, catcher: Arc<dyn FailureCatcher>) {
     self.catcher = Some(catcher);
+  }
+
+  pub(crate) fn set_event_sink(&mut self, sink: Arc<dyn EventSink>) {
+    self.event_sink = Some(sink);
+  }
+
+  pub(crate) fn event_sink(&self) -> Option<Arc<dyn EventSink>> {
+    self.event_sink.clone()
   }
 
   /// Starts an actor that the system owns directly, below `/user`.
@@ -126,21 +173,68 @@ impl Executor {
     strategy: SupervisorStrategy,
   ) -> ActorRef {
     let self_ref = next_actor_ref(path, self.queue.boundary().clone());
-    let cell = ActorCell::new(props.create_actor(), self_ref.clone(), parent, props, strategy);
+    let cell = ActorCell::pending(self_ref.clone(), parent, props, strategy);
     self.cells.push(cell);
+    let index = self.cells.len() - 1;
+    self.create_initial(index);
     self_ref
+  }
+
+  /// Builds the actor of `index` and runs its `pre_start`, repeating while the
+  /// strategy allows a restart on a failed startup and stopping once it does
+  /// not.
+  ///
+  /// Mirrors Pekko's spawn path: a `preStart` that throws is wrapped in an
+  /// `ActorInitializationException`, the parent decides whether to restart, and
+  /// a child that stops because it never started runs no `postStop` because the
+  /// actor was never created.
+  fn create_initial(&mut self, index: usize) {
+    let self_ref = self.cells[index].self_ref();
+    loop {
+      let outcome = match self.catcher.clone() {
+        | Some(catcher) => catcher.run(&mut || self.cells[index].create()),
+        | None => {
+          self.cells[index].create();
+          RunOutcome::Completed
+        },
+      };
+      match outcome {
+        | RunOutcome::Completed => return,
+        | RunOutcome::Failed { message } => {
+          self.publish_child_failure(&self_ref, ACTOR_INITIALIZATION_CAUSE, &message);
+          let strategy = *self.cells[index].strategy();
+          let count = self.cells[index].restart_count();
+          match strategy.decide(count, FailureKind::Initialization) {
+            | Directive::Restart => self.cells[index].record_restart_request(),
+            | Directive::Stop => {
+              self.stop_as_never_started(&self_ref);
+              return;
+            },
+          }
+        },
+      }
+    }
+  }
+
+  /// Stops an actor that never finished starting, without running `postStop`.
+  fn stop_as_never_started(&mut self, target: &ActorRef) {
+    if let Some(index) = self.cells.iter().position(|cell| cell.accepts(target)) {
+      self.cells.remove(index);
+    }
+    self.notify_watchers(target, true, false);
+    self.flush_deferred_replies(target);
   }
 
   /// Stops the actor or function reference `target`, telling every watcher that
   /// it is gone.
   ///
   /// Mirrors `org.apache.pekko.actor.ActorSystem.stop` together with
-  /// `ActorContext.stop`: the children stop first, then the cell is removed,
-  /// and each registered watcher receives `Terminated(target,
-  /// existence_confirmed = true, address_terminated = false)`. Pekko stops the
-  /// children before it finishes the parent's termination, so a child that is
-  /// watched learns about its own end before the parent's watcher learns about
-  /// the parent's.
+  /// `ActorContext.stop`: the children stop first, then the actor's `postStop`
+  /// runs, then the cell is removed, and each registered watcher receives
+  /// `Terminated`, and finally any reply the actor deferred is sent. Pekko stops
+  /// the children before it finishes the parent's termination, so a child that
+  /// is watched learns about its own end before the parent's watcher learns
+  /// about the parent's.
   ///
   /// A function reference has no cell, so stopping one closes its boundary, which
   /// keeps its handler from running again, and removes it from the list that
@@ -162,9 +256,57 @@ impl Executor {
       reference.boundary().close();
     }
     if let Some(index) = self.cells.iter().position(|cell| cell.accepts(target)) {
+      if !self.cells[index].post_stop_suppressed() {
+        self.run_post_stop(index);
+      }
       self.cells.remove(index);
     }
     self.notify_watchers(target, true, false);
+    self.flush_deferred_replies(target);
+  }
+
+  /// Runs `postStop` on the behaviour of `index`, publishing an error when it
+  /// throws.
+  ///
+  /// Mirrors `dungeon.FaultHandling`: a `postStop` that throws is logged as an
+  /// error and the stop continues. A failure here never restarts the actor.
+  fn run_post_stop(&mut self, index: usize) {
+    let self_ref = self.cells[index].self_ref();
+    match self.catcher.clone() {
+      | Some(catcher) => {
+        if let RunOutcome::Failed { message } = catcher.run(&mut || self.cells[index].post_stop()) {
+          self.publish_child_failure(&self_ref, EXCEPTION_CAUSE, &message);
+        }
+      },
+      | None => self.cells[index].post_stop(),
+    }
+  }
+
+  /// Registers a reply to `reply_to` after `target` stops.
+  pub(crate) fn stop_and_reply(&mut self, target: &ActorRef, reply_to: ActorRef, message: Message) {
+    self.deferred_replies.push((target.clone(), DeferredReply { reply_to, message }));
+  }
+
+  /// Sends the replies that `target` deferred when it stopped.
+  fn flush_deferred_replies(&mut self, target: &ActorRef) {
+    let mut remaining = Vec::new();
+    let mut ready = Vec::new();
+    for (actor, deferred) in self.deferred_replies.drain(..) {
+      if &actor == target {
+        ready.push(deferred);
+      } else {
+        remaining.push((actor, deferred));
+      }
+    }
+    self.deferred_replies = remaining;
+    for DeferredReply { reply_to, message } in ready {
+      let sender = reply_to.clone();
+      let envelope = Envelope::new(reply_to, message, sender);
+      match envelope.into_local_if_same_shard(self.queue.boundary()) {
+        | Ok(local) => self.queue.enqueue_locally(local),
+        | Err(remote) => remote.post_to_boundary(),
+      }
+    }
   }
 
   /// Registers `watcher` to receive the `Terminated` notice of `target`.
@@ -239,12 +381,18 @@ impl Executor {
     self.function_refs.clear();
     self.cells.clear();
     self.queue.clear();
+    self.deferred_replies.clear();
     while self.queue.boundary().poll().is_some() {}
   }
 
   /// Returns whether the system has been terminated.
   pub(crate) fn is_terminated(&self) -> bool {
     self.terminated
+  }
+
+  /// Returns the identity of the shard boundary this executor posts to.
+  pub(crate) fn boundary_key(&self) -> usize {
+    Arc::as_ptr(self.queue.boundary()) as *const () as usize
   }
 
   /// Refuses to start an actor once the system has been terminated.
@@ -257,47 +405,171 @@ impl Executor {
     self.cells.iter().any(|cell| cell.accepts(target)) || self.function_refs.contains(target)
   }
 
+  /// Sends `message` to `target`, naming `sender` as the sender of the
+  /// envelope.
+  ///
+  /// A message to an actor of this shard goes onto the local queue; a message
+  /// to an actor of another shard, or to a function reference, goes through the
+  /// recipient's boundary.
+  pub(crate) fn send(&mut self, sender: ActorRef, target: &ActorRef, message: Message) {
+    let envelope = Envelope::new(target.clone(), message, sender);
+    match envelope.into_local_if_same_shard(self.queue.boundary()) {
+      | Ok(local) => self.queue.enqueue_locally(local),
+      | Err(remote) => remote.post_to_boundary(),
+    }
+  }
+
+  /// Delivers one envelope.
+  ///
+  /// The envelope carries three kinds of message: `Kill` and `PoisonPill`, which
+  /// act on the actor without reaching `receive`, and any other message, which
+  /// the actor handles.
+  ///
+  /// The cell is taken out of the table before the actor runs, so the actor may
+  /// start a child or stop itself through the context without borrowing the
+  /// table twice. The context asks the executor directly, and the executor
+  /// carries out a stop-after-reply once the actor returns.
   fn deliver(&mut self, envelope: Envelope) {
     let (recipient, message, sender) = envelope.into_parts();
     let Some(index) = self.cells.iter().position(|cell| cell.accepts(&recipient)) else {
       return;
     };
-    let mut context = ActorContext::new(recipient.clone(), sender, &mut self.queue);
-    match self.catcher.clone() {
-      | Some(catcher) => {
-        let cell = &mut self.cells[index];
-        let failed = !catcher.run(&mut || cell.deliver(&mut context, message.clone()));
-        if failed {
-          self.handle_failure(index, &recipient, &catcher);
+    if message == KILL {
+      self.handle_kill(index, &recipient);
+      return;
+    }
+    if message == POISON_PILL {
+      self.stop(&recipient);
+      return;
+    }
+    let mut cell = self.cells.remove(index);
+    let delivered = message.clone();
+    let catcher = self.catcher.clone();
+    let outcome = {
+      let mut context = ActorContext::new(recipient.clone(), sender, self);
+      match catcher {
+        | Some(catcher) => catcher.run(&mut || cell.deliver(&mut context, delivered.clone())),
+        | None => {
+          cell.deliver(&mut context, delivered);
+          RunOutcome::Completed
+        },
+      }
+    };
+    match outcome {
+      | RunOutcome::Completed => {
+        self.cells.push(cell);
+        if self.deferred_stop(&recipient) {
+          self.stop(&recipient);
         }
       },
-      | None => {
-        let cell = &mut self.cells[index];
-        cell.deliver(&mut context, message);
+      | RunOutcome::Failed { message } => {
+        if self.deferred_stop(&recipient) {
+          self.cells.push(cell);
+          self.stop(&recipient);
+        } else {
+          self.apply_failure(cell, &recipient, RUNTIME_CAUSE, &message);
+        }
       },
     }
   }
 
-  /// Applies the supervisor's decision to a failed actor.
-  ///
-  /// A restart re-creates the actor from its recipe and runs `postRestart`,
-  /// either of which may fail. Pekko catches such a failure and stops the
-  /// actor with a `PostRestartException`, which the default decider maps to
-  /// `stop`; so does this port. Letting the panic out of the executor instead
-  /// would stop the whole shard.
-  ///
-  /// `catcher` is the one the caller already ran the failing message under, so
-  /// this path never picks a different catcher or falls back to letting a panic
-  /// escape.
-  fn handle_failure(&mut self, index: usize, target: &ActorRef, catcher: &Arc<dyn FailureCatcher>) {
-    match self.cells[index].strategy().decide() {
+  /// Returns whether the actor asked to stop after the reply it registered.
+  fn deferred_stop(&self, target: &ActorRef) -> bool {
+    self.deferred_replies.iter().any(|(actor, _)| actor == target)
+  }
+
+  /// Applies the supervisor's decision to a failure during `receive`, then
+  /// carries out the requests the actor recorded before it failed.
+  fn apply_failure(&mut self, mut cell: ActorCell, target: &ActorRef, cause_name: &str, message: &str) {
+    self.publish_child_failure(target, cause_name, message);
+    let strategy = *cell.strategy();
+    let count = cell.restart_count();
+    match strategy.decide(count, FailureKind::MessageHandling) {
       | Directive::Restart => {
-        let restarted = catcher.run(&mut || self.cells[index].restart());
-        if !restarted {
-          self.stop(target);
-        }
+        cell.record_restart_request();
+        self.restart_cell(target, cell, cause_name, message);
       },
-      | Directive::Stop => self.stop(target),
+      | Directive::Stop => {
+        self.cells.push(cell);
+        self.stop(target);
+      },
+    }
+  }
+
+  /// Re-creates the actor of `cell` and runs its `postRestart`, stopping it when
+  /// the recipe or `postRestart` fails.
+  ///
+  /// Mirrors Pekko's restart path: `preRestart` runs on the old instance, the
+  /// recipe creates the new one, and `postRestart` runs on it. A failure of the
+  /// recipe or of `postRestart` stops the actor, as the default decider maps
+  /// `PostRestartException` to stop. The stop path then skips the old
+  /// instance's `post_stop`, because `preRestart` already ran it and the
+  /// instance must not run it twice.
+  fn restart_cell(&mut self, target: &ActorRef, mut cell: ActorCell, cause_name: &str, message: &str) {
+    let reason = self.failure_reason(target, cause_name, message);
+    let reason_box: Box<dyn core::any::Any + Send> = Box::new(reason);
+    let pre_restart_failed = match self.catcher.clone() {
+      | Some(catcher) => catcher.run(&mut || cell.pre_restart(reason_box.as_ref())),
+      | None => {
+        cell.pre_restart(reason_box.as_ref());
+        RunOutcome::Completed
+      },
+    };
+    if let RunOutcome::Failed { message } = pre_restart_failed {
+      self.publish_child_failure(target, RUNTIME_CAUSE, &message);
+    }
+    let restarted = match self.catcher.clone() {
+      | Some(catcher) => catcher.run(&mut || cell.restart()),
+      | None => {
+        cell.restart();
+        RunOutcome::Completed
+      },
+    };
+    match restarted {
+      | RunOutcome::Completed => self.cells.push(cell),
+      | RunOutcome::Failed { message } => {
+        self.publish_child_failure(target, RUNTIME_CAUSE, &message);
+        cell.suppress_post_stop();
+        self.cells.push(cell);
+        self.stop(target);
+      },
+    }
+  }
+
+  /// Handles a `Kill`: the instance fails with `ActorKilledException` and the
+  /// supervisor decides for a killed child, which the default decider maps to
+  /// `Stop`.
+  fn handle_kill(&mut self, index: usize, recipient: &ActorRef) {
+    self.publish_child_failure(recipient, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE);
+    let mut cell = self.cells.remove(index);
+    let strategy = *cell.strategy();
+    let count = cell.restart_count();
+    match strategy.decide(count, FailureKind::Killed) {
+      | Directive::Restart => {
+        cell.record_restart_request();
+        self.restart_cell(recipient, cell, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE);
+      },
+      | Directive::Stop => {
+        self.cells.push(cell);
+        self.stop(recipient);
+      },
+    }
+  }
+
+  /// Builds an `Error` event with `cause_name` and `message`, raised by
+  /// `target`.
+  fn failure_reason(&self, target: &ActorRef, cause_name: &str, message: &str) -> Error {
+    Error::with_cause_name(cause_name, target.path().to_string(), ACTOR_LOG_CLASS, message)
+  }
+
+  /// Publishes the failure of `target` as an error event.
+  ///
+  /// Mirrors `FaultHandling.logFailure`: the parent logs an `Error` for a child
+  /// it restarts or stops, carrying the path of the child as its source.
+  fn publish_child_failure(&self, target: &ActorRef, cause_name: &str, message: &str) {
+    if let Some(sink) = self.event_sink.as_ref() {
+      let event = self.failure_reason(target, cause_name, message);
+      sink.publish(&event);
     }
   }
 
@@ -312,7 +584,7 @@ impl Executor {
 
   fn enqueue_to(&mut self, recipient: ActorRef, message: Terminated) {
     let sender = recipient.clone();
-    let envelope = Envelope::new(recipient.clone(), crate::kernel::message::Message::new(message), sender);
+    let envelope = Envelope::new(recipient.clone(), Message::new(message), sender);
     match envelope.into_local_if_same_shard(self.queue.boundary()) {
       | Ok(local) => self.queue.enqueue_locally(local),
       | Err(remote) => remote.post_to_boundary(),
