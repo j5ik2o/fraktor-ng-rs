@@ -107,3 +107,29 @@ fn a_post_racing_close_leaves_nothing_after_the_drain() {
     assert!(boundary.poll().is_none());
   }
 }
+
+#[test]
+fn has_pending_reports_a_posted_envelope_until_it_is_taken() {
+  let boundary = Arc::new(ChannelBoundary::new());
+  let mut system = system_on(&boundary);
+  let recipient = system.actor_of(Props::new(|| Sink));
+
+  assert!(!boundary.has_pending());
+  recipient.tell(Message::new("hello"), recipient.clone());
+  assert!(boundary.has_pending());
+
+  assert!(boundary.poll().is_some());
+  assert!(!boundary.has_pending());
+}
+
+#[test]
+fn has_pending_ignores_a_post_that_close_rejected() {
+  let boundary = Arc::new(ChannelBoundary::new());
+  let mut system = system_on(&boundary);
+  let recipient = system.actor_of(Props::new(|| Sink));
+
+  boundary.close();
+  recipient.tell(Message::new("hello"), recipient.clone());
+
+  assert!(!boundary.has_pending());
+}

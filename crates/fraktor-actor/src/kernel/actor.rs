@@ -3,7 +3,9 @@
 mod actor_context;
 mod actor_trait;
 mod props;
+mod terminated;
 
 pub use actor_context::ActorContext;
 pub use actor_trait::Actor;
 pub use props::Props;
+pub use terminated::Terminated;

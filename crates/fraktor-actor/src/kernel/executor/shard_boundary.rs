@@ -22,6 +22,13 @@ pub trait ShardBoundary: Send + Sync {
   /// Waits at most `max` for one envelope.
   fn poll_within(&self, max: Duration) -> Option<Envelope>;
 
+  /// Returns whether an envelope is already waiting on this boundary.
+  ///
+  /// A sender inside the shard uses this to keep the order it sent in: while
+  /// something it posted earlier still waits at the boundary, a later message
+  /// must not overtake it through the local queue.
+  fn has_pending(&self) -> bool;
+
   /// Stops the boundary from taking new envelopes.
   ///
   /// After this call, `post` discards the envelope instead of handing it on,

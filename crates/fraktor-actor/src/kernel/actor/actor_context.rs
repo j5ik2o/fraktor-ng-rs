@@ -1,10 +1,7 @@
 //! The view an actor gets while it handles one message.
 
-use alloc::collections::VecDeque;
-use alloc::sync::Arc;
-
 use crate::kernel::actor_ref::ActorRef;
-use crate::kernel::executor::ShardBoundary;
+use crate::kernel::executor::ShardQueue;
 use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
 
@@ -15,25 +12,19 @@ use crate::kernel::message::Message;
 /// the actor and lets it be read at any time; the port lends it out only for
 /// the duration of one `receive` call, as the ownership model decides.
 ///
-/// The context keeps the local queue of its shard. A message to an actor of the
-/// same shard goes onto that queue; a message to an actor of another shard goes
+/// The context keeps the queue of its shard. A message to an actor of the same
+/// shard goes onto that queue; a message to an actor of another shard goes
 /// through the recipient's boundary. That split is how "local queues inside a
 /// shard, channels only at the boundary" is expressed in the code.
 pub struct ActorContext<'a> {
   self_ref: ActorRef,
   sender: ActorRef,
-  boundary: Arc<dyn ShardBoundary>,
-  local_queue: &'a mut VecDeque<Envelope>,
+  queue: &'a mut ShardQueue,
 }
 
 impl<'a> ActorContext<'a> {
-  pub(crate) fn new(
-    self_ref: ActorRef,
-    sender: ActorRef,
-    boundary: Arc<dyn ShardBoundary>,
-    local_queue: &'a mut VecDeque<Envelope>,
-  ) -> Self {
-    Self { self_ref, sender, boundary, local_queue }
+  pub(crate) fn new(self_ref: ActorRef, sender: ActorRef, queue: &'a mut ShardQueue) -> Self {
+    Self { self_ref, sender, queue }
   }
 
   /// Returns a handle to the actor that is handling the message.
@@ -58,8 +49,8 @@ impl<'a> ActorContext<'a> {
   }
 
   fn dispatch(&mut self, envelope: Envelope) {
-    match envelope.into_local_if_same_shard(&self.boundary) {
-      | Ok(local) => self.local_queue.push_back(local),
+    match envelope.into_local_if_same_shard(self.queue.boundary()) {
+      | Ok(local) => self.queue.enqueue_locally(local),
       | Err(remote) => remote.post_to_boundary(),
     }
   }

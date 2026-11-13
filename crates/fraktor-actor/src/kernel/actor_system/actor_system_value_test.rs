@@ -12,6 +12,7 @@ use std::sync::Mutex;
 use crate::kernel::actor::Actor;
 use crate::kernel::actor::ActorContext;
 use crate::kernel::actor::Props;
+use crate::kernel::actor::Terminated;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
@@ -41,6 +42,10 @@ impl ShardBoundary for QueueBoundary {
 
   fn poll_within(&self, _max: Duration) -> Option<Envelope> {
     self.poll()
+  }
+
+  fn has_pending(&self) -> bool {
+    !self.queue.lock().unwrap().is_empty()
   }
 
   fn close(&self) {}
@@ -121,6 +126,10 @@ impl ShardBoundary for EndlessBoundary {
 
   fn poll_within(&self, _max: Duration) -> Option<Envelope> {
     self.poll()
+  }
+
+  fn has_pending(&self) -> bool {
+    false
   }
 
   fn close(&self) {}
@@ -306,4 +315,115 @@ fn run_until_idle_delivers_from_the_boundary_while_the_queue_keeps_filling() {
 
   assert_eq!(*received.lock().unwrap(), alloc::vec!["queued"]);
   assert!(boundary.polls.load(Ordering::SeqCst) < 1000, "the sink was starved by the boundary");
+}
+
+struct LocalSink {
+  received: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl Actor for LocalSink {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
+    if let Some(text) = message.downcast_ref::<&'static str>() {
+      self.received.lock().unwrap().push(text);
+    }
+  }
+}
+
+/// Sends the first message with `tell` (which posts to the boundary) and the
+/// second with `context.tell` (which stays on the shard-local queue). Both
+/// address the same actor, so the mix must still arrive in send order.
+struct MixedSender {
+  by_tell: ActorRef,
+  by_context: ActorRef,
+}
+
+impl Actor for MixedSender {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    if message.downcast_ref::<&'static str>() != Some(&"go") {
+      return;
+    }
+    self.by_tell.tell("first", context.self_ref());
+    context.tell(&self.by_context, Message::new("second"));
+  }
+}
+
+#[test]
+fn a_local_message_from_one_sender_keeps_its_order_against_an_earlier_boundary_message() {
+  let local_received = Arc::new(Mutex::new(Vec::new()));
+  let local_observer = Arc::clone(&local_received);
+  let mut system = system("PekkoCustomSpec");
+  let local = system.actor_of(Props::new(move || LocalSink { received: Arc::clone(&local_observer) }));
+  let sender = system.actor_of(Props::new({
+    let local = local.clone();
+    move || MixedSender { by_tell: local.clone(), by_context: local.clone() }
+  }));
+
+  sender.tell("go", sender.clone());
+  system.run_until_idle();
+
+  assert_eq!(*local_received.lock().unwrap(), alloc::vec!["first", "second"]);
+}
+
+struct StopWatcher {
+  observed: Arc<Mutex<Vec<Terminated>>>,
+  watched: Arc<Mutex<Option<ActorRef>>>,
+}
+
+impl Actor for StopWatcher {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
+    if let Some(terminated) = message.downcast_ref::<Terminated>() {
+      if self.watched.lock().unwrap().as_ref() == Some(terminated.target()) {
+        self.observed.lock().unwrap().push(terminated.clone());
+      }
+    }
+  }
+}
+
+struct FailingChild {
+  failures: Arc<AtomicUsize>,
+}
+
+impl Actor for FailingChild {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {
+    self.failures.fetch_add(1, Ordering::SeqCst);
+    panic!("simulated failure");
+  }
+}
+
+#[test]
+fn a_child_started_with_the_stopping_strategy_stops_and_tells_its_watcher() {
+  use crate::adaptor::UnwindCatcher;
+  use crate::kernel::supervision::SupervisorStrategy;
+
+  let observed = Arc::new(Mutex::new(Vec::<Terminated>::new()));
+  let watched = Arc::new(Mutex::new(None));
+  let failures = Arc::new(AtomicUsize::new(0));
+  let boundary: Arc<dyn ShardBoundary> = Arc::new(QueueBoundary::new());
+  let mut system = ActorSystem::with_failure_catcher("PekkoCustomSpec", boundary, Arc::new(UnwindCatcher));
+  let watcher = system.actor_of(Props::new({
+    let observed = Arc::clone(&observed);
+    let watched = Arc::clone(&watched);
+    move || StopWatcher { observed: Arc::clone(&observed), watched: Arc::clone(&watched) }
+  }));
+  let parent = system.actor_of(Props::new(|| NoOp));
+  let child = system.downgrade().spawn_child(
+    &parent,
+    Props::new({
+      let failures = Arc::clone(&failures);
+      move || FailingChild { failures: Arc::clone(&failures) }
+    }),
+    Some("child"),
+    SupervisorStrategy::stopping_strategy(),
+  );
+  *watched.lock().unwrap() = Some(child.clone());
+  system.watch(&watcher, &child);
+
+  child.tell("boom", watcher.clone());
+  system.run_until_idle();
+
+  let seen = observed.lock().unwrap();
+  assert_eq!(seen.len(), 1, "the watcher did not receive exactly one Terminated");
+  assert_eq!(seen[0].target(), &child);
+  assert!(seen[0].existence_confirmed(), "a stopped child was watched before it stopped");
+  assert_eq!(failures.load(Ordering::SeqCst), 1, "the stopping strategy let the child run again");
 }
