@@ -255,7 +255,9 @@ impl Executor {
       reference.boundary().close();
     }
     if let Some(index) = self.cells.iter().position(|cell| cell.accepts(target)) {
-      self.run_post_stop(index);
+      if !self.cells[index].post_stop_suppressed() {
+        self.run_post_stop(index);
+      }
       self.cells.remove(index);
     }
     self.notify_watchers(target, true, false);
@@ -499,7 +501,9 @@ impl Executor {
   /// Mirrors Pekko's restart path: `preRestart` runs on the old instance, the
   /// recipe creates the new one, and `postRestart` runs on it. A failure of the
   /// recipe or of `postRestart` stops the actor, as the default decider maps
-  /// `PostRestartException` to stop.
+  /// `PostRestartException` to stop. The stop path then skips the old
+  /// instance's `post_stop`, because `preRestart` already ran it and the
+  /// instance must not run it twice.
   fn restart_cell(&mut self, target: &ActorRef, mut cell: ActorCell, cause_name: &str, message: &str) {
     let reason = self.failure_reason(target, cause_name, message);
     let reason_box: Box<dyn core::any::Any + Send> = Box::new(reason);
@@ -524,6 +528,7 @@ impl Executor {
       | RunOutcome::Completed => self.cells.push(cell),
       | RunOutcome::Failed { message } => {
         self.publish_child_failure(target, RUNTIME_CAUSE, &message);
+        cell.suppress_post_stop();
         self.cells.push(cell);
         self.stop(target);
       },
