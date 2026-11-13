@@ -16,7 +16,7 @@ unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TRE
 # 向ける。run 用 opencode サーバは provider 定義を利用者設定から解決するため、graft しないと
 # モデル解決が「Model unavailable」で失敗する。利用者設定が存在し、サンドボックス側の
 # opencode.json が無いか既に symlink のときだけ graft する（冪等、stdout へは出さない）。
-oc_user_cfg="$HOME/.config/opencode/opencode.json"
+oc_user_cfg="${HOME:-}/.config/opencode/opencode.json"
 oc_sb_dir="${XDG_CONFIG_HOME:-$PWD/.takt/.runtime/config}/opencode"
 if [ -f "$oc_user_cfg" ] && { [ ! -e "$oc_sb_dir/opencode.json" ] || [ -L "$oc_sb_dir/opencode.json" ]; }; then
   mkdir -p "$oc_sb_dir"
