@@ -6,7 +6,7 @@ base_branch: main
 workflow_system_commands:
   custom_scripts: true
 
-# pekko-porting-ng の runtime.prepare（tools/pekko-source/prepare_pekko_source.sh）は
+# fraktor-porting-ng の runtime.prepare（tools/pekko-source/prepare_pekko_source.sh）は
 # preset ではないので、カスタムスクリプトの許可が要る（無いとワークフローの読み込みで失敗する）
 workflow_runtime_prepare:
   custom_scripts: true
@@ -31,4 +31,4 @@ manager:
   workflows:
     - default
     - simple
-    - pekko-porting-ng: 台帳のゴール（ノードの集合）を、Pekko のテストから 1 件ずつ移植する
+    - fraktor-porting-ng: 台帳のゴール（ノードの集合）を、Pekko のテストから 1 件ずつ移植する
