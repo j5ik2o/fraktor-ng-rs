@@ -95,7 +95,7 @@ provider:
               - dgx-flash
               - ollama-strong
         steps:
-          pekko-port-node/classify-red:
+          fraktor-port-node/classify-red:
             profile: ollama-strong
           mini-core/ai-antipattern-fix:
             profile: ollama-strong
