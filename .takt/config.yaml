@@ -1,5 +1,6 @@
 language: ja
-concurrency: 1
+# 全体で同時 2 本まで（基盤ゴールは同時 1 本。2026-11-13 窓口指示で、基盤ゴールではない issue #34 のスパイクを並行させる）
+concurrency: 2
 base_branch: main
 
 # ワークフロー内の system step が固定コマンド（台帳ツール）を実行するために必要
