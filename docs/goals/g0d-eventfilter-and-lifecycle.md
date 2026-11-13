@@ -90,8 +90,12 @@ requires: [G0c]（PR #36 が main に入り、`rollup.py --goal G0a`〜`G0c` が
 
 ## 置き場所
 
-- EventFilter・TestEventListener とログイベントの模型は `crates/fraktor-testkit/src` に置く
-  （TestKit の能力のため）
+- ログイベントの型（Logging の Error/Warning、Error.NoCause、発信元の表現を含む）は
+  `crates/fraktor-actor/src` に置く。actor の実行時（Kill の失敗、監督による再起動）がイベントを
+  発行するため、testkit 側に置くと fraktor-testkit → fraktor-actor の通常依存と逆向きの通常依存が
+  要って循環する。原典も LogEvent は actor モジュールの Logging.scala にある（依存分析の節を参照）
+- EventFilter・TestEventListener は `crates/fraktor-testkit/src` に置き、actor 側のログイベントの型を
+  参照する（TestKit の能力のため。actor から testkit へは dev-dependency のみ）
 - 最小のイベントストリーム、ライフサイクル、become の実装は `crates/fraktor-actor/src` に置く
 - TestEventListenerSpec のテストは `crates/fraktor-testkit/tests/` に置く（1 ノード 1 ファイル）
 - ActorLifeCycleSpec のテストは `crates/fraktor-actor/tests/` に置く（案C 規則 3。actor-tests は
@@ -170,5 +174,5 @@ cargo test -p fraktor-testkit
 cargo test -p fraktor-actor
 for g in G0a G0b G0c G0d; do uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal $g; done
 uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0d
-git diff --stat ledger/nodes.yaml
+git diff 0df2656 -- ledger/   # 発行前処理のコミット（0df2656）より後の ledger/ 全体の差分。対象 2 ノードの欄に限られること（AC6）
 ```
