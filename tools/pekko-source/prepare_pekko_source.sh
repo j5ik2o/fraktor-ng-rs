@@ -44,6 +44,23 @@ upstream_url="${PEKKO_SOURCE_UPSTREAM_URL:-https://github.com/apache/pekko}"
 expected="${PEKKO_SOURCE_EXPECTED_COMMIT:-9a54d1294c3ac7821bbed3c940769c3d5027d1ff}"
 tag="v1.7.1"
 
+# verify_green の aislop ゲートは node_modules の aislop を使う。run の各ステップの前に
+# node_modules を用意するため、aislop の実行物が無いか、package-lock.json / package.json
+# より古いときだけ npm ci を実行する（冪等）。stdout は TAKT が KEY=VALUE として
+# 読むので、npm の出力は stderr に回す。
+prepare_node_modules() {
+  if [ ! -f "$PWD/package-lock.json" ]; then
+    return 0
+  fi
+  if [ -x "$PWD/node_modules/.bin/aislop" ] \
+     && [ -z "$(find "$PWD/package-lock.json" "$PWD/package.json" -newer "$PWD/node_modules/.bin/aislop" 2>/dev/null)" ]; then
+    return 0
+  fi
+  npm ci --no-audit --no-fund 1>&2
+}
+
+prepare_node_modules
+
 prepare() {
   rm -rf "$target"
   if [ -d "$local_repo" ] && git -C "$local_repo" rev-parse --git-dir >/dev/null 2>&1; then

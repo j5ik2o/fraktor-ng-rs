@@ -2,7 +2,7 @@
 """準備スクリプトの判定を、テスト用の小さな git repo で確かめる。
 
 使い方:
-    python3 tools/pekko-source/prepare_pekko_source_test.py
+    uv run --with pyyaml python3 tools/pekko-source/prepare_pekko_source_test.py
 
 確かめること:
   1. pekko/ が無い            ローカルの原典から clone し、HEAD が期待 commit になる（exit 0）
@@ -26,6 +26,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import traceback
 from pathlib import Path
 
@@ -177,6 +178,223 @@ def assert_pekko_at(path: str | Path, expected_commit: str, label: str) -> None:
     assert (target / ".git").exists(), f"{label}: pekko/.git must exist"
     actual = git("rev-parse", "HEAD", cwd=target)
     assert actual == expected_commit, f"{label}: HEAD must be {expected_commit}, got {actual}"
+
+
+FAKE_NPM = """#!/usr/bin/env bash
+# npm ci を模す。呼び出しを記録し、作業ツリーに node_modules を作る。
+# 実 npm と同じく、node_modules/.package-lock.json は package-lock.json と
+# 同一内容ではなく、aislop の実行物（.bin/aislop）を作る。
+set -euo pipefail
+echo "npm $*" >> "$FAKE_NPM_LOG"
+case "${1:-}" in
+  ci)
+    rm -rf node_modules
+    mkdir -p node_modules/.bin
+    echo '{"resolved":"fake"}' > node_modules/.package-lock.json
+    printf '#!/usr/bin/env node\\n' > node_modules/.bin/aislop
+    chmod +x node_modules/.bin/aislop
+    ;;
+esac
+exit 0
+"""
+
+
+def install_fake_npm(worktree: str | Path) -> Path:
+    """node_modules を持たない作業ツリーに、npm を差し替えるための bin と npm ci の前提を作る。"""
+    worktree = Path(worktree)
+    (worktree / "package.json").write_text('{"devDependencies": {"aislop": "0.20.1"}}\n',
+                                            encoding="utf-8")
+    (worktree / "package-lock.json").write_text('{"lockfileVersion": 3, "packages": {}}\n',
+                                                encoding="utf-8")
+    bin_dir = worktree / ".fake-bin"
+    bin_dir.mkdir(exist_ok=True)
+    npm = bin_dir / "npm"
+    npm.write_text(FAKE_NPM, encoding="utf-8")
+    npm.chmod(0o755)
+    return bin_dir
+
+
+def prepare_env_with_npm(root: str | Path, source: str | Path, expected: str,
+                         worktree: str | Path) -> tuple[dict[str, str], Path]:
+    """base_env に、偽の npm を先頭へ足した PATH と、呼び出し記録のパスを加える。"""
+    log = Path(root) / "npm-calls.log"
+    log.write_text("", encoding="utf-8")
+    bin_dir = install_fake_npm(worktree)
+    env = base_env(PEKKO_SOURCE_LOCAL_REPO=str(source), PEKKO_SOURCE_EXPECTED_COMMIT=expected)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    env["FAKE_NPM_LOG"] = str(log)
+    return env, log
+
+
+def assert_node_modules_prepared(worktree: str | Path, label: str) -> None:
+    aislop = Path(worktree) / "node_modules" / ".bin" / "aislop"
+    assert aislop.exists(), f"{label}: prepare must leave node_modules/.bin/aislop for the aislop gate"
+
+
+def test_prepare_installs_node_modules_so_aislop_can_run() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        source = Path(root) / "source"
+        expected = make_source(source)
+        worktree = make_worktree(root)
+        env, log = prepare_env_with_npm(root, source, expected, worktree)
+
+        result = run_script(worktree, env)
+        assert result.returncode == 0, f"npm ci: expected 0, got {result.returncode}; stderr={result.stderr!r}"
+        assert_silent_stdout(result, "npm ci")
+        calls = log.read_text(encoding="utf-8").splitlines()
+        assert any(call.startswith("npm ci") for call in calls), (
+            f"npm ci: prepare must run npm ci to prepare node_modules, got calls={calls!r}"
+        )
+        assert_node_modules_prepared(worktree, "npm ci")
+
+
+def test_prepare_still_installs_node_modules_when_pekko_is_already_prepared() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        source = Path(root) / "source"
+        expected = make_source(source)
+        worktree = make_worktree(root)
+        env, log = prepare_env_with_npm(root, source, expected, worktree)
+
+        # 1 回目で pekko/ と node_modules を用意する。
+        first = run_script(worktree, env)
+        assert first.returncode == 0, f"npm ci: first run expected 0, got {first.returncode}; stderr={first.stderr!r}"
+        assert_silent_stdout(first, "npm ci first")
+        assert_node_modules_prepared(worktree, "npm ci first")
+
+        # node_modules を消して、pekko/ だけが揃った再実行を模す。pekko/ は clone では
+        # なく正しさの照合で抜ける経路になるが、node_modules の用意は動き続ける必要がある。
+        shutil.rmtree(Path(worktree) / "node_modules")
+        log.write_text("", encoding="utf-8")
+
+        second = run_script(worktree, env)
+        assert second.returncode == 0, (
+            f"npm ci: second run expected 0, got {second.returncode}; stderr={second.stderr!r}"
+        )
+        assert_silent_stdout(second, "npm ci second")
+        assert_node_modules_prepared(worktree, "npm ci second")
+
+        # node_modules が揃っている 3 回目は npm ci を再実行しない（冪等）。
+        log.write_text("", encoding="utf-8")
+        third = run_script(worktree, env)
+        assert third.returncode == 0, (
+            f"npm ci: third run expected 0, got {third.returncode}; stderr={third.stderr!r}"
+        )
+        assert_silent_stdout(third, "npm ci third")
+        assert log.read_text(encoding="utf-8").strip() == "", (
+            f"npm ci: an up-to-date node_modules must not trigger another npm ci, got {log.read_text(encoding='utf-8')!r}"
+        )
+
+
+def test_prepare_reinstalls_when_the_lockfile_is_newer_than_node_modules() -> None:
+    # package-lock.json が node_modules より新しい（依存が変わった）ときは npm ci をやり直す。
+    # mtime 比較の向きを逆にした実装や、片方のファイルだけを見る実装を拒否する。
+    with tempfile.TemporaryDirectory() as root:
+        source = Path(root) / "source"
+        expected = make_source(source)
+        worktree = make_worktree(root)
+        env, log = prepare_env_with_npm(root, source, expected, worktree)
+
+        first = run_script(worktree, env)
+        assert first.returncode == 0, f"fresh install: expected 0, got {first.returncode}; stderr={first.stderr!r}"
+        assert_node_modules_prepared(worktree, "fresh install")
+
+        # lockfile を node_modules/.bin/aislop より新しくする。
+        time.sleep(1.1)
+        os.utime(Path(worktree) / "package-lock.json", None)
+        log.write_text("", encoding="utf-8")
+
+        second = run_script(worktree, env)
+        assert second.returncode == 0, (
+            f"lock newer: expected 0, got {second.returncode}; stderr={second.stderr!r}"
+        )
+        assert_silent_stdout(second, "lock newer")
+        assert any(call.startswith("npm ci") for call in log.read_text(encoding="utf-8").splitlines()), (
+            "lock newer: a changed package-lock.json must trigger npm ci"
+        )
+
+
+def test_prepare_reinstalls_when_aislop_binary_is_a_broken_symlink() -> None:
+    # npm の .bin/aislop は symlink。リンク先が消えている（壊れている）なら
+    # 実行物が無いのと同じなので npm ci をやり直す。[ -e ] ではなく [ -x ] で
+    # 判定しないと、壊れたリンクを「用意済み」と誤認して aislop が動かなくなる。
+    with tempfile.TemporaryDirectory() as root:
+        source = Path(root) / "source"
+        expected = make_source(source)
+        worktree = make_worktree(root)
+        env, log = prepare_env_with_npm(root, source, expected, worktree)
+
+        first = run_script(worktree, env)
+        assert first.returncode == 0, f"fresh install: expected 0, got {first.returncode}; stderr={first.stderr!r}"
+        assert_node_modules_prepared(worktree, "fresh install")
+
+        # .bin/aislop を、存在しないリンク先を指す symlink に置き換える。
+        aislop = Path(worktree) / "node_modules" / ".bin" / "aislop"
+        aislop.unlink()
+        aislop.symlink_to("../aislop/dist/cli.js")
+        assert not aislop.exists(), "the symlink must be broken for this case"
+        log.write_text("", encoding="utf-8")
+
+        second = run_script(worktree, env)
+        assert second.returncode == 0, (
+            f"broken symlink: expected 0, got {second.returncode}; stderr={second.stderr!r}"
+        )
+        assert any(call.startswith("npm ci") for call in log.read_text(encoding="utf-8").splitlines()), (
+            "broken symlink: a dangling .bin/aislop must trigger npm ci"
+        )
+        assert_node_modules_prepared(worktree, "broken symlink")
+
+
+def test_prepare_without_a_lockfile_does_not_run_npm() -> None:
+    # package-lock.json が無い作業ツリー（package.json を置いていない）では
+    # node_modules を用意する必要が無い。npm を呼ばずに後続へ進む。
+    with tempfile.TemporaryDirectory() as root:
+        worktree = Path(root) / "worktree"
+        os.makedirs(worktree)
+        git("init", "-q", cwd=worktree)
+        # pekko/ を期待コミットで用意し、npm 段階だけを観測する。
+        source = Path(root) / "source"
+        expected = make_source(source)
+        env, log = prepare_env_with_npm(root, source, expected, worktree)
+        (worktree / "package-lock.json").unlink()
+        (worktree / "package.json").unlink()
+
+        result = run_script(worktree, env)
+        assert result.returncode == 0, f"no lockfile: expected 0, got {result.returncode}; stderr={result.stderr!r}"
+        assert_silent_stdout(result, "no lockfile")
+        assert log.read_text(encoding="utf-8").strip() == "", (
+            f"no lockfile: npm must not run when there is nothing to install, got {log.read_text(encoding='utf-8')!r}"
+        )
+
+
+def test_ci_runs_check_aislop_after_installing_dependencies() -> None:
+    # ステップ定義の順序を観測する。全文の文字列位置ではなく、`jobs.check.steps` の
+    # 並びで「npm ci を実行するステップ」が「npm run check:aislop を実行するステップ」
+    # より前にあることを確かめる。表示名（name）ではなく実行コマンド（run）を見る。
+    import yaml
+
+    ci = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml"
+    workflow = yaml.safe_load(ci.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["check"]["steps"]
+
+    def runs(command: str) -> list[int]:
+        # ステップの run を実行コマンドとして扱い、コマンド行の先頭一致で探す。
+        # 複数行の run は行ごとに見る。
+        found = []
+        for index, step in enumerate(steps):
+            script = step.get("run")
+            if not isinstance(script, str):
+                continue
+            if any(line.strip().startswith(command) for line in script.splitlines()):
+                found.append(index)
+        return found
+
+    install = runs("npm ci")
+    check = runs("npm run check:aislop")
+    assert install, "ci.yml has no step that runs 'npm ci'"
+    assert check, "ci.yml has no step that runs 'npm run check:aislop'"
+    assert install[0] < check[0], (
+        f"ci.yml runs 'npm run check:aislop' (step {check[0]}) before 'npm ci' (step {install[0]})"
+    )
 
 
 def test_absent_clones_from_local_source() -> None:
@@ -485,6 +703,12 @@ def main() -> int:
         test_missing_local_source_uses_shallow_upstream_clone,
         test_local_source_override_is_honoured,
         test_pekko_is_not_placed_in_the_callers_directory,
+        test_prepare_installs_node_modules_so_aislop_can_run,
+        test_prepare_still_installs_node_modules_when_pekko_is_already_prepared,
+        test_prepare_reinstalls_when_the_lockfile_is_newer_than_node_modules,
+        test_prepare_reinstalls_when_aislop_binary_is_a_broken_symlink,
+        test_prepare_without_a_lockfile_does_not_run_npm,
+        test_ci_runs_check_aislop_after_installing_dependencies,
     ]
     failures = 0
     for test in tests:

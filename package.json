@@ -1,0 +1,12 @@
+{
+  "name": "fraktor-ng-rs",
+  "private": true,
+  "description": "Pekko port of fraktor-ng-rs. aislop runs as a machine gate for AI-generated code quality.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "check:aislop": "node scripts/check-aislop.mjs"
+  },
+  "devDependencies": {
+    "aislop": "0.20.1"
+  }
+}

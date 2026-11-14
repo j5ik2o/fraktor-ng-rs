@@ -13,8 +13,9 @@
                違反かパース不能のファイルがあれば fail。チェッカーが無い環境
                （tools/syn-check が無い、cargo が無い）では "not_installed" として
                報告し、合否には含めない。
-  aislop は、実行物が導入されたらここに追加する。
-  現時点では "not_installed" として報告し、合否には含めない。
+  aislop  node scripts/check-aislop.mjs をリポジトリルートで実行し、その終了コードを
+          そのまま pass/fail に反映する。node や node_modules が無く check-aislop を
+          実行できない場合も fail として報告する（not_installed で合格にはしない）。
 """
 import json
 import os
@@ -24,6 +25,7 @@ import subprocess
 from pathlib import Path
 
 SYN_CHECK_MANIFEST = Path(__file__).resolve().parents[2] / "tools" / "syn-check" / "Cargo.toml"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def parse_crate() -> tuple[str | None, list[str]]:
@@ -108,6 +110,30 @@ def run_syn_checker(crate: str) -> dict:
     return {"result": "fail", "detail": "\n".join(lines)[:800]}
 
 
+def run_aislop() -> dict:
+    """check-aislop.mjs を実行し、終了コードを pass/fail に反映する。
+
+    スクリプトはカレントディレクトリ（呼び出し側のリポジトリルート）から解決する。
+    他のゲート（cargo の実行と台帳の読み取り）もカレントディレクトリをリポジトリ
+    ルートとして動く前提であり、テストは一時ワークスペースをカレントにして
+    スタブの check-aislop.mjs を置ける。
+    """
+    if shutil.which("node") is None:
+        return {"result": "fail", "detail": "node is not installed; cannot run scripts/check-aislop.mjs"}
+    root = Path.cwd()
+    script = root / "scripts" / "check-aislop.mjs"
+    try:
+        # check-aislop.mjs 内側の scan のタイムアウトは 600 秒。外側が先に切れると
+        # node だけが強制終了され、scan のプロセスが残るため、外側には内側の
+        # タイムアウト処理（scan の終了を含む）が終わるまでの余裕を持たせる。
+        proc = subprocess.run(["node", str(script)], capture_output=True, text=True,
+                              cwd=str(root), timeout=690)
+    except Exception as e:
+        return {"result": "fail", "detail": f"{type(e).__name__}: {e}"}
+    return {"result": "pass" if proc.returncode == 0 else "fail",
+            "detail": (proc.stdout + proc.stderr)[-800:]}
+
+
 def main() -> int:
     crate, notes = parse_crate()
     if not crate:
@@ -120,7 +146,7 @@ def main() -> int:
         "clippy": run(["cargo", "clippy", "-p", crate, "--", "-D", "warnings"]),
         "fmt": run(["cargo", "fmt", "--check"]),
         "syn_checker": run_syn_checker(crate),
-        "aislop": {"result": "not_installed", "detail": ""},
+        "aislop": run_aislop(),
     }
     all_pass = all(g["result"] in ("pass", "not_installed") for g in gates.values())
     print(json.dumps({"all_pass": all_pass, "crate": crate, "gates": gates},

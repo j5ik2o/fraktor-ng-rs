@@ -1,0 +1,34 @@
+{
+  "accepted": [
+    {
+      "rule": "knip/skipped",
+      "file": "package.json",
+      "line": 0,
+      "reason": "aislop の code-quality エンジンが同梱の knip を実行できない環境では『未使用コード未検査』を info として package.json に1件出す。これは指摘対象のコードではなく、掃引が一部省略されたことの通知である。knip の設定ファイルや追加依存は本タスクの変更可能ファイル一覧（order.md 制約）に無く、導入すると別の変更対象になるため、本タスクでは修正せず受け入れる。"
+    },
+    {
+      "rule": "complexity/function-too-long",
+      "file": "tools/syn-check/src/rules/tests_location.rs",
+      "line": 56,
+      "reason": "syn-check の tests-location ルール実装（find_inline_test_modules）が 132 行を超えて長いという complexity 警告。このファイルは本タスクの変更可能ファイル一覧（order.md 制約）の外にあり、移植チェッカーの既存ロジックなので本タスクでは修正しない。関数を分割すると検出規則の挙動を変えるリスクがあり、本タスクの目的（aislop の組み込み）とは無関係のため受け入れる。"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "file": "ledger/tools/check_needs.py",
+      "line": 15,
+      "reason": "台帳ツール check_needs.py が import した sys を使っていないという ai-slop 警告。このファイルは本タスクの変更可能ファイル一覧（order.md 制約）の外にあり、台帳ツールの挙動を本タスクで変えないため修正しない。未使用 import の除去は本タスクの目的（aislop の組み込み）とは独立で、別タスクで扱う。"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "file": "ledger/tools/rollup.py",
+      "line": 21,
+      "reason": "台帳ツール rollup.py が import した sys を使っていないという ai-slop 警告。このファイルは本タスクの変更可能ファイル一覧（order.md 制約）の外にあり、ゴール完了判定を行う rollup の挙動を本タスクで変えないため修正しない。未使用 import の除去は本タスクの目的（aislop の組み込み）とは独立で、別タスクで扱う。"
+    },
+    {
+      "rule": "ai-slop/python-chained-dict-get",
+      "file": "ledger/tools/check_needs.py",
+      "line": 63,
+      "reason": "台帳ツール check_needs.py の dict.get(..., {}) の連鎖が欠損データを隠すという ai-slop 警告。このファイルは本タスクの変更可能ファイル一覧（order.md 制約）の外にあり、台帳ツールのデータ処理の意味を本タスクで変えないため修正しない。意味を変えうる修正は別タスクで判断する。"
+    }
+  ]
+}
