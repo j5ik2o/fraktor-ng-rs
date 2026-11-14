@@ -665,7 +665,7 @@ impl Actor for PanicsOnRestart {
     }
   }
 
-  fn post_restart(&mut self) {
+  fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
     panic!("simulated failure of postRestart");
   }
 }
@@ -787,7 +787,7 @@ impl Actor for CountsPostStopAndPanicsOnRestart {
     }
   }
 
-  fn post_restart(&mut self) {
+  fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
     panic!("simulated failure of postRestart");
   }
 
@@ -895,7 +895,7 @@ struct CountsStartupAndPostStop {
 impl Actor for CountsStartupAndPostStop {
   fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
 
-  fn pre_start(&mut self) {
+  fn pre_start(&mut self, _context: &mut ActorContext<'_>) {
     panic!("simulated failure of preStart");
   }
 
@@ -1000,7 +1000,7 @@ impl Actor for CountsLifecycleHooks {
     self.pre_restarts.fetch_add(1, Ordering::SeqCst);
   }
 
-  fn post_restart(&mut self) {
+  fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
     self.post_restarts.fetch_add(1, Ordering::SeqCst);
   }
 

@@ -22,8 +22,12 @@ pub trait Actor {
   /// Runs after the actor has been started and before its first message.
   ///
   /// Mirrors `org.apache.pekko.actor.Actor.preStart`, which does nothing by
-  /// default.
-  fn pre_start(&mut self) {}
+  /// default. The context is lent so an actor may `change_behavior` here, which
+  /// is what `context.become` in a Pekko constructor does: the behaviour is
+  /// active before the first message arrives.
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    let _ = context;
+  }
 
   /// Runs after the actor has stopped.
   ///
@@ -47,7 +51,7 @@ pub trait Actor {
   ///
   /// Mirrors `org.apache.pekko.actor.Actor.postRestart`, whose default runs
   /// `preStart`.
-  fn post_restart(&mut self) {
-    self.pre_start();
+  fn post_restart(&mut self, context: &mut ActorContext<'_>) {
+    self.pre_start(context);
   }
 }

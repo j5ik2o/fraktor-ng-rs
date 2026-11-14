@@ -171,7 +171,7 @@ fn restart_a_failing_child_if_the_given_supervisor_says_so() {
       panic!("simulated failure");
     }
 
-    fn post_restart(&mut self) {
+    fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
       self.restarts.fetch_add(1, Ordering::SeqCst);
     }
   }

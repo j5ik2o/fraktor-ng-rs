@@ -5,6 +5,7 @@ use core::any::Any;
 
 use crate::kernel::actor::Actor;
 use crate::kernel::actor::ActorContext;
+use crate::kernel::actor::BehaviorStack;
 use crate::kernel::actor::Props;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::message::Message;
@@ -13,12 +14,14 @@ use crate::kernel::supervision::SupervisorStrategy;
 /// An actor that the executor owns and drives.
 ///
 /// Mirrors the mailbox-and-actor pair that an `org.apache.pekko.actor.ActorCell`
-/// keeps: the executor owns the behaviour, the recipe that created it, and the
-/// handle, and lends the context out only while a message is being handled. The
-/// recipe and the strategy are kept so the cell can be re-created after a
-/// failure, as a parent does for its child.
+/// keeps: the executor owns the behaviour, the behaviour stack that `become`
+/// installs, the recipe that created it, and the handle, and lends the context
+/// out only while a message is being handled. The recipe and the strategy are
+/// kept so the cell can be re-created after a failure, as a parent does for its
+/// child.
 pub(crate) struct ActorCell {
   behavior: Option<Box<dyn Actor>>,
+  stack: BehaviorStack,
   self_ref: ActorRef,
   parent: Option<ActorRef>,
   props: Props,
@@ -36,7 +39,16 @@ impl ActorCell {
     props: Props,
     strategy: SupervisorStrategy,
   ) -> Self {
-    Self { behavior: None, self_ref, parent, props, strategy, restart_count: 0, post_stop_suppressed: false }
+    Self {
+      behavior: None,
+      stack: BehaviorStack::new(),
+      self_ref,
+      parent,
+      props,
+      strategy,
+      restart_count: 0,
+      post_stop_suppressed: false,
+    }
   }
 
   /// Returns whether this cell is the actor that `recipient` addresses.
@@ -73,17 +85,32 @@ impl ActorCell {
     self.restart_count = self.restart_count.saturating_add(1);
   }
 
+  /// Takes the behaviour stack out of the cell so the executor can lend it to
+  /// the context while the actor runs.
+  pub(crate) fn take_stack(&mut self) -> BehaviorStack {
+    core::mem::replace(&mut self.stack, BehaviorStack::new())
+  }
+
+  /// Puts the behaviour stack back after the actor has run.
+  pub(crate) fn restore_stack(&mut self, stack: BehaviorStack) {
+    self.stack = stack;
+  }
+
   /// Builds the behaviour from the recipe and runs its `pre_start`.
-  pub(crate) fn create(&mut self) {
+  ///
+  /// The stack starts empty, so a `change_behavior` in `pre_start` installs the
+  /// frame that answers the first message; with none installed the initial
+  /// `receive` answers, as Pekko's `newActor` does when the stack is empty.
+  pub(crate) fn create(&mut self, context: &mut ActorContext<'_>) {
     let mut behavior = self.props.create_actor();
-    behavior.pre_start();
+    behavior.pre_start(context);
     self.behavior = Some(behavior);
   }
 
-  /// Hands one message to the behaviour.
+  /// Hands one message to the current behaviour.
   pub(crate) fn deliver(&mut self, context: &mut ActorContext<'_>, message: Message) {
     if let Some(behavior) = self.behavior.as_mut() {
-      behavior.receive(context, message);
+      context.run_behavior(behavior.as_mut(), message);
     }
   }
 
@@ -95,16 +122,18 @@ impl ActorCell {
   }
 
   /// Replaces the behaviour with a fresh instance from the recipe and runs its
-  /// `pre_start`, which is what Pekko's default `postRestart` does.
+  /// `post_restart`, which is what Pekko's default `postRestart` does.
   ///
-  /// Mirrors what Pekko does for a restarted child: the old instance is
-  /// discarded, the recipe creates the next one, and `postRestart` runs on it
-  /// before any further message is handled. The handle stays the same, so a
-  /// handle taken before the restart reaches the new instance, as an
-  /// `ActorRef` does in Pekko.
-  pub(crate) fn restart(&mut self) {
+  /// The executor clears the behaviour stack before it calls this, as Pekko's
+  /// `clearActorFields` does, so a `become` from before the restart is gone and
+  /// the initial `receive` answers again. Mirrors what Pekko does for a
+  /// restarted child: the old instance is discarded, the recipe creates the
+  /// next one, and `postRestart` runs on it before any further message is
+  /// handled. The handle stays the same, so a handle taken before the restart
+  /// reaches the new instance.
+  pub(crate) fn restart(&mut self, context: &mut ActorContext<'_>) {
     let mut behavior = self.props.create_actor();
-    behavior.post_restart();
+    behavior.post_restart(context);
     self.behavior = Some(behavior);
   }
 

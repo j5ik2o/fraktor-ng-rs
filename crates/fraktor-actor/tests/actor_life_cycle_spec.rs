@@ -107,7 +107,7 @@ impl Actor for LifeCycleTestActor {
   }
 
   // Original: `override def preStart(): Unit = { report("preStart") }`
-  fn pre_start(&mut self) {
+  fn pre_start(&mut self, _context: &mut ActorContext<'_>) {
     self.report("preStart");
   }
 
@@ -128,8 +128,8 @@ impl Actor for RestartReportingActor {
     self.inner.receive(context, message);
   }
 
-  fn pre_start(&mut self) {
-    self.inner.pre_start();
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    self.inner.pre_start(context);
   }
 
   fn post_stop(&mut self) {
@@ -140,7 +140,7 @@ impl Actor for RestartReportingActor {
     self.inner.report("preRestart");
   }
 
-  fn post_restart(&mut self) {
+  fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
     self.inner.report("postRestart");
   }
 }
@@ -150,42 +150,28 @@ impl Actor for RestartReportingActor {
 struct Become;
 
 // Original: Props(new Actor { def receive = { case Become(beh) => context.become(beh(context), discardOld = false); sender() ! "ok"; case _ => sender() ! 42 } })
-type StackedBehavior = Box<dyn FnMut(&mut ActorContext<'_>, Message)>;
-
-struct BehaviorStackActor {
-  stacked: Option<StackedBehavior>,
-}
+struct BehaviorStackActor;
 
 impl BehaviorStackActor {
   fn new() -> Self {
-    Self { stacked: None }
+    Self
   }
 }
 
 impl Actor for BehaviorStackActor {
   fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
     if message.is::<Become>() {
-      // The original stacks `beh(context)` below the current behavior with
-      // `discardOld = false`. The port keeps the stacked behavior in the actor
-      // and runs it first after the become.
-      let sender = context.sender();
-      self.stacked = Some(Box::new(|stacked_context: &mut ActorContext<'_>, stacked_message: Message| {
+      // The original stacks `beh(context)` above the current behavior with
+      // `discardOld = false`, so the stacked behavior answers the next message.
+      context.push_behavior(|stacked_context: &mut ActorContext<'_>, stacked_message: Message| {
         if stacked_message == "fail" {
           panic!("buh");
         }
         if stacked_message == "hello" {
           stacked_context.sender().tell(43_i32, stacked_context.self_ref());
         }
-      }));
-      let _ = sender;
+      });
       context.sender().tell("ok", context.self_ref());
-      return;
-    }
-    if self.stacked.is_some() {
-      if let Some(mut stacked) = self.stacked.take() {
-        stacked(context, message);
-        self.stacked = Some(stacked);
-      }
       return;
     }
     context.sender().tell(42_i32, context.self_ref());
@@ -213,7 +199,7 @@ impl Actor for PreStartThrowingActor {
     self.inner.receive(context, message);
   }
 
-  fn pre_start(&mut self) {
+  fn pre_start(&mut self, _context: &mut ActorContext<'_>) {
     self.inner.report("preStart");
     panic!("test exception");
   }
@@ -497,6 +483,12 @@ fn clear_the_behavior_stack_upon_restart() {
   actor.tell(Become, case.self_actor_ref());
   case.expect_str("ok");
 
+  actor.tell("hello", case.self_actor_ref());
+  case.expect_int(43);
+
+  // The stacked behavior is restored into its head slot after each delivery, so
+  // a second consecutive "hello" reaches the same frame again (Pekko runs
+  // `behaviorStack.head` without removing it, `ActorCell.scala:590`).
   actor.tell("hello", case.self_actor_ref());
   case.expect_int(43);
 

@@ -8,6 +8,7 @@ use core::sync::atomic::Ordering;
 use core::time::Duration;
 
 use crate::kernel::actor::ActorContext;
+use crate::kernel::actor::BehaviorStack;
 use crate::kernel::actor::Logging::Error;
 use crate::kernel::actor::Logging::EventSink;
 use crate::kernel::actor::Props;
@@ -191,16 +192,31 @@ impl Executor {
   fn create_initial(&mut self, index: usize) {
     let self_ref = self.cells[index].self_ref();
     loop {
-      let outcome = match self.catcher.clone() {
-        | Some(catcher) => catcher.run(&mut || self.cells[index].create()),
-        | None => {
-          self.cells[index].create();
-          RunOutcome::Completed
-        },
+      let catcher = self.catcher.clone();
+      let mut cell = self.cells.remove(index);
+      let mut stack = cell.take_stack();
+      let outcome = {
+        let mut context = ActorContext::new(self_ref.clone(), self_ref.clone(), self, &mut stack);
+        match catcher {
+          | Some(catcher) => catcher.run(&mut || cell.create(&mut context)),
+          | None => {
+            cell.create(&mut context);
+            RunOutcome::Completed
+          },
+        }
       };
       match outcome {
-        | RunOutcome::Completed => return,
+        | RunOutcome::Completed => {
+          cell.restore_stack(stack);
+          self.cells.insert(index, cell);
+          return;
+        },
         | RunOutcome::Failed { message } => {
+          // Pekko's `failActor` clears the behaviour stack before a retry, so a
+          // `become` issued by a `pre_start` that threw does not survive into
+          // the next creation. Dropping `stack` leaves the fresh empty one that
+          // `take_stack` put in its place.
+          self.cells.insert(index, cell);
           self.publish_child_failure(&self_ref, ACTOR_INITIALIZATION_CAUSE, &message);
           let strategy = *self.cells[index].strategy();
           let count = self.cells[index].restart_count();
@@ -443,10 +459,11 @@ impl Executor {
       return;
     }
     let mut cell = self.cells.remove(index);
+    let mut stack = cell.take_stack();
     let delivered = message.clone();
     let catcher = self.catcher.clone();
     let outcome = {
-      let mut context = ActorContext::new(recipient.clone(), sender, self);
+      let mut context = ActorContext::new(recipient.clone(), sender, self, &mut stack);
       match catcher {
         | Some(catcher) => catcher.run(&mut || cell.deliver(&mut context, delivered.clone())),
         | None => {
@@ -455,6 +472,7 @@ impl Executor {
         },
       }
     };
+    cell.restore_stack(stack);
     match outcome {
       | RunOutcome::Completed => {
         self.cells.push(cell);
@@ -518,13 +536,19 @@ impl Executor {
     if let RunOutcome::Failed { message } = pre_restart_failed {
       self.publish_child_failure(target, RUNTIME_CAUSE, &message);
     }
-    let restarted = match self.catcher.clone() {
-      | Some(catcher) => catcher.run(&mut || cell.restart()),
-      | None => {
-        cell.restart();
-        RunOutcome::Completed
-      },
+    let catcher = self.catcher.clone();
+    let mut stack = BehaviorStack::new();
+    let restarted = {
+      let mut context = ActorContext::new(target.clone(), target.clone(), self, &mut stack);
+      match catcher {
+        | Some(catcher) => catcher.run(&mut || cell.restart(&mut context)),
+        | None => {
+          cell.restart(&mut context);
+          RunOutcome::Completed
+        },
+      }
     };
+    cell.restore_stack(stack);
     match restarted {
       | RunOutcome::Completed => self.cells.push(cell),
       | RunOutcome::Failed { message } => {
