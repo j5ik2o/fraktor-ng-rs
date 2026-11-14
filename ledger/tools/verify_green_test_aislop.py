@@ -4,12 +4,12 @@
 使い方:
     python3 ledger/tools/verify_green_test_aislop.py
 
-aislop の結果は `node scripts/check-aislop.mjs` が決める。このテストでは
-`node` と、`scripts/check-aislop.mjs` が実行する「偽の aislop 実行物」を
+aislop の結果は `node scripts/aislop-check-bootstrap.mjs check` が決める。このテストでは
+`node` と、`scripts/aislop-check-bootstrap.mjs` が実行する「偽の aislop 実行物」を
 一時ワークスペースに置き、確かめられる範囲を固定する:
-  1. check-aislop が成功するツリー      aislop が pass
-  2. check-aislop が失敗するツリー      aislop が fail
-  3. check-aislop.mjs が無いツリー      aislop は not_installed ではなく fail
+  1. 検査が成功するツリー      aislop が pass
+  2. 検査が失敗するツリー      aislop が fail
+  3. aislop-check-bootstrap.mjs が無いツリー      aislop は not_installed ではなく fail
                                         （組み込み未完の状態を合格にしない）
   4. node が無い環境                    aislop は not_installed ではなく fail
                                         （実行物が無い状態を合格にしない）
@@ -26,9 +26,9 @@ from pathlib import Path
 
 VERIFY_GREEN = Path(__file__).resolve().parent / "verify_green.py"
 
-# 偽の aislop: check-aislop.mjs は aislop を node_modules/.bin/aislop から起動する。
-# ここでは check-aislop.mjs 自体も検証しない（その契約は check-aislop.test.mjs）。
-# verify_green が見るのは、check-aislop.mjs の終了コードだけである。
+# 偽の bootstrap: 本物の bootstrap は正本の check-aislop.mjs を取り寄せて起動する。
+# ここでは bootstrap 自体も検証しない（正本の契約は、正本の check-aislop.test.mjs が確かめる）。
+# verify_green が見るのは、bootstrap の終了コードだけである。
 FAKE_CHECK_AISLOP = """#!/usr/bin/env node
 process.exit(Number(process.env.FAKE_CHECK_AISLOP_EXIT || "0"));
 """
@@ -45,14 +45,14 @@ def make_workspace(root: Path, with_script: bool) -> None:
     """verify_green.py を repo 直下の ledger/tools/ に置いた最小ツリー。
 
     with_script=False は、node_modules の準備が済んでいない作業ツリー
-    （scripts/check-aislop.mjs が無い）を模す。この状態でも aislop は
+    （scripts/aislop-check-bootstrap.mjs が無い）を模す。この状態でも aislop は
     not_installed に落とさず fail として報告する。
     """
     write(root / "Cargo.toml", '[workspace]\nmembers = []\nresolver = "3"\n')
     (root / "ledger" / "tools").mkdir(parents=True, exist_ok=True)
     shutil.copy(VERIFY_GREEN, root / "ledger" / "tools" / "verify_green.py")
     if with_script:
-        write(root / "scripts" / "check-aislop.mjs", FAKE_CHECK_AISLOP, 0o755)
+        write(root / "scripts" / "aislop-check-bootstrap.mjs", FAKE_CHECK_AISLOP, 0o755)
 
 
 def run_verify(root: Path, crate: str, check_exit: int, hide: tuple[str, ...] = ("cargo",)) -> dict:
@@ -107,9 +107,9 @@ def main() -> int:
         results = gate_results(absent)
         assert results["aislop"] != "not_installed", absent
         assert results["aislop"] == "fail", absent
-        print("3. unprepared tree (no scripts/check-aislop.mjs):", results)
+        print("3. unprepared tree (no scripts/aislop-check-bootstrap.mjs):", results)
 
-        # node が無い環境: check-aislop.mjs を実行できないので fail。
+        # node が無い環境: aislop-check-bootstrap.mjs を実行できないので fail。
         # not_installed で合格にしない。cargo と node の両方を PATH から外す。
         no_node = temporary / "no-node"
         make_workspace(no_node, with_script=True)

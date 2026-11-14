@@ -13,8 +13,8 @@
                違反かパース不能のファイルがあれば fail。チェッカーが無い環境
                （tools/syn-check が無い、cargo が無い）では "not_installed" として
                報告し、合否には含めない。
-  aislop  node scripts/check-aislop.mjs をリポジトリルートで実行し、その終了コードを
-          そのまま pass/fail に反映する。node や node_modules が無く check-aislop を
+  aislop  node scripts/aislop-check-bootstrap.mjs check をリポジトリルートで実行し、
+          その終了コードをそのまま pass/fail に反映する。node や node_modules が無く検査を
           実行できない場合も fail として報告する（not_installed で合格にはしない）。
 """
 import json
@@ -111,22 +111,22 @@ def run_syn_checker(crate: str) -> dict:
 
 
 def run_aislop() -> dict:
-    """check-aislop.mjs を実行し、終了コードを pass/fail に反映する。
+    """aislop-check-bootstrap.mjs check を実行し、終了コードを pass/fail に反映する。
 
     スクリプトはカレントディレクトリ（呼び出し側のリポジトリルート）から解決する。
     他のゲート（cargo の実行と台帳の読み取り）もカレントディレクトリをリポジトリ
     ルートとして動く前提であり、テストは一時ワークスペースをカレントにして
-    スタブの check-aislop.mjs を置ける。
+    スタブの aislop-check-bootstrap.mjs を置ける。
     """
     if shutil.which("node") is None:
-        return {"result": "fail", "detail": "node is not installed; cannot run scripts/check-aislop.mjs"}
+        return {"result": "fail", "detail": "node is not installed; cannot run scripts/aislop-check-bootstrap.mjs"}
     root = Path.cwd()
-    script = root / "scripts" / "check-aislop.mjs"
+    script = root / "scripts" / "aislop-check-bootstrap.mjs"
     try:
-        # check-aislop.mjs 内側の scan のタイムアウトは 600 秒。外側が先に切れると
-        # node だけが強制終了され、scan のプロセスが残るため、外側には内側の
-        # タイムアウト処理（scan の終了を含む）が終わるまでの余裕を持たせる。
-        proc = subprocess.run(["node", str(script)], capture_output=True, text=True,
+        # 正本の検査は scan にタイムアウトを設けていないため、この 690 秒が
+        # 唯一の期限である。期限が発火すると、bootstrap の子プロセスが残る
+        # ことがある（正本への期限の追加は j5ik2o/ci の issue #20 で追跡する）。
+        proc = subprocess.run(["node", str(script), "check"], capture_output=True, text=True,
                               cwd=str(root), timeout=690)
     except Exception as e:
         return {"result": "fail", "detail": f"{type(e).__name__}: {e}"}
