@@ -2999,7 +2999,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0e
 - id: actor-tests/src/test/scala/org/apache/pekko/io/dns/IdGeneratorSpec.scala
   name: actor-tests:IdGeneratorSpec
   kind: test
@@ -4615,7 +4615,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0e
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/SupervisorSpec.scala
   name: actor-tests:SupervisorSpec
   kind: test
