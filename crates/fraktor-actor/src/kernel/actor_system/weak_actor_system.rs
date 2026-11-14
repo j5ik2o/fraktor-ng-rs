@@ -41,6 +41,10 @@ impl WeakActorSystem {
   }
 
   /// Starts a child of `parent`.
+  ///
+  /// # Panics
+  ///
+  /// Panics when `name` is `Some("")`, or when it contains `/` or `#`.
   pub fn spawn_child(
     &self,
     parent: &ActorRef,

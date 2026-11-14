@@ -156,3 +156,11 @@ fn from_uri_string_keeps_its_results() {
   );
   assert!(AddressFromUriString::try_apply("pekko://sys@in_valid:5001").is_none());
 }
+
+#[test]
+fn from_uri_string_rejects_an_empty_system() {
+  // An empty system was silently accepted before this change; the
+  // domain-primitive rule makes an empty system an invalid value, so the
+  // URI is now rejected instead of producing an address with an empty system.
+  assert!(AddressFromUriString::try_apply("pekko://@host:1234").is_none());
+}
