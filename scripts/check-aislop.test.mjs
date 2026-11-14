@@ -193,13 +193,36 @@ test("エンジンが失敗していれば合格にしない", () => {
 });
 
 test("aislop が異常終了しても指摘 0 件として合格にしない", () => {
+  // 異常終了では JSON レポートが返らない。レポート無しで終了コード 2 を返す
+  // 偽物で確かめる（レポートが返る終了コード 1 は、診断による終了として照合で判定する）。
   const accepted = { accepted: [] };
-  const { root } = makeRepo(report([]), accepted);
+  const { root } = makeRepo(undefined, accepted);
   const result = runCheck(root, {
-    AISLOP_FAKE_REPORT: path.join(root, "aislop-report.json"),
     AISLOP_FAKE_EXIT: "2",
   });
   assert.notEqual(result.status, 0, result.stdout);
+});
+
+test("登録済みの error 診断で aislop が終了コード 1 を返しても成功する", () => {
+  const accepted = {
+    accepted: [
+      { rule: "ai-slop/unused-import", file: "ledger/tools/sample.py", line: 15, reason: "移植対象外" },
+    ],
+  };
+  const { result } = withReport(report([diagnostic({ severity: "error" })]), accepted, {
+    AISLOP_FAKE_EXIT: "1",
+  });
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+});
+
+test("未登録の error 診断で aislop が終了コード 1 を返した場合は、診断を表示して失敗する", () => {
+  const accepted = { accepted: [] };
+  const { result } = withReport(report([diagnostic({ severity: "error" })]), accepted, {
+    AISLOP_FAKE_EXIT: "1",
+  });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stdout + result.stderr, /sample\.py/);
+  assert.match(result.stdout + result.stderr, /ai-slop\/unused-import/);
 });
 
 test("受け入れ一覧を読めなければ失敗する", () => {

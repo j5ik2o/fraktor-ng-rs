@@ -111,13 +111,20 @@ def run_syn_checker(crate: str) -> dict:
 
 
 def run_aislop() -> dict:
-    """check-aislop.mjs をリポジトリルートで実行し、終了コードを pass/fail に反映する。"""
+    """check-aislop.mjs を実行し、終了コードを pass/fail に反映する。
+
+    スクリプトはカレントディレクトリ（呼び出し側のリポジトリルート）から解決する。
+    他のゲート（cargo の実行と台帳の読み取り）もカレントディレクトリをリポジトリ
+    ルートとして動く前提であり、テストは一時ワークスペースをカレントにして
+    スタブの check-aislop.mjs を置ける。
+    """
     if shutil.which("node") is None:
         return {"result": "fail", "detail": "node is not installed; cannot run scripts/check-aislop.mjs"}
-    script = REPO_ROOT / "scripts" / "check-aislop.mjs"
+    root = Path.cwd()
+    script = root / "scripts" / "check-aislop.mjs"
     try:
         proc = subprocess.run(["node", str(script)], capture_output=True, text=True,
-                              cwd=str(REPO_ROOT), timeout=600)
+                              cwd=str(root), timeout=600)
     except Exception as e:
         return {"result": "fail", "detail": f"{type(e).__name__}: {e}"}
     return {"result": "pass" if proc.returncode == 0 else "fail",

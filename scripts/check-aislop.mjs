@@ -1,8 +1,10 @@
 // aislop の scan を実行し、結果を scripts/aislop-accepted.json と照合する機械ゲート。
 //
 // 判定:
-//   - scan が異常終了した、schemaVersion が "1" でない、scoreable が false、
-//     `engines.*.failed === true` のいずれかなら fail。
+//   - scan が異常終了した（JSON レポートが返らない）、schemaVersion が "1" で
+//     ない、scoreable が false、`engines.*.failed === true` のいずれかなら fail。
+//     aislop は診断の内容でも終了コード 1 を返すため、レポートが返った場合は
+//     終了コードでは判定せず、検証と照合の結果で判定する。
 //   - 各診断を rule + filePath + line で accepted 項目と照合し、未登録の診断が
 //     1 件でもあれば fail（診断を列挙）。
 //   - accepted にあるが今回の scan に無い項目は、stale として警告する（fail にしない）。
@@ -65,14 +67,24 @@ function runScan() {
     },
   });
   if (proc.error) return { error: `failed to run aislop: ${proc.error.message}` };
-  if (proc.status !== 0) {
-    return { error: `aislop scan exited with ${proc.status}: ${(proc.stderr || "").trim()}` };
-  }
+  // aislop は、error 診断がある場合やスコアが下限を下回る場合にも終了コード 1 を
+  // 返す。その場合も標準出力には JSON レポートが入っているため、終了コードだけでは
+  // 異常終了と区別できない。レポートとして読める場合は終了コードでは落とさず、
+  // 後段の検証と受け入れ照合で判定する。レポートが読めない場合だけ異常終了として扱う。
+  let report;
   try {
-    return { report: JSON.parse(proc.stdout) };
-  } catch (error) {
-    return { error: `aislop scan did not return JSON: ${error.message}` };
+    report = JSON.parse(proc.stdout);
+  } catch {
+    return {
+      error: `aislop scan exited with ${proc.status} and did not return JSON: ${(proc.stderr || "").trim()}`,
+    };
   }
+  if (report === null || typeof report !== "object" || Array.isArray(report)) {
+    return {
+      error: `aislop scan exited with ${proc.status} and did not return a report object: ${(proc.stderr || "").trim()}`,
+    };
+  }
+  return { report };
 }
 
 function keyOf(entry) {
