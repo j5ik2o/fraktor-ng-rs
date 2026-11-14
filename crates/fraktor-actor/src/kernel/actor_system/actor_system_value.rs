@@ -12,6 +12,7 @@ use crate::kernel::actor_path::RootActorPath;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::actor_system::weak_actor_system::WeakActorSystem;
 use crate::kernel::address::Address;
+use crate::kernel::address::SystemName;
 use crate::kernel::executor::Executor;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::supervision::FailureCatcher;
@@ -19,26 +20,6 @@ use crate::kernel::supervision::FailureCatcher;
 #[cfg(test)]
 #[path = "actor_system_value_test.rs"]
 mod tests;
-
-/// The name of an actor system, which must not be empty.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) struct SystemName(String);
-
-impl SystemName {
-  /// Creates a system name, or returns an error when `text` is empty.
-  pub(crate) fn new(text: &str) -> Result<Self, String> {
-    if text.is_empty() {
-      Err("the name of an actor system must not be empty".to_string())
-    } else {
-      Ok(Self(text.to_string()))
-    }
-  }
-
-  /// Returns the name text.
-  pub(crate) fn as_str(&self) -> &str {
-    &self.0
-  }
-}
 
 /// The protocol of the address a local ported actor system answers on.
 const LOCAL_PROTOCOL: &str = "pekko";
@@ -72,9 +53,15 @@ impl ActorSystem {
   ///
   /// Panics when `name` is empty.
   pub fn new(name: &str, boundary: Arc<dyn ShardBoundary>) -> Self {
-    let name = SystemName::new(name).unwrap_or_else(|message| panic!("{message}"));
+    Self::try_new(name, boundary).unwrap_or_else(|message| panic!("{message}"))
+  }
+
+  /// Creates a running actor system with the given name, or reports the
+  /// violated constraint instead of panicking.
+  pub fn try_new(name: &str, boundary: Arc<dyn ShardBoundary>) -> Result<Self, String> {
+    let name = SystemName::new(name)?;
     let executor = Rc::new(RefCell::new(Executor::new(Self::root_path(name.as_str()), boundary)));
-    Self { name, executor }
+    Ok(Self { name, executor })
   }
 
   /// Creates a running actor system that reports a failing actor to `catcher`.

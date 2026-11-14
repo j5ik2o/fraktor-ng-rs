@@ -113,7 +113,7 @@ impl Address {
 
   /// Creates a local address without host or port, or reports the violated
   /// constraint.
-  pub(crate) fn try_new(protocol: &str, system: &str) -> Result<Self, String> {
+  pub fn try_new(protocol: &str, system: &str) -> Result<Self, String> {
     Ok(Self::from_parts(Protocol::new(protocol)?, SystemName::new(system)?, None))
   }
 
@@ -128,7 +128,7 @@ impl Address {
 
   /// Creates an address with a host and port, or reports the violated
   /// constraint.
-  pub(crate) fn try_with_host_port(protocol: &str, system: &str, host: &str, port: u16) -> Result<Self, String> {
+  pub fn try_with_host_port(protocol: &str, system: &str, host: &str, port: u16) -> Result<Self, String> {
     Ok(Self::from_parts(Protocol::new(protocol)?, SystemName::new(system)?, Some(HostPort::new(host, port))))
   }
 

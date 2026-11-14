@@ -11,7 +11,7 @@ use crate::kernel::executor::Executor;
 use crate::kernel::message::Message;
 use crate::kernel::supervision::SupervisorStrategy;
 
-use super::actor_system_value::SystemName;
+use crate::kernel::address::SystemName;
 
 /// A handle to an actor system that does not keep it alive.
 ///

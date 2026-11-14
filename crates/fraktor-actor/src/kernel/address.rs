@@ -7,5 +7,6 @@ mod uri_parts;
 
 pub use address_from_uri_string::AddressFromUriString;
 pub use address_value::Address;
+pub(crate) use address_value::SystemName;
 pub use relative_actor_path::RelativeActorPath;
 pub(crate) use uri_parts::UriParts;
