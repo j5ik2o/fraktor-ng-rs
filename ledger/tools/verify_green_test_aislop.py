@@ -60,11 +60,19 @@ def run_verify(root: Path, crate: str, check_exit: int, hide: tuple[str, ...] = 
     response.write_text(f"crate: {crate}\n", encoding="utf-8")
     env = dict(os.environ, TAKT_PREVIOUS_RESPONSE_FILE=str(response),
                FAKE_CHECK_AISLOP_EXIT=str(check_exit))
-    # 指定した実行物（既定は cargo）のディレクトリを PATH から外し、他の実行物は残す。
-    env["PATH"] = os.pathsep.join(
-        entry for entry in os.environ.get("PATH", "").split(os.pathsep)
-        if entry and not any((Path(entry) / name).exists() for name in hide)
-    )
+    # 隠す実行物だけを外した PATH を作る。実行物のあるディレクトリごと外すと、
+    # 同じディレクトリにある別の実行物（例えば /usr/bin の cargo と node）まで
+    # 消えてしまうため、残す実行物へのシンボリックリンクだけを置いた専用の
+    # ディレクトリを PATH にする。
+    bindir = root / "test-bin"
+    bindir.mkdir(parents=True, exist_ok=True)
+    for name in ("cargo", "node"):
+        if name in hide:
+            continue
+        target = shutil.which(name)
+        if target:
+            (bindir / name).symlink_to(target)
+    env["PATH"] = str(bindir)
     proc = subprocess.run([sys.executable, str(root / "ledger" / "tools" / "verify_green.py")],
                           cwd=root, env=env, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr

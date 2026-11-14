@@ -2,7 +2,7 @@
 """準備スクリプトの判定を、テスト用の小さな git repo で確かめる。
 
 使い方:
-    python3 tools/pekko-source/prepare_pekko_source_test.py
+    uv run --with pyyaml python3 tools/pekko-source/prepare_pekko_source_test.py
 
 確かめること:
   1. pekko/ が無い            ローカルの原典から clone し、HEAD が期待 commit になる（exit 0）

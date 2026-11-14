@@ -123,8 +123,11 @@ def run_aislop() -> dict:
     root = Path.cwd()
     script = root / "scripts" / "check-aislop.mjs"
     try:
+        # check-aislop.mjs 内側の scan のタイムアウトは 600 秒。外側が先に切れると
+        # node だけが強制終了され、scan のプロセスが残るため、外側には内側の
+        # タイムアウト処理（scan の終了を含む）が終わるまでの余裕を持たせる。
         proc = subprocess.run(["node", str(script)], capture_output=True, text=True,
-                              cwd=str(root), timeout=600)
+                              cwd=str(root), timeout=690)
     except Exception as e:
         return {"result": "fail", "detail": f"{type(e).__name__}: {e}"}
     return {"result": "pass" if proc.returncode == 0 else "fail",
