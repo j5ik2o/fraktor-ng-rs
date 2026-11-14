@@ -19,6 +19,7 @@ use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
 
 use super::ActorSystem;
+use super::SystemName;
 use crate::adaptor::ChannelBoundary;
 
 struct QueueBoundary {
@@ -1007,4 +1008,26 @@ impl Actor for CountsLifecycleHooks {
   fn post_stop(&mut self) {
     self.post_stops.fetch_add(1, Ordering::SeqCst);
   }
+}
+
+impl SystemName {
+  fn parse_for_test(text: &str) -> Option<Self> {
+    Self::new(text).ok()
+  }
+}
+
+#[test]
+fn system_name_rejects_an_empty_string() {
+  assert!(SystemName::new("").is_err(), "an empty system name was accepted");
+}
+
+#[test]
+fn system_name_keeps_a_non_empty_string() {
+  assert_eq!(SystemName::new("PekkoSpecSpec").unwrap().as_str(), "PekkoSpecSpec");
+}
+
+#[test]
+fn system_name_parses_every_non_empty_string() {
+  assert_eq!(SystemName::parse_for_test("PekkoSpecSpec"), SystemName::new("PekkoSpecSpec").ok());
+  assert_eq!(SystemName::parse_for_test(""), None, "an empty system name parsed successfully");
 }

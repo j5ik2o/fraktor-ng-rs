@@ -11,6 +11,8 @@ use crate::kernel::executor::Executor;
 use crate::kernel::message::Message;
 use crate::kernel::supervision::SupervisorStrategy;
 
+use super::actor_system_value::SystemName;
+
 /// A handle to an actor system that does not keep it alive.
 ///
 /// Mirrors the way a test probe reaches the system it runs in: the probe must
@@ -25,17 +27,17 @@ use crate::kernel::supervision::SupervisorStrategy;
 /// that state. Pekko's `attachChild` refuses a defunct guardian for the same
 /// reason (`pekko/actor/.../dungeon/Children.scala:313-314`).
 pub struct WeakActorSystem {
-  name: String,
+  name: SystemName,
   executor: Weak<RefCell<Executor>>,
 }
 
 impl WeakActorSystem {
-  pub(crate) fn new(name: String, executor: Weak<RefCell<Executor>>) -> Self {
+  pub(crate) fn new(name: SystemName, executor: Weak<RefCell<Executor>>) -> Self {
     Self { name, executor }
   }
 
   fn upgrade(&self) -> Rc<RefCell<Executor>> {
-    self.executor.upgrade().unwrap_or_else(|| panic!("the actor system {} is gone", self.name))
+    self.executor.upgrade().unwrap_or_else(|| panic!("the actor system {} is gone", self.name.as_str()))
   }
 
   /// Starts a child of `parent`.

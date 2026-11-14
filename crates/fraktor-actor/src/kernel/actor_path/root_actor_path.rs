@@ -3,39 +3,30 @@
 use core::fmt;
 
 use crate::kernel::actor_path::actor_path_value::ActorPath;
+use crate::kernel::actor_path::actor_path_value::RootName;
 use crate::kernel::address::Address;
 
 /// The root actor path of an actor system.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RootActorPath {
   address: Address,
-  name: String,
+  name: RootName,
 }
 
 impl RootActorPath {
   /// Creates a root path for `address` with the default name `/`.
   pub fn new(address: Address) -> Self {
-    Self { address, name: "/".to_string() }
+    Self { address, name: RootName::root() }
   }
 
   /// Creates a root path with an explicit name.
   ///
   /// # Errors
   ///
-  /// Returns an error when `name` contains the path separator `/` after the
-  /// first character, or the fragment separator `#`.
+  /// Returns an error when `name` is empty, contains the path separator `/`
+  /// after the first character, or carries the fragment separator `#`.
   pub fn with_name(address: Address, name: &str) -> Result<Self, String> {
-    if !(name.len() == 1 || name.get(1..).is_some_and(|rest| !rest.contains('/'))) {
-      return Err(format!(
-        "/ may only exist at the beginning of the root actors name, \
-                 it is a path separator and is not legal in ActorPath names: [{}]",
-        name
-      ));
-    }
-    if name.contains('#') {
-      return Err(format!("# is a fragment separator and is not legal in ActorPath names: [{}]", name));
-    }
-    Ok(Self { address, name: name.to_string() })
+    Ok(Self { address, name: RootName::new(name)? })
   }
 
   /// Returns the address of this actor system.
@@ -45,7 +36,7 @@ impl RootActorPath {
 
   /// Returns the root name, which is `/` by default.
   pub fn name(&self) -> &str {
-    &self.name
+    self.name.as_str()
   }
 
   /// Returns a child path.
@@ -68,13 +59,13 @@ impl RootActorPath {
     if self.address.host().is_some() {
       self.to_string()
     } else {
-      format!("{}{}", address, self.name)
+      format!("{}{}", address, self.name.as_str())
     }
   }
 }
 
 impl fmt::Display for RootActorPath {
   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(formatter, "{}{}", self.address, self.name)
+    write!(formatter, "{}{}", self.address, self.name.as_str())
   }
 }

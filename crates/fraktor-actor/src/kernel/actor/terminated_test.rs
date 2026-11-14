@@ -4,13 +4,15 @@ use alloc::sync::Arc;
 
 use crate::adaptor::ChannelBoundary;
 use crate::kernel::actor_path::ActorPath;
+use crate::kernel::actor_ref::ActorId;
 use crate::kernel::actor_ref::ActorRef;
+use crate::kernel::actor_ref::Generation;
 
 use super::Terminated;
 
 fn actor_ref(id: u64) -> ActorRef {
   let path = ActorPath::from_string("pekko://test/user/target").expect("a valid path");
-  ActorRef::new(id, 0, Arc::new(path), Arc::new(ChannelBoundary::new()))
+  ActorRef::new(ActorId::new(id), Generation::new(0), Arc::new(path), Arc::new(ChannelBoundary::new()))
 }
 
 #[test]

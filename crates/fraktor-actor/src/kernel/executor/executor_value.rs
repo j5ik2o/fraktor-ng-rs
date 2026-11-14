@@ -13,7 +13,9 @@ use crate::kernel::actor::Logging::EventSink;
 use crate::kernel::actor::Props;
 use crate::kernel::actor::Terminated;
 use crate::kernel::actor_path::ActorPath;
+use crate::kernel::actor_ref::ActorId;
 use crate::kernel::actor_ref::ActorRef;
+use crate::kernel::actor_ref::Generation;
 use crate::kernel::executor::ActorCell;
 use crate::kernel::executor::ShardQueue;
 use crate::kernel::message::Envelope;
@@ -53,7 +55,7 @@ const ACTOR_LOG_CLASS: i32 = 3;
 /// Creates one handle with a fresh identifier and generation zero.
 pub(crate) fn next_actor_ref(path: ActorPath, boundary: Arc<dyn crate::kernel::executor::ShardBoundary>) -> ActorRef {
   let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-  ActorRef::new(id, 0, Arc::new(path), boundary)
+  ActorRef::new(ActorId::new(id), Generation::new(0), Arc::new(path), boundary)
 }
 
 /// Returns the next number from the counter that names children without a name.

@@ -20,6 +20,26 @@ use crate::kernel::supervision::FailureCatcher;
 #[path = "actor_system_value_test.rs"]
 mod tests;
 
+/// The name of an actor system, which must not be empty.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct SystemName(String);
+
+impl SystemName {
+  /// Creates a system name, or returns an error when `text` is empty.
+  pub(crate) fn new(text: &str) -> Result<Self, String> {
+    if text.is_empty() {
+      Err("the name of an actor system must not be empty".to_string())
+    } else {
+      Ok(Self(text.to_string()))
+    }
+  }
+
+  /// Returns the name text.
+  pub(crate) fn as_str(&self) -> &str {
+    &self.0
+  }
+}
+
 /// The protocol of the address a local ported actor system answers on.
 const LOCAL_PROTOCOL: &str = "pekko";
 
@@ -40,16 +60,21 @@ const LOCAL_PROTOCOL: &str = "pekko";
 /// that reaches the system by its weak reference is refused in exactly the same
 /// way as this value.
 pub struct ActorSystem {
-  name: String,
+  name: SystemName,
   executor: Rc<RefCell<Executor>>,
 }
 
 impl ActorSystem {
   /// Creates a running actor system with the given name, whose actors share
   /// `boundary` as the edge of their shard.
+  ///
+  /// # Panics
+  ///
+  /// Panics when `name` is empty.
   pub fn new(name: &str, boundary: Arc<dyn ShardBoundary>) -> Self {
-    let executor = Rc::new(RefCell::new(Executor::new(Self::root_path(name), boundary)));
-    Self { name: name.to_string(), executor }
+    let name = SystemName::new(name).unwrap_or_else(|message| panic!("{message}"));
+    let executor = Rc::new(RefCell::new(Executor::new(Self::root_path(name.as_str()), boundary)));
+    Self { name, executor }
   }
 
   /// Creates a running actor system that reports a failing actor to `catcher`.
@@ -80,7 +105,7 @@ impl ActorSystem {
 
   /// Returns the name the system was created with.
   pub fn name(&self) -> &str {
-    &self.name
+    self.name.as_str()
   }
 
   /// Starts the actor a recipe describes and returns a handle to it.
@@ -195,6 +220,10 @@ impl Drop for ActorSystem {
 
 impl fmt::Debug for ActorSystem {
   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-    formatter.debug_struct("ActorSystem").field("name", &self.name).field("terminated", &self.is_terminated()).finish()
+    formatter
+      .debug_struct("ActorSystem")
+      .field("name", &self.name.as_str())
+      .field("terminated", &self.is_terminated())
+      .finish()
   }
 }

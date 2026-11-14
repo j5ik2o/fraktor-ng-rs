@@ -11,6 +11,45 @@ use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
 
+#[cfg(test)]
+#[path = "actor_ref_value_test.rs"]
+mod tests;
+
+/// The identifier a handle carries. It is an identity, not domain data: the
+/// counter handed out by the executor keeps the identifiers distinct, so the
+/// value itself needs no separate invariant beyond that identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct ActorId(u64);
+
+impl ActorId {
+  /// Creates an identifier from the counter value.
+  pub(crate) fn new(value: u64) -> Self {
+    Self(value)
+  }
+
+  /// Returns the counter value.
+  pub(crate) fn value(&self) -> u64 {
+    self.0
+  }
+}
+
+/// The generation a handle carries, which tells a re-created actor apart from
+/// the one it replaced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct Generation(u32);
+
+impl Generation {
+  /// Creates a generation from the counter value.
+  pub(crate) fn new(value: u32) -> Self {
+    Self(value)
+  }
+
+  /// Returns the counter value.
+  pub(crate) fn value(&self) -> u32 {
+    self.0
+  }
+}
+
 /// A handle that lets a caller address one actor.
 ///
 /// Mirrors `org.apache.pekko.actor.ActorRef`. It carries an identifier, a
@@ -21,14 +60,19 @@ use crate::kernel::message::Message;
 /// identifier and the generation; the path and the boundary are carried along
 /// and never take part in comparing two handles.
 pub struct ActorRef {
-  id: u64,
-  generation: u32,
+  id: ActorId,
+  generation: Generation,
   path: Arc<ActorPath>,
   boundary: Arc<dyn ShardBoundary>,
 }
 
 impl ActorRef {
-  pub(crate) fn new(id: u64, generation: u32, path: Arc<ActorPath>, boundary: Arc<dyn ShardBoundary>) -> Self {
+  pub(crate) fn new(
+    id: ActorId,
+    generation: Generation,
+    path: Arc<ActorPath>,
+    boundary: Arc<dyn ShardBoundary>,
+  ) -> Self {
     Self { id, generation, path, boundary }
   }
 
@@ -93,6 +137,6 @@ impl Hash for ActorRef {
 
 impl fmt::Debug for ActorRef {
   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(formatter, "ActorRef({}, generation {})", self.id, self.generation)
+    write!(formatter, "ActorRef({}, generation {})", self.id.value(), self.generation.value())
   }
 }
