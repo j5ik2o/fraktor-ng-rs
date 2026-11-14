@@ -11,6 +11,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: npm ci
+        run: npm ci
+      - name: check:aislop
+        run: npm run check:aislop
       - name: cargo test
         run: cargo test --workspace
       - name: cargo clippy

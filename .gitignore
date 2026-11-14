@@ -2,3 +2,4 @@
 # external_directory: deny を固定し、../ の読み取りを拒むため）
 /pekko/
 /target
+/node_modules/

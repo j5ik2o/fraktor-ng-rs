@@ -22,6 +22,12 @@ from pathlib import Path
 
 VERIFY_GREEN = Path(__file__).resolve().parent / "verify_green.py"
 
+# aislop ゲートは `node scripts/check-aislop.mjs` の終了コードで合否を決める。
+# このテストは syn_checker の挙動を見るものなので、aislop は常に通す偽の
+# check-aislop.mjs を各ワークスペースに置く（aislop 自体は
+# verify_green_test_aislop.py が確かめる）。
+PASSING_CHECK_AISLOP = "process.exit(0);\n"
+
 CLEAN_LIB = "pub struct Clean;\n"
 # 公開型が 2 つあるので type-per-file に違反する。cargo test、clippy、fmt は通る。
 DIRTY_LIB = "pub struct First;\n\npub struct Second;\n"
@@ -60,6 +66,7 @@ def make_workspace(root: Path) -> None:
               f'[package]\nname = "{name}"\nversion = "0.0.0"\nedition = "2024"\npublish = false\n')
         write(root / "crates" / name / "src" / "lib.rs", lib)
     write(root / "crates" / "stub-test-use" / "tests" / "port.rs", LOCAL_USE_TEST)
+    write(root / "scripts" / "check-aislop.mjs", PASSING_CHECK_AISLOP)
 
 
 def run_verify(script: Path, workspace: Path, crate: str) -> dict:
@@ -99,6 +106,7 @@ def main() -> int:
         lonely = Path(temporary) / "elsewhere" / "ledger" / "tools" / "verify_green.py"
         lonely.parent.mkdir(parents=True)
         shutil.copy(VERIFY_GREEN, lonely)
+        write(lonely.parents[2] / "scripts" / "check-aislop.mjs", PASSING_CHECK_AISLOP)
         absent = run_verify(lonely, workspace, "stub-dirty")
         assert gate_results(absent)["syn_checker"] == "not_installed", absent
         assert absent["all_pass"] is True, absent
