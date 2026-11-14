@@ -123,9 +123,9 @@ def run_aislop() -> dict:
     root = Path.cwd()
     script = root / "scripts" / "aislop-check-bootstrap.mjs"
     try:
-        # 検査の内側の scan のタイムアウトは 600 秒。外側が先に切れると
-        # node だけが強制終了され、scan のプロセスが残るため、外側には内側の
-        # タイムアウト処理（scan の終了を含む）が終わるまでの余裕を持たせる。
+        # 正本の検査は scan にタイムアウトを設けていないため、この 690 秒が
+        # 唯一の期限である。期限が発火すると、bootstrap の子プロセスが残る
+        # ことがある（正本への期限の追加は j5ik2o/ci の issue #20 で追跡する）。
         proc = subprocess.run(["node", str(script), "check"], capture_output=True, text=True,
                               cwd=str(root), timeout=690)
     except Exception as e:
