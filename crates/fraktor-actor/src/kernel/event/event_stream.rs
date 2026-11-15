@@ -201,17 +201,28 @@ impl EventStream {
   /// Starts `loggers` and makes them listen to `level` and every more severe
   /// level.
   ///
-  /// Mirrors `LoggingBus.startDefaultLoggers` for the part the ported test
-  /// uses: each logger receives `InitializeLogger`, is subscribed to the
-  /// channels of the accepted levels, and its level is remembered so a later
-  /// [`EventStream::set_log_level`] can change the set.
+  /// Mirrors `LoggingBus.startDefaultLoggers`: each logger receives
+  /// `InitializeLogger` and is subscribed to the channels of the accepted
+  /// levels, and `level` is remembered so a later [`EventStream::set_log_level`]
+  /// can change the set. The subscription is applied to the channels `level`
+  /// accepts directly rather than through [`EventStream::set_log_level`]'s
+  /// difference from the saved level, so a `set_log_level` made before any
+  /// logger started does not leave the loggers subscribed to nothing.
   pub fn start_default_loggers(&self, loggers: &[ActorRef], level: LogLevel) {
     self.setup.borrow_mut().loggers = loggers.to_vec();
     for logger in loggers {
       logger.tell(InitializeLogger::new(self.bus.clone()), logger.clone());
     }
     self.system.run_until_idle();
-    self.set_log_level(level);
+    for candidate in LOG_LEVELS {
+      if candidate <= level {
+        let class = candidate.event_class();
+        for logger in loggers {
+          let _ = self.subscribe(Some(logger.clone()), class);
+        }
+      }
+    }
+    self.setup.borrow_mut().log_level = Some(level);
   }
 
   /// Changes the level that the default loggers listen to.
@@ -225,8 +236,8 @@ impl EventStream {
       let setup = self.setup.borrow();
       (setup.log_level, setup.loggers.clone())
     };
-    for candidate in [LogLevel::Error, LogLevel::Warning, LogLevel::Info, LogLevel::Debug] {
-      let class = event_class_of_level(candidate);
+    for candidate in LOG_LEVELS {
+      let class = candidate.event_class();
       if previous.is_none_or(|old| candidate > old) && candidate <= level {
         for logger in &loggers {
           let _ = self.subscribe(Some(logger.clone()), class);
@@ -314,12 +325,5 @@ impl StreamSetup {
   }
 }
 
-/// Returns the channel that carries the events of `level`.
-fn event_class_of_level(level: LogLevel) -> EventClass {
-  match level {
-    | LogLevel::Error => EventClass::of::<crate::kernel::actor::Logging::Error>(),
-    | LogLevel::Warning => EventClass::of::<crate::kernel::actor::Logging::Warning>(),
-    | LogLevel::Info => EventClass::of::<crate::kernel::actor::Logging::Info>(),
-    | LogLevel::Debug => EventClass::of::<Debug>(),
-  }
-}
+/// The levels of a log event, from the most severe to the least.
+const LOG_LEVELS: [LogLevel; 4] = [LogLevel::Error, LogLevel::Warning, LogLevel::Info, LogLevel::Debug];

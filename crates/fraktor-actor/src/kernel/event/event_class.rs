@@ -24,6 +24,15 @@ impl EventClass {
     Self { type_id: Some(TypeId::of::<T>()), name: core::any::type_name::<T>() }
   }
 
+  /// Returns the class `type_id` names.
+  ///
+  /// Used when the type is known only at run time, as for the payload an
+  /// already-built `Message` carries. A `TypeId` has no type name, so the name
+  /// is a fixed placeholder; it takes no part in equality.
+  pub(crate) fn of_type_id(type_id: TypeId) -> Self {
+    Self { type_id: Some(type_id), name: "core::any::Any" }
+  }
+
   /// Returns the class every other class is a subclass of.
   ///
   /// Mirrors `classOf[Any]`, the channel a subscriber listens to when it wants

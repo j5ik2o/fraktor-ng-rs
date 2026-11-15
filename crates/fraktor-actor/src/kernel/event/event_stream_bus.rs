@@ -4,6 +4,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
+use core::any::TypeId;
 
 use spin::Mutex;
 
@@ -83,9 +84,21 @@ impl EventStreamBus {
   /// Mirrors `EventStream.publish`: the recipients are collected before
   /// anything is sent, so a delivery may touch the stream again without
   /// holding the table.
+  ///
+  /// A value that is already a [`Message`] is published to the subscribers of
+  /// the class its payload carries, which is the `event.getClass` of Pekko's
+  /// `EventStream.classify`; republishing a received message therefore reaches
+  /// the subscribers of the carried event rather than the subscribers of
+  /// `Message`. Every other value is published to the subscribers of its own
+  /// class.
   pub fn publish<E: Any + Send + Sync>(&self, event: E) {
-    let recipients = self.state.lock().recipients_of(EventClass::of::<E>());
     let message = Message::new(event);
+    let class = if TypeId::of::<E>() == TypeId::of::<Message>() {
+      EventClass::of_type_id(message.payload_type_id())
+    } else {
+      EventClass::of::<E>()
+    };
+    let recipients = self.state.lock().recipients_of(class);
     for recipient in recipients {
       recipient.tell(message.clone(), recipient.clone());
     }

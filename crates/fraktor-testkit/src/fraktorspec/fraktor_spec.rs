@@ -164,15 +164,19 @@ impl FraktorSpec {
     self.test_kit.eventually(max, interval, assertion)
   }
 
-  /// Runs `body` with every wait clamped to the `max` that is left.
+  /// Runs `body` with its waits clamped to the `max` that is left.
   ///
-  /// Mirrors `TestKitBase.within`: the waits inside `body` use the remaining
-  /// time of the scope when that is shorter than the wait they ask for, so a
-  /// final `expectNoMessage` checks up to the end of the scope and no further.
-  /// A nested `within` keeps the earlier deadline, and the deadline is restored
-  /// even when `body` fails. Once `body` returns, the call fails when it took
-  /// longer than the scope, unless the last wait was a no-message check that
-  /// used up the scope on purpose.
+  /// Mirrors `TestKitBase.within`: `expectMsg`, `expectNoMessage`, and the
+  /// waits those share use the remaining time of the scope when that is shorter
+  /// than the wait they ask for, so a final `expectNoMessage` checks up to the
+  /// end of the scope and no further. `awaitAssert` and `eventually` take the
+  /// `max` they are given and do not use the scope's remaining time. A nested
+  /// `within` keeps the earlier deadline, and the deadline is restored even
+  /// when `body` fails. Once `body` returns, the call fails when it took longer
+  /// than the scope, unless the last wait was a no-message check that used up
+  /// the scope on purpose; the no-message flag is cleared at the entry of this
+  /// call and by `receiveOne`, which are the only two places that set it back
+  /// to `false`.
   pub fn within<T>(&mut self, max: Duration, body: impl FnOnce(&mut Self) -> T) -> T {
     let scope = self.test_kit.scope();
     let previous = *scope.borrow();

@@ -108,11 +108,15 @@ impl TestKitBase {
     self.last_was_no_msg
   }
 
-  /// Shortens `max` so that no wait passes the deadline of a `within` scope.
+  /// Shortens `max` so that the waits that go through it do not pass the
+  /// deadline of a `within` scope.
   ///
   /// Mirrors `TestKitBase.remainingOrDefault`: a wait inside `within` uses the
   /// time the scope has left when that is shorter than the wait it asked for.
-  /// Nothing is clamped outside a scope.
+  /// Only `expect_no_message`, `receive_one`, and `drive_for` call this, which
+  /// is what `expectMsg` and the no-message check rely on; `await_assert` and
+  /// `eventually` take the `max` they are given and do not use the scope's
+  /// remaining time. Nothing is clamped outside a scope.
   fn clamp(&self, max: Duration) -> Duration {
     match *self.scope.borrow() {
       | Some(deadline) => max.min(deadline.saturating_duration_since(Instant::now())),
