@@ -53,6 +53,17 @@
           "message": "Chained `.get(..., {})` defaults hide missing-data cases."
         }
       ]
+    },
+    {
+      "reason": "PR #64 のレビュー指摘対応（起動失敗・停止要求・生存判定・子終了フックと decider の panic 隔離）で executor_value.rs が 1100 行を超えた。executor はセル表・実行フレーム・最外側境界の処理を一つの状態として共有しており、ファイル分割は状態の所有者と可視性を動かして意味論に影響するリスクがある。G0e の範囲では分割せず受け入れ、分割は独立した作業として判断する。",
+      "findings": [
+        {
+          "engine": "code-quality",
+          "rule": "complexity/file-too-large",
+          "file": "crates/fraktor-actor/src/kernel/executor/executor_value.rs",
+          "message": "File too large (limit: 1000, flagged above 1100 lines)"
+        }
+      ]
     }
   ]
 }
