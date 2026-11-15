@@ -4,6 +4,7 @@ use core::any::Any;
 
 use crate::kernel::actor::ActorContext;
 use crate::kernel::message::Message;
+use crate::kernel::supervision::SupervisorStrategy;
 
 /// The behaviour that an actor shows when a message reaches it.
 ///
@@ -22,8 +23,12 @@ pub trait Actor {
   /// Runs after the actor has been started and before its first message.
   ///
   /// Mirrors `org.apache.pekko.actor.Actor.preStart`, which does nothing by
-  /// default.
-  fn pre_start(&mut self) {}
+  /// default. The context is lent so an actor may `change_behavior` here, which
+  /// is what `context.become` in a Pekko constructor does: the behaviour is
+  /// active before the first message arrives.
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    let _ = context;
+  }
 
   /// Runs after the actor has stopped.
   ///
@@ -47,7 +52,19 @@ pub trait Actor {
   ///
   /// Mirrors `org.apache.pekko.actor.Actor.postRestart`, whose default runs
   /// `preStart`.
-  fn post_restart(&mut self) {
-    self.pre_start();
+  fn post_restart(&mut self, context: &mut ActorContext<'_>) {
+    self.pre_start(context);
+  }
+
+  /// Returns the strategy this actor applies to the children it starts.
+  ///
+  /// Mirrors `Actor.supervisorStrategy`, which a Pekko actor overrides to
+  /// choose how it treats a failing child. The executor reads it right after it
+  /// builds the instance from the recipe and before `pre_start` runs, so an
+  /// override must build its strategy from the fields the recipe set, not from
+  /// state `pre_start` installs. The default is
+  /// `SupervisorStrategy.default_strategy`.
+  fn supervisor_strategy(&self) -> SupervisorStrategy {
+    SupervisorStrategy::default_strategy()
   }
 }

@@ -2,11 +2,12 @@
 
 mod directive;
 mod failure_catcher;
+mod failure_kind;
 mod run_outcome;
 mod supervisor_strategy;
 
-pub(crate) use directive::Directive;
+pub use directive::Directive;
 pub use failure_catcher::FailureCatcher;
+pub use failure_kind::FailureKind;
 pub use run_outcome::RunOutcome;
-pub(crate) use supervisor_strategy::FailureKind;
 pub use supervisor_strategy::SupervisorStrategy;

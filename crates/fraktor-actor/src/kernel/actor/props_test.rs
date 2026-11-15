@@ -27,3 +27,17 @@ fn a_recipe_can_be_carried_inside_a_message() {
 
   assert!(message.is::<Props>());
 }
+
+#[test]
+fn a_recipe_records_the_dispatcher_name_it_is_given() {
+  let props = Props::new(|| NoOp).with_dispatcher("pinned-dispatcher");
+
+  assert_eq!(props.dispatcher(), Some("pinned-dispatcher"));
+}
+
+#[test]
+fn a_recipe_has_no_dispatcher_name_until_one_is_set() {
+  let props = Props::new(|| NoOp);
+
+  assert_eq!(props.dispatcher(), None);
+}

@@ -1,13 +1,18 @@
 //! The view an actor gets while it handles one message.
 
+use crate::kernel::actor::Actor;
+use crate::kernel::actor::BehaviorStack;
+use crate::kernel::actor::InvalidActorNameException;
 use crate::kernel::actor::Props;
+use crate::kernel::actor::Running;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::Executor;
 use crate::kernel::message::Message;
 use crate::kernel::supervision::SupervisorStrategy;
 
 /// What an actor may do while it handles a message: address itself, name its
-/// sender, send messages, start children, and stop itself after a reply.
+/// sender, send messages, start children, swap behaviour, and stop itself after
+/// a reply.
 ///
 /// Mirrors `org.apache.pekko.actor.ActorContext`. Pekko keeps the context on
 /// the actor and lets it be read at any time; the port lends it out only for
@@ -16,16 +21,24 @@ use crate::kernel::supervision::SupervisorStrategy;
 /// The context borrows the executor for the duration of the call. The executor
 /// takes the running actor out of its table before it builds this context, so
 /// the actor may start a child or stop itself through the context without
-/// borrowing the actor table twice.
+/// borrowing the actor table twice. The context also borrows the running
+/// actor's behaviour stack, which `change_behavior`, `push_behavior`, and
+/// `pop_behavior` update while a frame runs.
 pub struct ActorContext<'a> {
   self_ref: ActorRef,
   sender: ActorRef,
   executor: &'a mut Executor,
+  stack: &'a mut BehaviorStack,
 }
 
 impl<'a> ActorContext<'a> {
-  pub(crate) fn new(self_ref: ActorRef, sender: ActorRef, executor: &'a mut Executor) -> Self {
-    Self { self_ref, sender, executor }
+  pub(crate) fn new(
+    self_ref: ActorRef,
+    sender: ActorRef,
+    executor: &'a mut Executor,
+    stack: &'a mut BehaviorStack,
+  ) -> Self {
+    Self { self_ref, sender, executor, stack }
   }
 
   /// Returns a handle to the actor that is handling the message.
@@ -43,6 +56,56 @@ impl<'a> ActorContext<'a> {
     self.executor.send(self.self_ref(), target, message);
   }
 
+  /// Replaces the current behaviour with `behavior`; the frames below it stay.
+  ///
+  /// Mirrors `context.become(behavior, discardOld = true)`, which is
+  /// `behavior :: behaviorStack.tail`: only the current head is dropped and the
+  /// frames below it remain. `become` is a reserved word in Rust, so the method
+  /// is named for what it does. The new behaviour answers the next message; a
+  /// later `pop_behavior` reaches the frame that was below the replaced head.
+  pub fn change_behavior<F>(&mut self, behavior: F)
+  where
+    F: FnMut(&mut ActorContext<'_>, Message) + 'static,
+  {
+    self.stack.change(Box::new(behavior));
+  }
+
+  /// Installs `behavior` above the current behaviour without dropping it.
+  ///
+  /// Mirrors `context.become(behavior, discardOld = false)`. A later
+  /// `pop_behavior` restores the behaviour below.
+  pub fn push_behavior<F>(&mut self, behavior: F)
+  where
+    F: FnMut(&mut ActorContext<'_>, Message) + 'static,
+  {
+    self.stack.push(Box::new(behavior));
+  }
+
+  /// Drops the top behaviour, restoring the one below it.
+  ///
+  /// Mirrors `context.unbecome()`. Called from the frame that is running, it
+  /// drops that frame once it returns, so the next message reaches the
+  /// behaviour below it (or the initial `receive`).
+  pub fn pop_behavior(&mut self) {
+    self.stack.pop();
+  }
+
+  /// Runs the behaviour of `initial` for one message.
+  ///
+  /// The top frame of the stack runs when there is one; otherwise the initial
+  /// `Actor::receive` runs. The frame is taken out of the stack before it runs,
+  /// so it may call `change_behavior`, `push_behavior`, or `pop_behavior` on
+  /// the same stack through this context, and the stack it leaves behind is the
+  /// one Pekko holds after the same calls.
+  pub(crate) fn run_behavior(&mut self, initial: &mut dyn Actor, message: Message) {
+    let mut running = self.stack.take_running();
+    match &mut running {
+      | Running::Frame { frame, .. } => frame(self, message),
+      | Running::Receive => initial.receive(self, message),
+    }
+    self.stack.finish_running(running);
+  }
+
   /// Starts a child of this actor with `props` and `strategy` and returns its
   /// handle.
   ///
@@ -52,6 +115,67 @@ impl<'a> ActorContext<'a> {
   pub fn actor_of_with_strategy(&mut self, props: Props, strategy: SupervisorStrategy) -> ActorRef {
     let parent = self.self_ref();
     self.executor.spawn_child(&parent, props, None, strategy)
+  }
+
+  /// Starts a child of this actor under `name`, using this actor's strategy.
+  ///
+  /// Mirrors `ActorContext.actorOf(props, name)`. The child is placed under the
+  /// strategy that this actor reports through
+  /// `Actor::supervisor_strategy`. A name that a live child of this actor
+  /// already uses is refused with [`InvalidActorNameException`], and a name is
+  /// reusable once the child that held it has stopped. The name is checked as
+  /// given; the port does not treat any prefix specially, so a caller that
+  /// wants a generated name must generate one, as Pekko's
+  /// `context.actorOf(props)` does.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`InvalidActorNameException`] when the name is taken by a live
+  /// child of this actor, or when this actor is terminating or terminated.
+  pub fn actor_of(&mut self, props: Props, name: &str) -> Result<ActorRef, InvalidActorNameException> {
+    let parent = self.self_ref();
+    self.executor.spawn_named_child(&parent, props, name)
+  }
+
+  /// Registers this actor as a watcher of `target` and returns `target`'s
+  /// handle.
+  ///
+  /// Mirrors `ActorContext.watch(ref)`, which returns `ref` so a caller can
+  /// watch and keep the handle in one expression. The watcher receives a
+  /// `Terminated` for `target` once it stops.
+  pub fn watch(&mut self, target: &ActorRef) -> ActorRef {
+    let watcher = self.self_ref();
+    self.executor.watch(&watcher, target);
+    target.clone()
+  }
+
+  /// Returns whether `target` no longer has a running actor behind it.
+  ///
+  /// Mirrors `ActorRef.isTerminated` from inside an actor: a handle reports
+  /// false while its actor runs and true once the actor has stopped. A handle
+  /// to a restarted actor keeps reporting false after the restart. A handle of
+  /// another system, or the reply address of an `ask`, has no cell here and
+  /// reports true, the same limit `watch` documents.
+  pub fn is_terminated(&self, target: &ActorRef) -> bool {
+    self.executor.is_actor_terminated(target)
+  }
+
+  /// Asks `target` to stop.
+  ///
+  /// Mirrors `ActorContext.stop(ref)`. Pekko's stop is asynchronous: the
+  /// target keeps running until the message that asked for the stop returns,
+  /// so a child stopped here is still alive for the rest of the current
+  /// delivery and a new child of the same name is refused until the stop has
+  /// finished. The port records the request and the executor carries it out
+  /// after the actor returns.
+  pub fn stop(&mut self, target: &ActorRef) {
+    self.executor.request_stop(target.clone());
+  }
+
+  /// Records the strategy this actor applies to its children.
+  pub(crate) fn register_parent_strategy(&mut self, strategy: SupervisorStrategy) {
+    let self_ref = self.self_ref();
+    self.executor.register_parent_strategy(self_ref, strategy);
   }
 
   /// Stops this actor and then sends `message` to `reply_to`.

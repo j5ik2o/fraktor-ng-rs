@@ -39,6 +39,14 @@ impl WeakActorSystem {
   }
 
   /// Starts a child of `parent`.
+  ///
+  /// Mirrors `ActorContext.actorOf` reached through a non-owning handle. A
+  /// named request goes through the same registry as
+  /// [`ActorSystem::actor_of`](crate::kernel::actor_system::ActorSystem) and a
+  /// name a live child uses is refused with
+  /// [`InvalidActorNameException`](crate::kernel::actor::InvalidActorNameException).
+  /// The handle cannot return an error to its caller, so a refused name ends the
+  /// call with the message Pekko throws from `attachChild`.
   pub fn spawn_child(
     &self,
     parent: &ActorRef,
@@ -46,7 +54,7 @@ impl WeakActorSystem {
     name: Option<&str>,
     strategy: SupervisorStrategy,
   ) -> ActorRef {
-    self.upgrade().borrow_mut().spawn_child(parent, props, name, strategy)
+    self.upgrade().borrow_mut().spawn_child_from_weak(parent, props, name, strategy)
   }
 
   /// Starts a handle whose shard runs `handler` for each delivered message.
@@ -60,6 +68,19 @@ impl WeakActorSystem {
   /// Registers `watcher` to receive the `Terminated` notice of `target`.
   pub fn watch(&self, watcher: &ActorRef, target: &ActorRef) {
     self.upgrade().borrow_mut().watch(watcher, target);
+  }
+
+  /// Stops `target`, telling its watchers that it is gone.
+  ///
+  /// Mirrors `ActorSystem.stop` reached through a non-owning handle, which is
+  /// how a probe or a test that only holds a `Weak` back-edge stops an actor.
+  pub fn stop(&self, target: &ActorRef) {
+    self.upgrade().borrow_mut().stop(target);
+  }
+
+  /// Delivers every message that is waiting until nothing is left.
+  pub fn run_until_idle(&self) {
+    self.upgrade().borrow_mut().run_until_idle();
   }
 
   /// Delivers at most one message and returns whether it delivered one.

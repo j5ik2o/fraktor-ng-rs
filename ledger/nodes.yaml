@@ -2981,7 +2981,7 @@ nodes:
     module: actor-tests
     class: HotSwapSpec
     test_cases_approx: 7
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -2989,16 +2989,17 @@ nodes:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'implicit-sender', 'expect-msg', 'event-filter']
     premise_flags: []
   depends_on_impl:
-    modules: []
+    modules:
+    - actor
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 7
+    ported: 7
+    passing: 7
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/hot_swap_spec.rs
   goal: G0e
 - id: actor-tests/src/test/scala/org/apache/pekko/io/dns/IdGeneratorSpec.scala
   name: actor-tests:IdGeneratorSpec
@@ -4597,7 +4598,7 @@ nodes:
     module: actor-tests
     class: SupervisorMiscSpec
     test_cases_approx: 6
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -4605,16 +4606,17 @@ nodes:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'test-actor', 'default-timeout', 'expect-msg', 'event-filter']
     premise_flags: []
   depends_on_impl:
-    modules: []
+    modules:
+    - actor
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 6
+    ported: 6
+    passing: 6
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/supervisor_misc_spec.rs
   goal: G0e
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/SupervisorSpec.scala
   name: actor-tests:SupervisorSpec
