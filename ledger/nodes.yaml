@@ -4598,7 +4598,7 @@ nodes:
     module: actor-tests
     class: SupervisorMiscSpec
     test_cases_approx: 6
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -4610,13 +4610,13 @@ nodes:
     - actor
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 6
+    ported: 6
+    passing: 6
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/supervisor_misc_spec.rs
   goal: G0e
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/SupervisorSpec.scala
   name: actor-tests:SupervisorSpec

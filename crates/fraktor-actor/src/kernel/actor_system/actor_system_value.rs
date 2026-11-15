@@ -117,6 +117,19 @@ impl ActorSystem {
     self.executor.borrow_mut().watch(watcher, target);
   }
 
+  /// Returns whether `target` no longer has a running actor behind it.
+  ///
+  /// Mirrors `ActorRef.isTerminated` for the actors and function references of
+  /// this system: a handle reports false while its actor runs and true once the
+  /// actor has stopped. A handle to a restarted actor keeps reporting false
+  /// after the restart, because the restarted cell answers for the same
+  /// identifier and generation. A handle of another system, or the reply
+  /// address of an `ask`, has no cell here and reports true, the same limit
+  /// `watch` documents.
+  pub fn is_actor_terminated(&self, target: &ActorRef) -> bool {
+    self.executor.borrow().is_actor_terminated(target)
+  }
+
   /// Starts a handle whose shard runs `handler` for each delivered message.
   ///
   /// This is how the port expresses Pekko's test actor, which runs on the

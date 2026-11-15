@@ -1008,3 +1008,134 @@ impl Actor for CountsLifecycleHooks {
     self.post_stops.fetch_add(1, Ordering::SeqCst);
   }
 }
+
+/// Fails its first `failures` starts, then starts for real and answers strings.
+struct FailsStartUntil {
+  attempts: Arc<AtomicUsize>,
+  failures: usize,
+  received: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl Actor for FailsStartUntil {
+  fn pre_start(&mut self, _context: &mut ActorContext<'_>) {
+    let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+    if attempt < self.failures {
+      panic!("simulated failure of preStart");
+    }
+  }
+
+  fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
+    if let Some(text) = message.downcast_ref::<&'static str>() {
+      self.received.lock().unwrap().push(text);
+    }
+  }
+}
+
+#[test]
+fn a_start_failure_is_offered_to_the_decider() {
+  let attempts = Arc::new(AtomicUsize::new(0));
+  let received = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+  let boundary: Arc<dyn ShardBoundary> = Arc::new(QueueBoundary::new());
+  let mut system =
+    ActorSystem::with_failure_catcher("PekkoCustomSpec", boundary, Arc::new(crate::adaptor::UnwindCatcher));
+  let parent = system.actor_of(Props::new(|| NoOp));
+  let strategy =
+    crate::kernel::supervision::SupervisorStrategy::one_for_one(3).with_decider(|_child, failure| match failure {
+      | crate::kernel::supervision::FailureKind::Initialization => crate::kernel::supervision::Directive::Restart,
+      | _ => crate::kernel::supervision::Directive::Stop,
+    });
+  let child = system.downgrade().spawn_child(
+    &parent,
+    Props::new({
+      let attempts = Arc::clone(&attempts);
+      let received = Arc::clone(&received);
+      move || FailsStartUntil { attempts: Arc::clone(&attempts), failures: 1, received: Arc::clone(&received) }
+    }),
+    Some("child"),
+    strategy,
+  );
+  assert_eq!(attempts.load(Ordering::SeqCst), 2, "the decider was not asked about the start failure");
+
+  child.tell("hello", child.clone());
+  system.run_until_idle();
+
+  assert_eq!(*received.lock().unwrap(), alloc::vec!["hello"], "the child restarted by the decider did not answer");
+}
+
+#[test]
+fn a_name_is_free_again_after_a_child_that_failed_its_start_stopped() {
+  let boundary: Arc<dyn ShardBoundary> = Arc::new(QueueBoundary::new());
+  let mut system =
+    ActorSystem::with_failure_catcher("PekkoCustomSpec", boundary, Arc::new(crate::adaptor::UnwindCatcher));
+  let parent = system.actor_of(Props::new(|| NoOp));
+  let failed = system.downgrade().spawn_child(
+    &parent,
+    Props::new(|| CountsStartupAndPostStop { post_stops: Arc::new(AtomicUsize::new(0)) }),
+    Some("bob"),
+    crate::kernel::supervision::SupervisorStrategy::stopping_strategy(),
+  );
+  assert!(system.is_actor_terminated(&failed), "the child that failed its start is still alive");
+
+  let replacement = system.downgrade().spawn_child(
+    &parent,
+    Props::new(|| NoOp),
+    Some("bob"),
+    crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+  );
+
+  assert_eq!(replacement.path().name(), "bob");
+  assert!(!system.is_actor_terminated(&replacement), "the replacement child is not alive");
+}
+
+#[test]
+#[should_panic(expected = "Actor name [bob] is not unique!")]
+fn weak_spawn_child_with_a_live_name_is_refused() {
+  let mut system = system("PekkoCustomSpec");
+  let parent = system.actor_of(Props::new(|| NoOp));
+  let first = system.downgrade().spawn_child(
+    &parent,
+    Props::new(|| NoOp),
+    Some("bob"),
+    crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+  );
+  assert!(!system.is_actor_terminated(&first));
+
+  system.downgrade().spawn_child(
+    &parent,
+    Props::new(|| NoOp),
+    Some("bob"),
+    crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+  );
+}
+
+/// Asks to stop `victim` and then fails while handling the same message.
+struct StopsAChildThenFails {
+  victim: ActorRef,
+}
+
+impl Actor for StopsAChildThenFails {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    if message.downcast_ref::<&'static str>() == Some(&"boom") {
+      context.stop(&self.victim);
+      panic!("simulated failure");
+    }
+  }
+}
+
+#[test]
+fn a_stop_requested_before_a_failure_still_runs() {
+  let boundary: Arc<dyn ShardBoundary> = Arc::new(QueueBoundary::new());
+  let mut system =
+    ActorSystem::with_failure_catcher("PekkoCustomSpec", boundary, Arc::new(crate::adaptor::UnwindCatcher));
+  let victim = system.actor_of(Props::new(|| NoOp));
+  let failing = system.actor_of(Props::new({
+    let victim = victim.clone();
+    move || StopsAChildThenFails { victim: victim.clone() }
+  }));
+
+  failing.tell("boom", failing.clone());
+  let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| system.run_until_idle()));
+
+  assert!(outcome.is_ok(), "the failure escaped the catcher");
+  assert!(system.is_actor_terminated(&victim), "the stop requested before the failure was lost");
+}

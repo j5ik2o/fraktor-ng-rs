@@ -22,6 +22,7 @@ mod tests;
 /// so the recipe must be too.
 pub struct Props {
   factory: Arc<dyn Fn() -> Box<dyn Actor> + Send + Sync>,
+  dispatcher: Option<Arc<str>>,
 }
 
 impl Props {
@@ -36,7 +37,26 @@ impl Props {
     F: Fn() -> A + Send + Sync + 'static,
     A: Actor + 'static,
   {
-    Self { factory: Arc::new(move || Box::new(factory())) }
+    Self { factory: Arc::new(move || Box::new(factory())), dispatcher: None }
+  }
+
+  /// Records the name of the dispatcher the actor should run on.
+  ///
+  /// Mirrors `Props.withDispatcher(name)`. The goal that introduces the child
+  /// name records states that the port keeps the name only: interpreting a
+  /// configuration text and modelling a thread pool belong to a later goal.
+  /// The name therefore travels with the recipe and is readable through
+  /// [`Props::dispatcher`] without changing how the actor runs.
+  pub fn with_dispatcher(mut self, name: &str) -> Self {
+    self.dispatcher = Some(Arc::from(name));
+    self
+  }
+
+  /// Returns the dispatcher name the recipe records, when one was set.
+  ///
+  /// Mirrors `Props.dispatcher`, narrowed to the name record this port keeps.
+  pub fn dispatcher(&self) -> Option<&str> {
+    self.dispatcher.as_deref()
   }
 
   pub(crate) fn create_actor(&self) -> Box<dyn Actor> {
@@ -46,6 +66,6 @@ impl Props {
 
 impl Clone for Props {
   fn clone(&self) -> Self {
-    Self { factory: Arc::clone(&self.factory) }
+    Self { factory: Arc::clone(&self.factory), dispatcher: self.dispatcher.clone() }
   }
 }

@@ -9,6 +9,7 @@ use core::time::Duration;
 
 use crate::kernel::actor::ActorContext;
 use crate::kernel::actor::BehaviorStack;
+use crate::kernel::actor::InvalidActorNameException;
 use crate::kernel::actor::Logging::Error;
 use crate::kernel::actor::Logging::EventSink;
 use crate::kernel::actor::Props;
@@ -67,10 +68,36 @@ pub(crate) fn next_spawn_name() -> u64 {
 /// Mirrors the `IllegalStateException` of `Children.attachChild`.
 pub(crate) const TERMINATED_MESSAGE: &str = "cannot create children while terminating or terminated";
 
+/// The cause name Pekko reports when the child-terminated hook fails.
+///
+/// Mirrors the `IllegalStateException("handleChildTerminated failed")` that
+/// `FaultHandling.handleChildTerminated` logs when the hook throws while its
+/// actor is terminating.
+const HANDLE_CHILD_TERMINATED_FAILED_CAUSE: &str = "IllegalStateException";
+
+/// The message Pekko attaches to the logged failure of the child-terminated
+/// hook.
+const HANDLE_CHILD_TERMINATED_FAILED_MESSAGE: &str = "handleChildTerminated failed";
+
 /// A reply to send to `reply_to` after the actor it was registered on stops.
 struct DeferredReply {
   reply_to: ActorRef,
   message: Message,
+}
+
+/// One parent and the facts the executor keeps on its behalf.
+///
+/// Mirrors the `Children` container that a Pekko `ActorCell` holds for one
+/// actor: the strategy the parent applies to its children, the names its live
+/// children use, and whether the parent is shutting down. The executor keeps
+/// this apart from the parent's cell because the cell is out of the table
+/// while the parent handles a message, yet the parent may still ask for a
+/// child inside that delivery.
+struct ParentEntry {
+  parent: ActorRef,
+  strategy: SupervisorStrategy,
+  children: Vec<(String, ActorRef)>,
+  stopping: bool,
 }
 
 /// Creates actors of one shard, runs their messages, and owns their state.
@@ -94,6 +121,9 @@ pub(crate) struct Executor {
   catcher: Option<Arc<dyn FailureCatcher>>,
   event_sink: Option<Arc<dyn EventSink>>,
   deferred_replies: Vec<(ActorRef, DeferredReply)>,
+  parents: Vec<ParentEntry>,
+  pending_stops: Vec<ActorRef>,
+  hook_child_creation_refused: bool,
   terminated: bool,
 }
 
@@ -108,6 +138,9 @@ impl Executor {
       catcher: None,
       event_sink: None,
       deferred_replies: Vec::new(),
+      parents: Vec::new(),
+      pending_stops: Vec::new(),
+      hook_child_creation_refused: false,
       terminated: false,
     }
   }
@@ -181,6 +214,133 @@ impl Executor {
     self_ref
   }
 
+  /// Records the strategy `parent` applies to the children it starts.
+  ///
+  /// Mirrors the `supervisorStrategy` a Pekko parent keeps for its `Children`.
+  /// The executor stores it apart from the parent's cell because the cell is
+  /// out of the table while the parent handles a message.
+  pub(crate) fn register_parent_strategy(&mut self, parent: ActorRef, strategy: SupervisorStrategy) {
+    match self.parents.iter_mut().find(|entry| entry.parent == parent) {
+      | Some(entry) => entry.strategy = strategy,
+      | None => self.parents.push(ParentEntry { parent, strategy, children: Vec::new(), stopping: false }),
+    }
+  }
+
+  /// Starts a named child of `parent` under the parent's strategy.
+  ///
+  /// Mirrors `ActorContext.actorOf(props, name)`. A name that a live child of
+  /// `parent` already uses is refused with [`InvalidActorNameException`], and a
+  /// name is reusable once that child has stopped. A parent that is terminating
+  /// or terminated refuses every child. The name is checked as given; the port
+  /// does not treat any prefix specially, so a caller that wants a generated
+  /// name must generate one, as Pekko's `context.actorOf(props)` does.
+  pub(crate) fn spawn_named_child(
+    &mut self,
+    parent: &ActorRef,
+    props: Props,
+    name: &str,
+  ) -> Result<ActorRef, InvalidActorNameException> {
+    let Some(strategy) = self.parents.iter().find(|entry| &entry.parent == parent).map(|entry| entry.strategy) else {
+      return Err(InvalidActorNameException::terminating());
+    };
+    self.spawn_named_child_under(parent, props, name, strategy)
+  }
+
+  /// Starts a named child of `parent` under `strategy`.
+  ///
+  /// Mirrors the named path of `TestProbe.childActorOf(props, name)`, which
+  /// reaches `attachChild` without an actor context to report the refusal to.
+  /// The name goes through the same registry as
+  /// [`Executor::spawn_named_child`], so a name a live child uses is refused
+  /// here too; a parent that has no registry yet gets one for its name
+  /// bookkeeping.
+  pub(crate) fn spawn_named_child_with_strategy(
+    &mut self,
+    parent: &ActorRef,
+    props: Props,
+    name: &str,
+    strategy: SupervisorStrategy,
+  ) -> Result<ActorRef, InvalidActorNameException> {
+    if self.parents.iter().all(|entry| &entry.parent != parent) {
+      self.parents.push(ParentEntry { parent: parent.clone(), strategy, children: Vec::new(), stopping: false });
+    }
+    self.spawn_named_child_under(parent, props, name, strategy)
+  }
+
+  /// Starts a named child once the checks shared by every named entry pass.
+  ///
+  /// The name is recorded only after the child has started. A `pre_start` that
+  /// fails and makes the strategy stop the child removes its cell during
+  /// creation, so the name is never taken by a child that is already gone and
+  /// a later request may reuse it, as Pekko's `unreserveChild` allows.
+  fn spawn_named_child_under(
+    &mut self,
+    parent: &ActorRef,
+    props: Props,
+    name: &str,
+    strategy: SupervisorStrategy,
+  ) -> Result<ActorRef, InvalidActorNameException> {
+    let Some(entry_index) = self.parents.iter().position(|entry| &entry.parent == parent) else {
+      return Err(InvalidActorNameException::terminating());
+    };
+    if self.terminated || self.parents[entry_index].stopping {
+      self.hook_child_creation_refused = true;
+      return Err(InvalidActorNameException::terminating());
+    }
+    if self.parents[entry_index].children.iter().any(|(used, _)| used == name) {
+      return Err(InvalidActorNameException::name_taken(name));
+    }
+    let label = name.to_string();
+    let child = self.spawn_child(parent, props, Some(&label), strategy);
+    if self.cells.iter().any(|cell| cell.accepts(&child)) {
+      if let Some(entry) = self.parents.iter_mut().find(|entry| &entry.parent == parent) {
+        entry.children.push((label, child.clone()));
+      }
+    }
+    Ok(child)
+  }
+
+  /// Starts a child for a caller that only holds a non-owning handle.
+  ///
+  /// Mirrors `TestProbe.childActorOf`: the caller has no way to receive a
+  /// refusal, so a named request the registry rejects ends the call with the
+  /// message Pekko throws from `attachChild`, and a request after the system
+  /// has terminated still panics as [`Executor::spawn_child`] documents.
+  pub(crate) fn spawn_child_from_weak(
+    &mut self,
+    parent: &ActorRef,
+    props: Props,
+    name: Option<&str>,
+    strategy: SupervisorStrategy,
+  ) -> ActorRef {
+    self.assert_running();
+    match name {
+      | Some(name) => match self.spawn_named_child_with_strategy(parent, props, name, strategy) {
+        | Ok(child) => child,
+        | Err(error) => panic!("{error}"),
+      },
+      | None => self.spawn_child(parent, props, None, strategy),
+    }
+  }
+
+  /// Records a stop request to carry out after the actor that asked returns.
+  pub(crate) fn request_stop(&mut self, target: ActorRef) {
+    self.pending_stops.push(target);
+  }
+
+  /// Carries out the stops that the actor asked for during its delivery.
+  ///
+  /// Pekko's `context.stop` is asynchronous, so the target is still alive for
+  /// the rest of the delivery; the executor runs the stops only after the
+  /// actor has returned and its cell is back in the table, which keeps the
+  /// child alive while the actor still handles its message.
+  fn drain_pending_stops(&mut self) {
+    let stops = core::mem::take(&mut self.pending_stops);
+    for target in stops {
+      self.stop(&target);
+    }
+  }
+
   /// Builds the actor of `index` and runs its `pre_start`, repeating while the
   /// strategy allows a restart on a failed startup and stopping once it does
   /// not.
@@ -209,6 +369,7 @@ impl Executor {
         | RunOutcome::Completed => {
           cell.restore_stack(stack);
           self.cells.insert(index, cell);
+          self.drain_pending_stops();
           return;
         },
         | RunOutcome::Failed { message } => {
@@ -220,10 +381,11 @@ impl Executor {
           self.publish_child_failure(&self_ref, ACTOR_INITIALIZATION_CAUSE, &message);
           let strategy = *self.cells[index].strategy();
           let count = self.cells[index].restart_count();
-          match strategy.decide(count, FailureKind::Initialization) {
+          match strategy.decide_for_child(&self_ref, count, FailureKind::Initialization) {
             | Directive::Restart => self.cells[index].record_restart_request(),
             | Directive::Stop => {
               self.stop_as_never_started(&self_ref);
+              self.drain_pending_stops();
               return;
             },
           }
@@ -237,6 +399,7 @@ impl Executor {
     if let Some(index) = self.cells.iter().position(|cell| cell.accepts(target)) {
       self.cells.remove(index);
     }
+    self.forget_child(target);
     self.notify_watchers(target, true, false);
     self.flush_deferred_replies(target);
   }
@@ -262,8 +425,10 @@ impl Executor {
     if !is_cell && !is_function_ref {
       return;
     }
+    let was_stopping = self.mark_stopping(target);
     let children: Vec<ActorRef> =
       self.cells.iter().filter(|cell| cell.is_child_of(target)).map(|cell| cell.self_ref()).collect();
+    let parent_of_target = self.cells.iter().find(|cell| cell.accepts(target)).and_then(|cell| cell.parent());
     for child in children {
       self.stop(&child);
     }
@@ -277,8 +442,74 @@ impl Executor {
       }
       self.cells.remove(index);
     }
+    self.forget_child(target);
     self.notify_watchers(target, true, false);
     self.flush_deferred_replies(target);
+    if let Some(parent) = parent_of_target {
+      self.run_child_terminated_hook(&parent, target);
+    }
+    if was_stopping {
+      self.clear_stopping(target);
+    }
+  }
+
+  /// Marks `target` as stopping in the parent registry and returns whether it
+  /// was already stopping.
+  fn mark_stopping(&mut self, target: &ActorRef) -> bool {
+    match self.parents.iter_mut().find(|entry| &entry.parent == target) {
+      | Some(entry) => !core::mem::replace(&mut entry.stopping, true),
+      | None => false,
+    }
+  }
+
+  /// Clears the stopping mark of `target` in the parent registry.
+  fn clear_stopping(&mut self, target: &ActorRef) {
+    if let Some(entry) = self.parents.iter_mut().find(|entry| &entry.parent == target) {
+      entry.stopping = false;
+    }
+  }
+
+  /// Forgets the names the stopped actor held as a child of its parent.
+  fn forget_child(&mut self, child: &ActorRef) {
+    for entry in &mut self.parents {
+      entry.children.retain(|(_, held)| held != child);
+    }
+  }
+
+  /// Runs `parent`'s child-terminated hook for the stopped `child`.
+  ///
+  /// Mirrors `FaultHandling.handleChildTerminated`: the parent's strategy hook
+  /// runs with the parent's context after the child has fully stopped, so it
+  /// may start a replacement child. A hook that tries to create a child while
+  /// the parent is terminating is refused; the executor then logs the failure
+  /// once as `IllegalStateException("handleChildTerminated failed")`, as Pekko
+  /// does when the hook throws.
+  fn run_child_terminated_hook(&mut self, parent: &ActorRef, child: &ActorRef) {
+    let Some(entry) = self.parents.iter().find(|entry| &entry.parent == parent) else {
+      return;
+    };
+    if !entry.strategy.has_child_terminated() {
+      return;
+    }
+    let strategy = entry.strategy;
+    let siblings: Vec<ActorRef> =
+      self.cells.iter().filter(|cell| cell.is_child_of(parent)).map(|cell| cell.self_ref()).collect();
+    let Some(index) = self.cells.iter().position(|cell| cell.accepts(parent)) else {
+      return;
+    };
+    let mut cell = self.cells.remove(index);
+    let mut stack = cell.take_stack();
+    self.hook_child_creation_refused = false;
+    {
+      let mut context = ActorContext::new(parent.clone(), parent.clone(), self, &mut stack);
+      strategy.handle_child_terminated(&mut context, child, &siblings);
+    }
+    cell.restore_stack(stack);
+    self.cells.insert(index, cell);
+    if core::mem::replace(&mut self.hook_child_creation_refused, false) {
+      self.publish_child_failure(parent, HANDLE_CHILD_TERMINATED_FAILED_CAUSE, HANDLE_CHILD_TERMINATED_FAILED_MESSAGE);
+    }
+    self.drain_pending_stops();
   }
 
   /// Runs `postStop` on the behaviour of `index`, publishing an error when it
@@ -398,12 +629,26 @@ impl Executor {
     self.cells.clear();
     self.queue.clear();
     self.deferred_replies.clear();
+    self.parents.clear();
+    self.pending_stops.clear();
     while self.queue.boundary().poll().is_some() {}
   }
 
   /// Returns whether the system has been terminated.
   pub(crate) fn is_terminated(&self) -> bool {
     self.terminated
+  }
+
+  /// Returns whether `target` no longer has a running actor behind it.
+  ///
+  /// Mirrors `ActorRef.isTerminated`: a handle reports false while its actor
+  /// runs and true once the actor has stopped. A handle to a restarted actor
+  /// keeps the same identifier and generation and the restarted cell answers
+  /// for it, so the handle reports false again after the restart. A handle of
+  /// another system, or the temporary reply address of an `ask`, has no cell
+  /// in this shard and reports true, the same limit `watch` documents.
+  pub(crate) fn is_actor_terminated(&self, target: &ActorRef) -> bool {
+    !self.is_live(target)
   }
 
   /// Returns the identity of the shard boundary this executor posts to.
@@ -479,6 +724,7 @@ impl Executor {
         if self.deferred_stop(&recipient) {
           self.stop(&recipient);
         }
+        self.drain_pending_stops();
       },
       | RunOutcome::Failed { message } => {
         if self.deferred_stop(&recipient) {
@@ -487,6 +733,7 @@ impl Executor {
         } else {
           self.apply_failure(cell, &recipient, RUNTIME_CAUSE, &message);
         }
+        self.drain_pending_stops();
       },
     }
   }
@@ -502,7 +749,7 @@ impl Executor {
     self.publish_child_failure(target, cause_name, message);
     let strategy = *cell.strategy();
     let count = cell.restart_count();
-    match strategy.decide(count, FailureKind::MessageHandling) {
+    match strategy.decide_for_child(target, count, FailureKind::MessageHandling) {
       | Directive::Restart => {
         cell.record_restart_request();
         self.restart_cell(target, cell, cause_name, message);
@@ -558,6 +805,7 @@ impl Executor {
         self.stop(target);
       },
     }
+    self.drain_pending_stops();
   }
 
   /// Handles a `Kill`: the instance fails with `ActorKilledException` and the
@@ -568,7 +816,7 @@ impl Executor {
     let mut cell = self.cells.remove(index);
     let strategy = *cell.strategy();
     let count = cell.restart_count();
-    match strategy.decide(count, FailureKind::Killed) {
+    match strategy.decide_for_child(recipient, count, FailureKind::Killed) {
       | Directive::Restart => {
         cell.record_restart_request();
         self.restart_cell(recipient, cell, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE);

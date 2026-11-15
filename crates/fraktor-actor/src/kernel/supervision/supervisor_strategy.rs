@@ -1,10 +1,30 @@
 //! The strategy a parent applies to its children.
 
+use alloc::boxed::Box;
+
+use crate::kernel::actor::ActorContext;
+use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::supervision::Directive;
+use crate::kernel::supervision::FailureKind;
 
 #[cfg(test)]
 #[path = "supervisor_strategy_test.rs"]
 mod tests;
+
+/// Decides the directive for a failing child, reading the child's handle.
+///
+/// Mirrors Pekko's `Decider` partial function, which a parent writes over the
+/// caught exception; the `sender()` of that function is the failing child. The
+/// port passes the child's handle as the first argument so a decider can read
+/// it without a borrowed context, which a failure has already unwound.
+pub type Decider = dyn Fn(&ActorRef, FailureKind) -> Directive + Send + Sync;
+
+/// Notified once a child of the strategy's owner has terminated.
+///
+/// Mirrors `SupervisorStrategy.handleChildTerminated(context, child,
+/// children)`. The port lends the owner's context so the hook can start a
+/// replacement child, as the Pekko hook does.
+pub type ChildTerminated = dyn Fn(&mut ActorContext<'_>, &ActorRef, &[ActorRef]) + Send + Sync;
 
 /// How a parent handles a child that fails.
 ///
@@ -21,14 +41,27 @@ mod tests;
 /// - `one_for_one_restarting_initialization_failures`, which applies the same
 ///   count to a child that fails while it is being started.
 ///
-/// The deciders of Pekko that choose per exception, and the resume and escalate
-/// directives, belong to later goals. The retry count follows
-/// `FaultHandling.requestRestartPermission`: every request adds one and the
-/// restart is allowed while the count does not exceed the maximum, so a limit
-/// of three allows three restarts and stops the fourth failure.
+/// A strategy may also carry a [`Decider`] and a [`ChildTerminated`] hook,
+/// which a parent installs to choose per failure and to react to a terminated
+/// child. The deciders of Pekko that choose per exception, and the resume and
+/// escalate directives, belong to later goals.
+///
+/// A strategy is a small value: a stored strategy must stay cheap to copy,
+/// because a recipe hands the same value to the executor each time it creates
+/// an actor. The hooks a caller installs are kept as borrowed trait objects, so
+/// the value stays `Copy`; [`SupervisorStrategy::with_decider`] and
+/// [`SupervisorStrategy::with_child_terminated`] therefore extend the lifetime
+/// of the closure they receive to `'static`.
+///
+/// The retry count follows `FaultHandling.requestRestartPermission`: every
+/// request adds one and the restart is allowed while the count does not exceed
+/// the maximum, so a limit of three allows three restarts and stops the fourth
+/// failure.
 #[derive(Clone, Copy)]
 pub struct SupervisorStrategy {
   policy: Policy,
+  decider: Option<&'static Decider>,
+  child_terminated: Option<&'static ChildTerminated>,
 }
 
 /// The internal decision rule of a [`SupervisorStrategy`].
@@ -59,7 +92,7 @@ impl SupervisorStrategy {
   /// Returns the strategy that restarts a failed child, corresponding to
   /// `SupervisorStrategy.defaultStrategy`.
   pub fn default_strategy() -> Self {
-    Self { policy: Policy::RestartAlways }
+    Self { policy: Policy::RestartAlways, decider: None, child_terminated: None }
   }
 
   /// Returns the strategy that stops a failed child, corresponding to
@@ -67,7 +100,7 @@ impl SupervisorStrategy {
   ///
   /// `TestProbe.childActorOf(props)` uses it, as Pekko does.
   pub fn stopping_strategy() -> Self {
-    Self { policy: Policy::StopAlways }
+    Self { policy: Policy::StopAlways, decider: None, child_terminated: None }
   }
 
   /// Returns the one-for-one strategy that restarts a failed child at most
@@ -77,7 +110,11 @@ impl SupervisorStrategy {
   /// whose default case restarts. A child that fails while it is being started
   /// is stopped, as the default decider does for `ActorInitializationException`.
   pub fn one_for_one(max_retries: u32) -> Self {
-    Self { policy: Policy::OneForOne { max_retries, restart_initialization_failures: false } }
+    Self {
+      policy: Policy::OneForOne { max_retries, restart_initialization_failures: false },
+      decider: None,
+      child_terminated: None,
+    }
   }
 
   /// Returns the one-for-one strategy that also restarts a child that fails
@@ -87,7 +124,43 @@ impl SupervisorStrategy {
   /// that maps `ActorInitializationException` to `Restart`, as the ported test
   /// uses to count the startup attempts of a child that never starts.
   pub fn one_for_one_restarting_initialization_failures(max_retries: u32) -> Self {
-    Self { policy: Policy::OneForOne { max_retries, restart_initialization_failures: true } }
+    Self {
+      policy: Policy::OneForOne { max_retries, restart_initialization_failures: true },
+      decider: None,
+      child_terminated: None,
+    }
+  }
+
+  /// Returns this strategy with a decider that chooses per failing child.
+  ///
+  /// Mirrors `OneForOneStrategy()(decider)`: the decider replaces the default
+  /// mapping of a failure kind to a directive. When no decider is installed,
+  /// [`SupervisorStrategy::decide`] keeps its default mapping.
+  ///
+  /// The strategy keeps its hooks as borrowed trait objects so that it stays
+  /// `Copy`; the closure is therefore given a `'static` lifetime. A caller that
+  /// builds the same strategy on each creation extends one closure per call,
+  /// which is the price of a `Copy` strategy value.
+  pub fn with_decider<D>(mut self, decider: D) -> Self
+  where
+    D: Fn(&ActorRef, FailureKind) -> Directive + Send + Sync + 'static,
+  {
+    self.decider = Some(Box::leak(Box::new(decider)));
+    self
+  }
+
+  /// Returns this strategy with a hook that runs once a child has terminated.
+  ///
+  /// Mirrors overriding `SupervisorStrategy.handleChildTerminated`. The hook
+  /// runs on the owner of the strategy, with the owner's context, after one of
+  /// its children has stopped. It is kept as a borrowed trait object for the
+  /// same reason as [`SupervisorStrategy::with_decider`].
+  pub fn with_child_terminated<H>(mut self, hook: H) -> Self
+  where
+    H: Fn(&mut ActorContext<'_>, &ActorRef, &[ActorRef]) + Send + Sync + 'static,
+  {
+    self.child_terminated = Some(Box::leak(Box::new(hook)));
+    self
   }
 
   /// Returns the action to take for a failed child.
@@ -116,22 +189,52 @@ impl SupervisorStrategy {
       },
     }
   }
-}
 
-/// The kind of failure a child raised, as the default decider distinguishes it.
-///
-/// Mirrors the parts of `org.apache.pekko.actor.FaultHandling.defaultDecider`
-/// that the strategies of this goal need: a failure during startup maps to
-/// `Stop`, a `Kill` maps to `Stop`, and any other failure maps to `Restart`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FailureKind {
-  /// The child failed while it was being created or in `preStart`, which Pekko
-  /// wraps in `ActorInitializationException`.
-  Initialization,
-  /// The child received `Kill`, which Pekko raises as `ActorKilledException`.
-  Killed,
-  /// The child threw while handling a message.
-  MessageHandling,
+  /// Returns the action to take for the failed `child`.
+  ///
+  /// Applies the installed [`Decider`] when there is one, so the decider sees
+  /// the failing child's handle, and falls back to [`SupervisorStrategy::decide`]
+  /// otherwise. Mirrors a Pekko `Decider`, whose `sender()` is the failing
+  /// child.
+  ///
+  /// A `Restart` the decider chooses still needs the permission of a
+  /// `one_for_one` strategy, as Pekko's `requestRestartPermission` checks it
+  /// after the decider has answered; a restart beyond `max_retries` therefore
+  /// becomes `Stop`. `RestartAlways` and `StopAlways` have no limit to enforce
+  /// and keep the decider's answer as it is.
+  pub(crate) fn decide_for_child(&self, child: &ActorRef, restart_count: u32, failure: FailureKind) -> Directive {
+    let Some(decider) = self.decider else {
+      return self.decide(restart_count, failure);
+    };
+    let directive = decider(child, failure);
+    match self.policy {
+      | Policy::OneForOne { max_retries, .. } => {
+        if directive == Directive::Restart && restart_count.saturating_add(1) > max_retries {
+          Directive::Stop
+        } else {
+          directive
+        }
+      },
+      | Policy::RestartAlways | Policy::StopAlways => directive,
+    }
+  }
+
+  /// Runs the child-terminated hook, if one is installed.
+  pub(crate) fn handle_child_terminated(
+    &self,
+    context: &mut ActorContext<'_>,
+    child: &ActorRef,
+    children: &[ActorRef],
+  ) {
+    if let Some(hook) = self.child_terminated {
+      hook(context, child, children);
+    }
+  }
+
+  /// Returns whether a child-terminated hook is installed.
+  pub(crate) fn has_child_terminated(&self) -> bool {
+    self.child_terminated.is_some()
+  }
 }
 
 impl core::fmt::Debug for SupervisorStrategy {

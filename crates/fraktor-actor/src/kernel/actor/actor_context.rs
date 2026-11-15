@@ -2,6 +2,7 @@
 
 use crate::kernel::actor::Actor;
 use crate::kernel::actor::BehaviorStack;
+use crate::kernel::actor::InvalidActorNameException;
 use crate::kernel::actor::Props;
 use crate::kernel::actor::Running;
 use crate::kernel::actor_ref::ActorRef;
@@ -114,6 +115,67 @@ impl<'a> ActorContext<'a> {
   pub fn actor_of_with_strategy(&mut self, props: Props, strategy: SupervisorStrategy) -> ActorRef {
     let parent = self.self_ref();
     self.executor.spawn_child(&parent, props, None, strategy)
+  }
+
+  /// Starts a child of this actor under `name`, using this actor's strategy.
+  ///
+  /// Mirrors `ActorContext.actorOf(props, name)`. The child is placed under the
+  /// strategy that this actor reports through
+  /// `Actor::supervisor_strategy`. A name that a live child of this actor
+  /// already uses is refused with [`InvalidActorNameException`], and a name is
+  /// reusable once the child that held it has stopped. The name is checked as
+  /// given; the port does not treat any prefix specially, so a caller that
+  /// wants a generated name must generate one, as Pekko's
+  /// `context.actorOf(props)` does.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`InvalidActorNameException`] when the name is taken by a live
+  /// child of this actor, or when this actor is terminating or terminated.
+  pub fn actor_of(&mut self, props: Props, name: &str) -> Result<ActorRef, InvalidActorNameException> {
+    let parent = self.self_ref();
+    self.executor.spawn_named_child(&parent, props, name)
+  }
+
+  /// Registers this actor as a watcher of `target` and returns `target`'s
+  /// handle.
+  ///
+  /// Mirrors `ActorContext.watch(ref)`, which returns `ref` so a caller can
+  /// watch and keep the handle in one expression. The watcher receives a
+  /// `Terminated` for `target` once it stops.
+  pub fn watch(&mut self, target: &ActorRef) -> ActorRef {
+    let watcher = self.self_ref();
+    self.executor.watch(&watcher, target);
+    target.clone()
+  }
+
+  /// Returns whether `target` no longer has a running actor behind it.
+  ///
+  /// Mirrors `ActorRef.isTerminated` from inside an actor: a handle reports
+  /// false while its actor runs and true once the actor has stopped. A handle
+  /// to a restarted actor keeps reporting false after the restart. A handle of
+  /// another system, or the reply address of an `ask`, has no cell here and
+  /// reports true, the same limit `watch` documents.
+  pub fn is_terminated(&self, target: &ActorRef) -> bool {
+    self.executor.is_actor_terminated(target)
+  }
+
+  /// Asks `target` to stop.
+  ///
+  /// Mirrors `ActorContext.stop(ref)`. Pekko's stop is asynchronous: the
+  /// target keeps running until the message that asked for the stop returns,
+  /// so a child stopped here is still alive for the rest of the current
+  /// delivery and a new child of the same name is refused until the stop has
+  /// finished. The port records the request and the executor carries it out
+  /// after the actor returns.
+  pub fn stop(&mut self, target: &ActorRef) {
+    self.executor.request_stop(target.clone());
+  }
+
+  /// Records the strategy this actor applies to its children.
+  pub(crate) fn register_parent_strategy(&mut self, strategy: SupervisorStrategy) {
+    let self_ref = self.self_ref();
+    self.executor.register_parent_strategy(self_ref, strategy);
   }
 
   /// Stops this actor and then sends `message` to `reply_to`.

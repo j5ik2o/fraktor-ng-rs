@@ -70,6 +70,11 @@ impl ActorCell {
     self.parent.as_ref() == Some(parent)
   }
 
+  /// Returns the handle of the actor that started this actor, when it has one.
+  pub(crate) fn parent(&self) -> Option<ActorRef> {
+    self.parent.clone()
+  }
+
   /// Returns the strategy this actor applies to its children.
   pub(crate) fn strategy(&self) -> &SupervisorStrategy {
     &self.strategy
@@ -101,8 +106,13 @@ impl ActorCell {
   /// The stack starts empty, so a `change_behavior` in `pre_start` installs the
   /// frame that answers the first message; with none installed the initial
   /// `receive` answers, as Pekko's `newActor` does when the stack is empty.
+  ///
+  /// The strategy the behaviour applies to its own children is read from
+  /// `Actor::supervisor_strategy` and registered with the executor before
+  /// `pre_start`, so a child that `pre_start` starts is placed under it.
   pub(crate) fn create(&mut self, context: &mut ActorContext<'_>) {
     let mut behavior = self.props.create_actor();
+    context.register_parent_strategy(behavior.supervisor_strategy());
     behavior.pre_start(context);
     self.behavior = Some(behavior);
   }
@@ -130,9 +140,14 @@ impl ActorCell {
   /// restarted child: the old instance is discarded, the recipe creates the
   /// next one, and `postRestart` runs on it before any further message is
   /// handled. The handle stays the same, so a handle taken before the restart
-  /// reaches the new instance.
+  /// reaches the new instance. Like `create`, this registers the re-created
+  /// instance's child-facing strategy from `Actor::supervisor_strategy` right
+  /// after the recipe builds it and before `post_restart` runs, so the strategy
+  /// is built from the fields the recipe sets, as Pekko evaluates
+  /// `supervisorStrategy` when it constructs the instance.
   pub(crate) fn restart(&mut self, context: &mut ActorContext<'_>) {
     let mut behavior = self.props.create_actor();
+    context.register_parent_strategy(behavior.supervisor_strategy());
     behavior.post_restart(context);
     self.behavior = Some(behavior);
   }
