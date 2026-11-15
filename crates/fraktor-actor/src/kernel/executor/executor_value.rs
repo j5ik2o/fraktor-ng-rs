@@ -336,6 +336,9 @@ impl Executor {
   /// refusal, so a named request the registry rejects ends the call with the
   /// message Pekko throws from `attachChild`, and a request after the system
   /// has terminated still panics as [`Executor::spawn_child`] documents.
+  /// An unnamed request reaches `attachChild` too, so a parent that is no
+  /// longer live or whose registry is stopping refuses it with the same
+  /// message instead of starting a child below a stopped actor.
   pub(crate) fn spawn_child_from_weak(
     &mut self,
     parent: &ActorRef,
@@ -349,7 +352,11 @@ impl Executor {
         | Ok(child) => child,
         | Err(error) => panic!("{error}"),
       },
-      | None => self.spawn_child(parent, props, None, strategy),
+      | None => {
+        let stopping = self.parents.iter().any(|entry| &entry.parent == parent && entry.stopping);
+        assert!(self.is_live(parent) && !stopping, "{TERMINATED_MESSAGE}");
+        self.spawn_child(parent, props, None, strategy)
+      },
     }
   }
 
@@ -432,7 +439,13 @@ impl Executor {
   /// actor was never created. Pekko's `faultCreate` stops the children the
   /// failed attempt left before it retries, so a child started by a failing
   /// `pre_start` does not keep its name into the next attempt.
-  fn create_initial(&mut self, index: usize) {
+  ///
+  /// Stopping those children can run child-terminated hooks that stop other
+  /// actors and remove their cells, so the index taken at the top of the loop
+  /// may no longer address this actor after the stops. The cell is found again
+  /// before the retry is recorded, as Pekko's `Children` keeps the same child
+  /// across attempts; a cell that is gone leaves nothing to retry.
+  fn create_initial(&mut self, mut index: usize) {
     let self_ref = self.cells[index].self_ref();
     loop {
       let catcher = self.catcher.clone();
@@ -469,6 +482,11 @@ impl Executor {
           match strategy.decide_for_child(&self_ref, count, FailureKind::Initialization) {
             | Directive::Restart => {
               self.stop_children_of(&self_ref);
+              let Some(found) = self.cells.iter().position(|cell| cell.accepts(&self_ref)) else {
+                self.finish_boundary();
+                return;
+              };
+              index = found;
               self.cells[index].record_restart_request();
             },
             | Directive::Stop => {

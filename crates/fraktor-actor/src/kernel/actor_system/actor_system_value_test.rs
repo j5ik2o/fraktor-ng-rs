@@ -1612,6 +1612,39 @@ fn a_weak_named_child_of_a_stopped_parent_is_refused() {
 }
 
 #[test]
+fn a_weak_unnamed_child_of_a_stopped_parent_is_refused() {
+  let creations = Arc::new(AtomicUsize::new(0));
+  let mut system = with_catcher("PekkoCustomSpec");
+  let parent = system.actor_of(Props::new(|| NoOp));
+  system.stop(&parent);
+
+  let attempted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let creations = Arc::clone(&creations);
+    system.downgrade().spawn_child(
+      &parent,
+      Props::new(move || {
+        creations.fetch_add(1, Ordering::SeqCst);
+        NoOp
+      }),
+      None,
+      crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+    );
+  }));
+
+  assert_eq!(creations.load(Ordering::SeqCst), 0, "the refused request still built the child");
+  let payload = attempted.expect_err("a stopped parent must refuse an unnamed weak child");
+  let message = payload
+    .downcast_ref::<alloc::string::String>()
+    .map(alloc::string::String::as_str)
+    .or_else(|| payload.downcast_ref::<&'static str>().copied())
+    .unwrap_or_default();
+  assert!(message.contains("cannot create children"), "unexpected refusal message: {message}");
+
+  let started = system.actor_of(Props::new(|| NoOp));
+  assert!(!system.is_actor_terminated(&started), "the executor refused to start actors after the refused request");
+}
+
+#[test]
 fn a_stopped_actor_leaves_no_parent_entry_behind() {
   let mut system = with_catcher("PekkoCustomSpec");
   for _ in 0..3 {
@@ -1702,4 +1735,90 @@ fn a_child_follows_the_strategy_of_its_restarted_parent() {
     "the child used the strategy from before the parent restarted"
   );
   assert!(system.is_actor_terminated(&kid_handle), "the child was not stopped by the new parent strategy");
+}
+
+/// Starts a child on every start attempt and fails the first attempt after the
+/// child is in place, so the retry has to stop that child first.
+struct StartsVictimStopperThenFailsOnce {
+  attempts: Arc<AtomicUsize>,
+  children: Arc<Mutex<Vec<ActorRef>>>,
+  victim: Arc<Mutex<Option<ActorRef>>>,
+}
+
+impl Actor for StartsVictimStopperThenFailsOnce {
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+    let victim = Arc::clone(&self.victim);
+    let child = context.actor_of_with_strategy(
+      Props::new(move || StopsVictimWhenItsChildStops { victim: Arc::clone(&victim) }),
+      crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+    );
+    self.children.lock().unwrap().push(child);
+    if attempt == 1 {
+      panic!("simulated initialization failure");
+    }
+  }
+
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+}
+
+/// Starts a leaf in `pre_start` and stops the victim from its child-terminated
+/// hook, so stopping this actor moves the executor's cell table.
+struct StopsVictimWhenItsChildStops {
+  victim: Arc<Mutex<Option<ActorRef>>>,
+}
+
+impl Actor for StopsVictimWhenItsChildStops {
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    let _ = context
+      .actor_of_with_strategy(Props::new(|| NoOp), crate::kernel::supervision::SupervisorStrategy::default_strategy());
+  }
+
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+
+  fn supervisor_strategy(&self) -> crate::kernel::supervision::SupervisorStrategy {
+    let victim = Arc::clone(&self.victim);
+    crate::kernel::supervision::SupervisorStrategy::one_for_one(3).with_child_terminated(
+      move |context, _child, _siblings| {
+        if let Some(victim) = victim.lock().unwrap().clone() {
+          context.stop(&victim);
+        }
+      },
+    )
+  }
+}
+
+#[test]
+fn a_retried_start_finds_the_cell_again_after_a_child_stop_moves_the_table() {
+  let attempts = Arc::new(AtomicUsize::new(0));
+  let children = Arc::new(Mutex::new(Vec::new()));
+  let victim = Arc::new(Mutex::new(None));
+  let mut system = with_catcher("PekkoCustomSpec");
+  let parent = system.actor_of(Props::new(|| NoOp));
+  let victim_ref = system.actor_of(Props::new(|| NoOp));
+  *victim.lock().unwrap() = Some(victim_ref.clone());
+
+  let failing = system.downgrade().spawn_child(
+    &parent,
+    Props::new({
+      let attempts = Arc::clone(&attempts);
+      let children = Arc::clone(&children);
+      let victim = Arc::clone(&victim);
+      move || StartsVictimStopperThenFailsOnce {
+        attempts: Arc::clone(&attempts),
+        children: Arc::clone(&children),
+        victim: Arc::clone(&victim),
+      }
+    }),
+    None,
+    crate::kernel::supervision::SupervisorStrategy::one_for_one_restarting_initialization_failures(3),
+  );
+
+  assert_eq!(attempts.load(Ordering::SeqCst), 2, "the failed start was not retried exactly once");
+  assert!(!system.is_actor_terminated(&failing), "the second start did not succeed");
+  let children = children.lock().unwrap();
+  assert_eq!(children.len(), 2, "each attempt should have started its own child");
+  assert!(system.is_actor_terminated(&children[0]), "the child of the failed attempt survived the retry");
+  assert!(!system.is_actor_terminated(&children[1]), "the child of the retried attempt is not alive");
+  assert!(system.is_actor_terminated(&victim_ref), "the stop issued from the child-terminated hook did not happen");
 }
