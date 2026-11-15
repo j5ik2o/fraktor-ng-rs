@@ -1,0 +1,58 @@
+//! The debug event.
+
+use alloc::string::String;
+use alloc::string::ToString;
+
+use crate::kernel::actor::Logging::empty_mdc;
+use crate::kernel::actor::Logging::log_event::LogEvent;
+use crate::kernel::actor::Logging::log_level::LogLevel;
+use crate::kernel::actor::Logging::Mdc;
+
+/// A debug event.
+///
+/// Mirrors `org.apache.pekko.event.Logging.Debug`, the event an event stream
+/// publishes when the ported bus reports the life cycle of a subscriber. Pekko
+/// keeps the class of the log source; the port keeps the integer that the
+/// other events of this milestone use.
+#[derive(Clone)]
+pub struct Debug {
+  log_source: String,
+  log_class: i32,
+  message: String,
+  mdc: Mdc,
+}
+
+impl Debug {
+  /// Creates a debug event without a cause.
+  ///
+  /// Mirrors `Debug(logSource, logClass, message = "")`.
+  pub fn new(log_source: String, log_class: i32, message: &str) -> Self {
+    Self { log_source, log_class, message: message.to_string(), mdc: empty_mdc() }
+  }
+}
+
+impl LogEvent for Debug {
+  fn level(&self) -> LogLevel {
+    LogLevel::Debug
+  }
+
+  fn log_source(&self) -> &str {
+    &self.log_source
+  }
+
+  fn log_class(&self) -> i32 {
+    self.log_class
+  }
+
+  fn message(&self) -> &str {
+    &self.message
+  }
+
+  fn mdc(&self) -> &Mdc {
+    &self.mdc
+  }
+
+  fn cause_name(&self) -> Option<&str> {
+    None
+  }
+}

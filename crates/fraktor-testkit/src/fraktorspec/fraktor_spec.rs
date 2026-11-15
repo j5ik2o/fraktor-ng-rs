@@ -2,7 +2,10 @@
 
 use core::time::Duration;
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use fraktor_actor::adaptor::ChannelBoundary;
 use fraktor_actor::adaptor::UnwindCatcher;
@@ -161,6 +164,33 @@ impl FraktorSpec {
     self.test_kit.eventually(max, interval, assertion)
   }
 
+  /// Runs `body` with every wait clamped to the `max` that is left.
+  ///
+  /// Mirrors `TestKitBase.within`: the waits inside `body` use the remaining
+  /// time of the scope when that is shorter than the wait they ask for, so a
+  /// final `expectNoMessage` checks up to the end of the scope and no further.
+  /// A nested `within` keeps the earlier deadline, and the deadline is restored
+  /// even when `body` fails. Once `body` returns, the call fails when it took
+  /// longer than the scope, unless the last wait was a no-message check that
+  /// used up the scope on purpose.
+  pub fn within<T>(&mut self, max: Duration, body: impl FnOnce(&mut Self) -> T) -> T {
+    let scope = self.test_kit.scope();
+    let previous = *scope.borrow();
+    let started = Instant::now();
+    let requested = started + self.test_kit.test_kit_settings().dilated(max);
+    let deadline = previous.map_or(requested, |previous| requested.min(previous));
+    let max_diff = deadline.saturating_duration_since(started);
+    *scope.borrow_mut() = Some(deadline);
+    self.test_kit.reset_last_was_no_msg();
+    let _reset = ScopeReset { scope, previous };
+    let value = body(self);
+    let elapsed = started.elapsed();
+    if !self.test_kit.last_was_no_msg() {
+      assert!(elapsed <= max_diff, "block took {elapsed:?}, exceeding {max_diff:?}");
+    }
+    value
+  }
+
   /// Stops the actor system, corresponding to Pekko's `afterAll`.
   ///
   /// Runs `before_termination`, then the shutdown of the test kit, then
@@ -180,3 +210,15 @@ impl FraktorSpec {
 struct NoHooks;
 
 impl FraktorSpecHooks for NoHooks {}
+
+/// Restores the surrounding `within` deadline when a scope ends.
+struct ScopeReset {
+  scope: Rc<RefCell<Option<Instant>>>,
+  previous: Option<Instant>,
+}
+
+impl Drop for ScopeReset {
+  fn drop(&mut self) {
+    *self.scope.borrow_mut() = self.previous;
+  }
+}

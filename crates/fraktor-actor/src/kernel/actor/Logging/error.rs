@@ -17,6 +17,7 @@ use crate::kernel::actor::Logging::Mdc;
 /// the cause and never the cause itself. An event without a cause carries
 /// `Error.NoCause`, whose name [`Error::NO_CAUSE_NAME`] makes visible to a
 /// filter, as Pekko's `Error.NoCause.getClass` does.
+#[derive(Clone)]
 pub struct Error {
   cause: Option<String>,
   log_source: String,

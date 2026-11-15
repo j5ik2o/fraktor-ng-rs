@@ -1,5 +1,6 @@
 //! The executor that owns one shard of actors and runs their messages.
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::sync::Arc;
@@ -105,6 +106,9 @@ struct ParentEntry {
   stopping: bool,
 }
 
+/// One callback that the executor runs with the handle of a stopped actor.
+type TerminationCallback = Box<dyn Fn(&ActorRef)>;
+
 /// Creates actors of one shard, runs their messages, and owns their state.
 ///
 /// Mirrors the role of `org.apache.pekko.actor.ActorCell` together with a
@@ -131,6 +135,8 @@ pub(crate) struct Executor {
   pending_decider_failures: Vec<(ActorRef, String)>,
   pending_child_terminated: Vec<(ActorRef, ActorRef)>,
   running: Vec<ActorRef>,
+  termination_callbacks: Vec<TerminationCallback>,
+  dead_letters: ActorRef,
   boundary_active: bool,
   hook_child_creation_refused: bool,
   terminated: bool,
@@ -138,7 +144,8 @@ pub(crate) struct Executor {
 
 impl Executor {
   pub(crate) fn new(root: ActorPath, boundary: Arc<dyn crate::kernel::executor::ShardBoundary>) -> Self {
-    Self {
+    let dead_letters = Self::create_dead_letters(&root);
+    let mut executor = Self {
       cells: Vec::new(),
       queue: ShardQueue::new(boundary),
       root,
@@ -152,10 +159,46 @@ impl Executor {
       pending_decider_failures: Vec::new(),
       pending_child_terminated: Vec::new(),
       running: Vec::new(),
+      termination_callbacks: Vec::new(),
+      dead_letters,
       boundary_active: false,
       hook_child_creation_refused: false,
       terminated: false,
-    }
+    };
+    executor.function_refs.push(executor.dead_letters.clone());
+    executor
+  }
+
+  /// Registers `callback` to run with the handle of every actor that stops.
+  ///
+  /// Mirrors the notification that Pekko's `ActorClassificationUnsubscriber`
+  /// receives for a watched subscriber: the executor is the only place that
+  /// knows an actor has stopped, so a component that is not an actor registers
+  /// here. The callback runs after the watchers have been told and must not
+  /// borrow the executor, which is already borrowed by the caller.
+  pub(crate) fn on_termination<F>(&mut self, callback: F)
+  where
+    F: Fn(&ActorRef) + 'static,
+  {
+    self.termination_callbacks.push(Box::new(callback));
+  }
+
+  /// Returns the handle that absorbs messages which no actor takes.
+  ///
+  /// Mirrors `ActorSystem.deadLetters`. The handle posts to a boundary that
+  /// drops the envelope. The executor makes one such handle when it is created,
+  /// below the root path, and answers that same handle for the life of the
+  /// system.
+  pub(crate) fn dead_letters(&self) -> ActorRef {
+    self.dead_letters.clone()
+  }
+
+  fn create_dead_letters(root: &ActorPath) -> ActorRef {
+    let path = root.with_child("deadLetters");
+    let handler = Arc::new(|_: &ActorRef, _: Message| {});
+    let boundary: Arc<dyn crate::kernel::executor::ShardBoundary> =
+      Arc::new(crate::kernel::executor::FunctionBoundary::new(handler));
+    next_actor_ref(path, boundary)
   }
 
   pub(crate) fn function_ref<H>(&mut self, name: &str, handler: H) -> ActorRef
@@ -594,6 +637,9 @@ impl Executor {
     }
     self.forget_child(target);
     self.notify_watchers(target, true, false);
+    for callback in &self.termination_callbacks {
+      callback(target);
+    }
     self.flush_deferred_replies(target);
     if let Some(parent) = parent_of_target {
       self.run_child_terminated_hook(&parent, target);
@@ -747,10 +793,21 @@ impl Executor {
   /// a stopped one, which is the documented limit of this port.
   pub(crate) fn watch(&mut self, watcher: &ActorRef, target: &ActorRef) {
     if self.is_live(target) {
-      self.watchers.push((watcher.clone(), target.clone()));
+      if !self.watchers.iter().any(|(existing, watched)| existing == watcher && watched == target) {
+        self.watchers.push((watcher.clone(), target.clone()));
+      }
     } else {
       self.enqueue_to(watcher.clone(), Terminated::new(target.clone(), false, false));
     }
+  }
+
+  /// Stops `watcher` from receiving the notice of `target`.
+  ///
+  /// Mirrors `ActorContext.unwatch`, which Pekko's event stream unsubscriber
+  /// calls once a subscriber holds no subscription. Removing a watch that is
+  /// not registered changes nothing, as `unwatch` is idempotent.
+  pub(crate) fn unwatch(&mut self, watcher: &ActorRef, target: &ActorRef) {
+    self.watchers.retain(|(existing, watched)| existing != watcher || watched != target);
   }
 
   /// Delivers every message that is waiting, whether it is in the shard or at
@@ -810,6 +867,7 @@ impl Executor {
     self.pending_decider_failures.clear();
     self.pending_child_terminated.clear();
     self.running.clear();
+    self.termination_callbacks.clear();
     self.boundary_active = false;
     while self.queue.boundary().poll().is_some() {}
   }

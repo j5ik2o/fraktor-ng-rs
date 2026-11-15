@@ -2565,7 +2565,7 @@ nodes:
     module: actor-tests
     class: EventBusSpec
     test_cases_approx: 16
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -2576,13 +2576,13 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 42
+    ported: 42
+    passing: 42
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/event_bus_spec.rs
   goal: G0f
 - id: actor-tests/src/test/scala/org/apache/pekko/event/EventStreamSpec.scala
   name: actor-tests:EventStreamSpec
@@ -2591,7 +2591,7 @@ nodes:
     module: actor-tests
     class: EventStreamSpec
     test_cases_approx: 17
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -2607,8 +2607,8 @@ nodes:
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/event_stream_spec.rs
   goal: G0f
 - id: actor-tests/src/test/scala/org/apache/pekko/dispatch/ExecutionContextSpec.scala
   name: actor-tests:ExecutionContextSpec

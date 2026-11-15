@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+spin = { version = "0.9", default-features = false, features = ["spin_mutex"] }
 
 [dev-dependencies]
 fraktor-testkit = { path = "../fraktor-testkit" }
