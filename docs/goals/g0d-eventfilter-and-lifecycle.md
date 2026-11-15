@@ -176,3 +176,7 @@ for g in G0a G0b G0c G0d; do uv run --with pyyaml python3 ledger/tools/rollup.py
 uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0d
 git diff 0df2656 -- ledger/   # 発行前処理のコミット（0df2656）より後の ledger/ 全体の差分。対象 2 ノードの欄に限られること（AC6）
 ```
+
+## 注記（2026-11-14、G0e の失敗を受けて追記）
+
+この文書の「作らせるもの」にある context.become の実装は、本番コードとしては行われていない。G0d のライフサイクルのテストは、テスト内のアクター状態にスタックを持たせて become の意味論を再現する方式だった。become/unbecome の本番コードへの実装は、G0e で行う。

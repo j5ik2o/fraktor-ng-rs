@@ -10,7 +10,7 @@ requires: [G0d]（プルリクエスト #50 が main に入り、`rollup.py --go
 ## 原典プロトコール依存分析（2026-11-14、窓口が原典 Pekko v1.7.1 のスペック本体を読んで導出）
 
 - HotSwapSpec（7 ケース）は、振る舞いのスタックの意味論を検証するスペックである。内訳は、コンストラクタでの become（置き換え）、コンストラクタでの複数回の become、スタッキングした become（discardOld = false）と unbecome、複数回のスタッキングと unbecome の連鎖、メッセージ処理中の become によるホットスワップ、unbecome による巻き戻し、再起動時に初期の振る舞いへ戻ることである。最後のケースだけが EventFilter の intercept を使う（HotSwapSpec.scala:129）。become と unbecome の原典は ActorCell.scala の :113、:129、:137 である。
-- G0d は、context.become（discardOld = false のスタッキングと、再起動時の振る舞いスタックの初期化を含む）を実装した。G0e で残るのは、unbecome、コンストラクタで指定した become が最初のメッセージより前に効くこと、スタックの意味論全体の検証である。run の triage で現状を確認し、足りない分だけを作る。
+- G0d のライフサイクルのテストは、テスト内のアクター状態にスタックを持たせて become の意味論を再現する方式だったため、本番コードへの context.become の実装は G0d では行われていない（2026-11-14 に作業ツリーで grep して確認。crates/fraktor-actor/src に become の実装は 0 件）。G0e で作るのは、本番コードへの become/unbecome の実装そのものである。内訳は、振る舞いスタックの仕組み（ActorCell と executor の側に置く）、unbecome、コンストラクタで指定した become が最初のメッセージより前に効くこと、再起動時の振る舞いスタックの初期化、スタックの意味論全体の検証である。再開後の最初の段で、振る舞いスタックの設計案を示して規模を見極めてから実装へ進む。
 - SupervisorMiscSpec（6 ケース）は、監督と子の管理の収束点である。内訳は次のとおりである。
   1. Supervisor と OneForOneStrategy（maxNrOfRetries = 3、withinTimeRange = 5 秒）配下で、クラッシュした actor とそのディスパッチャを再起動すること。子の生成は ask で受け、Kill で 4 つの子を落とし、postRestart のラッチで再起動を数え、status への応答を確認する。子には withDispatcher で pinned-dispatcher と test-dispatcher を指定する。ディスパッチャの定義はスペックの設定テキストにある。
   2. コンストラクタで名前つきの子を作れること。例外で再起動し、preStart が 2 回呼ばれることを EventFilter の intercept と expectMsg で確認する。
@@ -19,7 +19,7 @@ requires: [G0d]（プルリクエスト #50 が main に入り、`rollup.py --go
   5. 障害処理の戦略の中で子を作り直せること。supervisorStrategy の handleChildTerminated を上書きし、その中で終了した子と同じ名前の子を作る。
   6. 監督戦略の decider が、失敗した子への参照を sender として受け取れること。Kill が ActorKilledException になることを EventFilter で確認する。
 - 移植済みの土台は、watch と Terminated、監督による再起動、system.stop、ask の最小形（ask_future.rs の await_result）、testkit の Supervisor テストヘルパー（G0d）、preStart/postStop と既定の preRestart/postRestart（G0d）、Kill と ActorKilledException（G0d）、EventFilter と filterEvents（G0d）である。
-- G0e で新しく作るものは、unbecome とコンストラクタ時点の become の適用、子の名前の登録の意味論（二重登録では InvalidActorNameException、終了後は同じ名前を再利用できる）、handleChildTerminated のフック点、decider が失敗した子を sender として受け取ることの保証、Props の withDispatcher に相当するディスパッチャ名の指定である。
+- G0e で新しく作るものは、本番コードへの become/unbecome の実装と、コンストラクタ時点の become の適用、子の名前の登録の意味論（二重登録では InvalidActorNameException、終了後は同じ名前を再利用できる）、handleChildTerminated のフック点、decider が失敗した子を sender として受け取ることの保証、Props の withDispatcher に相当するディスパッチャ名の指定である。
 - ディスパッチャについては、設定体系（HOCON 相当）の再現範囲が未決定の設計判断であるため、G0e では設定テキストの解釈までは作らない。ディスパッチャ名はプログラム側の指定で受け、暫定の実行基盤のうえでは名前を記録するに留める。PinnedDispatcher のスレッドプールの意味論は再現しない。ケース 1 が確認するのは再起動と応答であり、ディスパッチャのスレッドの違いは確認していない。この扱いは移植の忠実さの判断として、プルリクエスト本文に記録する。
 - 処理順は HotSwapSpec を先、SupervisorMiscSpec を後とする。HotSwapSpec は前提がすべてそろっており、SupervisorMiscSpec は新しく作る面が多いため、依存の形で順序が決まる。
 
@@ -89,7 +89,7 @@ requires: [G0d]（プルリクエスト #50 が main に入り、`rollup.py --go
 - run の作業ツリーへの Pekko 原典の配置は恒久策が入っている（プルリクエスト #28。`tools/pekko-source/prepare_pekko_source.sh` が作業ツリー直下の `pekko/` に v1.7.1〔commit 9a54d12〕を用意する）
 - 対象は 2 ノード 13 ケース（概数）で、G0d（2 ノード 16 ケース）より小さい
 - SupervisorMiscSpec のケース 1 は CountDownLatch を使う。テスト側の補助として run が用意する（G0d の 7 番目のケースと同じ扱い）
-- unbecome が既存の実装にどこまで入っているかは未確認である。run の triage で確認し、足りない分だけを作る
+- become/unbecome は本番コードに存在しない（2026-11-14 に確認）。G0e では本番コードへの実装を最初から行う
 
 ## run の後に人間が確認するコマンド
 
