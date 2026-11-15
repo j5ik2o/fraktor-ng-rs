@@ -1,5 +1,6 @@
 //! The executor that owns one shard of actors and runs their messages.
 
+use alloc::string::String;
 use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -127,6 +128,7 @@ pub(crate) struct Executor {
   deferred_replies: Vec<(ActorRef, DeferredReply)>,
   parents: Vec<ParentEntry>,
   pending_stops: Vec<ActorRef>,
+  pending_decider_failures: Vec<(ActorRef, String)>,
   pending_child_terminated: Vec<(ActorRef, ActorRef)>,
   running: Vec<ActorRef>,
   boundary_active: bool,
@@ -147,6 +149,7 @@ impl Executor {
       deferred_replies: Vec::new(),
       parents: Vec::new(),
       pending_stops: Vec::new(),
+      pending_decider_failures: Vec::new(),
       pending_child_terminated: Vec::new(),
       running: Vec::new(),
       boundary_active: false,
@@ -392,13 +395,29 @@ impl Executor {
     self.boundary_active = true;
     loop {
       self.flush_ready_child_terminated();
-      if self.pending_stops.is_empty() {
+      let applied = self.apply_pending_decider_failures();
+      if self.pending_stops.is_empty() && !applied {
         break;
       }
       self.drain_pending_stops();
     }
     self.flush_ready_child_terminated();
     self.boundary_active = false;
+  }
+
+  /// Fails the actors whose decider panicked while they were still executing.
+  ///
+  /// The deciding actor is out of the cell table during its own delivery, so its
+  /// failure waits for the outermost boundary, where the cell is back and the
+  /// parent's strategy can decide for it. Returns whether a failure was applied,
+  /// so the boundary repeats and carries out the stops or notices that applying
+  /// it recorded.
+  fn apply_pending_decider_failures(&mut self) -> bool {
+    let pending = core::mem::take(&mut self.pending_decider_failures);
+    for (supervisor, message) in &pending {
+      self.apply_supervisor_failure(supervisor, message);
+    }
+    !pending.is_empty()
   }
 
   /// Carries out the stops that the actor asked for during its delivery.
@@ -479,8 +498,9 @@ impl Executor {
           self.publish_child_failure(&self_ref, ACTOR_INITIALIZATION_CAUSE, &message);
           let strategy = self.effective_strategy(&self.cells[index]);
           let count = self.cells[index].restart_count();
-          match strategy.decide_for_child(&self_ref, count, FailureKind::Initialization) {
-            | Directive::Restart => {
+          let decision = self.decide_catching(strategy, &self_ref, count, FailureKind::Initialization);
+          match decision {
+            | Ok(Directive::Restart) => {
               self.stop_children_of(&self_ref);
               let Some(found) = self.cells.iter().position(|cell| cell.accepts(&self_ref)) else {
                 self.finish_boundary();
@@ -489,8 +509,14 @@ impl Executor {
               index = found;
               self.cells[index].record_restart_request();
             },
-            | Directive::Stop => {
+            | Ok(Directive::Stop) => {
               self.stop(&self_ref);
+              self.finish_boundary();
+              return;
+            },
+            | Err(message) => {
+              let supervisor = self.cells[index].parent();
+              self.fail_supervisor(supervisor, &self_ref, &message);
               self.finish_boundary();
               return;
             },
@@ -781,6 +807,7 @@ impl Executor {
     self.deferred_replies.clear();
     self.parents.clear();
     self.pending_stops.clear();
+    self.pending_decider_failures.clear();
     self.pending_child_terminated.clear();
     self.running.clear();
     self.boundary_active = false;
@@ -910,16 +937,87 @@ impl Executor {
     self.publish_child_failure(target, cause_name, message);
     let strategy = self.effective_strategy(&cell);
     let count = cell.restart_count();
-    match strategy.decide_for_child(target, count, FailureKind::MessageHandling) {
-      | Directive::Restart => {
+    let supervisor = cell.parent();
+    let decision = self.decide_catching(strategy, target, count, FailureKind::MessageHandling);
+    match decision {
+      | Ok(Directive::Restart) => {
         cell.record_restart_request();
         self.restart_cell(target, cell, cause_name, message);
       },
-      | Directive::Stop => {
+      | Ok(Directive::Stop) => {
         self.cells.push(cell);
         self.stop(target);
       },
+      | Err(message) => {
+        self.cells.push(cell);
+        self.fail_supervisor(supervisor, target, &message);
+      },
     }
+  }
+
+  /// Asks `strategy` for the directive for `child`, catching a decider panic.
+  ///
+  /// The decider runs outside the work the caller already wrapped, so a panic
+  /// there would unwind past the cell the caller had taken out of the table.
+  /// Catching it here returns the panic message so the caller can put its cell
+  /// back and fail the deciding actor in its turn, as Pekko's `systemInvoke`
+  /// does when the failure handling throws. A system without a catcher keeps
+  /// the existing contract: the panic unwinds as any other actor panic does.
+  fn decide_catching(
+    &self,
+    strategy: SupervisorStrategy,
+    child: &ActorRef,
+    restart_count: u32,
+    failure: FailureKind,
+  ) -> Result<Directive, String> {
+    let Some(catcher) = self.catcher.clone() else {
+      return Ok(strategy.decide_for_child(child, restart_count, failure));
+    };
+    let mut directive = None;
+    let outcome = catcher.run(&mut || {
+      directive = Some(strategy.decide_for_child(child, restart_count, failure));
+    });
+    match outcome {
+      | RunOutcome::Completed => Ok(directive.expect("a completed decider answered for its child")),
+      | RunOutcome::Failed { message } => Err(message),
+    }
+  }
+
+  /// Fails the actor that decided for a child when its decider panicked.
+  ///
+  /// The panic is the failure of the deciding actor, not of the child, so the
+  /// deciding actor goes through the same path as a panic in `receive` and its
+  /// own parent chooses `Restart` or `Stop`. A deciding actor that is still
+  /// executing has no cell in the table, so its failure waits for the outermost
+  /// boundary instead of being dropped or applied to the child. A deciding actor
+  /// without a cell, such as a function reference, cannot fail in its turn, so
+  /// the panic is reported once and the restored child stays as it is.
+  fn fail_supervisor(&mut self, supervisor: Option<ActorRef>, failed: &ActorRef, message: &str) {
+    let Some(supervisor) = supervisor else {
+      self.publish_child_failure(failed, RUNTIME_CAUSE, message);
+      return;
+    };
+    if self.running.iter().any(|running| running == &supervisor) {
+      self.pending_decider_failures.push((supervisor, message.to_string()));
+      return;
+    }
+    self.apply_supervisor_failure(&supervisor, message);
+  }
+
+  /// Applies the failure of `supervisor` under the strategy of its own parent.
+  ///
+  /// The deciding actor failed while handling a message, so a `MessageHandling`
+  /// failure reaches `apply_failure` on the same path a panic in `receive` uses.
+  /// The panic is reported here, once; the capture that saw it does not report
+  /// it again. A deciding actor that has stopped since the panic was captured
+  /// has no cell to fail, so the panic is reported once and nothing else runs.
+  fn apply_supervisor_failure(&mut self, supervisor: &ActorRef, message: &str) {
+    let Some(index) = self.cells.iter().position(|cell| cell.accepts(supervisor)) else {
+      self.publish_child_failure(supervisor, RUNTIME_CAUSE, message);
+      return;
+    };
+    let cell = self.cells.remove(index);
+    self.apply_failure(cell, supervisor, RUNTIME_CAUSE, message);
   }
 
   /// Re-creates the actor of `cell` and runs its `postRestart`, stopping it when
@@ -979,14 +1077,21 @@ impl Executor {
     let mut cell = self.cells.remove(index);
     let strategy = self.effective_strategy(&cell);
     let count = cell.restart_count();
-    match strategy.decide_for_child(recipient, count, FailureKind::Killed) {
-      | Directive::Restart => {
+    let supervisor = cell.parent();
+    let decision = self.decide_catching(strategy, recipient, count, FailureKind::Killed);
+    match decision {
+      | Ok(Directive::Restart) => {
         cell.record_restart_request();
         self.restart_cell(recipient, cell, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE);
       },
-      | Directive::Stop => {
+      | Ok(Directive::Stop) => {
         self.cells.push(cell);
         self.stop(recipient);
+      },
+      | Err(message) => {
+        self.cells.push(cell);
+        self.fail_supervisor(supervisor, recipient, &message);
+        self.finish_boundary();
       },
     }
   }

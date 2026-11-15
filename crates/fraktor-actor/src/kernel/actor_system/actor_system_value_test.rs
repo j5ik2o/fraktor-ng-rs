@@ -1557,6 +1557,344 @@ fn a_panicking_child_terminated_hook_leaves_the_parent_alive_and_logs_once() {
   assert_eq!(failures.len(), 1, "the hook failure was not logged exactly once: {events:?}");
 }
 
+/// The message every panicking decider raises, so a test can count its log.
+const DECIDER_PANIC_MESSAGE: &str = "simulated decider panic";
+
+/// Returns a strategy whose decider panics only for `failure`, so a test can
+/// make the supervisor's decision fail at one failure kind while the other
+/// kinds keep the strategy's answer.
+fn strategy_with_a_panicking_decider(
+  failure: crate::kernel::supervision::FailureKind,
+) -> crate::kernel::supervision::SupervisorStrategy {
+  crate::kernel::supervision::SupervisorStrategy::one_for_one(3).with_decider(move |_child, kind| {
+    if kind == failure {
+      panic!("{}", DECIDER_PANIC_MESSAGE);
+    }
+    crate::kernel::supervision::Directive::Restart
+  })
+}
+
+/// Returns how many decider failures the sink recorded.
+///
+/// A single decider panic must be reported once, as a `RuntimeException` whose
+/// message is the panic text, so a test counts the events with both facts
+/// instead of trusting a substring somewhere in the log.
+fn decider_failures(events: &Arc<Mutex<Vec<RecordedEvent>>>) -> usize {
+  events
+    .lock()
+    .unwrap()
+    .iter()
+    .filter(|(cause, message)| cause.as_deref() == Some("RuntimeException") && message == DECIDER_PANIC_MESSAGE)
+    .count()
+}
+
+/// Counts its own restarts and answers `ping`, so a test can tell whether the
+/// supervising parent was restarted by its parent's strategy.
+struct CountsSupervisorRestarts {
+  post_restarts: Arc<AtomicUsize>,
+}
+
+impl Actor for CountsSupervisorRestarts {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    if message.downcast_ref::<&'static str>() == Some(&"ping") {
+      context.sender().tell("pong", context.self_ref());
+    }
+  }
+
+  fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
+    self.post_restarts.fetch_add(1, Ordering::SeqCst);
+  }
+}
+
+/// Starts a supervisor child in `pre_start` with the default strategy, so the
+/// supervisor inherits this actor's strategy as a grandchild would.
+struct StartsSupervisor {
+  supervisor: Arc<Mutex<Option<ActorRef>>>,
+  post_restarts: Arc<AtomicUsize>,
+}
+
+impl Actor for StartsSupervisor {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    let post_restarts = Arc::clone(&self.post_restarts);
+    let supervisor = context
+      .actor_of(
+        Props::new(move || CountsSupervisorRestarts { post_restarts: Arc::clone(&post_restarts) }),
+        "supervisor",
+      )
+      .expect("the supervisor name must be free");
+    *self.supervisor.lock().unwrap() = Some(supervisor);
+  }
+}
+
+#[test]
+fn a_panicking_decider_on_a_message_failure_restarts_the_supervisor_and_keeps_the_child() {
+  let events = Arc::new(Mutex::new(Vec::new()));
+  let post_restarts = Arc::new(AtomicUsize::new(0));
+  let supervisor_handle = Arc::new(Mutex::new(None));
+  let replies = Arc::new(Mutex::new(Vec::new()));
+  let mut system = with_catcher("PekkoCustomSpec");
+  system.set_event_sink(Arc::new(RecordingSink { events: Arc::clone(&events) }));
+  let observer = system.function_ref("observer", {
+    let replies = Arc::clone(&replies);
+    move |_sender: &ActorRef, message: Message| {
+      if let Some(text) = message.downcast_ref::<&'static str>() {
+        replies.lock().unwrap().push(*text);
+      }
+    }
+  });
+  let _grandparent = system.actor_of(Props::new({
+    let supervisor = Arc::clone(&supervisor_handle);
+    let post_restarts = Arc::clone(&post_restarts);
+    move || StartsSupervisor { supervisor: Arc::clone(&supervisor), post_restarts: Arc::clone(&post_restarts) }
+  }));
+  let supervisor = supervisor_handle.lock().unwrap().clone().expect("the grandparent started its supervisor");
+
+  let child = system.downgrade().spawn_child(
+    &supervisor,
+    Props::new(|| CountsRestarts { post_restarts: Arc::new(AtomicUsize::new(0)) }),
+    Some("kid"),
+    strategy_with_a_panicking_decider(crate::kernel::supervision::FailureKind::MessageHandling),
+  );
+
+  child.tell("boom", child.clone());
+  let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| system.run_until_idle()));
+
+  assert!(outcome.is_ok(), "the decider panic escaped the executor");
+  assert!(!system.is_actor_terminated(&supervisor), "the supervising parent was not restarted");
+  assert_eq!(post_restarts.load(Ordering::SeqCst), 1, "the supervising parent was not restarted exactly once");
+  assert!(!system.is_actor_terminated(&child), "the failing child was stopped instead of leaving it to the supervisor");
+  assert_eq!(
+    decider_failures(&events),
+    1,
+    "the decider failure was not logged exactly once: {:?}",
+    *events.lock().unwrap()
+  );
+
+  supervisor.tell("ping", observer);
+  system.run_until_idle();
+  assert_eq!(*replies.lock().unwrap(), alloc::vec!["pong"], "the restarted supervisor did not answer");
+
+  let started_after = system.actor_of(Props::new(|| NoOp));
+  assert!(!system.is_actor_terminated(&started_after), "the executor did not start an actor after the panic");
+}
+
+/// Starts a supervisor child that inherits this actor's stopping strategy, so
+/// the supervisor's own failure is stopped by its parent's strategy.
+struct StartsStoppingSupervisor {
+  supervisor: Arc<Mutex<Option<ActorRef>>>,
+}
+
+impl Actor for StartsStoppingSupervisor {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    let supervisor = context.actor_of(Props::new(|| NoOp), "supervisor").expect("the supervisor name must be free");
+    *self.supervisor.lock().unwrap() = Some(supervisor);
+  }
+
+  fn supervisor_strategy(&self) -> crate::kernel::supervision::SupervisorStrategy {
+    crate::kernel::supervision::SupervisorStrategy::stopping_strategy()
+  }
+}
+
+#[test]
+fn a_panicking_decider_on_a_start_failure_stops_the_idle_supervisor_and_frees_its_name() {
+  let events = Arc::new(Mutex::new(Vec::new()));
+  let supervisor_handle = Arc::new(Mutex::new(None));
+  let mut system = with_catcher("PekkoCustomSpec");
+  system.set_event_sink(Arc::new(RecordingSink { events: Arc::clone(&events) }));
+  let grandparent = system.actor_of(Props::new({
+    let supervisor = Arc::clone(&supervisor_handle);
+    move || StartsStoppingSupervisor { supervisor: Arc::clone(&supervisor) }
+  }));
+  let supervisor = supervisor_handle.lock().unwrap().clone().expect("the grandparent started its supervisor");
+
+  let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    system.downgrade().spawn_child(
+      &supervisor,
+      Props::new(|| FailsStartUntil {
+        attempts: Arc::new(AtomicUsize::new(0)),
+        failures: 1,
+        received: Arc::new(Mutex::new(Vec::new())),
+      }),
+      Some("kid"),
+      strategy_with_a_panicking_decider(crate::kernel::supervision::FailureKind::Initialization),
+    )
+  }));
+  let child = match spawned {
+    | Ok(child) => child,
+    | Err(_) => panic!("the decider panic escaped the executor"),
+  };
+
+  assert!(system.is_actor_terminated(&child), "the child whose start failed is still alive");
+  assert!(
+    system.is_actor_terminated(&supervisor),
+    "the supervising parent was not stopped by the grandparent's strategy"
+  );
+  assert_eq!(
+    system.executor.borrow().parent_entry_count(),
+    1,
+    "a stopped supervisor left an entry in the parent registry"
+  );
+  assert_eq!(
+    decider_failures(&events),
+    1,
+    "the decider failure was not logged exactly once: {:?}",
+    *events.lock().unwrap()
+  );
+
+  let replacement = system.downgrade().spawn_child(
+    &grandparent,
+    Props::new(|| NoOp),
+    Some("supervisor"),
+    crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+  );
+  assert!(!system.is_actor_terminated(&replacement), "the name of the stopped supervisor was not reusable");
+
+  let started_after = system.actor_of(Props::new(|| NoOp));
+  assert!(!system.is_actor_terminated(&started_after), "the executor did not start an actor after the panic");
+}
+
+#[test]
+fn a_panicking_decider_on_a_kill_stops_the_supervisor_and_tells_the_watcher() {
+  let events = Arc::new(Mutex::new(Vec::new()));
+  let observed = Arc::new(Mutex::new(Vec::<Terminated>::new()));
+  let watched = Arc::new(Mutex::new(None));
+  let supervisor_handle = Arc::new(Mutex::new(None));
+  let mut system = with_catcher("PekkoCustomSpec");
+  system.set_event_sink(Arc::new(RecordingSink { events: Arc::clone(&events) }));
+  let _grandparent = system.actor_of(Props::new({
+    let supervisor = Arc::clone(&supervisor_handle);
+    move || StartsStoppingSupervisor { supervisor: Arc::clone(&supervisor) }
+  }));
+  let supervisor = supervisor_handle.lock().unwrap().clone().expect("the grandparent started its supervisor");
+  let watcher = system.actor_of(Props::new({
+    let observed = Arc::clone(&observed);
+    let watched = Arc::clone(&watched);
+    move || StopWatcher { observed: Arc::clone(&observed), watched: Arc::clone(&watched) }
+  }));
+  let child = system.downgrade().spawn_child(
+    &supervisor,
+    Props::new(|| NoOp),
+    Some("kid"),
+    strategy_with_a_panicking_decider(crate::kernel::supervision::FailureKind::Killed),
+  );
+  *watched.lock().unwrap() = Some(child.clone());
+  system.watch(&watcher, &child);
+
+  child.tell("Kill", watcher.clone());
+  let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| system.run_until_idle()));
+
+  assert!(outcome.is_ok(), "the decider panic escaped the executor");
+  assert!(
+    system.is_actor_terminated(&supervisor),
+    "the supervising parent was not stopped by the grandparent's strategy"
+  );
+  assert!(system.is_actor_terminated(&child), "the killed child is still alive");
+  assert_eq!(observed.lock().unwrap().len(), 1, "the watcher did not receive exactly one Terminated");
+  assert_eq!(
+    decider_failures(&events),
+    1,
+    "the decider failure was not logged exactly once: {:?}",
+    *events.lock().unwrap()
+  );
+}
+
+/// Creates the child "kid" on demand under a decider that panics when the child
+/// fails its start, and records whether a later request for the same name was
+/// refused, so the name registry can be observed after the panic.
+struct StartsKidUnderPanickingDecider {
+  restarts: Arc<AtomicUsize>,
+  started: Arc<Mutex<Vec<&'static str>>>,
+  kid: Arc<Mutex<Option<ActorRef>>>,
+}
+
+impl Actor for StartsKidUnderPanickingDecider {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    let Some(text) = message.downcast_ref::<&'static str>() else {
+      return;
+    };
+    if *text == "go" {
+      let outcome = match context.actor_of(
+        Props::new(|| FailsStartUntil {
+          attempts: Arc::new(AtomicUsize::new(0)),
+          failures: 1,
+          received: Arc::new(Mutex::new(Vec::new())),
+        }),
+        "kid",
+      ) {
+        | Ok(kid) => {
+          *self.kid.lock().unwrap() = Some(kid);
+          "spawned"
+        },
+        | Err(_) => "refused",
+      };
+      self.started.lock().unwrap().push(outcome);
+    } else if *text == "respawn" {
+      let outcome = match context.actor_of(Props::new(|| NoOp), "kid") {
+        | Ok(_) => "reused",
+        | Err(_) => "blocked",
+      };
+      self.started.lock().unwrap().push(outcome);
+    }
+  }
+
+  fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
+    self.restarts.fetch_add(1, Ordering::SeqCst);
+  }
+
+  fn supervisor_strategy(&self) -> crate::kernel::supervision::SupervisorStrategy {
+    strategy_with_a_panicking_decider(crate::kernel::supervision::FailureKind::Initialization)
+  }
+}
+
+#[test]
+fn a_panicking_decider_while_the_supervisor_runs_restarts_it_and_keeps_the_child_name() {
+  let events = Arc::new(Mutex::new(Vec::new()));
+  let restarts = Arc::new(AtomicUsize::new(0));
+  let started = Arc::new(Mutex::new(Vec::new()));
+  let kid_handle = Arc::new(Mutex::new(None));
+  let mut system = with_catcher("PekkoCustomSpec");
+  system.set_event_sink(Arc::new(RecordingSink { events: Arc::clone(&events) }));
+  let parent = system.actor_of(Props::new({
+    let restarts = Arc::clone(&restarts);
+    let started = Arc::clone(&started);
+    let kid = Arc::clone(&kid_handle);
+    move || StartsKidUnderPanickingDecider {
+      restarts: Arc::clone(&restarts),
+      started: Arc::clone(&started),
+      kid: Arc::clone(&kid),
+    }
+  }));
+
+  parent.tell("go", parent.clone());
+  let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| system.run_until_idle()));
+  assert!(outcome.is_ok(), "the decider panic escaped the executor");
+
+  parent.tell("respawn", parent.clone());
+  system.run_until_idle();
+
+  assert_eq!(
+    *started.lock().unwrap(),
+    alloc::vec!["spawned", "blocked"],
+    "the child name was not kept after the supervising parent was restarted"
+  );
+  assert_eq!(restarts.load(Ordering::SeqCst), 1, "the supervising parent was not restarted exactly once");
+  let kid = kid_handle.lock().unwrap().clone().expect("the child was started before the decider panicked");
+  assert!(
+    !system.is_actor_terminated(&kid),
+    "the child whose start failed was stopped instead of leaving it to the supervisor"
+  );
+  assert_eq!(
+    decider_failures(&events),
+    1,
+    "the decider failure was not logged exactly once: {:?}",
+    *events.lock().unwrap()
+  );
+}
+
 /// Stops itself and then starts a child in the same delivery.
 struct StopsThenStartsChild {
   worker: Arc<Mutex<Option<ActorRef>>>,
