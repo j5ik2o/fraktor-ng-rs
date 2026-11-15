@@ -4598,7 +4598,7 @@ nodes:
     module: actor-tests
     class: SupervisorMiscSpec
     test_cases_approx: 6
-  status: red
+  status: green
   triage:
     kind: pending
     reason: null
