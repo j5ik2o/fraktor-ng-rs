@@ -26,6 +26,7 @@ pub(crate) struct ActorCell {
   parent: Option<ActorRef>,
   props: Props,
   strategy: SupervisorStrategy,
+  strategy_inherited: bool,
   restart_count: u32,
   post_stop_suppressed: bool,
 }
@@ -38,6 +39,7 @@ impl ActorCell {
     parent: Option<ActorRef>,
     props: Props,
     strategy: SupervisorStrategy,
+    strategy_inherited: bool,
   ) -> Self {
     Self {
       behavior: None,
@@ -46,6 +48,7 @@ impl ActorCell {
       parent,
       props,
       strategy,
+      strategy_inherited,
       restart_count: 0,
       post_stop_suppressed: false,
     }
@@ -78,6 +81,24 @@ impl ActorCell {
   /// Returns the strategy this actor applies to its children.
   pub(crate) fn strategy(&self) -> &SupervisorStrategy {
     &self.strategy
+  }
+
+  /// Returns whether this actor's strategy is inherited from its parent.
+  ///
+  /// A named child started through `ActorContext::actorOf` inherits it, so the
+  /// supervisor decision reads the parent's current strategy instead of a copy
+  /// taken at creation. A child started under an explicit strategy keeps the
+  /// one its caller chose.
+  pub(crate) fn strategy_inherited(&self) -> bool {
+    self.strategy_inherited
+  }
+
+  /// Returns whether the recipe has built the behaviour for this cell.
+  ///
+  /// A cell that never finishes `pre_start` has no behaviour, and Pekko does not
+  /// run `handleChildTerminated` for such a parent.
+  pub(crate) fn is_created(&self) -> bool {
+    self.behavior.is_some()
   }
 
   /// Returns the number of restart requests this actor has already made.

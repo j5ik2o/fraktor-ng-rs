@@ -26,6 +26,10 @@ use crate::kernel::supervision::FailureKind;
 use crate::kernel::supervision::RunOutcome;
 use crate::kernel::supervision::SupervisorStrategy;
 
+#[cfg(test)]
+#[path = "executor_value_test.rs"]
+mod tests;
+
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 static NEXT_SPAWN: AtomicU64 = AtomicU64::new(0);
 
@@ -123,6 +127,9 @@ pub(crate) struct Executor {
   deferred_replies: Vec<(ActorRef, DeferredReply)>,
   parents: Vec<ParentEntry>,
   pending_stops: Vec<ActorRef>,
+  pending_child_terminated: Vec<(ActorRef, ActorRef)>,
+  running: Vec<ActorRef>,
+  boundary_active: bool,
   hook_child_creation_refused: bool,
   terminated: bool,
 }
@@ -140,6 +147,9 @@ impl Executor {
       deferred_replies: Vec::new(),
       parents: Vec::new(),
       pending_stops: Vec::new(),
+      pending_child_terminated: Vec::new(),
+      running: Vec::new(),
+      boundary_active: false,
       hook_child_creation_refused: false,
       terminated: false,
     }
@@ -175,14 +185,15 @@ impl Executor {
     self.assert_running();
     let name = alloc::format!("${}", next_spawn_name());
     let path = self.root.with_child("user").with_child(&name);
-    self.spawn_at(props, path, None, SupervisorStrategy::default_strategy())
+    self.spawn_at(props, path, None, SupervisorStrategy::default_strategy(), false)
   }
 
   /// Starts an actor below `parent`, using `name` when one is given.
   ///
   /// Mirrors `ActorContext.actorOf`: the child's path is the parent's path
   /// with the name appended, and a name drawn from a shared counter is used
-  /// otherwise.
+  /// otherwise. The `strategy` is the caller's own choice and stays with the
+  /// child, as `actorOf(props)` under an explicitly chosen strategy does.
   pub(crate) fn spawn_child(
     &mut self,
     parent: &ActorRef,
@@ -190,13 +201,25 @@ impl Executor {
     name: Option<&str>,
     strategy: SupervisorStrategy,
   ) -> ActorRef {
+    self.spawn_child_with_origin(parent, props, name, strategy, false)
+  }
+
+  /// Starts a child, recording whether its strategy is inherited from `parent`.
+  fn spawn_child_with_origin(
+    &mut self,
+    parent: &ActorRef,
+    props: Props,
+    name: Option<&str>,
+    strategy: SupervisorStrategy,
+    strategy_inherited: bool,
+  ) -> ActorRef {
     self.assert_running();
     let label = match name {
       | Some(name) => name.to_string(),
       | None => alloc::format!("${}", next_spawn_name()),
     };
     let path = parent.path().with_child(&label);
-    self.spawn_at(props, path, Some(parent.clone()), strategy)
+    self.spawn_at(props, path, Some(parent.clone()), strategy, strategy_inherited)
   }
 
   fn spawn_at(
@@ -205,9 +228,11 @@ impl Executor {
     path: ActorPath,
     parent: Option<ActorRef>,
     strategy: SupervisorStrategy,
+    strategy_inherited: bool,
   ) -> ActorRef {
+    self.assert_running();
     let self_ref = next_actor_ref(path, self.queue.boundary().clone());
-    let cell = ActorCell::pending(self_ref.clone(), parent, props, strategy);
+    let cell = ActorCell::pending(self_ref.clone(), parent, props, strategy, strategy_inherited);
     self.cells.push(cell);
     let index = self.cells.len() - 1;
     self.create_initial(index);
@@ -243,7 +268,7 @@ impl Executor {
     let Some(strategy) = self.parents.iter().find(|entry| &entry.parent == parent).map(|entry| entry.strategy) else {
       return Err(InvalidActorNameException::terminating());
     };
-    self.spawn_named_child_under(parent, props, name, strategy)
+    self.spawn_named_child_under(parent, props, name, strategy, true)
   }
 
   /// Starts a named child of `parent` under `strategy`.
@@ -253,7 +278,8 @@ impl Executor {
   /// The name goes through the same registry as
   /// [`Executor::spawn_named_child`], so a name a live child uses is refused
   /// here too; a parent that has no registry yet gets one for its name
-  /// bookkeeping.
+  /// bookkeeping. A parent that has already stopped keeps no registry, so a
+  /// request against it is refused as terminating instead of reviving it.
   pub(crate) fn spawn_named_child_with_strategy(
     &mut self,
     parent: &ActorRef,
@@ -262,9 +288,12 @@ impl Executor {
     strategy: SupervisorStrategy,
   ) -> Result<ActorRef, InvalidActorNameException> {
     if self.parents.iter().all(|entry| &entry.parent != parent) {
+      if !self.is_live(parent) {
+        return Err(InvalidActorNameException::terminating());
+      }
       self.parents.push(ParentEntry { parent: parent.clone(), strategy, children: Vec::new(), stopping: false });
     }
-    self.spawn_named_child_under(parent, props, name, strategy)
+    self.spawn_named_child_under(parent, props, name, strategy, false)
   }
 
   /// Starts a named child once the checks shared by every named entry pass.
@@ -279,6 +308,7 @@ impl Executor {
     props: Props,
     name: &str,
     strategy: SupervisorStrategy,
+    strategy_inherited: bool,
   ) -> Result<ActorRef, InvalidActorNameException> {
     let Some(entry_index) = self.parents.iter().position(|entry| &entry.parent == parent) else {
       return Err(InvalidActorNameException::terminating());
@@ -291,7 +321,7 @@ impl Executor {
       return Err(InvalidActorNameException::name_taken(name));
     }
     let label = name.to_string();
-    let child = self.spawn_child(parent, props, Some(&label), strategy);
+    let child = self.spawn_child_with_origin(parent, props, Some(&label), strategy, strategy_inherited);
     if self.cells.iter().any(|cell| cell.accepts(&child)) {
       if let Some(entry) = self.parents.iter_mut().find(|entry| &entry.parent == parent) {
         entry.children.push((label, child.clone()));
@@ -328,16 +358,67 @@ impl Executor {
     self.pending_stops.push(target);
   }
 
+  /// Marks the start of one actor execution frame.
+  fn enter_frame(&mut self, target: &ActorRef) {
+    self.running.push(target.clone());
+  }
+
+  /// Marks the end of one actor execution frame.
+  ///
+  /// The frame is only popped here; the stops and child-terminated notices it
+  /// left behind run once the outermost frame has returned, because the actor
+  /// that asked for them is out of the cell table until then.
+  fn exit_frame(&mut self) {
+    self.running.pop();
+  }
+
+  /// Carries out the work deferred until the outermost actor frame returned.
+  ///
+  /// Pekko runs `context.stop` and the child-terminated hook after the actor
+  /// that asked for them has returned to its cell. A nested frame, such as a
+  /// child that an actor starts from `pre_start`, must not consume the requests
+  /// of the frames around it, so only the outermost boundary drains them.
+  fn finish_boundary(&mut self) {
+    if !self.running.is_empty() || self.boundary_active {
+      return;
+    }
+    self.boundary_active = true;
+    loop {
+      self.flush_ready_child_terminated();
+      if self.pending_stops.is_empty() {
+        break;
+      }
+      self.drain_pending_stops();
+    }
+    self.flush_ready_child_terminated();
+    self.boundary_active = false;
+  }
+
   /// Carries out the stops that the actor asked for during its delivery.
   ///
   /// Pekko's `context.stop` is asynchronous, so the target is still alive for
   /// the rest of the delivery; the executor runs the stops only after the
-  /// actor has returned and its cell is back in the table, which keeps the
-  /// child alive while the actor still handles its message.
+  /// outermost frame has returned and the actor's cell is back in the table,
+  /// which keeps the child alive while the actor still handles its message.
   fn drain_pending_stops(&mut self) {
     let stops = core::mem::take(&mut self.pending_stops);
     for target in stops {
       self.stop(&target);
+    }
+  }
+
+  /// Runs a child-terminated notice whose parent is no longer executing.
+  fn flush_ready_child_terminated(&mut self) {
+    loop {
+      let Some(index) = self
+        .pending_child_terminated
+        .iter()
+        .position(|(parent, _)| !self.running.iter().any(|running| running == parent))
+      else {
+        return;
+      };
+      let (parent, child) = self.pending_child_terminated.remove(index);
+      self.execute_child_terminated_hook(&parent, &child);
     }
   }
 
@@ -348,13 +429,16 @@ impl Executor {
   /// Mirrors Pekko's spawn path: a `preStart` that throws is wrapped in an
   /// `ActorInitializationException`, the parent decides whether to restart, and
   /// a child that stops because it never started runs no `postStop` because the
-  /// actor was never created.
+  /// actor was never created. Pekko's `faultCreate` stops the children the
+  /// failed attempt left before it retries, so a child started by a failing
+  /// `pre_start` does not keep its name into the next attempt.
   fn create_initial(&mut self, index: usize) {
     let self_ref = self.cells[index].self_ref();
     loop {
       let catcher = self.catcher.clone();
       let mut cell = self.cells.remove(index);
       let mut stack = cell.take_stack();
+      self.enter_frame(&self_ref);
       let outcome = {
         let mut context = ActorContext::new(self_ref.clone(), self_ref.clone(), self, &mut stack);
         match catcher {
@@ -365,11 +449,12 @@ impl Executor {
           },
         }
       };
+      self.exit_frame();
       match outcome {
         | RunOutcome::Completed => {
           cell.restore_stack(stack);
           self.cells.insert(index, cell);
-          self.drain_pending_stops();
+          self.finish_boundary();
           return;
         },
         | RunOutcome::Failed { message } => {
@@ -379,13 +464,16 @@ impl Executor {
           // `take_stack` put in its place.
           self.cells.insert(index, cell);
           self.publish_child_failure(&self_ref, ACTOR_INITIALIZATION_CAUSE, &message);
-          let strategy = *self.cells[index].strategy();
+          let strategy = self.effective_strategy(&self.cells[index]);
           let count = self.cells[index].restart_count();
           match strategy.decide_for_child(&self_ref, count, FailureKind::Initialization) {
-            | Directive::Restart => self.cells[index].record_restart_request(),
+            | Directive::Restart => {
+              self.stop_children_of(&self_ref);
+              self.cells[index].record_restart_request();
+            },
             | Directive::Stop => {
-              self.stop_as_never_started(&self_ref);
-              self.drain_pending_stops();
+              self.stop(&self_ref);
+              self.finish_boundary();
               return;
             },
           }
@@ -394,14 +482,32 @@ impl Executor {
     }
   }
 
-  /// Stops an actor that never finished starting, without running `postStop`.
-  fn stop_as_never_started(&mut self, target: &ActorRef) {
-    if let Some(index) = self.cells.iter().position(|cell| cell.accepts(target)) {
-      self.cells.remove(index);
+  /// Stops every child of `parent`, letting `stop` carry out the usual order.
+  fn stop_children_of(&mut self, parent: &ActorRef) {
+    let children: Vec<ActorRef> =
+      self.cells.iter().filter(|cell| cell.is_child_of(parent)).map(|cell| cell.self_ref()).collect();
+    for child in children {
+      self.stop(&child);
     }
-    self.forget_child(target);
-    self.notify_watchers(target, true, false);
-    self.flush_deferred_replies(target);
+  }
+
+  /// Returns the strategy that decides for `cell`.
+  ///
+  /// A child started through `ActorContext::actorOf` inherits the strategy of
+  /// the parent as it stands when the child fails, so a restart of the parent
+  /// with a new `supervisor_strategy` also governs the children it already
+  /// holds. A child that was started under an explicit strategy keeps it, and a
+  /// child whose parent has no registry falls back to the strategy recorded
+  /// when it was created.
+  fn effective_strategy(&self, cell: &ActorCell) -> SupervisorStrategy {
+    if cell.strategy_inherited() {
+      if let Some(parent) = cell.parent() {
+        if let Some(entry) = self.parents.iter().find(|entry| entry.parent == parent) {
+          return entry.strategy;
+        }
+      }
+    }
+    *cell.strategy()
   }
 
   /// Stops the actor or function reference `target`, telling every watcher that
@@ -419,19 +525,19 @@ impl Executor {
   /// keeps its handler from running again, and removes it from the list that
   /// `watch` treats as live. Its children, if it was used as a parent, stop
   /// first under the same rule as a cell's children.
+  ///
+  /// The stopped actor keeps no entry in the parent registry, so a later named
+  /// request against it is refused as terminating instead of reviving a stale
+  /// registry.
   pub(crate) fn stop(&mut self, target: &ActorRef) {
     let is_cell = self.cells.iter().any(|cell| cell.accepts(target));
     let is_function_ref = self.function_refs.contains(target);
     if !is_cell && !is_function_ref {
       return;
     }
-    let was_stopping = self.mark_stopping(target);
-    let children: Vec<ActorRef> =
-      self.cells.iter().filter(|cell| cell.is_child_of(target)).map(|cell| cell.self_ref()).collect();
+    self.mark_stopping(target);
     let parent_of_target = self.cells.iter().find(|cell| cell.accepts(target)).and_then(|cell| cell.parent());
-    for child in children {
-      self.stop(&child);
-    }
+    self.stop_children_of(target);
     if let Some(index) = self.function_refs.iter().position(|reference| reference == target) {
       let reference = self.function_refs.remove(index);
       reference.boundary().close();
@@ -448,24 +554,13 @@ impl Executor {
     if let Some(parent) = parent_of_target {
       self.run_child_terminated_hook(&parent, target);
     }
-    if was_stopping {
-      self.clear_stopping(target);
-    }
+    self.parents.retain(|entry| &entry.parent != target);
   }
 
-  /// Marks `target` as stopping in the parent registry and returns whether it
-  /// was already stopping.
-  fn mark_stopping(&mut self, target: &ActorRef) -> bool {
-    match self.parents.iter_mut().find(|entry| &entry.parent == target) {
-      | Some(entry) => !core::mem::replace(&mut entry.stopping, true),
-      | None => false,
-    }
-  }
-
-  /// Clears the stopping mark of `target` in the parent registry.
-  fn clear_stopping(&mut self, target: &ActorRef) {
+  /// Marks `target` as stopping in the parent registry.
+  fn mark_stopping(&mut self, target: &ActorRef) {
     if let Some(entry) = self.parents.iter_mut().find(|entry| &entry.parent == target) {
-      entry.stopping = false;
+      entry.stopping = true;
     }
   }
 
@@ -484,7 +579,31 @@ impl Executor {
   /// the parent is terminating is refused; the executor then logs the failure
   /// once as `IllegalStateException("handleChildTerminated failed")`, as Pekko
   /// does when the hook throws.
+  ///
+  /// A parent that is still executing is out of the cell table, so its notice
+  /// waits until the outermost frame returns instead of being dropped.
   fn run_child_terminated_hook(&mut self, parent: &ActorRef, child: &ActorRef) {
+    let Some(entry) = self.parents.iter().find(|entry| &entry.parent == parent) else {
+      return;
+    };
+    if !entry.strategy.has_child_terminated() {
+      return;
+    }
+    if self.running.iter().any(|running| running == parent) {
+      self.pending_child_terminated.push((parent.clone(), child.clone()));
+      return;
+    }
+    self.execute_child_terminated_hook(parent, child);
+  }
+
+  /// Runs `parent`'s child-terminated hook, restoring the parent cell whatever
+  /// the hook does.
+  ///
+  /// A hook that throws is reported once as
+  /// `IllegalStateException("handleChildTerminated failed")`, and the stop that
+  /// triggered it still finishes. The hook does not run for a parent that never
+  /// finished starting, matching Pekko's `if (actor != null)` guard.
+  fn execute_child_terminated_hook(&mut self, parent: &ActorRef, child: &ActorRef) {
     let Some(entry) = self.parents.iter().find(|entry| &entry.parent == parent) else {
       return;
     };
@@ -497,19 +616,32 @@ impl Executor {
     let Some(index) = self.cells.iter().position(|cell| cell.accepts(parent)) else {
       return;
     };
+    if !self.cells[index].is_created() {
+      return;
+    }
     let mut cell = self.cells.remove(index);
     let mut stack = cell.take_stack();
     self.hook_child_creation_refused = false;
-    {
+    self.enter_frame(parent);
+    let catcher = self.catcher.clone();
+    let outcome = {
       let mut context = ActorContext::new(parent.clone(), parent.clone(), self, &mut stack);
-      strategy.handle_child_terminated(&mut context, child, &siblings);
-    }
+      match catcher {
+        | Some(catcher) => catcher.run(&mut || strategy.handle_child_terminated(&mut context, child, &siblings)),
+        | None => {
+          strategy.handle_child_terminated(&mut context, child, &siblings);
+          RunOutcome::Completed
+        },
+      }
+    };
+    self.exit_frame();
     cell.restore_stack(stack);
     self.cells.insert(index, cell);
-    if core::mem::replace(&mut self.hook_child_creation_refused, false) {
+    let refused = core::mem::replace(&mut self.hook_child_creation_refused, false);
+    if matches!(outcome, RunOutcome::Failed { .. }) || refused {
       self.publish_child_failure(parent, HANDLE_CHILD_TERMINATED_FAILED_CAUSE, HANDLE_CHILD_TERMINATED_FAILED_MESSAGE);
     }
-    self.drain_pending_stops();
+    self.finish_boundary();
   }
 
   /// Runs `postStop` on the behaviour of `index`, publishing an error when it
@@ -631,6 +763,9 @@ impl Executor {
     self.deferred_replies.clear();
     self.parents.clear();
     self.pending_stops.clear();
+    self.pending_child_terminated.clear();
+    self.running.clear();
+    self.boundary_active = false;
     while self.queue.boundary().poll().is_some() {}
   }
 
@@ -662,8 +797,15 @@ impl Executor {
   }
 
   /// Returns whether `target` can still be watched for its end.
+  ///
+  /// The cell table does not hold the actor that is currently executing it, so
+  /// a frame that is running counts as live as well; otherwise an actor would
+  /// see itself as terminated from inside `receive`, `pre_start`,
+  /// `post_restart`, or a child-terminated hook.
   fn is_live(&self, target: &ActorRef) -> bool {
-    self.cells.iter().any(|cell| cell.accepts(target)) || self.function_refs.contains(target)
+    self.cells.iter().any(|cell| cell.accepts(target))
+      || self.function_refs.contains(target)
+      || self.running.iter().any(|running| running == target)
   }
 
   /// Sends `message` to `target`, naming `sender` as the sender of the
@@ -707,6 +849,7 @@ impl Executor {
     let mut stack = cell.take_stack();
     let delivered = message.clone();
     let catcher = self.catcher.clone();
+    self.enter_frame(&recipient);
     let outcome = {
       let mut context = ActorContext::new(recipient.clone(), sender, self, &mut stack);
       match catcher {
@@ -717,6 +860,7 @@ impl Executor {
         },
       }
     };
+    self.exit_frame();
     cell.restore_stack(stack);
     match outcome {
       | RunOutcome::Completed => {
@@ -724,7 +868,6 @@ impl Executor {
         if self.deferred_stop(&recipient) {
           self.stop(&recipient);
         }
-        self.drain_pending_stops();
       },
       | RunOutcome::Failed { message } => {
         if self.deferred_stop(&recipient) {
@@ -733,9 +876,9 @@ impl Executor {
         } else {
           self.apply_failure(cell, &recipient, RUNTIME_CAUSE, &message);
         }
-        self.drain_pending_stops();
       },
     }
+    self.finish_boundary();
   }
 
   /// Returns whether the actor asked to stop after the reply it registered.
@@ -747,7 +890,7 @@ impl Executor {
   /// carries out the requests the actor recorded before it failed.
   fn apply_failure(&mut self, mut cell: ActorCell, target: &ActorRef, cause_name: &str, message: &str) {
     self.publish_child_failure(target, cause_name, message);
-    let strategy = *cell.strategy();
+    let strategy = self.effective_strategy(&cell);
     let count = cell.restart_count();
     match strategy.decide_for_child(target, count, FailureKind::MessageHandling) {
       | Directive::Restart => {
@@ -785,6 +928,7 @@ impl Executor {
     }
     let catcher = self.catcher.clone();
     let mut stack = BehaviorStack::new();
+    self.enter_frame(target);
     let restarted = {
       let mut context = ActorContext::new(target.clone(), target.clone(), self, &mut stack);
       match catcher {
@@ -795,6 +939,7 @@ impl Executor {
         },
       }
     };
+    self.exit_frame();
     cell.restore_stack(stack);
     match restarted {
       | RunOutcome::Completed => self.cells.push(cell),
@@ -805,7 +950,7 @@ impl Executor {
         self.stop(target);
       },
     }
-    self.drain_pending_stops();
+    self.finish_boundary();
   }
 
   /// Handles a `Kill`: the instance fails with `ActorKilledException` and the
@@ -814,7 +959,7 @@ impl Executor {
   fn handle_kill(&mut self, index: usize, recipient: &ActorRef) {
     self.publish_child_failure(recipient, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE);
     let mut cell = self.cells.remove(index);
-    let strategy = *cell.strategy();
+    let strategy = self.effective_strategy(&cell);
     let count = cell.restart_count();
     match strategy.decide_for_child(recipient, count, FailureKind::Killed) {
       | Directive::Restart => {

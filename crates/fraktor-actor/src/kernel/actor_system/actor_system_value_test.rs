@@ -1139,3 +1139,567 @@ fn a_stop_requested_before_a_failure_still_runs() {
   assert!(outcome.is_ok(), "the failure escaped the catcher");
   assert!(system.is_actor_terminated(&victim), "the stop requested before the failure was lost");
 }
+
+/// One recorded log event: its cause name and its message.
+type RecordedEvent = (Option<alloc::string::String>, alloc::string::String);
+
+/// Records the log events the executor publishes, so a test can count the
+/// failures of a child-terminated hook.
+struct RecordingSink {
+  events: Arc<Mutex<Vec<RecordedEvent>>>,
+}
+
+impl crate::kernel::actor::Logging::EventSink for RecordingSink {
+  fn publish(&self, event: &dyn crate::kernel::actor::Logging::LogEvent) {
+    let cause = event.cause_name().map(alloc::string::String::from);
+    self.events.lock().unwrap().push((cause, alloc::string::String::from(event.message())));
+  }
+
+  fn into_any(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync> {
+    self
+  }
+}
+
+fn with_catcher(name: &str) -> ActorSystem {
+  let boundary: Arc<dyn ShardBoundary> = Arc::new(QueueBoundary::new());
+  ActorSystem::with_failure_catcher(name, boundary, Arc::new(crate::adaptor::UnwindCatcher))
+}
+
+/// Creates a grandchild named "grand" and then fails its start, so the stop
+/// path has to clean up the child the failed attempt left behind.
+struct StartsGrandThenFails {
+  grand: Arc<Mutex<Option<ActorRef>>>,
+  post_stops: Arc<AtomicUsize>,
+}
+
+impl Actor for StartsGrandThenFails {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    let grand = context.actor_of(Props::new(|| NoOp), "grand").expect("the grandchild name must be free");
+    *self.grand.lock().unwrap() = Some(grand);
+    panic!("simulated failure of preStart");
+  }
+
+  fn post_stop(&mut self) {
+    self.post_stops.fetch_add(1, Ordering::SeqCst);
+  }
+}
+
+/// Starts the failing child, then reuses its name once it has stopped.
+struct StartsAFailingChild {
+  hooks: Arc<AtomicUsize>,
+  grand: Arc<Mutex<Option<ActorRef>>>,
+  post_stops: Arc<AtomicUsize>,
+  results: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl Actor for StartsAFailingChild {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    let Some(text) = message.downcast_ref::<&'static str>() else {
+      return;
+    };
+    if *text == "spawn" {
+      let grand = Arc::clone(&self.grand);
+      let post_stops = Arc::clone(&self.post_stops);
+      let created = context.actor_of(
+        Props::new(move || StartsGrandThenFails { grand: Arc::clone(&grand), post_stops: Arc::clone(&post_stops) }),
+        "boom",
+      );
+      self.results.lock().unwrap().push(if created.is_ok() { "spawned" } else { "refused" });
+    } else if *text == "respawn" {
+      match context.actor_of(Props::new(|| NoOp), "boom") {
+        | Ok(kid) if !context.is_terminated(&kid) => self.results.lock().unwrap().push("reused-live"),
+        | Ok(_) => self.results.lock().unwrap().push("reused-dead"),
+        | Err(_) => self.results.lock().unwrap().push("blocked"),
+      }
+    }
+  }
+
+  fn supervisor_strategy(&self) -> crate::kernel::supervision::SupervisorStrategy {
+    let hooks = Arc::clone(&self.hooks);
+    crate::kernel::supervision::SupervisorStrategy::one_for_one(3).with_child_terminated(
+      move |_context, _child, _siblings| {
+        hooks.fetch_add(1, Ordering::SeqCst);
+      },
+    )
+  }
+}
+
+#[test]
+fn a_child_that_fails_its_start_stops_its_children_frees_its_name_and_runs_the_parent_hook() {
+  let hooks = Arc::new(AtomicUsize::new(0));
+  let grand = Arc::new(Mutex::new(None));
+  let post_stops = Arc::new(AtomicUsize::new(0));
+  let results = Arc::new(Mutex::new(Vec::new()));
+  let mut system = with_catcher("PekkoCustomSpec");
+  let parent = system.actor_of(Props::new({
+    let hooks = Arc::clone(&hooks);
+    let grand = Arc::clone(&grand);
+    let post_stops = Arc::clone(&post_stops);
+    let results = Arc::clone(&results);
+    move || StartsAFailingChild {
+      hooks: Arc::clone(&hooks),
+      grand: Arc::clone(&grand),
+      post_stops: Arc::clone(&post_stops),
+      results: Arc::clone(&results),
+    }
+  }));
+
+  parent.tell("spawn", parent.clone());
+  system.run_until_idle();
+
+  assert_eq!(*results.lock().unwrap(), alloc::vec!["spawned"]);
+  let grand = grand.lock().unwrap().clone().expect("the failing start created a grandchild");
+  assert!(system.is_actor_terminated(&grand), "the grandchild of the failed start is still alive");
+  assert_eq!(hooks.load(Ordering::SeqCst), 1, "the parent hook did not run once for the stopped child");
+  assert_eq!(post_stops.load(Ordering::SeqCst), 0, "a never-started instance ran post_stop");
+
+  parent.tell("respawn", parent.clone());
+  system.run_until_idle();
+  assert_eq!(
+    *results.lock().unwrap(),
+    alloc::vec!["spawned", "reused-live"],
+    "the name of the stopped child was not reusable"
+  );
+}
+
+/// Starts a named worker on every start attempt and fails the first one.
+struct StartsWorkerThenFailsOnce {
+  attempts: Arc<AtomicUsize>,
+  results: Arc<Mutex<Vec<&'static str>>>,
+  workers: Arc<Mutex<Vec<ActorRef>>>,
+}
+
+impl Actor for StartsWorkerThenFailsOnce {
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+    let worker = context.actor_of(Props::new(|| NoOp), "worker");
+    self.results.lock().unwrap().push(if worker.is_ok() { "worker-spawned" } else { "worker-refused" });
+    if let Ok(worker) = worker {
+      self.workers.lock().unwrap().push(worker);
+    }
+    if attempt == 1 {
+      panic!("simulated initialization failure");
+    }
+  }
+
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+}
+
+/// Starts the worker actor above on demand under a strategy that retries a
+/// failed start.
+struct SpawnsRestartingChild {
+  attempts: Arc<AtomicUsize>,
+  results: Arc<Mutex<Vec<&'static str>>>,
+  workers: Arc<Mutex<Vec<ActorRef>>>,
+}
+
+impl Actor for SpawnsRestartingChild {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    if message.downcast_ref::<&'static str>() != Some(&"start") {
+      return;
+    }
+    let attempts = Arc::clone(&self.attempts);
+    let results = Arc::clone(&self.results);
+    let workers = Arc::clone(&self.workers);
+    let started = context.actor_of(
+      Props::new(move || StartsWorkerThenFailsOnce {
+        attempts: Arc::clone(&attempts),
+        results: Arc::clone(&results),
+        workers: Arc::clone(&workers),
+      }),
+      "restarting",
+    );
+    self.results.lock().unwrap().push(if started.is_ok() { "started" } else { "refused" });
+  }
+
+  fn supervisor_strategy(&self) -> crate::kernel::supervision::SupervisorStrategy {
+    crate::kernel::supervision::SupervisorStrategy::one_for_one_restarting_initialization_failures(3)
+  }
+}
+
+#[test]
+fn a_retried_start_does_not_keep_the_children_of_the_failed_attempt() {
+  let attempts = Arc::new(AtomicUsize::new(0));
+  let results = Arc::new(Mutex::new(Vec::new()));
+  let workers = Arc::new(Mutex::new(Vec::new()));
+  let mut system = with_catcher("PekkoCustomSpec");
+  let parent = system.actor_of(Props::new({
+    let attempts = Arc::clone(&attempts);
+    let results = Arc::clone(&results);
+    let workers = Arc::clone(&workers);
+    move || SpawnsRestartingChild {
+      attempts: Arc::clone(&attempts),
+      results: Arc::clone(&results),
+      workers: Arc::clone(&workers),
+    }
+  }));
+
+  parent.tell("start", parent.clone());
+  system.run_until_idle();
+
+  assert_eq!(attempts.load(Ordering::SeqCst), 2, "the failed start was not retried exactly once");
+  assert_eq!(
+    *results.lock().unwrap(),
+    alloc::vec!["worker-spawned", "worker-spawned", "started"],
+    "the retried start did not reuse the name its first attempt took"
+  );
+  let workers = workers.lock().unwrap();
+  assert_eq!(workers.len(), 2, "each attempt should have started its own worker");
+  assert!(system.is_actor_terminated(&workers[0]), "the worker of the failed attempt survived the retry");
+  assert!(!system.is_actor_terminated(&workers[1]), "the worker of the retried attempt is not alive");
+}
+
+/// Checks its own liveness from every hook it runs.
+struct ReportsItsOwnLiveness {
+  seen: Arc<Mutex<Vec<(&'static str, bool)>>>,
+  parent: Option<ActorRef>,
+}
+
+impl Actor for ReportsItsOwnLiveness {
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    let me = context.self_ref();
+    self.seen.lock().unwrap().push(("pre_start", context.is_terminated(&me)));
+    if let Some(parent) = self.parent.clone() {
+      let terminated = context.is_terminated(&parent);
+      self.seen.lock().unwrap().push(("child_pre_start_parent", terminated));
+    }
+  }
+
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    let me = context.self_ref();
+    self.seen.lock().unwrap().push(("receive", context.is_terminated(&me)));
+    if message.downcast_ref::<&'static str>() == Some(&"boom") {
+      panic!("simulated failure");
+    }
+  }
+
+  fn post_restart(&mut self, context: &mut ActorContext<'_>) {
+    let me = context.self_ref();
+    self.seen.lock().unwrap().push(("post_restart", context.is_terminated(&me)));
+  }
+}
+
+struct StartsLiveChild {
+  seen: Arc<Mutex<Vec<(&'static str, bool)>>>,
+}
+
+impl Actor for StartsLiveChild {
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    let me = context.self_ref();
+    self.seen.lock().unwrap().push(("pre_start", context.is_terminated(&me)));
+    let seen = Arc::clone(&self.seen);
+    let parent = me.clone();
+    let _ = context.actor_of_with_strategy(
+      Props::new(move || ReportsItsOwnLiveness { seen: Arc::clone(&seen), parent: Some(parent.clone()) }),
+      crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+    );
+  }
+
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    let me = context.self_ref();
+    self.seen.lock().unwrap().push(("receive", context.is_terminated(&me)));
+    if message.downcast_ref::<&'static str>() == Some(&"boom") {
+      panic!("simulated failure");
+    }
+  }
+
+  fn post_restart(&mut self, context: &mut ActorContext<'_>) {
+    let me = context.self_ref();
+    self.seen.lock().unwrap().push(("post_restart", context.is_terminated(&me)));
+  }
+}
+
+#[test]
+fn an_actor_is_not_terminated_while_it_runs() {
+  let seen = Arc::new(Mutex::new(Vec::new()));
+  let mut system = with_catcher("PekkoCustomSpec");
+  let parent = system.actor_of(Props::new({
+    let seen = Arc::clone(&seen);
+    move || StartsLiveChild { seen: Arc::clone(&seen) }
+  }));
+
+  parent.tell("check", parent.clone());
+  parent.tell("boom", parent.clone());
+  system.run_until_idle();
+
+  let seen = seen.lock().unwrap();
+  for label in ["pre_start", "child_pre_start_parent", "receive", "post_restart"] {
+    assert!(seen.iter().any(|(name, _)| *name == label), "the {label} check did not run");
+  }
+  for (label, terminated) in seen.iter() {
+    assert!(!*terminated, "the actor was reported terminated inside {label}");
+  }
+}
+
+/// Stops itself from `pre_start`, so the parent's hook must wait until the
+/// parent frame has finished.
+struct StopsItselfInPreStart;
+
+impl Actor for StopsItselfInPreStart {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    let me = context.self_ref();
+    context.stop(&me);
+  }
+}
+
+struct StartsSelfStoppingChild {
+  hooks: Arc<AtomicUsize>,
+  hook_liveness: Arc<Mutex<Vec<bool>>>,
+}
+
+impl Actor for StartsSelfStoppingChild {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    if message.downcast_ref::<&'static str>() == Some(&"go") {
+      let _ = context.actor_of(Props::new(|| StopsItselfInPreStart), "selfstop");
+    }
+  }
+
+  fn supervisor_strategy(&self) -> crate::kernel::supervision::SupervisorStrategy {
+    let hooks = Arc::clone(&self.hooks);
+    let hook_liveness = Arc::clone(&self.hook_liveness);
+    crate::kernel::supervision::SupervisorStrategy::one_for_one(3).with_child_terminated(
+      move |context, _child, _siblings| {
+        let me = context.self_ref();
+        hook_liveness.lock().unwrap().push(context.is_terminated(&me));
+        hooks.fetch_add(1, Ordering::SeqCst);
+      },
+    )
+  }
+}
+
+#[test]
+fn a_child_that_stops_itself_while_starting_still_runs_the_parent_hook_once() {
+  let hooks = Arc::new(AtomicUsize::new(0));
+  let hook_liveness = Arc::new(Mutex::new(Vec::new()));
+  let mut system = with_catcher("PekkoCustomSpec");
+  let parent = system.actor_of(Props::new({
+    let hooks = Arc::clone(&hooks);
+    let hook_liveness = Arc::clone(&hook_liveness);
+    move || StartsSelfStoppingChild { hooks: Arc::clone(&hooks), hook_liveness: Arc::clone(&hook_liveness) }
+  }));
+
+  parent.tell("go", parent.clone());
+  system.run_until_idle();
+
+  assert_eq!(hooks.load(Ordering::SeqCst), 1, "the parent hook did not run exactly once");
+  assert_eq!(*hook_liveness.lock().unwrap(), alloc::vec![false], "the parent was terminated inside its hook");
+}
+
+/// A parent whose child-terminated hook panics.
+struct PanickingHookParent {
+  strategy: crate::kernel::supervision::SupervisorStrategy,
+  received: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl Actor for PanickingHookParent {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    let Some(text) = message.downcast_ref::<&'static str>() else {
+      return;
+    };
+    if *text == "go" {
+      let kid = context.actor_of(Props::new(|| NoOp), "kid").expect("the kid name must be free");
+      context.stop(&kid);
+    } else if *text == "ping" {
+      self.received.lock().unwrap().push("ping");
+      context.sender().tell("pong", context.self_ref());
+    }
+  }
+
+  fn supervisor_strategy(&self) -> crate::kernel::supervision::SupervisorStrategy {
+    self.strategy
+  }
+}
+
+#[test]
+fn a_panicking_child_terminated_hook_leaves_the_parent_alive_and_logs_once() {
+  let events = Arc::new(Mutex::new(Vec::new()));
+  let received = Arc::new(Mutex::new(Vec::new()));
+  let replies = Arc::new(Mutex::new(Vec::new()));
+  let mut system = with_catcher("PekkoCustomSpec");
+  system.set_event_sink(Arc::new(RecordingSink { events: Arc::clone(&events) }));
+  let observer = system.function_ref("observer", {
+    let replies = Arc::clone(&replies);
+    move |_sender: &ActorRef, message: Message| {
+      if let Some(text) = message.downcast_ref::<&'static str>() {
+        replies.lock().unwrap().push(*text);
+      }
+    }
+  });
+  let parent = system.actor_of(Props::new({
+    let received = Arc::clone(&received);
+    move || PanickingHookParent {
+      strategy: crate::kernel::supervision::SupervisorStrategy::one_for_one(3)
+        .with_child_terminated(|_context, _child, _siblings| panic!("simulated hook failure")),
+      received: Arc::clone(&received),
+    }
+  }));
+
+  parent.tell("go", parent.clone());
+  system.run_until_idle();
+
+  assert!(!system.is_actor_terminated(&parent), "the parent cell was lost when its hook panicked");
+  parent.tell("ping", observer);
+  system.run_until_idle();
+  assert_eq!(*received.lock().unwrap(), alloc::vec!["ping"], "the parent no longer handled messages");
+  assert_eq!(*replies.lock().unwrap(), alloc::vec!["pong"], "the parent did not answer after its hook panicked");
+
+  let events = events.lock().unwrap();
+  let failures: Vec<_> = events
+    .iter()
+    .filter(|(cause, message)| {
+      cause.as_deref() == Some("IllegalStateException") && message == "handleChildTerminated failed"
+    })
+    .collect();
+  assert_eq!(failures.len(), 1, "the hook failure was not logged exactly once: {events:?}");
+}
+
+/// Stops itself and then starts a child in the same delivery.
+struct StopsThenStartsChild {
+  worker: Arc<Mutex<Option<ActorRef>>>,
+  self_liveness: Arc<Mutex<Vec<bool>>>,
+}
+
+impl Actor for StopsThenStartsChild {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    if message.downcast_ref::<&'static str>() != Some(&"go") {
+      return;
+    }
+    let me = context.self_ref();
+    context.stop(&me);
+    let worker = context.actor_of(Props::new(|| NoOp), "worker").expect("the worker name must be free");
+    *self.worker.lock().unwrap() = Some(worker);
+    self.self_liveness.lock().unwrap().push(!context.is_terminated(&me));
+  }
+}
+
+#[test]
+fn a_stop_requested_before_a_child_starts_still_stops_the_actor() {
+  let worker = Arc::new(Mutex::new(None));
+  let self_liveness = Arc::new(Mutex::new(Vec::new()));
+  let mut system = with_catcher("PekkoCustomSpec");
+  let actor = system.actor_of(Props::new({
+    let worker = Arc::clone(&worker);
+    let self_liveness = Arc::clone(&self_liveness);
+    move || StopsThenStartsChild { worker: Arc::clone(&worker), self_liveness: Arc::clone(&self_liveness) }
+  }));
+
+  actor.tell("go", actor.clone());
+  system.run_until_idle();
+
+  assert_eq!(*self_liveness.lock().unwrap(), alloc::vec![true], "the actor was not alive during its delivery");
+  assert!(system.is_actor_terminated(&actor), "the stop requested before the nested start was lost");
+  let worker = worker.lock().unwrap().clone().expect("the nested start created a child");
+  assert!(system.is_actor_terminated(&worker), "the child of the stopped actor is still alive");
+}
+
+#[test]
+#[should_panic(expected = "cannot create children")]
+fn a_weak_named_child_of_a_stopped_parent_is_refused() {
+  let mut system = with_catcher("PekkoCustomSpec");
+  let parent = system.actor_of(Props::new(|| NoOp));
+  system.stop(&parent);
+
+  system.downgrade().spawn_child(
+    &parent,
+    Props::new(|| NoOp),
+    Some("kid"),
+    crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+  );
+}
+
+#[test]
+fn a_stopped_actor_leaves_no_parent_entry_behind() {
+  let mut system = with_catcher("PekkoCustomSpec");
+  for _ in 0..3 {
+    let actor = system.actor_of(Props::new(|| NoOp));
+    system.stop(&actor);
+  }
+
+  assert_eq!(system.executor.borrow().parent_entry_count(), 0, "the parent registry kept stopped actors");
+}
+
+/// Counts its `post_restart` calls so a test can tell a restart from a stop.
+struct CountsRestarts {
+  post_restarts: Arc<AtomicUsize>,
+}
+
+impl Actor for CountsRestarts {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
+    if message.downcast_ref::<&'static str>() == Some(&"boom") {
+      panic!("simulated failure of the child");
+    }
+  }
+
+  fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
+    self.post_restarts.fetch_add(1, Ordering::SeqCst);
+  }
+}
+
+/// A parent whose strategy changes between its first and later instances.
+struct ChangesStrategyOnRestart {
+  strategy: crate::kernel::supervision::SupervisorStrategy,
+  kid: Arc<Mutex<Option<ActorRef>>>,
+  kid_post_restarts: Arc<AtomicUsize>,
+}
+
+impl Actor for ChangesStrategyOnRestart {
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    let post_restarts = Arc::clone(&self.kid_post_restarts);
+    if let Ok(kid) =
+      context.actor_of(Props::new(move || CountsRestarts { post_restarts: Arc::clone(&post_restarts) }), "kid")
+    {
+      *self.kid.lock().unwrap() = Some(kid);
+    }
+  }
+
+  fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
+    if message.downcast_ref::<&'static str>() == Some(&"panic") {
+      panic!("simulated failure of the parent");
+    }
+  }
+
+  fn supervisor_strategy(&self) -> crate::kernel::supervision::SupervisorStrategy {
+    self.strategy
+  }
+}
+
+#[test]
+fn a_child_follows_the_strategy_of_its_restarted_parent() {
+  let creations = Arc::new(AtomicUsize::new(0));
+  let kid = Arc::new(Mutex::new(None));
+  let kid_post_restarts = Arc::new(AtomicUsize::new(0));
+  let mut system = with_catcher("PekkoCustomSpec");
+  let parent = system.actor_of(Props::new({
+    let creations = Arc::clone(&creations);
+    let kid = Arc::clone(&kid);
+    let kid_post_restarts = Arc::clone(&kid_post_restarts);
+    move || {
+      let creation = creations.fetch_add(1, Ordering::SeqCst);
+      let strategy = if creation == 0 {
+        crate::kernel::supervision::SupervisorStrategy::one_for_one(3)
+      } else {
+        crate::kernel::supervision::SupervisorStrategy::stopping_strategy()
+      };
+      ChangesStrategyOnRestart { strategy, kid: Arc::clone(&kid), kid_post_restarts: Arc::clone(&kid_post_restarts) }
+    }
+  }));
+
+  let kid_handle = kid.lock().unwrap().clone().expect("the parent created its kid");
+  parent.tell("panic", parent.clone());
+  system.run_until_idle();
+  assert!(!system.is_actor_terminated(&parent), "the parent did not restart");
+
+  kid_handle.tell("boom", kid_handle.clone());
+  system.run_until_idle();
+
+  assert_eq!(
+    kid_post_restarts.load(Ordering::SeqCst),
+    0,
+    "the child used the strategy from before the parent restarted"
+  );
+  assert!(system.is_actor_terminated(&kid_handle), "the child was not stopped by the new parent strategy");
+}
