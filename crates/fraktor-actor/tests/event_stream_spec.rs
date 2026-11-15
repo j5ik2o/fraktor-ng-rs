@@ -665,7 +665,7 @@ fn an_event_stream_must_unwatch_an_actor_from_unsubscriber_when_that_actor_unsub
   let stream = EventStream::new(spec.system().downgrade(), true);
   stream.start_unsubscriber();
   let mut a1 = TestProbe::new(spec.system_mut());
-  let mut a2 = TestProbe::new(spec.system_mut());
+  let a2 = TestProbe::new(spec.system_mut());
   let a2_ref = a2.ref_handle();
 
   assert!(stream.subscribe(Some(a1.ref_handle()), EventClass::of::<Debug>()).expect("the probe is not null"));
@@ -685,7 +685,7 @@ fn an_event_stream_must_unwatch_an_actor_from_unsubscriber_when_that_actor_unsub
   stream.start_unsubscriber();
   declare_event_stream_hierarchy(&stream);
   let mut a1 = TestProbe::new(spec.system_mut());
-  let mut a2 = TestProbe::new(spec.system_mut());
+  let a2 = TestProbe::new(spec.system_mut());
   let a2_ref = a2.ref_handle();
 
   assert!(stream.subscribe(Some(a1.ref_handle()), EventClass::of::<Debug>()).expect("the probe is not null"));

@@ -2591,7 +2591,7 @@ nodes:
     module: actor-tests
     class: EventStreamSpec
     test_cases_approx: 17
-  status: red
+  status: green
   triage:
     kind: pending
     reason: null
@@ -2602,9 +2602,9 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 17
+    ported: 17
+    passing: 17
     excluded: []
   rust:
     crate: fraktor-actor
