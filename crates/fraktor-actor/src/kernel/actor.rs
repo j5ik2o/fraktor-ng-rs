@@ -10,6 +10,7 @@ mod behavior_stack;
 mod invalid_actor_name_exception;
 mod props;
 mod terminated;
+mod unhandled_message;
 
 pub use actor_context::ActorContext;
 pub use actor_trait::Actor;
@@ -18,3 +19,4 @@ pub(crate) use behavior_stack::Running;
 pub use invalid_actor_name_exception::InvalidActorNameException;
 pub use props::Props;
 pub use terminated::Terminated;
+pub use unhandled_message::UnhandledMessage;

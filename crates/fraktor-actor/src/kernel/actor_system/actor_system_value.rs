@@ -12,6 +12,7 @@ use crate::kernel::actor_path::RootActorPath;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::actor_system::weak_actor_system::WeakActorSystem;
 use crate::kernel::address::Address;
+use crate::kernel::event::EventStream;
 use crate::kernel::executor::Executor;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::supervision::FailureCatcher;
@@ -42,6 +43,7 @@ const LOCAL_PROTOCOL: &str = "pekko";
 pub struct ActorSystem {
   name: String,
   executor: Rc<RefCell<Executor>>,
+  event_stream: EventStream,
 }
 
 impl ActorSystem {
@@ -49,7 +51,10 @@ impl ActorSystem {
   /// `boundary` as the edge of their shard.
   pub fn new(name: &str, boundary: Arc<dyn ShardBoundary>) -> Self {
     let executor = Rc::new(RefCell::new(Executor::new(Self::root_path(name), boundary)));
-    Self { name: name.to_string(), executor }
+    let system = WeakActorSystem::new(name.to_string(), Rc::downgrade(&executor));
+    let event_stream = EventStream::new(system, false);
+    executor.borrow_mut().set_event_stream(event_stream.clone());
+    Self { name: name.to_string(), executor, event_stream }
   }
 
   /// Creates a running actor system that reports a failing actor to `catcher`.
@@ -150,6 +155,24 @@ impl ActorSystem {
   /// Returns a handle that can reach the executor without owning the system.
   pub fn downgrade(&self) -> WeakActorSystem {
     WeakActorSystem::new(self.name.clone(), Rc::downgrade(&self.executor))
+  }
+
+  /// Returns the event stream of the system.
+  ///
+  /// Mirrors `ActorSystem.eventStream`: the returned handle shares the
+  /// subscribers of this system, so subscribing to it reaches the same stream
+  /// that the system publishes its own events to.
+  pub fn event_stream(&self) -> EventStream {
+    self.event_stream.clone()
+  }
+
+  /// Returns the handle that absorbs messages which no actor takes.
+  ///
+  /// Mirrors `ActorSystem.deadLetters`. Pekko names the handle below the root
+  /// path; the port makes one when the system is created and answers that same
+  /// handle afterwards.
+  pub fn dead_letters(&self) -> ActorRef {
+    self.executor.borrow().dead_letters()
   }
 
   /// Delivers every message that is waiting until nothing is left.

@@ -52,8 +52,8 @@ impl<'a> ActorContext<'a> {
   }
 
   /// Sends a message to `target`, naming this actor as the sender.
-  pub fn tell(&mut self, target: &ActorRef, message: Message) {
-    self.executor.send(self.self_ref(), target, message);
+  pub fn tell<M: core::any::Any + Send + Sync>(&mut self, target: &ActorRef, message: M) {
+    self.executor.send(self.self_ref(), target, Message::new(message));
   }
 
   /// Replaces the current behaviour with `behavior`; the frames below it stay.

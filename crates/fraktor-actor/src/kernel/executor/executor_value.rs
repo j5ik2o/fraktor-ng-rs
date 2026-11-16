@@ -1,5 +1,6 @@
 //! The executor that owns one shard of actors and runs their messages.
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::sync::Arc;
@@ -17,6 +18,7 @@ use crate::kernel::actor::Props;
 use crate::kernel::actor::Terminated;
 use crate::kernel::actor_path::ActorPath;
 use crate::kernel::actor_ref::ActorRef;
+use crate::kernel::event::EventStream;
 use crate::kernel::executor::ActorCell;
 use crate::kernel::executor::ShardQueue;
 use crate::kernel::message::Envelope;
@@ -105,6 +107,9 @@ struct ParentEntry {
   stopping: bool,
 }
 
+/// One callback that the executor runs with the handle of a stopped actor.
+type TerminationCallback = Box<dyn Fn(&ActorRef)>;
+
 /// Creates actors of one shard, runs their messages, and owns their state.
 ///
 /// Mirrors the role of `org.apache.pekko.actor.ActorCell` together with a
@@ -125,12 +130,15 @@ pub(crate) struct Executor {
   function_refs: Vec<ActorRef>,
   catcher: Option<Arc<dyn FailureCatcher>>,
   event_sink: Option<Arc<dyn EventSink>>,
+  event_stream: Option<EventStream>,
   deferred_replies: Vec<(ActorRef, DeferredReply)>,
   parents: Vec<ParentEntry>,
   pending_stops: Vec<ActorRef>,
   pending_decider_failures: Vec<(ActorRef, String)>,
   pending_child_terminated: Vec<(ActorRef, ActorRef)>,
   running: Vec<ActorRef>,
+  termination_callbacks: Vec<TerminationCallback>,
+  dead_letters: ActorRef,
   boundary_active: bool,
   hook_child_creation_refused: bool,
   terminated: bool,
@@ -138,7 +146,8 @@ pub(crate) struct Executor {
 
 impl Executor {
   pub(crate) fn new(root: ActorPath, boundary: Arc<dyn crate::kernel::executor::ShardBoundary>) -> Self {
-    Self {
+    let dead_letters = Self::create_dead_letters(&root);
+    let mut executor = Self {
       cells: Vec::new(),
       queue: ShardQueue::new(boundary),
       root,
@@ -146,16 +155,53 @@ impl Executor {
       function_refs: Vec::new(),
       catcher: None,
       event_sink: None,
+      event_stream: None,
       deferred_replies: Vec::new(),
       parents: Vec::new(),
       pending_stops: Vec::new(),
       pending_decider_failures: Vec::new(),
       pending_child_terminated: Vec::new(),
       running: Vec::new(),
+      termination_callbacks: Vec::new(),
+      dead_letters,
       boundary_active: false,
       hook_child_creation_refused: false,
       terminated: false,
-    }
+    };
+    executor.function_refs.push(executor.dead_letters.clone());
+    executor
+  }
+
+  /// Registers `callback` to run with the handle of every actor that stops.
+  ///
+  /// Mirrors the notification that Pekko's `ActorClassificationUnsubscriber`
+  /// receives for a watched subscriber: the executor is the only place that
+  /// knows an actor has stopped, so a component that is not an actor registers
+  /// here. The callback runs after the watchers have been told and must not
+  /// borrow the executor, which is already borrowed by the caller.
+  pub(crate) fn on_termination<F>(&mut self, callback: F)
+  where
+    F: Fn(&ActorRef) + 'static,
+  {
+    self.termination_callbacks.push(Box::new(callback));
+  }
+
+  /// Returns the handle that absorbs messages which no actor takes.
+  ///
+  /// Mirrors `ActorSystem.deadLetters`. The handle posts to a boundary that
+  /// drops the envelope. The executor makes one such handle when it is created,
+  /// below the root path, and answers that same handle for the life of the
+  /// system.
+  pub(crate) fn dead_letters(&self) -> ActorRef {
+    self.dead_letters.clone()
+  }
+
+  fn create_dead_letters(root: &ActorPath) -> ActorRef {
+    let path = root.with_child("deadLetters");
+    let handler = Arc::new(|_: &ActorRef, _: Message| {});
+    let boundary: Arc<dyn crate::kernel::executor::ShardBoundary> =
+      Arc::new(crate::kernel::executor::FunctionBoundary::new(handler));
+    next_actor_ref(path, boundary)
   }
 
   pub(crate) fn function_ref<H>(&mut self, name: &str, handler: H) -> ActorRef
@@ -177,6 +223,17 @@ impl Executor {
 
   pub(crate) fn set_event_sink(&mut self, sink: Arc<dyn EventSink>) {
     self.event_sink = Some(sink);
+  }
+
+  /// Installs the event stream the system publishes its own events to.
+  ///
+  /// Mirrors the stream `FaultHandling.publish` reaches through
+  /// `context.system.eventStream`: a failure log the parent raises is published
+  /// here, so a subscriber of the stream sees it. The executor keeps the stream
+  /// apart from the sink because the sink is a test-side tap while the stream is
+  /// the destination Pekko names.
+  pub(crate) fn set_event_stream(&mut self, stream: EventStream) {
+    self.event_stream = Some(stream);
   }
 
   pub(crate) fn event_sink(&self) -> Option<Arc<dyn EventSink>> {
@@ -594,6 +651,9 @@ impl Executor {
     }
     self.forget_child(target);
     self.notify_watchers(target, true, false);
+    for callback in &self.termination_callbacks {
+      callback(target);
+    }
     self.flush_deferred_replies(target);
     if let Some(parent) = parent_of_target {
       self.run_child_terminated_hook(&parent, target);
@@ -747,10 +807,21 @@ impl Executor {
   /// a stopped one, which is the documented limit of this port.
   pub(crate) fn watch(&mut self, watcher: &ActorRef, target: &ActorRef) {
     if self.is_live(target) {
-      self.watchers.push((watcher.clone(), target.clone()));
+      if !self.watchers.iter().any(|(existing, watched)| existing == watcher && watched == target) {
+        self.watchers.push((watcher.clone(), target.clone()));
+      }
     } else {
       self.enqueue_to(watcher.clone(), Terminated::new(target.clone(), false, false));
     }
+  }
+
+  /// Stops `watcher` from receiving the notice of `target`.
+  ///
+  /// Mirrors `ActorContext.unwatch`, which Pekko's event stream unsubscriber
+  /// calls once a subscriber holds no subscription. Removing a watch that is
+  /// not registered changes nothing, as `unwatch` is idempotent.
+  pub(crate) fn unwatch(&mut self, watcher: &ActorRef, target: &ActorRef) {
+    self.watchers.retain(|(existing, watched)| existing != watcher || watched != target);
   }
 
   /// Delivers every message that is waiting, whether it is in the shard or at
@@ -810,6 +881,7 @@ impl Executor {
     self.pending_decider_failures.clear();
     self.pending_child_terminated.clear();
     self.running.clear();
+    self.termination_callbacks.clear();
     self.boundary_active = false;
     while self.queue.boundary().poll().is_some() {}
   }
@@ -1105,10 +1177,16 @@ impl Executor {
   /// Publishes the failure of `target` as an error event.
   ///
   /// Mirrors `FaultHandling.logFailure`: the parent logs an `Error` for a child
-  /// it restarts or stops, carrying the path of the child as its source.
+  /// it restarts or stops, carrying the path of the child as its source. The
+  /// event is built once and published to the system's event stream, which is
+  /// the destination Pekko names; an installed sink is a test-side tap that
+  /// receives the same single event.
   fn publish_child_failure(&self, target: &ActorRef, cause_name: &str, message: &str) {
+    let event = self.failure_reason(target, cause_name, message);
+    if let Some(stream) = self.event_stream.as_ref() {
+      stream.publish(event.clone());
+    }
     if let Some(sink) = self.event_sink.as_ref() {
-      let event = self.failure_reason(target, cause_name, message);
       sink.publish(&event);
     }
   }

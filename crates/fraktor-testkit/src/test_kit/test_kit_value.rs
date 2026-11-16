@@ -5,6 +5,10 @@ use core::any::Any;
 use core::fmt::Debug;
 use core::time::Duration;
 
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::Instant;
+
 use fraktor_actor::kernel::actor::Props;
 use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::actor_system::ActorSystem;
@@ -62,6 +66,31 @@ impl TestKit {
   /// `testActor`.
   pub fn test_actor(&self) -> ActorRef {
     self.base.test_actor()
+  }
+
+  /// Receives `n` messages before a single shared deadline.
+  ///
+  /// Mirrors `TestKitBase.receiveN`: `max` is dilated and the whole call costs
+  /// at most that much, rather than `n * max`.
+  pub fn receive_n(&mut self, n: usize, max: Duration) -> Vec<ReceivedMessage> {
+    let max = self.base.settings().dilated(max);
+    self.base.receive_n(n, max)
+  }
+
+  /// Returns the handle that holds the deadline of the enclosing `within`.
+  pub(crate) fn scope(&self) -> Rc<RefCell<Option<Instant>>> {
+    self.base.scope()
+  }
+
+  /// Clears the flag that tells a `within` scope its last wait was a
+  /// no-message check.
+  pub(crate) fn reset_last_was_no_msg(&mut self) {
+    self.base.reset_last_was_no_msg();
+  }
+
+  /// Returns whether the last wait was a no-message check.
+  pub(crate) fn last_was_no_msg(&self) -> bool {
+    self.base.last_was_no_msg()
   }
 
   /// Returns the last message the test actor handed to a waiting method.

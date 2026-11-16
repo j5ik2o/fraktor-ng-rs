@@ -24,6 +24,11 @@ impl ReceivedMessage {
     &self.message
   }
 
+  /// Returns the message as the given type, or `None` if it has another type.
+  pub fn downcast_ref<T: core::any::Any>(&self) -> Option<&T> {
+    self.message.downcast_ref::<T>()
+  }
+
   /// Returns the sender of the message.
   pub fn sender(&self) -> &ActorRef {
     &self.sender

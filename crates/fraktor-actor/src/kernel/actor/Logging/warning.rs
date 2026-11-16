@@ -15,6 +15,7 @@ use crate::kernel::actor::Logging::Mdc;
 /// Mirrors `org.apache.pekko.event.Logging.Warning` together with `Warning4`,
 /// the subclass that carries a cause. Pekko keeps the cause as a `Throwable`;
 /// the port keeps its name, as [`Error`](super::Error) does.
+#[derive(Clone)]
 pub struct Warning {
   cause: Option<String>,
   log_source: String,

@@ -2,6 +2,7 @@
 
 use alloc::sync::Arc;
 use core::any::Any;
+use core::any::TypeId;
 use core::fmt;
 
 #[cfg(test)]
@@ -40,6 +41,16 @@ impl Message {
   /// Returns the payload as the given type, or `None` if it has another type.
   pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
     self.payload.downcast_ref::<T>()
+  }
+
+  /// Returns the type of the payload it carries.
+  ///
+  /// A publisher that receives a `Message` needs this to route the message by
+  /// the class of what it carries rather than the class of `Message` itself,
+  /// which is how `EventStream` behaves in Pekko: an event is published to the
+  /// subscribers of `event.getClass`.
+  pub(crate) fn payload_type_id(&self) -> TypeId {
+    (*self.payload).type_id()
   }
 
   /// Returns whether the payload has the given type.

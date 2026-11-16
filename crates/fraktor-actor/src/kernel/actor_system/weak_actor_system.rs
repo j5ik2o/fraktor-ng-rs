@@ -65,9 +65,30 @@ impl WeakActorSystem {
     self.upgrade().borrow_mut().function_ref(name, handler)
   }
 
+  /// Registers `callback` to run with the handle of every actor that stops.
+  ///
+  /// Mirrors the notification that Pekko's `ActorClassificationUnsubscriber`
+  /// receives for the actors it watches. A component that is not an actor, such
+  /// as an event bus, has no mailbox to receive a `Terminated` notice, so it
+  /// registers here instead. The callback must not borrow the executor, which
+  /// is already borrowed while it runs.
+  pub fn on_termination<F>(&self, callback: F)
+  where
+    F: Fn(&ActorRef) + 'static,
+  {
+    self.upgrade().borrow_mut().on_termination(callback);
+  }
+
   /// Registers `watcher` to receive the `Terminated` notice of `target`.
   pub fn watch(&self, watcher: &ActorRef, target: &ActorRef) {
     self.upgrade().borrow_mut().watch(watcher, target);
+  }
+
+  /// Stops `watcher` from receiving the notice of `target`.
+  ///
+  /// Mirrors `ActorContext.unwatch` reached through a non-owning handle.
+  pub fn unwatch(&self, watcher: &ActorRef, target: &ActorRef) {
+    self.upgrade().borrow_mut().unwatch(watcher, target);
   }
 
   /// Stops `target`, telling its watchers that it is gone.
@@ -76,6 +97,17 @@ impl WeakActorSystem {
   /// how a probe or a test that only holds a `Weak` back-edge stops an actor.
   pub fn stop(&self, target: &ActorRef) {
     self.upgrade().borrow_mut().stop(target);
+  }
+
+  /// Returns whether `target` no longer has a running actor behind it.
+  ///
+  /// Mirrors
+  /// [`ActorSystem::is_actor_terminated`](crate::kernel::actor_system::ActorSystem::is_actor_terminated)
+  /// reached through a non-owning handle: a handle reports false while its actor
+  /// runs and true once the actor has stopped. The scope and its limits are the
+  /// ones `watch` documents.
+  pub fn is_actor_terminated(&self, target: &ActorRef) -> bool {
+    self.upgrade().borrow().is_actor_terminated(target)
   }
 
   /// Delivers every message that is waiting until nothing is left.
@@ -92,5 +124,11 @@ impl WeakActorSystem {
   /// the local queue. Returns whether a message arrived.
   pub fn await_envelope(&self, max: Duration) -> bool {
     self.upgrade().borrow_mut().await_envelope(max)
+  }
+}
+
+impl Clone for WeakActorSystem {
+  fn clone(&self) -> Self {
+    Self { name: self.name.clone(), executor: self.executor.clone() }
   }
 }

@@ -4,7 +4,9 @@ use core::any::Any;
 use core::fmt::Debug;
 use core::time::Duration;
 
+use std::cell::RefCell;
 use std::panic::AssertUnwindSafe;
+use std::rc::Rc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -48,6 +50,8 @@ pub(crate) struct TestKitBase {
   actor: Arc<TestActor>,
   last_message: Option<ReceivedMessage>,
   settings: TestKitSettings,
+  scope: Rc<RefCell<Option<Instant>>>,
+  last_was_no_msg: bool,
 }
 
 impl TestKitBase {
@@ -60,7 +64,15 @@ impl TestKitBase {
       | None => format!("{DEFAULT_TEST_ACTOR_NAME}-{}", TEST_ACTOR_ID.fetch_add(1, Ordering::Relaxed)),
     };
     let test_actor = spawn_function_ref(&system, &label, handler_actor);
-    Self { system, test_actor, actor, last_message: None, settings }
+    Self {
+      system,
+      test_actor,
+      actor,
+      last_message: None,
+      settings,
+      scope: Rc::new(RefCell::new(None)),
+      last_was_no_msg: false,
+    }
   }
 
   /// Returns the handle of the test actor.
@@ -71,6 +83,45 @@ impl TestKitBase {
   /// Returns the settings of the test kit.
   pub(crate) fn settings(&self) -> TestKitSettings {
     self.settings
+  }
+
+  /// Returns the handle that holds the deadline of the enclosing `within`.
+  pub(crate) fn scope(&self) -> Rc<RefCell<Option<Instant>>> {
+    Rc::clone(&self.scope)
+  }
+
+  /// Clears the flag that tells a `within` scope its last wait was a
+  /// no-message check.
+  ///
+  /// Mirrors the `lastWasNoMsg = false` that Pekko's `within` performs before
+  /// it runs the body.
+  pub(crate) fn reset_last_was_no_msg(&mut self) {
+    self.last_was_no_msg = false;
+  }
+
+  /// Returns whether the last wait was a no-message check.
+  ///
+  /// Mirrors `TestKitBase.lastWasNoMsg`: a `within` scope skips its elapsed
+  /// check after `expectNoMessage`, because that call waits out the scope on
+  /// purpose.
+  pub(crate) fn last_was_no_msg(&self) -> bool {
+    self.last_was_no_msg
+  }
+
+  /// Shortens `max` so that the waits that go through it do not pass the
+  /// deadline of a `within` scope.
+  ///
+  /// Mirrors `TestKitBase.remainingOrDefault`: a wait inside `within` uses the
+  /// time the scope has left when that is shorter than the wait it asked for.
+  /// Only `expect_no_message`, `receive_one`, and `drive_for` call this, which
+  /// is what `expectMsg` and the no-message check rely on; `await_assert` and
+  /// `eventually` take the `max` they are given and do not use the scope's
+  /// remaining time. Nothing is clamped outside a scope.
+  fn clamp(&self, max: Duration) -> Duration {
+    match *self.scope.borrow() {
+      | Some(deadline) => max.min(deadline.saturating_duration_since(Instant::now())),
+      | None => max,
+    }
   }
 
   /// Returns the last message taken from the queue.
@@ -195,6 +246,7 @@ impl TestKitBase {
   /// `let settings = TestKitSettings::from_system(system); settings.dilated(
   /// settings.expect_no_message_default_timeout())`.
   pub(crate) fn expect_no_message(&mut self, max: Duration) {
+    let max = self.clamp(max);
     let start = Instant::now();
     let finish = start + max;
     loop {
@@ -208,6 +260,7 @@ impl TestKitBase {
       }
       let left = finish.saturating_duration_since(Instant::now());
       if left == Duration::ZERO {
+        self.last_was_no_msg = true;
         return;
       }
       if !self.system.run_one() {
@@ -311,6 +364,7 @@ impl TestKitBase {
 
   /// Delivers messages of the system for `max`, stopping at the deadline.
   pub(crate) fn drive_for(&mut self, max: Duration) {
+    let max = self.clamp(max);
     let finish = Instant::now() + max;
     loop {
       if !self.system.run_one() {
@@ -350,6 +404,8 @@ impl TestKitBase {
   /// Because the deadline is checked between single deliveries, a wait ends on
   /// time even while another actor keeps sending.
   pub(crate) fn receive_one(&mut self, max: Duration) -> Option<ReceivedMessage> {
+    let max = self.clamp(max);
+    self.last_was_no_msg = false;
     let deadline = Instant::now() + max;
     loop {
       if let Some(received) = self.actor.take_next() {
