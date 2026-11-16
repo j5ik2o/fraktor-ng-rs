@@ -144,29 +144,36 @@ impl BusState {
     }
   }
 
+  /// Returns the parents that `class` directly declares, plus `any`.
+  ///
+  /// This is the "most specific known super-class" set that Pekko's
+  /// `SubclassifiedIndex.innerAddKey` inherits from. `any` stands for the root
+  /// super-class (`classOf[Any]`), so a class with no declared parent still
+  /// inherits the subscribers of [`EventClass::any`].
+  fn direct_parents(&self, class: EventClass) -> Vec<EventClass> {
+    let mut parents = Vec::new();
+    for (child, parent) in &self.subclass_links {
+      if *child == class && !parents.contains(parent) {
+        parents.push(*parent);
+      }
+    }
+    let any = EventClass::any();
+    if class != any && !parents.contains(&any) {
+      parents.push(any);
+    }
+    parents
+  }
+
   /// Returns the declared parents of `class`, transitively, plus `any`.
   fn ancestors(&self, class: EventClass) -> Vec<EventClass> {
     let mut found = Vec::new();
-    let mut pending = Vec::new();
-    for (child, parent) in &self.subclass_links {
-      if *child == class {
-        pending.push(*parent);
-      }
-    }
+    let mut pending = self.direct_parents(class);
     while let Some(next) = pending.pop() {
       if next == class || found.contains(&next) {
         continue;
       }
       found.push(next);
-      for (child, parent) in &self.subclass_links {
-        if *child == next {
-          pending.push(*parent);
-        }
-      }
-    }
-    let any = EventClass::any();
-    if class != any && !found.contains(&any) {
-      found.push(any);
+      pending.extend(self.direct_parents(next));
     }
     found
   }
@@ -187,17 +194,19 @@ impl BusState {
   }
 
   /// Creates the channel of `class` when it is unknown, seeded with the
-  /// subscribers of every known ancestor channel.
+  /// subscribers of the most specific known super-class channels.
+  ///
+  /// Mirrors `SubclassifiedIndex.innerAddKey`: a new key inherits from the
+  /// super-classes it is integrated under, not from every transitive ancestor.
   fn ensure(&mut self, class: EventClass) {
     if self.channel_index(class).is_some() {
       return;
     }
     self.channels.push((class, Vec::new()));
-    let ancestors = self.ancestors(class);
     let mut inherited = Vec::new();
-    for ancestor in ancestors {
-      self.ensure(ancestor);
-      for subscriber in self.channel(ancestor) {
+    for parent in self.direct_parents(class) {
+      self.ensure(parent);
+      for subscriber in self.channel(parent) {
         push_unique(&mut inherited, subscriber);
       }
     }
@@ -251,8 +260,20 @@ impl BusState {
   fn unsubscribe(&mut self, subscriber: &ActorRef, class: EventClass) -> bool {
     self.ensure(class);
     let mut changed = self.remove(class, subscriber);
-    for descendant in self.descendants_of(class) {
+    let mut descendants = self.descendants_of(class);
+    // Parents before their descendants, so a re-derived child reads the
+    // already-updated cache of a parent that is itself under `class`.
+    descendants.sort_by_key(|known| self.ancestors(*known).len());
+    for descendant in descendants {
       changed |= self.remove(descendant, subscriber);
+      // Mirrors `SubclassifiedIndex.removeValue` re-deriving each changed key
+      // from the remaining paths: the subscriber returns when another direct
+      // super-class channel still holds it.
+      let restored =
+        self.direct_parents(descendant).into_iter().any(|parent| self.channel(parent).contains(subscriber));
+      if restored {
+        changed |= self.insert(descendant, subscriber);
+      }
     }
     changed
   }
