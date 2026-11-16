@@ -49,9 +49,17 @@ fn g0f_review_f_subscription_of_a_terminated_actor_is_removed() {
   subscriber.tell("PoisonPill", sender);
   spec.system_mut().run_until_idle();
 
-  // Subscribe the already-terminated subscriber.
+  // Subscribe the already-terminated subscriber. The bus accepts the pair as
+  // Pekko's `subscribe` does; the removal comes from observing the end of the
+  // subscriber, not from refusing the subscription.
   let added = bus.subscribe(subscriber.clone(), classifier.clone());
   assert!(added, "the subscription is new");
+
+  // The removal already happened inside `subscribe`: the bus reports a
+  // subscriber that had stopped as terminated at once and drops the pair
+  // synchronously, so the assertion below does not depend on driving the
+  // executor. The call is kept only to drain any message left in flight.
+  spec.system_mut().run_until_idle();
 
   // A terminated subscriber must already be gone from the table, so removing
   // the pair answers `false`.

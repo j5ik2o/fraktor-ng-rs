@@ -99,6 +99,17 @@ impl WeakActorSystem {
     self.upgrade().borrow_mut().stop(target);
   }
 
+  /// Returns whether `target` no longer has a running actor behind it.
+  ///
+  /// Mirrors
+  /// [`ActorSystem::is_actor_terminated`](crate::kernel::actor_system::ActorSystem::is_actor_terminated)
+  /// reached through a non-owning handle: a handle reports false while its actor
+  /// runs and true once the actor has stopped. The scope and its limits are the
+  /// ones `watch` documents.
+  pub fn is_actor_terminated(&self, target: &ActorRef) -> bool {
+    self.upgrade().borrow().is_actor_terminated(target)
+  }
+
   /// Delivers every message that is waiting until nothing is left.
   pub fn run_until_idle(&self) {
     self.upgrade().borrow_mut().run_until_idle();

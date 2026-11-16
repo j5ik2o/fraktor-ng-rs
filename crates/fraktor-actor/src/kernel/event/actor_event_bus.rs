@@ -26,10 +26,17 @@ const DEBUG_LOG_CLASS: i32 = 0;
 /// subscriptions in place, as Pekko's unsubscriber does by watching only the
 /// subscribers.
 ///
+/// As `ActorClassificationUnsubscriber` does, a subscriber that had already
+/// stopped when it subscribed is reported at once: the subscription is removed
+/// during `subscribe`, which is the same set of targets that `ActorContext.watch`
+/// reports with `existence_confirmed = false`. A subscriber that stops later is
+/// removed through the termination callback.
+///
 /// The bus shares its subscription table with one termination callback of the
 /// executor. The callback touches only the table and the event stream, never the
 /// executor, because the executor is borrowed while the callback runs.
 pub struct ActorEventBus<E: Clone + Send + Sync + 'static> {
+  system: WeakActorSystem,
   event_stream: EventStream,
   name: String,
   debug: bool,
@@ -53,35 +60,30 @@ impl<E: Clone + Send + Sync + 'static> ActorEventBus<E> {
       let subscriptions = Rc::clone(&subscriptions);
       let event_stream = event_stream.clone();
       let name = name.to_string();
-      move |target: &ActorRef| {
-        let watched = subscriptions.borrow_mut().detach(target);
-        if !watched || !debug {
-          return;
-        }
-        let path = target.path();
-        let terminated = format!("actor {path} has terminated, unsubscribing it from {name}");
-        event_stream.publish(Debug::new(name.clone(), DEBUG_LOG_CLASS, &terminated));
-        let unregistered = format!("unregistered watch of {path} in {name}");
-        event_stream.publish(Debug::new(name.clone(), DEBUG_LOG_CLASS, &unregistered));
-      }
+      move |target: &ActorRef| detach_subscriber(&subscriptions, &event_stream, &name, debug, target)
     };
     system.on_termination(callback);
-    Self { event_stream, name: name.to_string(), debug, classify: Box::new(classify), subscriptions }
+    Self { system, event_stream, name: name.to_string(), debug, classify: Box::new(classify), subscriptions }
   }
 
   /// Subscribes `subscriber` to the events of `to`.
   ///
   /// Mirrors `ManagedActorClassification.subscribe`: a new pair answers `true`
-  /// and one the table already holds answers `false`. The first subscription of
-  /// a subscriber starts watching it.
+  /// and one the table already holds answers `false`. A subscriber that had
+  /// already stopped is unsubscribed at once, the way
+  /// `ActorClassificationUnsubscriber` answers `watch` for a stopped actor.
   pub fn subscribe(&mut self, subscriber: ActorRef, to: ActorRef) -> bool {
     let added = self.subscriptions.borrow_mut().add(&to, &subscriber);
     match added {
       | None => false,
       | Some(newly_watched) => {
-        if newly_watched && self.debug {
-          let registered = format!("registered watch for {} in {}", subscriber.path(), self.name);
-          self.event_stream.publish(Debug::new(self.name.clone(), DEBUG_LOG_CLASS, &registered));
+        if newly_watched {
+          if self.system.is_actor_terminated(&subscriber) {
+            detach_subscriber(&self.subscriptions, &self.event_stream, &self.name, self.debug, &subscriber);
+          } else if self.debug {
+            let registered = format!("registered watch for {} in {}", subscriber.path(), self.name);
+            self.event_stream.publish(Debug::new(self.name.clone(), DEBUG_LOG_CLASS, &registered));
+          }
         }
         true
       },
@@ -128,6 +130,30 @@ impl<E: Clone + Send + Sync + 'static> ActorEventBus<E> {
   pub fn name(&self) -> &str {
     &self.name
   }
+}
+
+/// Removes every subscription of `target` and reports the end of its watch.
+///
+/// Shared by the termination callback and `subscribe` so a subscriber that stops
+/// later and one that had already stopped both leave the table through the same
+/// rule, as `ActorClassificationUnsubscriber` reports them through
+/// `Terminated`.
+fn detach_subscriber(
+  subscriptions: &Rc<RefCell<Subscriptions>>,
+  event_stream: &EventStream,
+  name: &str,
+  debug: bool,
+  target: &ActorRef,
+) {
+  let watched = subscriptions.borrow_mut().detach(target);
+  if !watched || !debug {
+    return;
+  }
+  let path = target.path();
+  let terminated = format!("actor {path} has terminated, unsubscribing it from {name}");
+  event_stream.publish(Debug::new(String::from(name), DEBUG_LOG_CLASS, &terminated));
+  let unregistered = format!("unregistered watch of {path} in {name}");
+  event_stream.publish(Debug::new(String::from(name), DEBUG_LOG_CLASS, &unregistered));
 }
 
 /// The classifier-to-subscriber table and the subscribers the bus watches.
