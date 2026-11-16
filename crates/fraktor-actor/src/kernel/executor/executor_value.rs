@@ -18,6 +18,7 @@ use crate::kernel::actor::Props;
 use crate::kernel::actor::Terminated;
 use crate::kernel::actor_path::ActorPath;
 use crate::kernel::actor_ref::ActorRef;
+use crate::kernel::event::EventStream;
 use crate::kernel::executor::ActorCell;
 use crate::kernel::executor::ShardQueue;
 use crate::kernel::message::Envelope;
@@ -129,6 +130,7 @@ pub(crate) struct Executor {
   function_refs: Vec<ActorRef>,
   catcher: Option<Arc<dyn FailureCatcher>>,
   event_sink: Option<Arc<dyn EventSink>>,
+  event_stream: Option<EventStream>,
   deferred_replies: Vec<(ActorRef, DeferredReply)>,
   parents: Vec<ParentEntry>,
   pending_stops: Vec<ActorRef>,
@@ -153,6 +155,7 @@ impl Executor {
       function_refs: Vec::new(),
       catcher: None,
       event_sink: None,
+      event_stream: None,
       deferred_replies: Vec::new(),
       parents: Vec::new(),
       pending_stops: Vec::new(),
@@ -220,6 +223,17 @@ impl Executor {
 
   pub(crate) fn set_event_sink(&mut self, sink: Arc<dyn EventSink>) {
     self.event_sink = Some(sink);
+  }
+
+  /// Installs the event stream the system publishes its own events to.
+  ///
+  /// Mirrors the stream `FaultHandling.publish` reaches through
+  /// `context.system.eventStream`: a failure log the parent raises is published
+  /// here, so a subscriber of the stream sees it. The executor keeps the stream
+  /// apart from the sink because the sink is a test-side tap while the stream is
+  /// the destination Pekko names.
+  pub(crate) fn set_event_stream(&mut self, stream: EventStream) {
+    self.event_stream = Some(stream);
   }
 
   pub(crate) fn event_sink(&self) -> Option<Arc<dyn EventSink>> {
@@ -1163,10 +1177,16 @@ impl Executor {
   /// Publishes the failure of `target` as an error event.
   ///
   /// Mirrors `FaultHandling.logFailure`: the parent logs an `Error` for a child
-  /// it restarts or stops, carrying the path of the child as its source.
+  /// it restarts or stops, carrying the path of the child as its source. The
+  /// event is built once and published to the system's event stream, which is
+  /// the destination Pekko names; an installed sink is a test-side tap that
+  /// receives the same single event.
   fn publish_child_failure(&self, target: &ActorRef, cause_name: &str, message: &str) {
+    let event = self.failure_reason(target, cause_name, message);
+    if let Some(stream) = self.event_stream.as_ref() {
+      stream.publish(event.clone());
+    }
     if let Some(sink) = self.event_sink.as_ref() {
-      let event = self.failure_reason(target, cause_name, message);
       sink.publish(&event);
     }
   }

@@ -53,6 +53,7 @@ impl ActorSystem {
     let executor = Rc::new(RefCell::new(Executor::new(Self::root_path(name), boundary)));
     let system = WeakActorSystem::new(name.to_string(), Rc::downgrade(&executor));
     let event_stream = EventStream::new(system, false);
+    executor.borrow_mut().set_event_stream(event_stream.clone());
     Self { name: name.to_string(), executor, event_stream }
   }
 
