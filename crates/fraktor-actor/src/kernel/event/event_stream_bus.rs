@@ -143,45 +143,45 @@ impl BusState {
       return;
     }
     self.subclass_links.push((child, parent));
-    self.propagate_subclass_link(child);
+    self.propagate_subclass_link(child, parent);
   }
 
   /// Reflects a newly declared link in `child` and the channels below it.
   ///
   /// Mirrors `SubclassifiedIndex.innerAddKey`: the new key is integrated under
   /// its most specific known super-class, and `addValue` recurses into the
-  /// sub-keys. The subscribers of each affected channel are therefore
-  /// re-derived from [`Self::direct_parents`], the same rule [`Self::ensure`]
-  /// uses, so a channel that only exists because of a later publish already
-  /// follows the new ancestry, and a subscription removed from an intermediate
-  /// channel is not revived.
-  fn propagate_subclass_link(&mut self, child: EventClass) {
-    self.rederive_inherited(child);
-    for descendant in self.descendants_of(child) {
-      self.rederive_inherited(descendant);
-    }
-  }
-
-  /// Rebuilds the inherited subscribers of `class` from every direct parent
-  /// channel, keeping the subscribers that were added to `class` directly.
-  ///
-  /// `class` may still be unknown: its channel is created, which is what a
-  /// later publish would do, so the new ancestry is visible before the first
-  /// event of that class.
-  fn rederive_inherited(&mut self, class: EventClass) {
-    self.ensure(class);
-    let direct = self.direct_parents(class);
-    let mut inherited = Vec::new();
-    for parent in &direct {
-      for subscriber in self.channel(*parent) {
-        push_unique(&mut inherited, subscriber);
-      }
-    }
-    let Some(index) = self.channel_index(class) else {
+  /// sub-keys. Only the subscribers that newly appear in `child` flow down:
+  /// the subscribers of the new parent's channel, plus the seed of a channel
+  /// created by this declaration. The older parents are not re-read, so a
+  /// subscriber explicitly removed from `child` is not brought back by an
+  /// unrelated link. The new subscribers reach the descendants in
+  /// parent-first order, the same order [`Self::unsubscribe`] uses, so a deep
+  /// descendant reads the already-updated channel of its parent instead of
+  /// the still-empty one.
+  fn propagate_subclass_link(&mut self, child: EventClass, new_parent: EventClass) {
+    self.ensure(new_parent);
+    let before = self.channel(child);
+    self.ensure(child);
+    let contributed = self.channel(new_parent);
+    let Some(index) = self.channel_index(child) else {
       return;
     };
-    for subscriber in inherited {
+    for subscriber in contributed {
       push_unique(&mut self.channels[index].1, subscriber);
+    }
+    let added: Vec<ActorRef> =
+      self.channels[index].1.iter().filter(|subscriber| !before.contains(subscriber)).cloned().collect();
+    let mut descendants = self.descendants_of(child);
+    // Parents before their descendants, so a re-derived child reads the
+    // already-updated cache of a parent that is itself under `child`.
+    descendants.sort_by_key(|known| self.ancestors(*known).len());
+    for descendant in descendants {
+      let Some(descendant_index) = self.channel_index(descendant) else {
+        continue;
+      };
+      for subscriber in &added {
+        push_unique(&mut self.channels[descendant_index].1, subscriber.clone());
+      }
     }
   }
 
