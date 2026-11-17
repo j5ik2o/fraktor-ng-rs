@@ -234,7 +234,7 @@ steps:
     system_inputs:
       - type: command
         as: result
-        command: uv run --with pyyaml python3 ledger/tools/verify_green.py
+        command: uv run --with pyyaml python3 ledger/tools/verify_green.py --response .takt/port-test-response.txt
         timeout_ms: 900000
         output: json
     rules:

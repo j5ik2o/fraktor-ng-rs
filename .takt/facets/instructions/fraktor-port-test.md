@@ -59,3 +59,9 @@ node: {台帳のノード id}
 crate: {検証対象のクレート名}
 test_file: {作成したテストファイルのパス}
 ```
+
+同じ3行を、リポジトリ直下の `.takt/port-test-response.txt` にも書き出してください
+（この3行だけを書く）。verify_red は直前応答から読みますが、verify_green は develop を
+挟むため直前応答に crate が残りません。verify_green はこのファイルを `--response` で
+読み、今回のノードの crate を確定的に選びます。`.takt/port-test-response.txt` は
+git 管理外です。
