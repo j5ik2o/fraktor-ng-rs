@@ -54,8 +54,8 @@ fn g0f_review_c2_late_hierarchy_reaches_deep_descendant_in_parent_first_order() 
   let subscriber = probe.ref_handle();
   assert!(bus.subscribe(Some(subscriber.clone()), EventClass::of::<Parent>()).expect("the probe is not null"));
 
-  // The new link reaches Child, and through it Middle and then Leaf, even
-  // though Leaf's channel was created before Middle's.
+  // The new link adds the subscribers to Child and directly to Middle and
+  // Leaf as well, even though Leaf's channel was created before Middle's.
   bus.declare_subclass::<Child, Parent>();
 
   bus.publish(Leaf);

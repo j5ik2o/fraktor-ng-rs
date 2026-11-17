@@ -154,10 +154,10 @@ impl BusState {
   /// the subscribers of the new parent's channel, plus the seed of a channel
   /// created by this declaration. The older parents are not re-read, so a
   /// subscriber explicitly removed from `child` is not brought back by an
-  /// unrelated link. The new subscribers reach the descendants in
-  /// parent-first order, the same order [`Self::unsubscribe`] uses, so a deep
-  /// descendant reads the already-updated channel of its parent instead of
-  /// the still-empty one.
+  /// unrelated link. The same set is then pushed directly into every
+  /// descendant channel, so the order in which descendants are visited does
+  /// not affect the result: a deep descendant receives the new subscribers
+  /// even when its channel was created before its parent's.
   fn propagate_subclass_link(&mut self, child: EventClass, new_parent: EventClass) {
     self.ensure(new_parent);
     let before = self.channel(child);
@@ -171,10 +171,7 @@ impl BusState {
     }
     let added: Vec<ActorRef> =
       self.channels[index].1.iter().filter(|subscriber| !before.contains(subscriber)).cloned().collect();
-    let mut descendants = self.descendants_of(child);
-    // Parents before their descendants, so a re-derived child reads the
-    // already-updated cache of a parent that is itself under `child`.
-    descendants.sort_by_key(|known| self.ancestors(*known).len());
+    let descendants = self.descendants_of(child);
     for descendant in descendants {
       let Some(descendant_index) = self.channel_index(descendant) else {
         continue;
