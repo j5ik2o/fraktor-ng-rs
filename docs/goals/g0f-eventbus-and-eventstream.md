@@ -76,7 +76,7 @@ requires: [G0e]（G0e の成果が main に入り、`rollup.py --goal G0a` か�
 
 ## provider
 
-基盤ゴールなので強いモデルを使う（論点 19）。実効並行は 1 本。assignment は発行時の既定に従う。2026-11-15 時点の主チェックアウトの実効は interim-cloud-flash（Ollama Cloud の deepseek-v4.1-flash:cloud、作業ツリーで未コミット）である。
+基盤ゴールなので強いモデルを使う（論点 19）。実効並行は 1 本。assignment は発行時の既定に従う。基盤ゴールなので、発行時に計画・設計・レビューの役割が強いモデルのプロファイルになるよう、発行者が assignment を選ぶ。
 
 ## 発行時の台帳前処理（窓口がゴール文書のプルリクエストとあわせて行う）
 
