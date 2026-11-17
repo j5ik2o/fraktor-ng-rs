@@ -25,7 +25,8 @@ rollup.py --goal を走らせる。ここでは takt も cargo も node も起�
  13. 要件10: 表に id 見出し列が無い      非0
  14. 要件10: 2列表（g0a 形式）と5列表（g0b〜g0f 形式）の両方で一致 0
  15. 実物の docs/goals/*.md 全6本で、1行目から ID が取れ、表 id 集合が現行台帳の
-     所属と一致する（文字列をテストへ埋め込まない）
+     所属と一致する（文字列をテストへ埋め込まない）。終了値の期待は台帳のノード
+     状態から求める（全ノードが green か do_not_port のときだけ 0）
  16. 失敗時も終了コードは 0 で、JSON に exit_code 非0 を載せる（takt の output: json 契約）
  17. `-t` 直渡し（order.md 無し）でも meta.json の task から完了判定できる
  18. order.md も meta.json も無ければ判定不能として失敗し COMPLETE にしない
@@ -348,6 +349,8 @@ def test_real_goal_documents_match_current_ledger():
 
     文書・台帳の文字列はテストへ埋め込まず、ファイルから読む。関門を一時ディレクトリへ
     コピーし、実物の文書と台帳をそこへ写して走らせる（実リポジトリは書き換えない）。
+    終了値の期待は台帳のノード状態から求める。未完了のゴール文書があっても、
+    完了状態と終了値が一致することだけを確かめる（完了を前提にしない）。
     """
     import re
     import yaml
@@ -384,9 +387,12 @@ def test_real_goal_documents_match_current_ledger():
             members = sorted(n["id"] for n in ledger_nodes if n.get("goal") == goal_id)
             assert members, (doc_path.name, "no ledger member for goal", goal_id)
 
+            member_nodes = [n for n in ledger_nodes if n.get("goal") == goal_id]
+            complete = all(n.get("status") in ("green", "do_not_port") for n in member_nodes)
             result = run_gate(root, response)
-            assert result["exit_code"] == 0, (doc_path.name, result)
-            print(f"15. real doc {doc_path.name} ({goal_id}): exit_code =", result["exit_code"])
+            assert (result["exit_code"] == 0) == complete, (doc_path.name, complete, result)
+            print(f"15. real doc {doc_path.name} ({goal_id}): exit_code =", result["exit_code"],
+                  "(complete)" if complete else "(incomplete)")
 
 
 def test_without_order_md_uses_meta_task():
