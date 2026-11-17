@@ -1,8 +1,30 @@
 #!/usr/bin/env python3
 """verify-green の機械ゲート（TAKT の system step から固定コマンドで呼ばれる）。
 
-直前の implement レポート（環境変数 TAKT_PREVIOUS_RESPONSE_FILE）から
-対象クレートを読み、機械ゲートをすべて実行して結果を JSON で出す。
+対象クレートは次の順で解決する（`resolve_crate`）:
+  1. `--crate <name>` 引数
+  2. `--response <path>` が指す応答ファイルの `crate:` 行
+  3. 環境変数 TAKT_PREVIOUS_RESPONSE_FILE が指す応答ファイルの `crate:` 行
+  4. 台帳 `ledger/nodes.yaml` のノード。crate は、`rust.crate` を持つ
+     `status: red` ノードが 1 件のときだけ採用する。2 件以上は曖昧なので
+     選ばずに失敗し、理由に候補の一覧を載せる。
+
+`--response` が明示されているときは 2 で確定するか、そこでの失敗で打ち切る
+（台帳へはフォールバックしない）。応答ファイルが無い・読み込みで例外になる
+（ディレクトリ、権限、UTF-8 でない）・`crate:` 行が無い場合は、指定されたパスを
+理由に含めて失敗させる。後続の 3・4 を通るのは
+`--crate` と `--response` のどちらも指定されていない場合だけである。
+`--crate` の値欠落も 2 以降へ進まずに失敗する。
+
+workflow が渡す `.takt/port-test-response.txt` が今回のノードの応答であることは、
+`save_port_test_response.py` が保証する。port-test のたびに古い内容を消してから
+書き直し、転記に失敗したときは消したままにする。
+
+選ばれた crate の解決元は、JSON の `crate_source` に
+`crate`／`response`／previous_response／ledger のいずれかで載る。応答由来か
+台帳由来かを出力から判別できるようにするためである。
+
+機械ゲートをすべて実行して結果を JSON で出す。
 終了コードは常に 0 で、合否は JSON の all_pass が持つ。
 
 ゲート:
@@ -22,44 +44,115 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 SYN_CHECK_MANIFEST = Path(__file__).resolve().parents[2] / "tools" / "syn-check" / "Cargo.toml"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def parse_crate() -> tuple[str | None, list[str]]:
-    """対象クレート名と、特定できなかった場合の理由の一覧を返す。"""
-    notes: list[str] = []
-    # 1. 直前レスポンスの `crate:` 行（あれば最優先）
-    path = os.environ.get("TAKT_PREVIOUS_RESPONSE_FILE", "")
+def crate_from_response(path: str, notes: list[str]) -> str | None:
+    """応答ファイルの `crate:` 行を返す。読めない・無い場合は notes に理由を積む。"""
     if not path:
-        notes.append("TAKT_PREVIOUS_RESPONSE_FILE is not set")
-    elif not os.path.exists(path):
-        notes.append(f"previous response file not found: {path}")
-    else:
+        notes.append("no response file to read a crate line")
+        return None
+    if not os.path.exists(path):
+        notes.append(f"response file not found: {path}")
+        return None
+    try:
         text = open(path, encoding="utf-8").read()
-        m = re.search(r"^crate:\s*(\S+)\s*$", text, re.MULTILINE)
-        if m:
-            return m.group(1), notes
-        notes.append("previous response lacks a crate line")
-    # 2. 台帳で status が red のノード（処理中の1件）の rust.crate
+    except (OSError, UnicodeDecodeError) as e:
+        notes.append(f"cannot read response file: {path}: {type(e).__name__}: {e}")
+        return None
+    m = re.search(r"^crate:\s*(\S+)\s*$", text, re.MULTILINE)
+    if not m:
+        notes.append(f"response lacks a crate line: {path}")
+        return None
+    return m.group(1)
+
+
+def crate_from_ledger(notes: list[str]) -> str | None:
+    """台帳の red ノードの rust.crate を返す。
+
+    `rust.crate` を持つ `status: red` ノードが 1 件のときだけ採用する。2 件以上は
+    別ゴールや中断した実行の red と区別できず、選ぶと別クレートを検証してしまうため、
+    候補の一覧を理由に積んで失敗させる。
+    """
     ledger = "ledger/nodes.yaml"
     if not os.path.exists(ledger):
         notes.append(f"ledger not found: {ledger}")
-    else:
-        try:
-            import yaml
-            data = yaml.safe_load(open(ledger, encoding="utf-8"))
-            for node in data.get("nodes", []):
-                if node.get("status") == "red":
-                    crate = (node.get("rust") or {}).get("crate")
-                    if crate:
-                        return crate, notes
-            notes.append("ledger has no red node with rust.crate")
-        except Exception as e:
-            notes.append(f"ledger fallback failed: {type(e).__name__}: {e}")
-    return None, notes
+        return None
+    try:
+        import yaml
+        data = yaml.safe_load(open(ledger, encoding="utf-8"))
+    except Exception as e:
+        notes.append(f"ledger fallback failed: {type(e).__name__}: {e}")
+        return None
+    candidates = []
+    for node in data.get("nodes", []):
+        if node.get("status") == "red":
+            crate = (node.get("rust") or {}).get("crate")
+            if crate:
+                candidates.append((node.get("id"), crate))
+    if not candidates:
+        notes.append("ledger has no red node with rust.crate")
+        return None
+    if len(candidates) > 1:
+        listing = ", ".join(f"{node_id}={crate}" for node_id, crate in candidates)
+        notes.append(f"ambiguous: {len(candidates)} red nodes with rust.crate ({listing}); pass --crate")
+        return None
+    return candidates[0][1]
+
+
+def parse_args(argv: list[str]) -> tuple[str | None, str | None, list[str]]:
+    """`--crate` と `--response` を取り出す。値の無い `--crate` は不正として理由を積む。"""
+    crate: str | None = None
+    response: str | None = None
+    notes: list[str] = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--crate":
+            if i + 1 >= len(argv) or argv[i + 1].startswith("--"):
+                notes.append("--crate requires a crate name")
+            else:
+                crate = argv[i + 1]
+                i += 1
+        elif arg == "--response":
+            if i + 1 >= len(argv) or argv[i + 1].startswith("--"):
+                notes.append("--response requires a file path")
+            else:
+                response = argv[i + 1]
+                i += 1
+        i += 1
+    return crate, response, notes
+
+
+CRATE_SOURCES = ("crate", "response", "previous_response", "ledger")
+
+
+def resolve_crate(argv: list[str]) -> tuple[str | None, str, str | None]:
+    """対象クレート名、特定できなかった場合の理由、解決元を返す。
+
+    `--crate` は明示指定として最優先。値の無い `--crate` と、値のある
+    `--response` で crate を確定できない場合は、そこで Fail Fast にして
+    台帳フォールバックへ無言で戻らない。`--response` 未指定のときだけ
+    TAKT_PREVIOUS_RESPONSE_FILE と台帳へ進む。
+    """
+    explicit, response, notes = parse_args(argv)
+    if explicit:
+        return explicit, "; ".join(notes), "crate"
+    if "--crate requires a crate name" in notes:
+        return None, "; ".join(notes), None
+    if response:
+        crate = crate_from_response(response, notes)
+        return crate, "; ".join(notes), ("response" if crate else None)
+    crate = crate_from_response(os.environ.get("TAKT_PREVIOUS_RESPONSE_FILE", ""), notes)
+    if crate:
+        return crate, "; ".join(notes), "previous_response"
+    crate = crate_from_ledger(notes)
+    return crate, "; ".join(notes), ("ledger" if crate else None)
+
 
 
 def run(cmd: list[str], timeout: int = 840) -> dict:
@@ -135,11 +228,11 @@ def run_aislop() -> dict:
             "detail": (proc.stdout + proc.stderr)[-800:]}
 
 
-def main() -> int:
-    crate, notes = parse_crate()
+def main(argv: list[str] | None = None) -> int:
+    crate, notes, crate_source = resolve_crate(sys.argv[1:] if argv is None else argv)
     if not crate:
         print(json.dumps({"all_pass": False,
-                          "detail": "cannot determine target crate: " + "; ".join(notes)}))
+                          "detail": "cannot determine target crate: " + notes}))
         return 0
 
     gates = {
@@ -150,7 +243,8 @@ def main() -> int:
         "aislop": run_aislop(),
     }
     all_pass = all(g["result"] in ("pass", "not_installed") for g in gates.values())
-    print(json.dumps({"all_pass": all_pass, "crate": crate, "gates": gates},
+    print(json.dumps({"all_pass": all_pass, "crate": crate, "crate_source": crate_source,
+                      "gates": gates},
                      ensure_ascii=False))
     return 0
 

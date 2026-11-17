@@ -59,3 +59,11 @@ node: {台帳のノード id}
 crate: {検証対象のクレート名}
 test_file: {作成したテストファイルのパス}
 ```
+
+同じ3行は、後段の機械判定（verify_red）と機械ゲート（verify_green）が対象を
+確定するために使われます。あなたがファイルへ書き出す必要はありません。
+ワークフローが応答を受け取った直後（ステップ `save-port-test-response`）に、
+この3行を `.takt/port-test-response.txt` へ転記します。verify_red は直前応答から
+読み、verify_green は develop を挟むため直前応答に crate が残らないので、
+このファイルを `--response` で読み、今回のノードの crate を確定します。
+`.takt/port-test-response.txt` は git 管理外です。
