@@ -139,8 +139,36 @@ impl BusState {
   }
 
   fn declare_subclass(&mut self, child: EventClass, parent: EventClass) {
-    if !self.subclass_links.iter().any(|(c, p)| *c == child && *p == parent) {
-      self.subclass_links.push((child, parent));
+    if self.subclass_links.iter().any(|(c, p)| *c == child && *p == parent) {
+      return;
+    }
+    self.subclass_links.push((child, parent));
+    self.propagate_subclass_link(child, parent);
+  }
+
+  /// Reflects a newly declared `child -> parent` link in the channels that
+  /// already exist.
+  ///
+  /// Mirrors `SubclassifiedIndex.innerAddKey`: the diff that `integrate`
+  /// returns is unioned into the cache, so an already-known key whose ancestry
+  /// changed gains the subscribers of its new super-class without losing the
+  /// ones it already had. The child's existing descendants inherit the same
+  /// subscribers, because `addValue` recurses into the sub-keys.
+  fn propagate_subclass_link(&mut self, child: EventClass, parent: EventClass) {
+    let inherited = self.channel(parent);
+    if inherited.is_empty() {
+      return;
+    }
+    let mut affected = self.descendants_of(child);
+    if self.channel_index(child).is_some() && !affected.contains(&child) {
+      affected.push(child);
+    }
+    for class in affected {
+      if let Some(index) = self.channel_index(class) {
+        for subscriber in &inherited {
+          push_unique(&mut self.channels[index].1, subscriber.clone());
+        }
+      }
     }
   }
 
