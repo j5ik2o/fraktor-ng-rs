@@ -389,8 +389,9 @@ def test_real_goal_documents_match_current_ledger():
 
             member_nodes = [n for n in ledger_nodes if n.get("goal") == goal_id]
             complete = all(n.get("status") in ("green", "do_not_port") for n in member_nodes)
+            expected = 0 if complete else 1
             result = run_gate(root, response)
-            assert (result["exit_code"] == 0) == complete, (doc_path.name, complete, result)
+            assert result["exit_code"] == expected, (doc_path.name, complete, result)
             print(f"15. real doc {doc_path.name} ({goal_id}): exit_code =", result["exit_code"],
                   "(complete)" if complete else "(incomplete)")
 
