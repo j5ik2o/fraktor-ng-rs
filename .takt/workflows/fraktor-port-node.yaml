@@ -147,10 +147,28 @@ steps:
       - at: 2
     rules:
       - condition: テストの移植が完了した（除外は承認済みの提案だけを反映）
-        next: verify_red
+        next: save-port-test-response
       - condition: 未承認の除外提案がある（移植できないケースが見つかり、人間の承認が要る）
         return: needs_human
       - condition: 移植を進行できない
+        next: ABORT
+  - name: save-port-test-response
+    description: >-
+      port-test の作業フェーズ応答（node／crate／test_file の 3 行）を
+      `.takt/port-test-response.txt` へ転記する。verify_red は直前応答を
+      読むが、verify_green は develop を挟むため直前応答に crate が残らない。
+      verify_green はこの保存先を `--response` で読む。
+    kind: system
+    system_inputs:
+      - type: command
+        as: result
+        command: python3 ledger/tools/save_port_test_response.py
+        timeout_ms: 60000
+        output: json
+    rules:
+      - condition: when(context.save-port-test-response.result.json.saved == true)
+        next: verify_red
+      - condition: when(true)
         next: ABORT
   - name: verify_red
     kind: system

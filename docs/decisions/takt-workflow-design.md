@@ -131,7 +131,9 @@ instruction、output-contract（`test-report`、`testing-review`）、workflow r
    復元は、同じ呼び出しに限られる
 4. verify_red から再開したとき、`TAKT_PREVIOUS_RESPONSE_FILE` に port-test の応答
    （node、crate、test_file の 3 行）が渡るか。渡らないと verify_red は
-   unclassifiable を返す。verify_green は、台帳の red のノードから対象を引ける
+   unclassifiable を返す。verify_green は `port-test` 直後の system step
+   `save-port-test-response` が `.takt/port-test-response.txt` へ転記した応答を
+   `--response` で読み、応答が無い場合は台帳へ落ちずに all_pass=false を返す
 5. needs_human や ABORT で終わった run の成果物が残り、次に引き継げるか（下の
    「run の成果を捨てない設計」）
 6. 再 run で、green のノードが飛ばされ、止まったノードがどこからやり直されるか
@@ -467,7 +469,7 @@ instruction に、作成・変更したテストファイルへ rustfmt を適�
 
 | プロジェクト facet | 親（builtin） | 差分 |
 |---|---|---|
-| instruction `fraktor-port-test` | `write-tests-first` | 原典の移植であること、置き場所、ケースの扱い、test-report への書き方、機械判定が読む 3 行 |
+| instruction `fraktor-port-test` | `write-tests-first` | 原典の移植であること、置き場所、ケースの扱い、test-report への書き方、機械判定が読む 3 行（保存は system step `save-port-test-response` が担う） |
 | instruction `fraktor-review-equivalence` | `testing-review` | 原典との突き合わせの 3 観点 |
 | instruction `fraktor-loop-judge` | `loop-monitor-reviewers-fix` | 選べる結果が 2 つであること、標準の語（収束中、停滞または発散）との対応、非生産的と判定したときの人間向け要約 |
 | instruction `fraktor-verify-red-loop-judge`、`fraktor-verify-green-loop-judge` | `loop-monitor-reviewers-fix` | 選べる結果が 2 つであること、標準の語との対応、直近の system step の出力、非生産的と判定したときの人間向け要約 |
@@ -751,7 +753,7 @@ output-contract は、ゼロから書かず **TAKT の標準ファセットを�
 | ステップ | 継承する標準ファセット | ng 固有の差分 |
 |---|---|---|
 | triage | persona: research-digger（自分で調べて報告する役。research-analyzer は「自分で調査を実行しない」役なので合わない） | instruction と output-contract は独自（台帳の triage） |
-| port-test | step fragment development-core-write-tests（persona: coder、policy: contract-change）、output-contract: test-report | instruction は write-tests-first を継承＋差分：出典ヘッダ、1ノード1ファイル、test-report への書き方 |
+| port-test | step fragment development-core-write-tests（persona: coder、policy: contract-change）、output-contract: test-report | instruction は write-tests-first を継承＋差分：出典ヘッダ、1ノード1ファイル、test-report への書き方、機械判定が読む 3 行。応答 3 行の保存は後段の system step `save-port-test-response`（`ledger/tools/save_port_test_response.py`）が担う |
 | implement | mini-core 内蔵（persona: coder、標準 instruction） | プロジェクト instruction は持たず、knowledge 注入で規約を届ける |
 | equivalence-review | step fragment development-testing-reviewer（persona: testing-reviewer、policy: testing、contract-change、review）、policy に ai-antipattern | instruction と output-contract は testing-review を継承＋差分：Pekko 原典との突き合わせ観点 |
 | ledger-update | persona: coder | instruction と output-contract は独自（台帳の記録と完了判定） |

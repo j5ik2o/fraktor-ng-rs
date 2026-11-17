@@ -16,6 +16,11 @@ issue #65 の回帰を固定する。crate の指定が無いとき、台帳の�
   5. crate 未指定・red 2 件以上で `main()` を実行すると、終了コード 0・
      `all_pass=false`・`gates` 無し・`detail` に候補一覧（外部契約の観測）
   6. `--response` を渡すと `main()` の JSON の `crate` が応答の crate になる
+     （`crate_source` が `response`）
+  7. `--response` のファイルが無い、または `crate:` 行が無い場合、台帳の red
+     ノードへフォールバックせず `all_pass=false` で失敗し、`detail` にパスが入る
+  8. `--response` を渡さない従来経路は、台帳の red 1 件の crate を採用する
+     （`crate_source` が `ledger`）
 
 crate の解決は cargo に依存しないので、cargo の無い環境でも走らせられる。
 `main()` の成功経路は cargo と node をスタブに置いて観測する。
@@ -69,7 +74,8 @@ def run_resolve(module, workspace: Path, *, argv: list[str] | None = None,
             response = workspace / "previous-response.txt"
             response.write_text(previous_response, encoding="utf-8")
             os.environ["TAKT_PREVIOUS_RESPONSE_FILE"] = str(response)
-        return module.resolve_crate(argv or [])
+        crate, reason, _source = module.resolve_crate(argv or [])
+        return crate, reason
     finally:
         os.chdir(cwd)
         if had_previous:
@@ -211,8 +217,59 @@ def test_main_uses_response_crate() -> None:
         assert proc.returncode == 0, (proc.returncode, proc.stderr)
         result = json.loads(proc.stdout)
         assert result["crate"] == "crate-b", result
+        assert result["crate_source"] == "response", result
         assert set(result["gates"]) == {"test", "clippy", "fmt", "syn_checker", "aislop"}, result
     print("8. main() uses --response crate:", result["crate"], result["all_pass"])
+
+
+def test_main_fails_when_response_file_missing() -> None:
+    # --response のファイルが無い場合、台帳の red ノードの crate へ無言で
+    # フォールバックせず失敗する。台帳に red（crate-b）があっても all_pass にしない。
+    with tempfile.TemporaryDirectory() as temporary:
+        workspace = Path(temporary)
+        write_ledger(workspace, [("this-node", "red", "crate-b")])
+        missing = workspace / "does-not-exist.txt"
+        proc = run_main(workspace, "--response", str(missing))
+        assert proc.returncode == 0, (proc.returncode, proc.stderr)
+        result = json.loads(proc.stdout)
+        assert result["all_pass"] is False, result
+        assert "crate" not in result, result
+        assert "gates" not in result, result
+        assert str(missing) in result["detail"], result
+    print("9. --response missing file fail:", result["detail"])
+
+
+def test_main_fails_when_response_lacks_crate_line() -> None:
+    # --response のファイルに crate: 行が無い場合も Fail Fast。台帳へは落ちない。
+    with tempfile.TemporaryDirectory() as temporary:
+        workspace = Path(temporary)
+        write_ledger(workspace, [("this-node", "red", "crate-b")])
+        response = workspace / "port-test-response.txt"
+        response.write_text("node: this-node\ntest_file: crates/crate-b/tests/x.rs\n",
+                            encoding="utf-8")
+        proc = run_main(workspace, "--response", str(response))
+        assert proc.returncode == 0, (proc.returncode, proc.stderr)
+        result = json.loads(proc.stdout)
+        assert result["all_pass"] is False, result
+        assert "gates" not in result, result
+        assert str(response) in result["detail"], result
+        assert "lacks a crate line" in result["detail"], result
+    print("10. --response without crate line fail:", result["detail"])
+
+
+def test_main_ledger_fallback_when_no_response_flag() -> None:
+    # --response を渡さない従来経路は維持される。台帳の red 1 件の crate を採用し、
+    # その解決元が crate_source に載る。
+    with tempfile.TemporaryDirectory() as temporary:
+        workspace = Path(temporary)
+        write_ledger(workspace, [("this-node", "red", "crate-b")])
+        path = make_stub_bin(workspace, "crate-b")
+        proc = run_main(workspace, path=path)
+        assert proc.returncode == 0, (proc.returncode, proc.stderr)
+        result = json.loads(proc.stdout)
+        assert result["crate"] == "crate-b", result
+        assert result["crate_source"] == "ledger", result
+    print("11. ledger fallback without --response:", result["crate"], result["crate_source"])
 
 
 def main() -> int:
@@ -225,6 +282,9 @@ def main() -> int:
     test_missing_explicit_crate_value_is_rejected(module)
     test_main_failure_json_for_ambiguous_red()
     test_main_uses_response_crate()
+    test_main_fails_when_response_file_missing()
+    test_main_fails_when_response_lacks_crate_line()
+    test_main_ledger_fallback_when_no_response_flag()
     print("ok")
     return 0
 

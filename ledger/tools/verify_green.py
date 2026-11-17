@@ -8,6 +8,17 @@
   4. 台帳 `ledger/nodes.yaml` のノード。crate は、`rust.crate` を持つ
      `status: red` ノードが 1 件のときだけ採用する。2 件以上は曖昧なので
      選ばずに失敗し、理由に候補の一覧を載せる。
+
+`--response` が明示されているときは 2 で確定するか、そこでの失敗で打ち切る
+（台帳へはフォールバックしない）。応答ファイルが読めない・`crate:` 行が無い
+場合は、指定されたパスを理由に含めて失敗させる。後続の 3・4 を通るのは
+`--crate` と `--response` のどちらも指定されていない場合だけである。
+`--crate` の値欠落も 2 以降へ進まずに失敗する。
+
+選ばれた crate の解決元は、JSON の `crate_source` に
+`crate`／`response`／previous_response／ledger のいずれかで載る。応答由来か
+台帳由来かを出力から判別できるようにするためである。
+
 機械ゲートをすべて実行して結果を JSON で出す。
 終了コードは常に 0 で、合否は JSON の all_pass が持つ。
 
@@ -108,25 +119,30 @@ def parse_args(argv: list[str]) -> tuple[str | None, str | None, list[str]]:
     return crate, response, notes
 
 
-def resolve_crate(argv: list[str]) -> tuple[str | None, str]:
-    """対象クレート名と、特定できなかった場合の理由を返す。
+CRATE_SOURCES = ("crate", "response", "previous_response", "ledger")
 
-    `--crate` は明示指定として最優先。値の無い `--crate` は Fail Fast で失敗させ、
-    台帳フォールバックへ無言で戻らない。
+
+def resolve_crate(argv: list[str]) -> tuple[str | None, str, str | None]:
+    """対象クレート名、特定できなかった場合の理由、解決元を返す。
+
+    `--crate` は明示指定として最優先。値の無い `--crate` と、値のある
+    `--response` で crate を確定できない場合は、そこで Fail Fast にして
+    台帳フォールバックへ無言で戻らない。`--response` 未指定のときだけ
+    TAKT_PREVIOUS_RESPONSE_FILE と台帳へ進む。
     """
     explicit, response, notes = parse_args(argv)
     if explicit:
-        return explicit, "; ".join(notes)
+        return explicit, "; ".join(notes), "crate"
     if "--crate requires a crate name" in notes:
-        return None, "; ".join(notes)
-    crate = crate_from_response(response, notes) if response else None
-    if crate:
-        return crate, "; ".join(notes)
+        return None, "; ".join(notes), None
+    if response:
+        crate = crate_from_response(response, notes)
+        return crate, "; ".join(notes), ("response" if crate else None)
     crate = crate_from_response(os.environ.get("TAKT_PREVIOUS_RESPONSE_FILE", ""), notes)
     if crate:
-        return crate, "; ".join(notes)
+        return crate, "; ".join(notes), "previous_response"
     crate = crate_from_ledger(notes)
-    return crate, "; ".join(notes)
+    return crate, "; ".join(notes), ("ledger" if crate else None)
 
 
 
@@ -204,7 +220,7 @@ def run_aislop() -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    crate, notes = resolve_crate(sys.argv[1:] if argv is None else argv)
+    crate, notes, crate_source = resolve_crate(sys.argv[1:] if argv is None else argv)
     if not crate:
         print(json.dumps({"all_pass": False,
                           "detail": "cannot determine target crate: " + notes}))
@@ -218,7 +234,8 @@ def main(argv: list[str] | None = None) -> int:
         "aislop": run_aislop(),
     }
     all_pass = all(g["result"] in ("pass", "not_installed") for g in gates.values())
-    print(json.dumps({"all_pass": all_pass, "crate": crate, "gates": gates},
+    print(json.dumps({"all_pass": all_pass, "crate": crate, "crate_source": crate_source,
+                      "gates": gates},
                      ensure_ascii=False))
     return 0
 
