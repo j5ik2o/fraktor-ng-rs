@@ -143,32 +143,45 @@ impl BusState {
       return;
     }
     self.subclass_links.push((child, parent));
-    self.propagate_subclass_link(child, parent);
+    self.propagate_subclass_link(child);
   }
 
-  /// Reflects a newly declared `child -> parent` link in the channels that
-  /// already exist.
+  /// Reflects a newly declared link in `child` and the channels below it.
   ///
-  /// Mirrors `SubclassifiedIndex.innerAddKey`: the diff that `integrate`
-  /// returns is unioned into the cache, so an already-known key whose ancestry
-  /// changed gains the subscribers of its new super-class without losing the
-  /// ones it already had. The child's existing descendants inherit the same
-  /// subscribers, because `addValue` recurses into the sub-keys.
-  fn propagate_subclass_link(&mut self, child: EventClass, parent: EventClass) {
-    let inherited = self.channel(parent);
-    if inherited.is_empty() {
-      return;
+  /// Mirrors `SubclassifiedIndex.innerAddKey`: the new key is integrated under
+  /// its most specific known super-class, and `addValue` recurses into the
+  /// sub-keys. The subscribers of each affected channel are therefore
+  /// re-derived from [`Self::direct_parents`], the same rule [`Self::ensure`]
+  /// uses, so a channel that only exists because of a later publish already
+  /// follows the new ancestry, and a subscription removed from an intermediate
+  /// channel is not revived.
+  fn propagate_subclass_link(&mut self, child: EventClass) {
+    self.rederive_inherited(child);
+    for descendant in self.descendants_of(child) {
+      self.rederive_inherited(descendant);
     }
-    let mut affected = self.descendants_of(child);
-    if self.channel_index(child).is_some() && !affected.contains(&child) {
-      affected.push(child);
-    }
-    for class in affected {
-      if let Some(index) = self.channel_index(class) {
-        for subscriber in &inherited {
-          push_unique(&mut self.channels[index].1, subscriber.clone());
-        }
+  }
+
+  /// Rebuilds the inherited subscribers of `class` from every direct parent
+  /// channel, keeping the subscribers that were added to `class` directly.
+  ///
+  /// `class` may still be unknown: its channel is created, which is what a
+  /// later publish would do, so the new ancestry is visible before the first
+  /// event of that class.
+  fn rederive_inherited(&mut self, class: EventClass) {
+    self.ensure(class);
+    let direct = self.direct_parents(class);
+    let mut inherited = Vec::new();
+    for parent in &direct {
+      for subscriber in self.channel(*parent) {
+        push_unique(&mut inherited, subscriber);
       }
+    }
+    let Some(index) = self.channel_index(class) else {
+      return;
+    };
+    for subscriber in inherited {
+      push_unique(&mut self.channels[index].1, subscriber);
     }
   }
 
