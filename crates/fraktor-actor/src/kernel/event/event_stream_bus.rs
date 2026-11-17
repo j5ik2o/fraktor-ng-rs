@@ -139,8 +139,46 @@ impl BusState {
   }
 
   fn declare_subclass(&mut self, child: EventClass, parent: EventClass) {
-    if !self.subclass_links.iter().any(|(c, p)| *c == child && *p == parent) {
-      self.subclass_links.push((child, parent));
+    if self.subclass_links.iter().any(|(c, p)| *c == child && *p == parent) {
+      return;
+    }
+    self.subclass_links.push((child, parent));
+    self.propagate_subclass_link(child, parent);
+  }
+
+  /// Reflects a newly declared link in `child` and the channels below it.
+  ///
+  /// Mirrors `SubclassifiedIndex.innerAddKey`: the new key is integrated under
+  /// its most specific known super-class, and `addValue` recurses into the
+  /// sub-keys. Only the subscribers that newly appear in `child` flow down:
+  /// the subscribers of the new parent's channel, plus the seed of a channel
+  /// created by this declaration. The older parents are not re-read, so a
+  /// subscriber explicitly removed from `child` is not brought back by an
+  /// unrelated link. The same set is then pushed directly into every
+  /// descendant channel, so the order in which descendants are visited does
+  /// not affect the result: a deep descendant receives the new subscribers
+  /// even when its channel was created before its parent's.
+  fn propagate_subclass_link(&mut self, child: EventClass, new_parent: EventClass) {
+    self.ensure(new_parent);
+    let before = self.channel(child);
+    self.ensure(child);
+    let contributed = self.channel(new_parent);
+    let Some(index) = self.channel_index(child) else {
+      return;
+    };
+    for subscriber in contributed {
+      push_unique(&mut self.channels[index].1, subscriber);
+    }
+    let added: Vec<ActorRef> =
+      self.channels[index].1.iter().filter(|subscriber| !before.contains(subscriber)).cloned().collect();
+    let descendants = self.descendants_of(child);
+    for descendant in descendants {
+      let Some(descendant_index) = self.channel_index(descendant) else {
+        continue;
+      };
+      for subscriber in &added {
+        push_unique(&mut self.channels[descendant_index].1, subscriber.clone());
+      }
     }
   }
 
