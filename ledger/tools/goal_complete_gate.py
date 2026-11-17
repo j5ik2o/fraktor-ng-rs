@@ -6,10 +6,12 @@ triage や ledger-update の指示に頼らず、機械的に次を順に行う�
 
 1. `TAKT_PREVIOUS_RESPONSE_FILE` の **3階層上** を run の context ディレクトリとする
    （`<context>/system-commands/<uuid>/response.txt`）。それより上は遡らない。
-2. `<context>/task/order.md` を読み、`docs/goals/<x>.md` を1件だけ採る（0件・複数件は失敗）。
+2. ゴール文書パスを `<context>/task/order.md` から探し、無ければ run 直下の
+   `meta.json` の `task`（`-t` 直渡しの発行時タスク文字列）から探す。`docs/goals/<x>.md`
+   を1件だけ採る（0件・複数件は失敗）。
 3. ゴール文書の **先頭行だけ** から `# ゴール G0x：…` の ID を取り出す。
-4. ゴール文書の `## 対象ノード` 表の `id` 列と、台帳で `goal == <ID>` のノード集合が
-   一致することを確かめる（要件10）。表が読めない・空・不一致は失敗。
+4. ゴール文書の `## 対象ノード` 節内の `id` 列と、台帳で `goal == <ID>` のノード集合が
+   一致することを確かめる（要件10）。節外の表は読まない。表が読めない・空・不一致は失敗。
 5. `rollup.py --goal <ID>` を実行し、その終了コードと出力（未完了 id の一覧を含む）を返す。
 
 `output: json` の system step は終了コード 0 のときだけ stdout の JSON を読む。したがって
@@ -44,11 +46,33 @@ def context_directory(response: str) -> str | None:
 
 
 def goal_path_from_order(order_text: str) -> tuple[str | None, str]:
-    """order.md から `docs/goals/<x>.md` を集める。1件だけなら採る。"""
+    """タスク文書から `docs/goals/<x>.md` を集める。1件だけなら採る。"""
     found = sorted(set(GOAL_PATH.findall(order_text)))
     if len(found) != 1:
-        return None, f"order.md のゴール文書パスが {len(found)} 件: {found}"
+        return None, f"タスク文書のゴール文書パスが {len(found)} 件: {found}"
     return found[0], ""
+
+
+def task_text_for_goal(context: str) -> tuple[str | None, str]:
+    """ゴール文書パスを探す入力テキストを解決する。
+
+    `<context>/task/order.md` を最優先する（taskSpec を伴う発行で作られる）。
+    `-t` 直渡しの発行では taskSpec が作られず order.md が無いため、run 直下の
+    `meta.json` の `task`（発行時に渡したタスク文字列）へ切り替える。どちらも
+    無ければ判定不能として失敗する。
+    """
+    order = os.path.join(context, "task", "order.md")
+    if os.path.exists(order):
+        with open(order, encoding="utf-8") as f:
+            return f.read(), ""
+    meta = os.path.join(context, "..", "meta.json")
+    if not os.path.exists(meta):
+        return None, f"order.md も meta.json も無い: {order} / {meta}"
+    with open(meta, encoding="utf-8") as f:
+        task = json.load(f).get("task")
+    if not isinstance(task, str):
+        return None, f"meta.json の task が文字列ではない: {meta}"
+    return task, ""
 
 
 def goal_id_from_document(text: str) -> tuple[str | None, str]:
@@ -63,14 +87,23 @@ def goal_id_from_document(text: str) -> tuple[str | None, str]:
 
 
 def table_ids_from_document(text: str) -> tuple[list[str] | None, str]:
-    """`## 対象ノード` 直後の表の `id` 列を読む。見出し行で列位置を決める。"""
+    """`## 対象ノード` 節内の表の `id` 列を読む。見出し行で列位置を決める。
+
+    走査は節の範囲（次の `## ` 見出しの直前まで）に限る。後続する別の節の表
+    （検証結果など）を対象ノード表として解釈しない。
+    """
     lines = text.splitlines()
     start = next((i for i, l in enumerate(lines) if l.startswith("## 対象ノード")), None)
     if start is None:
         return None, "対象ノードの節が無い"
+    section = lines[start:]
+    for offset, line in enumerate(section[1:], start=1):
+        if line.startswith("## "):
+            section = section[:offset]
+            break
     header: list[str] | None = None
     ids: list[str] = []
-    for line in lines[start:]:
+    for line in section:
         if not line.startswith("|"):
             continue
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
@@ -123,11 +156,10 @@ def evaluate(response: str | None) -> dict:
         return {"exit_code": FAIL_EXIT,
                 "detail": f"3階層上が context ディレクトリではない: {response}"}
 
-    order = os.path.join(context, "task", "order.md")
-    if not os.path.exists(order):
-        return {"exit_code": FAIL_EXIT, "detail": f"order.md が無い: {order}"}
-    with open(order, encoding="utf-8") as f:
-        goal_path, error = goal_path_from_order(f.read())
+    task_text, error = task_text_for_goal(context)
+    if task_text is None:
+        return {"exit_code": FAIL_EXIT, "detail": error}
+    goal_path, error = goal_path_from_order(task_text)
     if goal_path is None:
         return {"exit_code": FAIL_EXIT, "detail": error}
 
@@ -155,7 +187,11 @@ def evaluate(response: str | None) -> dict:
 
 
 def main() -> int:
-    result = evaluate(os.environ.get("TAKT_PREVIOUS_RESPONSE_FILE", ""))
+    try:
+        result = evaluate(os.environ.get("TAKT_PREVIOUS_RESPONSE_FILE", ""))
+    except Exception as error:  # 入力起因の失敗を JSON 契約へ変換する。原因は隠さない
+        result = {"exit_code": FAIL_EXIT,
+                  "detail": f"判定中に入力起因の例外: {type(error).__name__}: {error}"}
     result.setdefault("output", "")
     print(json.dumps(result, ensure_ascii=False))
     return 0

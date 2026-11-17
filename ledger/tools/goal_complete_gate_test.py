@@ -27,6 +27,10 @@ rollup.py --goal を走らせる。ここでは takt も cargo も node も起�
  15. 実物の docs/goals/*.md 全6本で、1行目から ID が取れ、表 id 集合が現行台帳の
      所属と一致する（文字列をテストへ埋め込まない）
  16. 失敗時も終了コードは 0 で、JSON に exit_code 非0 を載せる（takt の output: json 契約）
+ 17. `-t` 直渡し（order.md 無し）でも meta.json の task から完了判定できる
+ 18. order.md も meta.json も無ければ判定不能として失敗し COMPLETE にしない
+ 19. 台帳 YAML が不正でも終了コード 0 で JSON を出し exit_code 非0 と原因を返す
+ 20. `## 対象ノード` 節の後に別の表があっても、節外の表を id と解釈しない
 """
 import json
 import os
@@ -103,6 +107,27 @@ def make_run(root: Path, order_text: str, ledger: str,
     for name, text in (goal_docs or {}).items():
         write(root / "docs" / "goals" / name, text)
     return response
+
+
+def make_run_without_order(root: Path, task_text: str, ledger: str,
+                           goal_docs: dict[str, str] | None = None) -> Path:
+    """`-t` 直渡しの発行を模す。order.md を作らず、run 直下に meta.json だけ置く。
+
+    <root>/.takt/runs/<slug>/context/system-commands/<uuid>/response.txt
+    <root>/.takt/runs/<slug>/meta.json （task に発行時タスク文字列）
+    <root>/ledger/nodes.yaml
+    <root>/ledger/tools/rollup.py
+    """
+    run = root / ".takt" / "runs" / SLUG
+    response = run / "context" / "system-commands" / UUID / "response.txt"
+    write(response, "dummy\n")
+    write(run / "meta.json", json.dumps({"task": task_text}, ensure_ascii=False))
+    write(root / "ledger" / "nodes.yaml", ledger)
+    write(root / "ledger" / "tools" / "rollup.py", ROLLUP.read_text(encoding="utf-8"))
+    for name, text in (goal_docs or {}).items():
+        write(root / "docs" / "goals" / name, text)
+    return response
+
 
 
 def run_gate(root: Path, response: Path | None, set_env: bool = True) -> dict:
@@ -363,6 +388,64 @@ def test_real_goal_documents_match_current_ledger():
             print(f"15. real doc {doc_path.name} ({goal_id}): exit_code =", result["exit_code"])
 
 
+def test_without_order_md_uses_meta_task():
+    """`-t` 直渡しの発行（order.md 無し）でも meta.json の task から完了判定できる。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.scala", "a/B.scala"]
+        ledger = ledger_yaml([(ids[0], "green", "G0z"), (ids[1], "green", "G0z")])
+        response = make_run_without_order(
+            root, order_with(["docs/goals/g0z-stub.md"]), ledger, one_goal_doc("G0z", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] == 0, result
+        print("17. -t path via meta.json: exit_code =", result["exit_code"])
+
+
+def test_without_order_md_and_without_meta_fails():
+    """order.md も meta.json も無ければ判定不能として失敗し、COMPLETE にしない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.scala"]
+        ledger = ledger_yaml([(ids[0], "green", "G0z")])
+        run = root / ".takt" / "runs" / SLUG
+        response = run / "context" / "system-commands" / UUID / "response.txt"
+        write(response, "dummy\n")
+        write(root / "ledger" / "nodes.yaml", ledger)
+        write(root / "ledger" / "tools" / "rollup.py", ROLLUP.read_text(encoding="utf-8"))
+        result = run_gate(root, response)
+        assert result["exit_code"] != 0, result
+        print("18. neither order.md nor meta.json: exit_code =", result["exit_code"])
+
+
+def test_invalid_ledger_yaml_yields_json_failure():
+    """台帳 YAML が不正でも終了コード 0 で JSON を出し、exit_code 非0 と原因を返す。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.scala"]
+        ledger = "nodes: [\n"
+        response = make_run(root, order_with(["docs/goals/g0z-stub.md"]), ledger,
+                            one_goal_doc("G0z", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] != 0, result
+        assert "detail" in result and result["detail"], result
+        print("19. invalid ledger yaml: exit_code =", result["exit_code"])
+
+
+def test_table_after_target_section_is_ignored():
+    """`## 対象ノード` 節の後に別の表を足しても、節外の表を id と解釈しない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.scala", "a/B.scala"]
+        ledger = ledger_yaml([(ids[0], "green", "G0z"), (ids[1], "green", "G0z")])
+        doc = one_goal_doc("G0z", ids)["g0z-stub.md"]
+        doc += "\n## 検証結果\n\n| Check | Result |\n|---|---|\n| x | ok |\n"
+        response = make_run(root, order_with(["docs/goals/g0z-stub.md"]), ledger,
+                            {"g0z-stub.md": doc})
+        result = run_gate(root, response)
+        assert result["exit_code"] == 0, result
+        print("20. table after target section: exit_code =", result["exit_code"])
+
+
 def main() -> int:
     tests = [
         test_pending_node_is_not_complete,
@@ -380,6 +463,10 @@ def main() -> int:
         test_table_without_id_column_fails,
         test_two_and_five_column_tables_both_pass,
         test_real_goal_documents_match_current_ledger,
+        test_without_order_md_uses_meta_task,
+        test_without_order_md_and_without_meta_fails,
+        test_invalid_ledger_yaml_yields_json_failure,
+        test_table_after_target_section_is_ignored,
     ]
     failures = 0
     for test in tests:
