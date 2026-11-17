@@ -10,10 +10,15 @@
      選ばずに失敗し、理由に候補の一覧を載せる。
 
 `--response` が明示されているときは 2 で確定するか、そこでの失敗で打ち切る
-（台帳へはフォールバックしない）。応答ファイルが読めない・`crate:` 行が無い
-場合は、指定されたパスを理由に含めて失敗させる。後続の 3・4 を通るのは
+（台帳へはフォールバックしない）。応答ファイルが無い・読み込みで例外になる
+（ディレクトリ、権限、UTF-8 でない）・`crate:` 行が無い場合は、指定されたパスを
+理由に含めて失敗させる。後続の 3・4 を通るのは
 `--crate` と `--response` のどちらも指定されていない場合だけである。
 `--crate` の値欠落も 2 以降へ進まずに失敗する。
+
+workflow が渡す `.takt/port-test-response.txt` が今回のノードの応答であることは、
+`save_port_test_response.py` が保証する。port-test のたびに古い内容を消してから
+書き直し、転記に失敗したときは消したままにする。
 
 選ばれた crate の解決元は、JSON の `crate_source` に
 `crate`／`response`／previous_response／ledger のいずれかで載る。応答由来か
@@ -54,7 +59,11 @@ def crate_from_response(path: str, notes: list[str]) -> str | None:
     if not os.path.exists(path):
         notes.append(f"response file not found: {path}")
         return None
-    text = open(path, encoding="utf-8").read()
+    try:
+        text = open(path, encoding="utf-8").read()
+    except (OSError, UnicodeDecodeError) as e:
+        notes.append(f"cannot read response file: {path}: {type(e).__name__}: {e}")
+        return None
     m = re.search(r"^crate:\s*(\S+)\s*$", text, re.MULTILINE)
     if not m:
         notes.append(f"response lacks a crate line: {path}")

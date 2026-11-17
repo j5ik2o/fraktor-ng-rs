@@ -39,11 +39,9 @@ def read_response(path: str) -> dict:
 
 
 def discard_target() -> None:
-    """前回の保存内容を消す。存在しなければ何もしない。"""
-    try:
+    """前回の保存内容を消す。"""
+    if os.path.exists(TARGET):
         os.remove(TARGET)
-    except FileNotFoundError:
-        pass
 
 
 def fail(detail: str) -> int:

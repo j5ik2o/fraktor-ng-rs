@@ -133,7 +133,10 @@ instruction、output-contract（`test-report`、`testing-review`）、workflow r
    （node、crate、test_file の 3 行）が渡るか。渡らないと verify_red は
    unclassifiable を返す。verify_green は `port-test` 直後の system step
    `save-port-test-response` が `.takt/port-test-response.txt` へ転記した応答を
-   `--response` で読み、応答が無い場合は台帳へ落ちずに all_pass=false を返す
+   `--response` で読み、応答が無い・読めない場合は台帳へ落ちずに all_pass=false を
+   返す。転記の工程は書き出す前に古いファイルを消し、転記に失敗したら消したまま
+   ABORT する。verify_green へは必ずこの工程を通って入るので、前のノードの応答が
+   残っていても今回のクレートとして検証しない
 5. needs_human や ABORT で終わった run の成果物が残り、次に引き継げるか（下の
    「run の成果を捨てない設計」）
 6. 再 run で、green のノードが飛ばされ、止まったノードがどこからやり直されるか
