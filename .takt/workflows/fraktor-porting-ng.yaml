@@ -22,8 +22,24 @@ steps:
       - condition: node_green
         next: port_node
       - condition: goal_complete
-        next: COMPLETE
+        next: goal_complete_gate
       - condition: needs_human
         next: ABORT
       - condition: ABORT
         next: ABORT
+  - name: goal_complete_gate
+    description: >-
+      ゴール完了を rollup.py --goal の終了コードで確かめる関門。
+      0 なら COMPLETE、それ以外は port_node へ戻す。判定不能は port_node へ戻す。
+    kind: system
+    system_inputs:
+      - type: command
+        as: result
+        command: uv run --with pyyaml python3 ledger/tools/goal_complete_gate.py
+        timeout_ms: 600000
+        output: json
+    rules:
+      - condition: when(context.goal_complete_gate.result.json.exit_code == 0)
+        next: COMPLETE
+      - condition: when(true)
+        next: port_node
