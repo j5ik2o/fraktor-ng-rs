@@ -29,7 +29,8 @@ import yaml
 
 LEDGER = os.path.join("ledger", "nodes.yaml")
 ROLLUP = os.path.join("ledger", "tools", "rollup.py")
-GOAL_PATH = re.compile(r"docs/goals/[A-Za-z0-9._-]+\.md")
+GOAL_PATH = re.compile(r"(?<![\w.-])docs/goals/[A-Za-z0-9_-]+\.md(?![\w./-])")
+TABLE_SEPARATOR = re.compile(r":?-{3,}:?")
 GOAL_ID = re.compile(r"^# ゴール (G0[a-zA-Z0-9]+)：")
 TABLE_ID = re.compile(r"`([^`]+)`")
 FAIL_EXIT = 2
@@ -46,7 +47,12 @@ def context_directory(response: str) -> str | None:
 
 
 def goal_path_from_order(order_text: str) -> tuple[str | None, str]:
-    """タスク文書から `docs/goals/<x>.md` を集める。1件だけなら採る。"""
+    """タスク文書から `docs/goals/<x>.md` を集める。1件だけなら採る。
+
+    `docs/goals/` に続く `<x>` は `.md` の直後まで1つのファイル名として扱い、
+    `docs/goals/<x>.md/<sub>` や `docs/goals/<x>.md.<ext>` のような後続文字を
+    持つ参照はゴール文書パスとして採らない（`GOAL_PATH` の前後の境界で判定する）。
+    """
     found = sorted(set(GOAL_PATH.findall(order_text)))
     if len(found) != 1:
         return None, f"タスク文書のゴール文書パスが {len(found)} 件: {found}"
@@ -118,11 +124,14 @@ def table_ids_from_document(text: str) -> tuple[list[str] | None, str]:
         if header is None:
             header = cells
             continue
-        if all(set(c) <= set("-: ") for c in cells):
+        if all(TABLE_SEPARATOR.fullmatch(c) for c in cells):
             continue
         if "id" not in header:
             return None, "対象ノードの表に id 列が無い"
-        cell = cells[header.index("id")]
+        index = header.index("id")
+        if len(cells) <= index:
+            return None, f"対象ノードの表に id 列が欠けた行がある: {line.strip()!r}"
+        cell = cells[index]
         m = TABLE_ID.search(cell)
         if not m:
             return None, f"表の id 列からパスを読めない: {cell!r}"

@@ -474,6 +474,101 @@ def test_second_table_inside_target_section_is_ignored():
         print("21. second table inside target section: exit_code =", result["exit_code"])
 
 
+def test_goal_path_with_trailing_subpath_is_not_adopted():
+    """`docs/goals/<x>.md/<sub>` の後続部分パスを、ゴール文書パスとして採らない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.scala"]
+        ledger = ledger_yaml([(ids[0], "green", "G0z")])
+        response = make_run(
+            root, "参照: docs/goals/g0z-stub.md/notes.md を確認する。\n", ledger,
+            one_goal_doc("G0z", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] != 0, result
+        assert "0 件" in result["detail"], result
+        print("22. goal path with trailing subpath: exit_code =", result["exit_code"])
+
+
+def test_goal_path_with_trailing_extension_is_not_adopted():
+    """`docs/goals/<x>.md.<ext>` の後続拡張子を、ゴール文書パスとして採らない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.scala"]
+        ledger = ledger_yaml([(ids[0], "green", "G0z")])
+        response = make_run(root, "参照: docs/goals/g0z-stub.md.bak\n", ledger,
+                            one_goal_doc("G0z", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] != 0, result
+        assert "0 件" in result["detail"], result
+        print("23. goal path with trailing extension: exit_code =", result["exit_code"])
+
+
+def test_goal_path_with_sentence_punctuation_is_adopted():
+    """整形式のゴール文書パスは、後ろに文の句読点が続いても1件だけ採用される。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.scala", "a/B.scala"]
+        ledger = ledger_yaml([(ids[0], "green", "G0z"), (ids[1], "green", "G0z")])
+        response = make_run(root, "定義の正は docs/goals/g0z-stub.md。\n", ledger,
+                            one_goal_doc("G0z", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] == 0, result
+        print("24. well-formed goal path in sentence: exit_code =", result["exit_code"])
+
+
+def test_separator_line_with_three_dashes_is_skipped():
+    """`\\|---\\|` の区切り線は区切りとして扱い、id として数えない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.scala", "a/B.scala"]
+        ledger = ledger_yaml([(ids[0], "green", "G0z"), (ids[1], "green", "G0z")])
+        response = make_run(root, order_with(["docs/goals/g0z-stub.md"]), ledger,
+                            one_goal_doc("G0z", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] == 0, result
+        print("25. three-dash separator: exit_code =", result["exit_code"])
+
+
+def test_single_dash_data_row_is_not_treated_as_separator():
+    """`\\| - \\| - \\|` の行はデータ行として読み、id 列から読めない失敗にする。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.scala"]
+        ledger = ledger_yaml([(ids[0], "green", "G0z")])
+        doc = (
+            "# ゴール G0z：テスト用のゴール\n\n"
+            "## 対象ノード（1件）\n\n"
+            "| id | ケース数 |\n|---|---|\n| `a/A.scala` | 1 |\n| - | - |\n"
+        )
+        response = make_run(root, order_with(["docs/goals/g0z-stub.md"]), ledger,
+                            {"g0z-stub.md": doc})
+        result = run_gate(root, response)
+        assert result["exit_code"] != 0, result
+        assert "対象ノードの表に行が無い" not in result["detail"], result
+        assert "'-'" in result["detail"], result
+        print("26. single-dash data row: exit_code =", result["exit_code"])
+
+
+def test_row_missing_id_column_fails_with_shape_reason():
+    """id 列が欠けた行は、例外名ではなく表の形状を説明する理由で失敗する。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.scala"]
+        ledger = ledger_yaml([(ids[0], "green", "G0z")])
+        doc = (
+            "# ゴール G0z：テスト用のゴール\n\n"
+            "## 対象ノード（1件）\n\n"
+            "| 処理順 | id | ケース数 |\n|---|---|---|\n"
+            "| 1 | `a/A.scala` | 1 |\n| 2 |\n"
+        )
+        response = make_run(root, order_with(["docs/goals/g0z-stub.md"]), ledger,
+                            {"g0z-stub.md": doc})
+        result = run_gate(root, response)
+        assert result["exit_code"] != 0, result
+        assert "id 列が欠けた行" in result["detail"], result
+        print("27. row missing id column: exit_code =", result["exit_code"])
+
+
 def main() -> int:
     tests = [
         test_pending_node_is_not_complete,
@@ -496,6 +591,12 @@ def main() -> int:
         test_invalid_ledger_yaml_yields_json_failure,
         test_table_after_target_section_is_ignored,
         test_second_table_inside_target_section_is_ignored,
+        test_goal_path_with_trailing_subpath_is_not_adopted,
+        test_goal_path_with_trailing_extension_is_not_adopted,
+        test_goal_path_with_sentence_punctuation_is_adopted,
+        test_separator_line_with_three_dashes_is_skipped,
+        test_single_dash_data_row_is_not_treated_as_separator,
+        test_row_missing_id_column_fails_with_shape_reason,
     ]
     failures = 0
     for test in tests:
