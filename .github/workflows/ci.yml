@@ -22,7 +22,7 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
       - name: cargo clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo fmt
         run: cargo fmt --check
       - name: syn checker

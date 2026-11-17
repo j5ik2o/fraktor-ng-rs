@@ -7,7 +7,7 @@
 
 ゲート:
   test     cargo test -p <crate>（クレート全体。既存テストの退行検出を含む）
-  clippy   cargo clippy -p <crate> -- -D warnings
+  clippy   cargo clippy -p <crate> --all-targets -- -D warnings
   fmt      cargo fmt --check
   syn_checker  tools/syn-check を対象クレートのディレクトリに対して実行する。
                違反かパース不能のファイルがあれば fail。チェッカーが無い環境
@@ -144,7 +144,7 @@ def main() -> int:
 
     gates = {
         "test": run(["cargo", "test", "-p", crate]),
-        "clippy": run(["cargo", "clippy", "-p", crate, "--", "-D", "warnings"]),
+        "clippy": run(["cargo", "clippy", "-p", crate, "--all-targets", "--", "-D", "warnings"]),
         "fmt": run(["cargo", "fmt", "--check"]),
         "syn_checker": run_syn_checker(crate),
         "aislop": run_aislop(),
