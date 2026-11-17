@@ -87,10 +87,14 @@ def goal_id_from_document(text: str) -> tuple[str | None, str]:
 
 
 def table_ids_from_document(text: str) -> tuple[list[str] | None, str]:
-    """`## 対象ノード` 節内の表の `id` 列を読む。見出し行で列位置を決める。
+    """`## 対象ノード` 節内の最初の表の `id` 列を読む。見出し行で列位置を決める。
 
     走査は節の範囲（次の `## ` 見出しの直前まで）に限る。後続する別の節の表
     （検証結果など）を対象ノード表として解釈しない。
+
+    節内で最初の表の見出し行を一度だけ確定し、その後に `|` で始まらない行
+    （空行・本文・`### ` 小見出し）が来たら表の終端として走査を止める。節内に
+    別の表が続いても、その見出し行を対象ノード表のヘッダとして上書きしない。
     """
     lines = text.splitlines()
     start = next((i for i, l in enumerate(lines) if l.startswith("## 対象ノード")), None)
@@ -103,9 +107,13 @@ def table_ids_from_document(text: str) -> tuple[list[str] | None, str]:
             break
     header: list[str] | None = None
     ids: list[str] = []
-    for line in section:
+    started = False
+    for line in section[1:]:
         if not line.startswith("|"):
+            if started:
+                break
             continue
+        started = True
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if header is None:
             header = cells

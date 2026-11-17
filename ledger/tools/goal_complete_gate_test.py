@@ -31,6 +31,7 @@ rollup.py --goal を走らせる。ここでは takt も cargo も node も起�
  18. order.md も meta.json も無ければ判定不能として失敗し COMPLETE にしない
  19. 台帳 YAML が不正でも終了コード 0 で JSON を出し exit_code 非0 と原因を返す
  20. `## 対象ノード` 節の後に別の表があっても、節外の表を id と解釈しない
+ 21. `## 対象ノード` 節内で対象ノード表の後に別の表が続いても、最初の表だけを読む
 """
 import json
 import os
@@ -446,6 +447,27 @@ def test_table_after_target_section_is_ignored():
         print("20. table after target section: exit_code =", result["exit_code"])
 
 
+def test_second_table_inside_target_section_is_ignored():
+    """`## 対象ノード` 節内で対象ノード表の後に別の表が続いても、最初の表だけを読む。
+
+    空行区切りの表と `### ` 小見出し区切りの表の両方を含む1文書で確かめる。
+    """
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.scala", "a/B.scala"]
+        ledger = ledger_yaml([(ids[0], "green", "G0z"), (ids[1], "green", "G0z")])
+        doc = one_goal_doc("G0z", ids)["g0z-stub.md"]
+        doc += (
+            "\n| 名前 | 備考 |\n|---|---|\n| 補足A | x |\n"
+            "\n### 補足\n\n| 名前 | 備考 |\n|---|---|\n| 補足B | y |\n"
+        )
+        response = make_run(root, order_with(["docs/goals/g0z-stub.md"]), ledger,
+                            {"g0z-stub.md": doc})
+        result = run_gate(root, response)
+        assert result["exit_code"] == 0, result
+        print("21. second table inside target section: exit_code =", result["exit_code"])
+
+
 def main() -> int:
     tests = [
         test_pending_node_is_not_complete,
@@ -467,6 +489,7 @@ def main() -> int:
         test_without_order_md_and_without_meta_fails,
         test_invalid_ledger_yaml_yields_json_failure,
         test_table_after_target_section_is_ignored,
+        test_second_table_inside_target_section_is_ignored,
     ]
     failures = 0
     for test in tests:
