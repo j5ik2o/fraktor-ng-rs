@@ -70,9 +70,10 @@ fn unhandled_message_forwarder_releases_the_subscription_table_when_the_system_i
   stream.start_unhandled_message_forwarder();
 
   let (subscriber_flag, dropped) = DropFlag::new();
-  let subscriber = system.function_ref("forwarder-ownership-subscriber", move |_sender: &ActorRef, _message: Message| {
-    let _ = &subscriber_flag;
-  });
+  let subscriber =
+    system.function_ref("forwarder-ownership-subscriber", move |_sender: &ActorRef, _message: Message| {
+      let _ = &subscriber_flag;
+    });
   stream.subscribe(Some(subscriber.clone()), EventClass::any()).expect("the subscriber is not null");
 
   assert!(!dropped.load(Ordering::SeqCst), "the subscriber is alive while the stream holds it");
