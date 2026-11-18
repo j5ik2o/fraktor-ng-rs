@@ -2,6 +2,7 @@
 //! starts.
 
 use alloc::sync::Arc;
+use alloc::sync::Weak;
 use alloc::vec::Vec;
 use core::any::Any;
 use core::any::TypeId;
@@ -12,6 +13,10 @@ use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::event::EventClass;
 use crate::kernel::event::NullSubscriber;
 use crate::kernel::message::Message;
+
+#[cfg(test)]
+#[path = "event_stream_bus_test.rs"]
+mod tests;
 
 /// The subscription table of an event stream.
 ///
@@ -92,16 +97,39 @@ impl EventStreamBus {
   /// `Message`. Every other value is published to the subscribers of its own
   /// class.
   pub fn publish<E: Any + Send + Sync>(&self, event: E) {
+    Self::publish_through(&self.state, event);
+  }
+
+  /// Publishes `event` through an already-promoted handle to the shared state.
+  ///
+  /// A subscriber that the table itself retains must not hold the table by a
+  /// strong reference, or the two would keep each other alive after the stream
+  /// is gone. The unhandled-message forwarder is such a subscriber: it keeps
+  /// only the weak handle from [`EventStreamBus::downgrade`], upgrades it while
+  /// delivering, and publishes through the promoted state. The class
+  /// resolution and recipient collection are the same as [`EventStreamBus::publish`].
+  fn publish_through<E: Any + Send + Sync>(state: &Mutex<BusState>, event: E) {
     let message = Message::new(event);
     let class = if TypeId::of::<E>() == TypeId::of::<Message>() {
       EventClass::of_type_id(message.payload_type_id())
     } else {
       EventClass::of::<E>()
     };
-    let recipients = self.state.lock().recipients_of(class);
+    let recipients = state.lock().recipients_of(class);
     for recipient in recipients {
       recipient.tell(message.clone(), recipient.clone());
     }
+  }
+
+  /// Returns a weak handle to the shared state of this table.
+  ///
+  /// A subscriber that the table itself retains must not hold the table by a
+  /// strong reference, or the two would keep each other alive after the stream
+  /// is gone. The unhandled-message forwarder is such a subscriber: it publishes
+  /// through this weak handle and does nothing once the handle no longer
+  /// upgrades.
+  pub(crate) fn downgrade(&self) -> EventStreamBusWeak {
+    EventStreamBusWeak { state: Arc::downgrade(&self.state) }
   }
 
   /// Returns whether `subscriber` still holds a subscription on any channel.
@@ -124,6 +152,31 @@ impl EventStreamBus {
 impl Default for EventStreamBus {
   fn default() -> Self {
     Self::new()
+  }
+}
+
+/// A non-owning handle to the shared state of an [`EventStreamBus`].
+///
+/// A subscriber that the table retains must not hold the table by a strong
+/// reference, or the subscription table and that subscriber would keep each
+/// other alive after the stream is gone. Such a subscriber stores this handle
+/// and publishes through it; once the table is dropped, [`EventStreamBusWeak::publish`]
+/// has nothing to upgrade and silently does nothing.
+#[derive(Clone)]
+pub(crate) struct EventStreamBusWeak {
+  state: Weak<Mutex<BusState>>,
+}
+
+impl EventStreamBusWeak {
+  /// Publishes `event` to the subscribers of its class while the table is alive.
+  ///
+  /// Does nothing once the table has been dropped, so a late delivery neither
+  /// panics nor reaches the subscribers of a stream that is gone.
+  pub(crate) fn publish<E: Any + Send + Sync>(&self, event: E) {
+    let Some(state) = self.state.upgrade() else {
+      return;
+    };
+    EventStreamBus::publish_through(&state, event);
   }
 }
 
