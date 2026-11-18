@@ -202,12 +202,16 @@ impl EventStream {
   /// level.
   ///
   /// Mirrors `LoggingBus.startDefaultLoggers`: each logger receives
-  /// `InitializeLogger` and is subscribed to the channels of the accepted
-  /// levels, and `level` is remembered so a later [`EventStream::set_log_level`]
-  /// can change the set. The subscription is applied to the channels `level`
-  /// accepts directly rather than through [`EventStream::set_log_level`]'s
-  /// difference from the saved level, so a `set_log_level` made before any
-  /// logger started does not leave the loggers subscribed to nothing.
+  /// `InitializeLogger` and its subscription is set to exactly the channels of
+  /// the accepted levels, and `level` is remembered so a later
+  /// [`EventStream::set_log_level`] can change the set. The accepted channels
+  /// are subscribed and the channels `level` does not accept are unsubscribed,
+  /// which is the same dropping side [`EventStream::set_log_level`] uses, so
+  /// restarting an already started logger at a lower level leaves the
+  /// subscription state a fresh start at that level would have. Applying the
+  /// absolute set rather than [`EventStream::set_log_level`]'s difference from
+  /// the saved level keeps a `set_log_level` made before any logger started
+  /// from leaving the loggers subscribed to nothing.
   pub fn start_default_loggers(&self, loggers: &[ActorRef], level: LogLevel) {
     self.setup.borrow_mut().loggers = loggers.to_vec();
     for logger in loggers {
@@ -215,10 +219,14 @@ impl EventStream {
     }
     self.system.run_until_idle();
     for candidate in LOG_LEVELS {
+      let class = candidate.event_class();
       if candidate <= level {
-        let class = candidate.event_class();
         for logger in loggers {
           let _ = self.subscribe(Some(logger.clone()), class);
+        }
+      } else {
+        for logger in loggers {
+          let _ = self.unsubscribe(Some(logger.clone()), class);
         }
       }
     }
