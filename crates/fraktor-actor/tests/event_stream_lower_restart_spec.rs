@@ -82,10 +82,11 @@ fn one_second() -> Duration {
   Duration::from_secs(1)
 }
 
-// Starts one logger, points it at the test actor, and returns the logger.
-fn logger_forwarding_to_test_actor(spec: &mut FraktorSpec, bus: &EventStream) -> ActorRef {
+// Starts one logger at the given level, points it at the test actor, and
+// returns the logger.
+fn logger_forwarding_to_test_actor(spec: &mut FraktorSpec, bus: &EventStream, level: LogLevel) -> ActorRef {
   let logger = spec.system_mut().actor_of(Props::new(MyLog::new));
-  bus.start_default_loggers(core::slice::from_ref(&logger), LogLevel::Debug);
+  bus.start_default_loggers(core::slice::from_ref(&logger), level);
   bus.publish(SetTarget { target: spec.test_actor() });
   spec.expect_msg("OK");
   logger
@@ -101,7 +102,7 @@ fn logger_forwarding_to_test_actor(spec: &mut FraktorSpec, bus: &EventStream) ->
 fn start_default_loggers_must_drop_the_channels_a_lower_restart_does_not_accept() {
   let mut spec = FraktorSpec::new("EventStreamLowerRestartDrops");
   let bus = EventStream::new(spec.system().downgrade(), false);
-  let logger = logger_forwarding_to_test_actor(&mut spec, &bus);
+  let logger = logger_forwarding_to_test_actor(&mut spec, &bus, LogLevel::Debug);
 
   bus.start_default_loggers(&[logger], LogLevel::Warning);
   bus.publish(Info::new(String::new(), 0, "info"));
@@ -122,7 +123,7 @@ fn start_default_loggers_must_drop_the_channels_a_lower_restart_does_not_accept(
 fn start_default_loggers_must_keep_the_channels_a_lower_restart_accepts() {
   let mut spec = FraktorSpec::new("EventStreamLowerRestartKeeps");
   let bus = EventStream::new(spec.system().downgrade(), false);
-  let logger = logger_forwarding_to_test_actor(&mut spec, &bus);
+  let logger = logger_forwarding_to_test_actor(&mut spec, &bus, LogLevel::Debug);
 
   bus.start_default_loggers(&[logger], LogLevel::Warning);
   bus.publish(Warning::new(String::new(), 0, "warning"));
@@ -145,7 +146,7 @@ fn start_default_loggers_must_keep_the_channels_a_lower_restart_accepts() {
 fn start_default_loggers_must_not_duplicate_a_same_level_restart() {
   let mut spec = FraktorSpec::new("EventStreamSameLevelRestart");
   let bus = EventStream::new(spec.system().downgrade(), false);
-  let logger = logger_forwarding_to_test_actor(&mut spec, &bus);
+  let logger = logger_forwarding_to_test_actor(&mut spec, &bus, LogLevel::Info);
 
   bus.start_default_loggers(&[logger], LogLevel::Info);
   bus.publish(Info::new(String::new(), 0, "info"));
