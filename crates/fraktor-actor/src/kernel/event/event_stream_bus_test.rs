@@ -69,9 +69,5 @@ fn a_weak_handle_delivers_while_the_table_is_alive_and_stays_silent_after_it_is_
 
   let delivered_before = boundary.len();
   weak.publish(43_u32);
-  assert_eq!(
-    boundary.len(),
-    delivered_before,
-    "a delivery through the weak handle is dropped once the table is gone"
-  );
+  assert_eq!(boundary.len(), delivered_before, "a delivery through the weak handle is dropped once the table is gone");
 }
