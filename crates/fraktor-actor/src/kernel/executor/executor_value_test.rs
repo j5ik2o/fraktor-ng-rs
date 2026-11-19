@@ -11,6 +11,7 @@ use crate::kernel::actor_system::ActorSystem;
 struct RecoveryObservations {
   attempts: usize,
   restarts: usize,
+  active_recoveries: usize,
   restart_depths: Vec<usize>,
   worker_creations: Vec<bool>,
   workers: Vec<ActorRef>,
@@ -20,6 +21,21 @@ struct RecoveryObservations {
   received: Vec<&'static str>,
   terminated: Vec<ActorRef>,
   events: Vec<(String, String)>,
+}
+
+struct RecoveryScope(Arc<Mutex<RecoveryObservations>>);
+
+impl RecoveryScope {
+  fn enter(observations: &Arc<Mutex<RecoveryObservations>>) -> Self {
+    observations.lock().unwrap().active_recoveries += 1;
+    Self(Arc::clone(observations))
+  }
+}
+
+impl Drop for RecoveryScope {
+  fn drop(&mut self) {
+    self.0.lock().unwrap().active_recoveries -= 1;
+  }
 }
 
 struct RecoveryEventSink(Arc<Mutex<RecoveryObservations>>);
@@ -88,18 +104,17 @@ impl Actor for RecoveringParent {
     self.observations.lock().unwrap().child = Some(child);
   }
 
-  fn pre_restart(&mut self, _context: &mut ActorContext<'_>, _reason: &(dyn core::any::Any + Send)) {}
+  fn pre_restart(&mut self, context: &mut ActorContext<'_>, _reason: &(dyn core::any::Any + Send)) {
+    let scope = RecoveryScope::enter(&self.observations);
+    // The discarded behavior stack outlives child recovery, unlike this hook.
+    context.change_behavior(move |_, _| {
+      let _scope = &scope;
+    });
+  }
 
   fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
-    let backtrace = std::backtrace::Backtrace::force_capture();
-    assert_eq!(backtrace.status(), std::backtrace::BacktraceStatus::Captured);
-    let stack = alloc::format!("{backtrace}");
-    let depth = stack
-      .lines()
-      .filter(|line| line.contains("::executor_value::") && line.trim_end().ends_with("::restart_cell"))
-      .count();
-    assert!(depth > 0, "parent restart frames must be visible: {stack}");
     let mut observations = self.observations.lock().unwrap();
+    let depth = observations.active_recoveries;
     observations.restarts += 1;
     observations.restart_depths.push(depth);
   }
@@ -254,8 +269,15 @@ fn run_recovery(
     }
   }
   let observed = observations.lock().unwrap();
+  assert_eq!(observed.active_recoveries, 0, "all parent recovery scopes must be released");
+  assert_eq!(observed.restart_depths.len(), observed.restarts);
+  assert!(observed.restart_depths.iter().all(|depth| *depth > 0), "parent recovery must be observed");
   let depth = *observed.restart_depths.iter().max().expect("parent restart was observed");
-  std::eprintln!("restart stack depths: {:?}", observed.restart_depths);
+  std::eprintln!(
+    "overlapping parent recoveries: {:?}; active at end: {}",
+    observed.restart_depths,
+    observed.active_recoveries
+  );
   let child_notices = observed.terminated.iter().filter(|notice| *notice == &child).count();
   assert!(observed.terminated.iter().all(|notice| notice == &child || parent_stopped));
   let initialization_failures = observed.attempts.min(failures);
