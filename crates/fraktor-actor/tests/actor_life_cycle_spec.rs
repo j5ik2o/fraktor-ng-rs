@@ -136,7 +136,7 @@ impl Actor for RestartReportingActor {
     self.inner.post_stop();
   }
 
-  fn pre_restart(&mut self, _reason: &(dyn Any + Send)) {
+  fn pre_restart(&mut self, _context: &mut ActorContext<'_>, _reason: &(dyn Any + Send)) {
     self.inner.report("preRestart");
   }
 

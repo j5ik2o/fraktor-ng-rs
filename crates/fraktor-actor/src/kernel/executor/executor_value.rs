@@ -584,7 +584,7 @@ impl Executor {
   }
 
   /// Stops every child of `parent`, letting `stop` carry out the usual order.
-  fn stop_children_of(&mut self, parent: &ActorRef) {
+  pub(crate) fn stop_children_of(&mut self, parent: &ActorRef) {
     let children: Vec<ActorRef> =
       self.cells.iter().filter(|cell| cell.is_child_of(parent)).map(|cell| cell.self_ref()).collect();
     for child in children {
@@ -1104,13 +1104,20 @@ impl Executor {
   fn restart_cell(&mut self, target: &ActorRef, mut cell: ActorCell, cause_name: &str, message: &str) {
     let reason = self.failure_reason(target, cause_name, message);
     let reason_box: Box<dyn core::any::Any + Send> = Box::new(reason);
-    let pre_restart_failed = match self.catcher.clone() {
-      | Some(catcher) => catcher.run(&mut || cell.pre_restart(reason_box.as_ref())),
-      | None => {
-        cell.pre_restart(reason_box.as_ref());
-        RunOutcome::Completed
-      },
+    let catcher = self.catcher.clone();
+    let mut old_stack = cell.take_stack();
+    self.enter_frame(target);
+    let pre_restart_failed = {
+      let mut context = ActorContext::new(target.clone(), target.clone(), self, &mut old_stack);
+      match catcher {
+        | Some(catcher) => catcher.run(&mut || cell.pre_restart(&mut context, reason_box.as_ref())),
+        | None => {
+          cell.pre_restart(&mut context, reason_box.as_ref());
+          RunOutcome::Completed
+        },
+      }
     };
+    self.exit_frame();
     if let RunOutcome::Failed { message } = pre_restart_failed {
       self.publish_child_failure(target, RUNTIME_CAUSE, &message);
     }
@@ -1130,7 +1137,20 @@ impl Executor {
     self.exit_frame();
     cell.restore_stack(stack);
     match restarted {
-      | RunOutcome::Completed => self.cells.push(cell),
+      | RunOutcome::Completed => {
+        self.cells.push(cell);
+        let children: Vec<ActorRef> = self
+          .cells
+          .iter()
+          .filter(|child| child.is_child_of(target) && !child.is_created())
+          .map(|child| child.self_ref())
+          .collect();
+        for child in children {
+          if let Some(index) = self.cells.iter().position(|cell| cell.accepts(&child) && !cell.is_created()) {
+            self.create_initial(index);
+          }
+        }
+      },
       | RunOutcome::Failed { message } => {
         self.publish_child_failure(target, RUNTIME_CAUSE, &message);
         cell.suppress_post_stop();
