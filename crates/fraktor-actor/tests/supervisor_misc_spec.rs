@@ -105,7 +105,7 @@ impl Actor for SupervisorActor {
     self.strategy
   }
 
-  fn pre_restart(&mut self, _reason: &(dyn core::any::Any + Send)) {}
+  fn pre_restart(&mut self, _context: &mut ActorContext<'_>, _reason: &(dyn core::any::Any + Send)) {}
 }
 
 // Original: the anonymous `Actor` of case 1. Its `postRestart` counts down the
@@ -156,7 +156,7 @@ impl Actor for NamedChildInConstructor {
 
   // Original: `override def preStart(): Unit = testActor ! "preStart"`
   fn pre_start(&mut self, context: &mut ActorContext<'_>) {
-    let _ = context.actor_of(empty_props(), "bob");
+    context.actor_of(empty_props(), "bob").expect("the constructor must create bob before reporting preStart");
     self.test_actor.tell("preStart", self.test_actor.clone());
   }
 }
@@ -446,6 +446,41 @@ fn be_able_to_create_named_children_in_its_constructor() {
 
   // Original: `a.isTerminated should ===(false)` — the restarted actor is alive.
   assert!(!case.system().is_actor_terminated(&actor), "the actor restarted by the exception must still be alive");
+}
+
+// Occupying bob first exercises the real refusal in the named-child hook.
+struct StartsNamedChildWithOccupiedName {
+  actor: NamedChildInConstructor,
+}
+
+impl Actor for StartsNamedChildWithOccupiedName {
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    context.actor_of(empty_props(), "bob").expect("the fixture must occupy bob first");
+    self.actor.pre_start(context);
+  }
+
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+}
+
+#[test]
+fn a_failed_named_child_creation_does_not_report_pre_start_success() {
+  let mut case = SupervisorMiscSpecCase::new();
+  let notifications = Arc::new(AtomicUsize::new(0));
+  let observer = case.system().function_ref("notifications", {
+    let notifications = Arc::clone(&notifications);
+    move |_sender: &ActorRef, message: Message| {
+      if text_of(&message) == Some("preStart") {
+        notifications.fetch_add(1, Ordering::SeqCst);
+      }
+    }
+  });
+  let actor = case.actor_of(Props::new(move || StartsNamedChildWithOccupiedName {
+    actor: NamedChildInConstructor { test_actor: observer.clone() },
+  }));
+  case.system().run_until_idle();
+
+  assert_eq!(notifications.load(Ordering::SeqCst), 0, "a refused bob creation was reported as successful preStart");
+  assert!(case.system().is_actor_terminated(&actor), "the failed creation must fail actor initialization");
 }
 
 // "A Supervisor" must { "be able to recreate child when old child is Terminated" in { ... } }
