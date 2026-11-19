@@ -1139,6 +1139,11 @@ impl Executor {
     match restarted {
       | RunOutcome::Completed => {
         self.cells.push(cell);
+        #[cfg(test)]
+        let _recovery_scope = tests::RecoveryScope::enter(target);
+        // A retained child's decider can fail again; defer that failure until
+        // this recovery returns instead of restarting the same parent inside it.
+        self.enter_frame(target);
         let children: Vec<ActorRef> = self
           .cells
           .iter()
@@ -1150,6 +1155,7 @@ impl Executor {
             self.create_initial(index);
           }
         }
+        self.exit_frame();
       },
       | RunOutcome::Failed { message } => {
         self.publish_child_failure(target, RUNTIME_CAUSE, &message);
