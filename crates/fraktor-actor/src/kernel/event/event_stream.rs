@@ -271,7 +271,7 @@ impl EventStream {
       return;
     }
     self.setup.borrow_mut().forwarder_started = true;
-    let bus = self.bus.clone();
+    let bus = self.bus.downgrade();
     let forwarder = self.system.function_ref(UNHANDLED_FORWARDER_NAME, move |_sender: &ActorRef, message: Message| {
       let Some(unhandled) = message.downcast_ref::<crate::kernel::actor::UnhandledMessage>() else {
         return;
