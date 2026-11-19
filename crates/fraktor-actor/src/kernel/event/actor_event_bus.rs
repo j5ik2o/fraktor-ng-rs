@@ -13,6 +13,10 @@ use crate::kernel::actor_system::WeakActorSystem;
 use crate::kernel::event::EventStream;
 use crate::kernel::message::Message;
 
+#[cfg(test)]
+#[path = "actor_event_bus_test.rs"]
+mod tests;
+
 /// The class the ported debug events report, standing in for the `Class` of the
 /// unsubscriber that Pekko names.
 const DEBUG_LOG_CLASS: i32 = 0;
@@ -32,9 +36,10 @@ const DEBUG_LOG_CLASS: i32 = 0;
 /// reports with `existence_confirmed = false`. A subscriber that stops later is
 /// removed through the termination callback.
 ///
-/// The bus shares its subscription table with one termination callback of the
-/// executor. The callback touches only the table and the event stream, never the
-/// executor, because the executor is borrowed while the callback runs.
+/// The executor's termination callback holds only weak handles to the table and
+/// event stream, so it cannot extend their lifetimes after the bus is dropped.
+/// Both handles must upgrade before subscriptions or debug events change.
+/// The callback never touches the executor, which is borrowed while it runs.
 pub struct ActorEventBus<E: Clone + Send + Sync + 'static> {
   system: WeakActorSystem,
   event_stream: EventStream,
@@ -57,10 +62,18 @@ impl<E: Clone + Send + Sync + 'static> ActorEventBus<E> {
   {
     let subscriptions = Rc::new(RefCell::new(Subscriptions::new()));
     let callback = {
-      let subscriptions = Rc::clone(&subscriptions);
-      let event_stream = event_stream.clone();
+      let subscriptions = Rc::downgrade(&subscriptions);
+      let event_stream = event_stream.downgrade();
       let name = name.to_string();
-      move |target: &ActorRef| detach_subscriber(&subscriptions, &event_stream, &name, debug, target)
+      move |target: &ActorRef| {
+        let Some(subscriptions) = subscriptions.upgrade() else {
+          return;
+        };
+        let Some(event_stream) = event_stream.upgrade() else {
+          return;
+        };
+        detach_subscriber(&subscriptions, |event| event_stream.publish(event), &name, debug, target);
+      }
     };
     system.on_termination(callback);
     Self { system, event_stream, name: name.to_string(), debug, classify: Box::new(classify), subscriptions }
@@ -79,7 +92,13 @@ impl<E: Clone + Send + Sync + 'static> ActorEventBus<E> {
       | Some(newly_watched) => {
         if newly_watched {
           if self.system.is_actor_terminated(&subscriber) {
-            detach_subscriber(&self.subscriptions, &self.event_stream, &self.name, self.debug, &subscriber);
+            detach_subscriber(
+              &self.subscriptions,
+              |event| self.event_stream.publish(event),
+              &self.name,
+              self.debug,
+              &subscriber,
+            );
           } else if self.debug {
             let registered = format!("registered watch for {} in {}", subscriber.path(), self.name);
             self.event_stream.publish(Debug::new(self.name.clone(), DEBUG_LOG_CLASS, &registered));
@@ -140,7 +159,7 @@ impl<E: Clone + Send + Sync + 'static> ActorEventBus<E> {
 /// `Terminated`.
 fn detach_subscriber(
   subscriptions: &Rc<RefCell<Subscriptions>>,
-  event_stream: &EventStream,
+  publish_debug: impl Fn(Debug),
   name: &str,
   debug: bool,
   target: &ActorRef,
@@ -151,9 +170,9 @@ fn detach_subscriber(
   }
   let path = target.path();
   let terminated = format!("actor {path} has terminated, unsubscribing it from {name}");
-  event_stream.publish(Debug::new(String::from(name), DEBUG_LOG_CLASS, &terminated));
+  publish_debug(Debug::new(String::from(name), DEBUG_LOG_CLASS, &terminated));
   let unregistered = format!("unregistered watch of {path} in {name}");
-  event_stream.publish(Debug::new(String::from(name), DEBUG_LOG_CLASS, &unregistered));
+  publish_debug(Debug::new(String::from(name), DEBUG_LOG_CLASS, &unregistered));
 }
 
 /// The classifier-to-subscriber table and the subscribers the bus watches.

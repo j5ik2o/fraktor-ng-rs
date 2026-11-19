@@ -15,6 +15,7 @@ use crate::kernel::actor::Logging::LogLevel;
 use crate::kernel::actor::Terminated;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::actor_system::WeakActorSystem;
+use crate::kernel::event::event_stream_bus::EventStreamBusWeak;
 use crate::kernel::event::EventClass;
 use crate::kernel::event::EventStreamBus;
 use crate::kernel::event::NullSubscriber;
@@ -78,6 +79,11 @@ impl EventStream {
   /// name `E` and recover it.
   pub fn publish<E: Any + Send + Sync>(&self, event: E) {
     self.bus.publish(event);
+  }
+
+  /// Keeps callbacks from extending the lifetime of this stream's subscribers.
+  pub(crate) fn downgrade(&self) -> EventStreamBusWeak {
+    self.bus.downgrade()
   }
 
   /// Subscribes `subscriber` to `event_class`.

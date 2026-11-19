@@ -71,3 +71,20 @@ fn a_weak_handle_delivers_while_the_table_is_alive_and_stays_silent_after_it_is_
   weak.publish(43_u32);
   assert_eq!(boundary.len(), delivered_before, "a delivery through the weak handle is dropped once the table is gone");
 }
+
+#[test]
+fn an_upgraded_handle_keeps_the_table_alive_only_until_it_is_dropped() {
+  let boundary = Arc::new(QueueBoundary::new());
+  let bus = EventStreamBus::new();
+  let weak = bus.downgrade();
+  let target = subscriber(Arc::clone(&boundary) as Arc<dyn ShardBoundary>, "pekko://upgraded-handle/sys/user/probe");
+  bus.subscribe(Some(target), EventClass::any()).expect("the target is not null");
+  let upgraded = weak.upgrade().expect("the table is alive");
+
+  drop(bus);
+  upgraded.publish(42_u32);
+  assert_eq!(boundary.len(), 1, "the promoted handle publishes through the original subscription table");
+
+  drop(upgraded);
+  assert!(weak.upgrade().is_none(), "no strong owner remains after the promoted handle is dropped");
+}
