@@ -1,6 +1,5 @@
 use super::*;
 
-use std::cell::RefCell;
 use std::sync::Mutex;
 
 use crate::adaptor::ChannelBoundary;
@@ -8,46 +7,15 @@ use crate::adaptor::UnwindCatcher;
 use crate::kernel::actor::Actor;
 use crate::kernel::actor_system::ActorSystem;
 
-std::thread_local! {
-  static RECOVERY_DEPTH: RefCell<Option<RecoveryDepth>> = const { RefCell::new(None) };
-}
-
-struct RecoveryDepth {
-  target: ActorRef,
-  active: usize,
-  maximum: usize,
-}
-
-pub(super) struct RecoveryScope(bool);
-
-impl RecoveryScope {
-  pub(super) fn enter(target: &ActorRef) -> Self {
-    let tracked = RECOVERY_DEPTH.with_borrow_mut(|measurement| {
-      if let Some(depth) = measurement.as_mut().filter(|depth| &depth.target == target) {
-        depth.active += 1;
-        depth.maximum = depth.maximum.max(depth.active);
-        return true;
-      }
-      false
-    });
-    Self(tracked)
-  }
-}
-
-impl Drop for RecoveryScope {
-  fn drop(&mut self) {
-    if self.0 {
-      RECOVERY_DEPTH.with_borrow_mut(|measurement| {
-        measurement.as_mut().expect("a tracked recovery has a measurement").active -= 1;
-      });
-    }
-  }
-}
-
 #[derive(Default)]
 struct RecoveryObservations {
   attempts: usize,
   restarts: usize,
+  restart_depths: Vec<usize>,
+  worker_creations: Vec<bool>,
+  workers: Vec<ActorRef>,
+  previous_worker_stopped: Vec<bool>,
+  duplicate_worker_rejected: Option<bool>,
   child: Option<ActorRef>,
   received: Vec<&'static str>,
   terminated: Vec<ActorRef>,
@@ -96,6 +64,7 @@ struct RecoveringParent {
   observations: Arc<Mutex<RecoveryObservations>>,
   failures: usize,
   stop_on_success: bool,
+  spawn_worker: bool,
   strategy: SupervisorStrategy,
 }
 
@@ -104,9 +73,15 @@ impl Actor for RecoveringParent {
     let observations = Arc::clone(&self.observations);
     let failures = self.failures;
     let stop_on_success = self.stop_on_success;
+    let spawn_worker = self.spawn_worker;
     let child = context
       .actor_of(
-        Props::new(move || RecoveringChild { observations: Arc::clone(&observations), failures, stop_on_success }),
+        Props::new(move || RecoveringChild {
+          observations: Arc::clone(&observations),
+          failures,
+          stop_on_success,
+          spawn_worker,
+        }),
         "bob",
       )
       .expect("the child name is free");
@@ -116,7 +91,17 @@ impl Actor for RecoveringParent {
   fn pre_restart(&mut self, _context: &mut ActorContext<'_>, _reason: &(dyn core::any::Any + Send)) {}
 
   fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
-    self.observations.lock().unwrap().restarts += 1;
+    let backtrace = std::backtrace::Backtrace::force_capture();
+    assert_eq!(backtrace.status(), std::backtrace::BacktraceStatus::Captured);
+    let stack = alloc::format!("{backtrace}");
+    let depth = stack
+      .lines()
+      .filter(|line| line.contains("::executor_value::") && line.trim_end().ends_with("::restart_cell"))
+      .count();
+    assert!(depth > 0, "parent restart frames must be visible: {stack}");
+    let mut observations = self.observations.lock().unwrap();
+    observations.restarts += 1;
+    observations.restart_depths.push(depth);
   }
 
   fn supervisor_strategy(&self) -> SupervisorStrategy {
@@ -128,6 +113,7 @@ struct RecoveringChild {
   observations: Arc<Mutex<RecoveryObservations>>,
   failures: usize,
   stop_on_success: bool,
+  spawn_worker: bool,
 }
 
 impl Actor for RecoveringChild {
@@ -137,15 +123,35 @@ impl Actor for RecoveringChild {
       observations.attempts += 1;
       observations.attempts
     };
+    if self.spawn_worker {
+      let previous = self.observations.lock().unwrap().workers.last().cloned();
+      if let Some(previous) = previous {
+        let stopped = context.is_terminated(&previous);
+        self.observations.lock().unwrap().previous_worker_stopped.push(stopped);
+      }
+      let worker = context.actor_of(Props::new(|| Guardian), "worker");
+      {
+        let mut observations = self.observations.lock().unwrap();
+        observations.worker_creations.push(worker.is_ok());
+        if let Ok(reference) = &worker {
+          observations.workers.push(reference.clone());
+        }
+      }
+      worker.expect("a failed attempt must release its worker name before recovery");
+    }
     assert!(attempt > self.failures, "child initialization failed");
     if self.stop_on_success {
       context.stop(&context.self_ref());
     }
   }
 
-  fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
     if let Some(text) = message.downcast_ref::<&'static str>() {
       self.observations.lock().unwrap().received.push(text);
+      if self.spawn_worker {
+        let rejected = context.actor_of(Props::new(|| Guardian), "worker").is_err();
+        self.observations.lock().unwrap().duplicate_worker_rejected = Some(rejected);
+      }
     }
   }
 }
@@ -155,6 +161,7 @@ fn run_recovery(
   max_retries: u32,
   later_decision: Option<Directive>,
   stop_on_success: bool,
+  spawn_worker: bool,
 ) -> (usize, usize, usize, bool, bool, usize) {
   let observations = Arc::new(Mutex::new(RecoveryObservations::default()));
   let decisions = Arc::new(Mutex::new(0));
@@ -182,7 +189,13 @@ fn run_recovery(
     &guardian,
     Props::new({
       let observations = Arc::clone(&observations);
-      move || RecoveringParent { observations: Arc::clone(&observations), failures, stop_on_success, strategy }
+      move || RecoveringParent {
+        observations: Arc::clone(&observations),
+        failures,
+        stop_on_success,
+        spawn_worker,
+        strategy,
+      }
     }),
     Some("parent"),
     SupervisorStrategy::one_for_one(max_retries),
@@ -206,13 +219,23 @@ fn run_recovery(
   healthy.tell("read", guardian.clone());
   system.run_until_idle();
   assert_eq!(*values.lock().unwrap(), alloc::vec![(healthy.clone(), 1)]);
-  RECOVERY_DEPTH.with_borrow_mut(|measurement| {
-    *measurement = Some(RecoveryDepth { target: parent.clone(), active: 0, maximum: 0 })
-  });
 
   parent.tell("go", guardian.clone());
   system.run_until_idle();
   let child = observations.lock().unwrap().child.clone().expect("creation returned the child handle");
+  if spawn_worker {
+    let observed = observations.lock().unwrap();
+    let stopped: Vec<bool> = observed.workers.iter().map(|worker| system.is_actor_terminated(worker)).collect();
+    std::eprintln!(
+      "worker creations: {:?}; previous worker stopped before retry: {:?}; worker stopped at end: {stopped:?}",
+      observed.worker_creations,
+      observed.previous_worker_stopped
+    );
+    assert_eq!(observed.worker_creations, alloc::vec![true, true]);
+    assert_eq!(observed.previous_worker_stopped, alloc::vec![true]);
+    assert_eq!(stopped, alloc::vec![true, false]);
+    assert_ne!(observed.workers[0], observed.workers[1]);
+  }
   let parent_stopped = system.is_actor_terminated(&parent);
   let child_stopped = system.is_actor_terminated(&child);
   assert_eq!(system.is_actor_terminated(&healthy), parent_stopped);
@@ -226,13 +249,13 @@ fn run_recovery(
     child.tell("recovered", guardian);
     system.run_until_idle();
     assert_eq!(observations.lock().unwrap().received, alloc::vec!["recovered"]);
+    if spawn_worker {
+      assert_eq!(observations.lock().unwrap().duplicate_worker_rejected, Some(true));
+    }
   }
-  let depth = RECOVERY_DEPTH.with_borrow_mut(|measurement| {
-    let depth = measurement.take().expect("parent recovery was measured");
-    assert_eq!(depth.active, 0, "recovery scopes must be released");
-    depth.maximum
-  });
   let observed = observations.lock().unwrap();
+  let depth = *observed.restart_depths.iter().max().expect("parent restart was observed");
+  std::eprintln!("restart stack depths: {:?}", observed.restart_depths);
   let child_notices = observed.terminated.iter().filter(|notice| *notice == &child).count();
   assert!(observed.terminated.iter().all(|notice| notice == &child || parent_stopped));
   let initialization_failures = observed.attempts.min(failures);
@@ -260,25 +283,31 @@ fn run_recovery(
 
 #[test]
 fn repeated_child_recovery_failures_do_not_nest_parent_recovery() {
-  assert_eq!(run_recovery(1, 3, None, false), (2, 1, 1, false, false, 0));
-  assert_eq!(run_recovery(3, 3, None, false), (4, 3, 1, false, false, 0));
+  assert_eq!(run_recovery(1, 3, None, false, false), (2, 1, 1, false, false, 0));
+  assert_eq!(run_recovery(3, 3, None, false, false), (4, 3, 1, false, false, 0));
 }
 
 #[test]
 fn repeated_child_recovery_failures_obey_parent_retry_limit() {
-  assert_eq!(run_recovery(3, 2, None, false), (3, 2, 1, true, true, 1));
+  assert_eq!(run_recovery(3, 2, None, false, false), (3, 2, 1, true, true, 1));
 }
 
 #[test]
 fn child_recovery_preserves_restart_and_stop_decisions() {
-  assert_eq!(run_recovery(3, 3, Some(Directive::Restart), false), (4, 1, 1, false, false, 0));
-  assert_eq!(run_recovery(3, 3, Some(Directive::Stop), false), (2, 1, 1, false, true, 1));
+  assert_eq!(run_recovery(3, 3, Some(Directive::Restart), false, false), (4, 1, 1, false, false, 0));
+  assert_eq!(run_recovery(3, 3, Some(Directive::Stop), false, false), (2, 1, 1, false, true, 1));
 }
 
 #[test]
 fn child_recovery_drains_stop_requests_and_termination_notices() {
-  assert_eq!(run_recovery(1, 3, None, false), (2, 1, 1, false, false, 0));
-  assert_eq!(run_recovery(1, 3, None, true), (2, 1, 1, false, true, 1));
+  assert_eq!(run_recovery(1, 3, None, false, false), (2, 1, 1, false, false, 0));
+  assert_eq!(run_recovery(1, 3, None, true, false), (2, 1, 1, false, true, 1));
+}
+
+#[test]
+fn child_recovery_stops_workers_from_the_failed_initialization_attempt() {
+  assert_eq!(run_recovery(1, 3, None, false, false), (2, 1, 1, false, false, 0));
+  assert_eq!(run_recovery(1, 3, None, false, true), (2, 1, 1, false, false, 0));
 }
 
 impl Executor {

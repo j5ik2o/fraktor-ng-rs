@@ -1139,8 +1139,6 @@ impl Executor {
     match restarted {
       | RunOutcome::Completed => {
         self.cells.push(cell);
-        #[cfg(test)]
-        let _recovery_scope = tests::RecoveryScope::enter(target);
         // A retained child's decider can fail again; defer that failure until
         // this recovery returns instead of restarting the same parent inside it.
         self.enter_frame(target);
@@ -1151,6 +1149,10 @@ impl Executor {
           .map(|child| child.self_ref())
           .collect();
         for child in children {
+          if !self.cells.iter().any(|cell| cell.accepts(&child) && !cell.is_created()) {
+            continue;
+          }
+          self.stop_children_of(&child);
           if let Some(index) = self.cells.iter().position(|cell| cell.accepts(&child) && !cell.is_created()) {
             self.create_initial(index);
           }
