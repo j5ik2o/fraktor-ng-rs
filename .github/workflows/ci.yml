@@ -17,6 +17,13 @@ jobs:
           cache: npm
       - name: npm ci
         run: npm ci
+      - uses: astral-sh/setup-uv@v6
+      - name: python tests
+        run: |
+          uv run --with pyyaml python3 ledger/tools/goal_complete_gate_test.py
+          uv run --with pyyaml python3 ledger/tools/verify_green_test.py
+          uv run --with pyyaml python3 ledger/tools/verify_green_test_aislop.py
+          uv run --with pyyaml python3 ledger/tools/verify_green_test_crate.py
       - name: check:aislop
         run: npm run check:aislop
       - name: cargo test
