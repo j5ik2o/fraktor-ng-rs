@@ -172,6 +172,11 @@ impl<'a> ActorContext<'a> {
     self.executor.request_stop(target.clone());
   }
 
+  /// Completes child stops before the default restart hook runs `post_stop`.
+  pub(crate) fn stop_children(&mut self) {
+    self.executor.stop_children_of(&self.self_ref);
+  }
+
   /// Records the strategy this actor applies to its children.
   pub(crate) fn register_parent_strategy(&mut self, strategy: SupervisorStrategy) {
     let self_ref = self.self_ref();

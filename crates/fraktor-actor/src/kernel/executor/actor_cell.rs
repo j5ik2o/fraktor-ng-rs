@@ -146,9 +146,9 @@ impl ActorCell {
   }
 
   /// Runs `pre_restart` on the current behaviour.
-  pub(crate) fn pre_restart(&mut self, reason: &(dyn Any + Send)) {
+  pub(crate) fn pre_restart(&mut self, context: &mut ActorContext<'_>, reason: &(dyn Any + Send)) {
     if let Some(behavior) = self.behavior.as_mut() {
-      behavior.pre_restart(reason);
+      behavior.pre_restart(context, reason);
     }
   }
 
