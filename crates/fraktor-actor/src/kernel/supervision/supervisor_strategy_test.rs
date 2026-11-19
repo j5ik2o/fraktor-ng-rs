@@ -132,3 +132,86 @@ fn restart_always_keeps_a_decider_restart_without_a_limit() {
 
   assert_eq!(strategy.decide_for_child(&child, 1000, FailureKind::MessageHandling), Directive::Restart);
 }
+
+#[test]
+#[allow(dropping_copy_types)] // The same regression test must run before Copy is removed.
+fn dropping_a_strategy_releases_its_decider_capture() {
+  let captured = Arc::new(Directive::Stop);
+  let weak = Arc::downgrade(&captured);
+  let strategy = SupervisorStrategy::one_for_one(3).with_decider(move |_, _| *captured);
+  assert!(weak.upgrade().is_some(), "the decider must retain its capture while the strategy lives");
+
+  drop(strategy);
+
+  assert!(weak.upgrade().is_none(), "dropping the only strategy must release the decider capture");
+}
+
+#[test]
+#[allow(dropping_copy_types, clippy::clone_on_copy)] // Also runs against the leaking Copy implementation.
+fn a_cloned_strategy_retains_the_decider_capture_until_the_last_drop() {
+  let captured = Arc::new(Directive::Stop);
+  let weak = Arc::downgrade(&captured);
+  let strategy = SupervisorStrategy::one_for_one(3).with_decider(move |_, _| *captured);
+  let cloned = strategy.clone();
+  assert!(weak.upgrade().is_some(), "the strategies must retain the decider capture");
+
+  drop(strategy);
+  assert!(weak.upgrade().is_some(), "the remaining clone must retain the decider capture");
+
+  drop(cloned);
+  assert!(weak.upgrade().is_none(), "dropping the last clone must release the decider capture");
+}
+
+#[test]
+#[allow(dropping_copy_types)] // The same regression test must run before Copy is removed.
+fn dropping_a_strategy_releases_its_child_terminated_capture() {
+  let captured = Arc::new(());
+  let weak = Arc::downgrade(&captured);
+  let strategy = SupervisorStrategy::one_for_one(3).with_child_terminated(move |_, _, _| {
+    core::hint::black_box(&captured);
+  });
+  assert!(weak.upgrade().is_some(), "the hook must retain its capture while the strategy lives");
+
+  drop(strategy);
+
+  assert!(weak.upgrade().is_none(), "dropping the only strategy must release the child-terminated capture");
+}
+
+#[test]
+#[allow(dropping_copy_types, clippy::clone_on_copy)] // Also runs against the leaking Copy implementation.
+fn a_cloned_strategy_retains_the_child_terminated_capture_until_the_last_drop() {
+  let captured = Arc::new(());
+  let weak = Arc::downgrade(&captured);
+  let strategy = SupervisorStrategy::one_for_one(3).with_child_terminated(move |_, _, _| {
+    core::hint::black_box(&captured);
+  });
+  let cloned = strategy.clone();
+  assert!(weak.upgrade().is_some(), "the strategies must retain the child-terminated capture");
+
+  drop(strategy);
+  assert!(weak.upgrade().is_some(), "the remaining clone must retain the child-terminated capture");
+
+  drop(cloned);
+  assert!(weak.upgrade().is_none(), "dropping the last clone must release the child-terminated capture");
+}
+
+#[test]
+#[allow(clippy::clone_on_copy)] // Exercises Clone both before and after Copy is removed.
+fn a_cloned_strategy_preserves_the_decider_and_retry_limit() {
+  let child = child_ref("child");
+  let strategy = SupervisorStrategy::one_for_one(1).with_decider(|_, failure| match failure {
+    | FailureKind::Initialization => Directive::Stop,
+    | FailureKind::MessageHandling | FailureKind::Killed => Directive::Restart,
+  });
+  let cloned = strategy.clone();
+
+  for (failure, count, expected) in [
+    (FailureKind::Initialization, 0, Directive::Stop),
+    (FailureKind::MessageHandling, 0, Directive::Restart),
+    (FailureKind::MessageHandling, 1, Directive::Stop),
+    (FailureKind::Killed, 0, Directive::Restart),
+  ] {
+    assert_eq!(strategy.decide_for_child(&child, count, failure), expected);
+    assert_eq!(cloned.decide_for_child(&child, count, failure), expected);
+  }
+}

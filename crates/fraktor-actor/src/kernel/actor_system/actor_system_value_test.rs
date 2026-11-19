@@ -1510,7 +1510,7 @@ impl Actor for PanickingHookParent {
   }
 
   fn supervisor_strategy(&self) -> crate::kernel::supervision::SupervisorStrategy {
-    self.strategy
+    self.strategy.clone()
   }
 }
 
@@ -2333,7 +2333,7 @@ impl Actor for ChangesStrategyOnRestart {
   }
 
   fn supervisor_strategy(&self) -> crate::kernel::supervision::SupervisorStrategy {
-    self.strategy
+    self.strategy.clone()
   }
 }
 
