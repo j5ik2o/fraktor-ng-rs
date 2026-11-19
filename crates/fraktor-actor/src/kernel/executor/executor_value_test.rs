@@ -120,7 +120,7 @@ impl Actor for RecoveringParent {
   }
 
   fn supervisor_strategy(&self) -> SupervisorStrategy {
-    self.strategy
+    self.strategy.clone()
   }
 }
 
@@ -209,7 +209,7 @@ fn run_recovery(
         failures,
         stop_on_success,
         spawn_worker,
-        strategy,
+        strategy: strategy.clone(),
       }
     }),
     Some("parent"),

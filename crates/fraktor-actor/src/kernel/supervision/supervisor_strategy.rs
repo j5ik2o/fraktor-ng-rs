@@ -1,6 +1,6 @@
 //! The strategy a parent applies to its children.
 
-use alloc::boxed::Box;
+use alloc::sync::Arc;
 
 use crate::kernel::actor::ActorContext;
 use crate::kernel::actor_ref::ActorRef;
@@ -46,22 +46,21 @@ pub type ChildTerminated = dyn Fn(&mut ActorContext<'_>, &ActorRef, &[ActorRef])
 /// child. The deciders of Pekko that choose per exception, and the resume and
 /// escalate directives, belong to later goals.
 ///
-/// A strategy is a small value: a stored strategy must stay cheap to copy,
-/// because a recipe hands the same value to the executor each time it creates
-/// an actor. The hooks a caller installs are kept as borrowed trait objects, so
-/// the value stays `Copy`; [`SupervisorStrategy::with_decider`] and
-/// [`SupervisorStrategy::with_child_terminated`] therefore extend the lifetime
-/// of the closure they receive to `'static`.
+/// A stored strategy stays cheap to clone because a recipe hands it to the
+/// executor each time it creates an actor. Clones share ownership of the
+/// installed closures through `Arc`. Dropping the last strategy releases the
+/// closures and their captures; captured data with other owners follows those
+/// owners' lifetimes too.
 ///
 /// The retry count follows `FaultHandling.requestRestartPermission`: every
 /// request adds one and the restart is allowed while the count does not exceed
 /// the maximum, so a limit of three allows three restarts and stops the fourth
 /// failure.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct SupervisorStrategy {
   policy: Policy,
-  decider: Option<&'static Decider>,
-  child_terminated: Option<&'static ChildTerminated>,
+  decider: Option<Arc<Decider>>,
+  child_terminated: Option<Arc<ChildTerminated>>,
 }
 
 /// The internal decision rule of a [`SupervisorStrategy`].
@@ -137,15 +136,13 @@ impl SupervisorStrategy {
   /// mapping of a failure kind to a directive. When no decider is installed,
   /// [`SupervisorStrategy::decide`] keeps its default mapping.
   ///
-  /// The strategy keeps its hooks as borrowed trait objects so that it stays
-  /// `Copy`; the closure is therefore given a `'static` lifetime. A caller that
-  /// builds the same strategy on each creation extends one closure per call,
-  /// which is the price of a `Copy` strategy value.
+  /// The strategy owns the closure, and clones share that ownership until the
+  /// last strategy holding it is dropped.
   pub fn with_decider<D>(mut self, decider: D) -> Self
   where
     D: Fn(&ActorRef, FailureKind) -> Directive + Send + Sync + 'static,
   {
-    self.decider = Some(Box::leak(Box::new(decider)));
+    self.decider = Some(Arc::new(decider));
     self
   }
 
@@ -153,13 +150,13 @@ impl SupervisorStrategy {
   ///
   /// Mirrors overriding `SupervisorStrategy.handleChildTerminated`. The hook
   /// runs on the owner of the strategy, with the owner's context, after one of
-  /// its children has stopped. It is kept as a borrowed trait object for the
-  /// same reason as [`SupervisorStrategy::with_decider`].
+  /// its children has stopped. The strategy owns the closure and shares it
+  /// with clones, as [`SupervisorStrategy::with_decider`] does.
   pub fn with_child_terminated<H>(mut self, hook: H) -> Self
   where
     H: Fn(&mut ActorContext<'_>, &ActorRef, &[ActorRef]) + Send + Sync + 'static,
   {
-    self.child_terminated = Some(Box::leak(Box::new(hook)));
+    self.child_terminated = Some(Arc::new(hook));
     self
   }
 
@@ -203,7 +200,7 @@ impl SupervisorStrategy {
   /// becomes `Stop`. `RestartAlways` and `StopAlways` have no limit to enforce
   /// and keep the decider's answer as it is.
   pub(crate) fn decide_for_child(&self, child: &ActorRef, restart_count: u32, failure: FailureKind) -> Directive {
-    let Some(decider) = self.decider else {
+    let Some(decider) = &self.decider else {
       return self.decide(restart_count, failure);
     };
     let directive = decider(child, failure);
@@ -226,7 +223,7 @@ impl SupervisorStrategy {
     child: &ActorRef,
     children: &[ActorRef],
   ) {
-    if let Some(hook) = self.child_terminated {
+    if let Some(hook) = &self.child_terminated {
       hook(context, child, children);
     }
   }

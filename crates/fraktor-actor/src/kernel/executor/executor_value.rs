@@ -325,7 +325,8 @@ impl Executor {
     props: Props,
     name: &str,
   ) -> Result<ActorRef, InvalidActorNameException> {
-    let Some(strategy) = self.parents.iter().find(|entry| &entry.parent == parent).map(|entry| entry.strategy) else {
+    let Some(strategy) = self.parents.iter().find(|entry| &entry.parent == parent).map(|entry| entry.strategy.clone())
+    else {
       return Err(InvalidActorNameException::terminating());
     };
     self.spawn_named_child_under(parent, props, name, strategy, true)
@@ -351,7 +352,12 @@ impl Executor {
       if !self.is_live(parent) {
         return Err(InvalidActorNameException::terminating());
       }
-      self.parents.push(ParentEntry { parent: parent.clone(), strategy, children: Vec::new(), stopping: false });
+      self.parents.push(ParentEntry {
+        parent: parent.clone(),
+        strategy: strategy.clone(),
+        children: Vec::new(),
+        stopping: false,
+      });
     }
     self.spawn_named_child_under(parent, props, name, strategy, false)
   }
@@ -604,11 +610,11 @@ impl Executor {
     if cell.strategy_inherited() {
       if let Some(parent) = cell.parent() {
         if let Some(entry) = self.parents.iter().find(|entry| entry.parent == parent) {
-          return entry.strategy;
+          return entry.strategy.clone();
         }
       }
     }
-    *cell.strategy()
+    cell.strategy().clone()
   }
 
   /// Stops the actor or function reference `target`, telling every watcher that
@@ -714,7 +720,7 @@ impl Executor {
     if !entry.strategy.has_child_terminated() {
       return;
     }
-    let strategy = entry.strategy;
+    let strategy = entry.strategy.clone();
     let siblings: Vec<ActorRef> =
       self.cells.iter().filter(|cell| cell.is_child_of(parent)).map(|cell| cell.self_ref()).collect();
     let Some(index) = self.cells.iter().position(|cell| cell.accepts(parent)) else {
