@@ -230,7 +230,7 @@ impl Actor for TestSupervisor {
     let Some(props) = message.downcast_ref::<Props>() else {
       return;
     };
-    let child = context.actor_of_with_strategy(props.clone(), self.strategy);
+    let child = context.actor_of_with_strategy(props.clone(), self.strategy.clone());
     context.sender().tell(child, context.self_ref());
   }
 }
@@ -339,7 +339,7 @@ fn invoke_pre_restart_pre_start_post_restart_when_using_one_for_one_strategy() {
   let id = "invoke-hooks";
   let supervisor = {
     let strategy = SupervisorStrategy::one_for_one(3);
-    case.system().actor_of(Props::new(move || TestSupervisor::new(strategy)))
+    case.system().actor_of(Props::new(move || TestSupervisor::new(strategy.clone())))
   };
   let generation = GenerationCounter::new();
   let restarter = {
@@ -389,7 +389,7 @@ fn default_for_pre_restart_and_post_restart_calls_post_stop_and_pre_start() {
   let id = "default-hooks";
   let supervisor = {
     let strategy = SupervisorStrategy::one_for_one(3);
-    case.system().actor_of(Props::new(move || TestSupervisor::new(strategy)))
+    case.system().actor_of(Props::new(move || TestSupervisor::new(strategy.clone())))
   };
   let generation = GenerationCounter::new();
   let restarter = {
@@ -435,7 +435,7 @@ fn not_invoke_pre_restart_and_post_restart_when_never_restarted_using_one_for_on
   let id = "never-restarted";
   let supervisor = {
     let strategy = SupervisorStrategy::one_for_one(3);
-    case.system().actor_of(Props::new(move || TestSupervisor::new(strategy)))
+    case.system().actor_of(Props::new(move || TestSupervisor::new(strategy.clone())))
   };
   let generation = GenerationCounter::new();
   let actor = {
@@ -512,7 +512,7 @@ fn not_break_supervisor_strategy_due_to_unhandled_exception_in_pre_start() {
   let max_retry = 3;
   let supervisor = {
     let strategy = SupervisorStrategy::one_for_one_restarting_initialization_failures(max_retry as u32);
-    case.system().actor_of(Props::new(move || TestSupervisor::new(strategy)))
+    case.system().actor_of(Props::new(move || TestSupervisor::new(strategy.clone())))
   };
 
   let generation = GenerationCounter::new();

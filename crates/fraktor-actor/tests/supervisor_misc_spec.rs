@@ -102,7 +102,7 @@ impl Actor for SupervisorActor {
   }
 
   fn supervisor_strategy(&self) -> SupervisorStrategy {
-    self.strategy
+    self.strategy.clone()
   }
 
   fn pre_restart(&mut self, _context: &mut ActorContext<'_>, _reason: &(dyn core::any::Any + Send)) {}
@@ -398,7 +398,7 @@ fn restart_a_crashing_actor_and_its_dispatcher_for_any_dispatcher() {
 
   let supervisor = {
     let strategy = SupervisorStrategy::one_for_one(3);
-    case.actor_of(Props::new(move || SupervisorActor { strategy, created: 0 }))
+    case.actor_of(Props::new(move || SupervisorActor { strategy: strategy.clone(), created: 0 }))
   };
 
   let restarts = Arc::new(AtomicUsize::new(0));
