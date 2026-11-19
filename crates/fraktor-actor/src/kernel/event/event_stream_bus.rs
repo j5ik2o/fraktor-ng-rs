@@ -168,15 +168,22 @@ pub(crate) struct EventStreamBusWeak {
 }
 
 impl EventStreamBusWeak {
+  /// Pins the shared table while a callback checks its other required handles.
+  ///
+  /// Callers can defer all side effects until every handle has upgraded.
+  pub(crate) fn upgrade(&self) -> Option<EventStreamBus> {
+    self.state.upgrade().map(|state| EventStreamBus { state })
+  }
+
   /// Publishes `event` to the subscribers of its class while the table is alive.
   ///
   /// Does nothing once the table has been dropped, so a late delivery neither
   /// panics nor reaches the subscribers of a stream that is gone.
   pub(crate) fn publish<E: Any + Send + Sync>(&self, event: E) {
-    let Some(state) = self.state.upgrade() else {
+    let Some(bus) = self.upgrade() else {
       return;
     };
-    EventStreamBus::publish_through(&state, event);
+    bus.publish(event);
   }
 }
 
