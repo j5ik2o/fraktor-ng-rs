@@ -187,6 +187,8 @@ steps:
         next: port-test
       - condition: when(context.verify_red.result.json.classification == "unclassifiable")
         next: classify-red
+      - condition: when(context.verify_red.result.json.classification == "already_green")
+        next: equivalence-review
       - condition: when(true)
         next: ABORT
   - name: classify-red

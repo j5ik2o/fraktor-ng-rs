@@ -1209,10 +1209,10 @@ nodes:
     module: actor-tests
     class: AddressTest
     test_cases_approx: 1
-  status: unported
+  status: green
   triage:
     kind: pending
-    reason: null
+    reason: "already_green: 原典 Pekko のケース数 1 と通過ケース数 1 が一致し、対象テストが全件成功している（前提の実装が契約を満たす）"
   needs:
     testkit: []
     premise_flags: []
@@ -1220,13 +1220,13 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 1
+    ported: 1
+    passing: 1
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/address_test.rs
   goal: null
 - id: actor-tests/src/test/scala/org/apache/pekko/util/AsciiStringCopySpec.scala
   name: actor-tests:AsciiStringCopySpec
