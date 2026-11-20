@@ -8,11 +8,21 @@
 分類（stdout に JSON で出す。終了コードは常に 0 で、成否は JSON が持つ）:
   expected_compile_error  未実装によるコンパイルエラー（想定どおり）
   expected_assertion      テストが実行され、アサーションで落ちた（想定どおり）
-  unexpected_pass         最初から通ってしまった
+  already_green           移植が正しく、前提の実装が既に契約を満たしている
+  unexpected_pass         最初から通ったが、移植の正しさを確かめられない
   unclassifiable          機械分類できない（軽量モデルの判定ステップへ）
+
+already_green は「移植の正しさ（原典 Pekko のケース数と、通過したケース数が一致し、
+1 件以上通っている）」と「前提の実装が契約を満たす（対象テストの全件成功）」の
+両方が確かめられる場合に限る。片方でも欠ける場合は unexpected_pass に倒す。
+原典が用意されていない環境（pekko/ が無い）では移植を確かめられないため
+already_green にはしない。
 
 台帳の書き換えは外部ライブラリに頼らず、対象ノードのブロック内の
 status 行だけを置き換える（nodes.yaml は変換器の生成形式に依存する）。
+already_green のときは status に加えて cases の total/ported/passing も実数で書き、
+triage.reason が null または空のときだけ理由を `already_green: ` で始めて書く（既存の理由は保持する）。
+新しいキーは増やさない。
 """
 import json
 import os
@@ -21,6 +31,10 @@ import subprocess
 import sys
 
 LEDGER = "ledger/nodes.yaml"
+
+# 原典 Pekko のチェックアウト先。tools/pekko-source/prepare_pekko_source.sh が
+# cwd に pekko/ を用意する。環境依存パスをコードへ直書きしないため環境変数で上書きできる。
+DEFAULT_ORIGINAL_ROOT = "pekko"
 
 
 def parse_previous_response() -> dict:
@@ -37,6 +51,100 @@ def parse_previous_response() -> dict:
 
 def mark_red(node_id: str) -> bool:
     """台帳の対象ノードの status を red にする。成功したら True。"""
+    return _rewrite_node(node_id, lambda i, line: _replace_status(line, "red"))
+
+
+def mark_green(node_id: str, cases: int, reason: str) -> bool:
+    """台帳の対象ノードを green にし、cases の実数を書き、理由を triage.reason へ書く。成功したら True。
+
+    新キーは増やさない。status・cases の total/ported/passing・既存の triage.reason だけを書き換える。
+    triage.reason が null または空のときだけ理由を書き、人間が書いた既存の理由は上書きしない
+    （その場合は台帳の理由を変えず False を返す）。triage.reason が無い台帳でも green と cases は書き、
+    理由は載せない。
+    """
+    if not os.path.exists(LEDGER):
+        return False
+    lines = open(LEDGER, encoding="utf-8").read().splitlines(keepends=True)
+    in_block = False
+    in_cases = False
+    in_triage = False
+    status_written = False
+    cases_written = False
+    reason_written = False
+    reason_preserved = False
+    reason_indent = "    "
+    for i, line in enumerate(lines):
+        if line.startswith("- id: "):
+            in_block = line.split(":", 1)[1].strip() == node_id
+            in_cases = False
+            in_triage = False
+            continue
+        if not in_block:
+            continue
+        base_indent = len(line) - len(line.lstrip())
+        if re.match(r"\s+cases:\s*$", line):
+            in_cases = True
+            in_triage = False
+            continue
+        if re.match(r"\s+triage:\s*$", line):
+            in_triage = True
+            in_cases = False
+            reason_indent = line[: len(line) - len(line.lstrip())] + "  "
+            continue
+        if base_indent <= 2:
+            in_cases = False
+            in_triage = False
+        if re.match(r"\s+status:\s*", line):
+            lines[i] = _replace_status(line, "green")
+            status_written = True
+        elif in_cases:
+            m = re.match(r"(\s+)(total|ported|passing):", line)
+            if m:
+                lines[i] = f"{m.group(1)}{m.group(2)}: {cases}\n"
+                cases_written = True
+        elif in_triage and re.match(r"\s+reason:", line):
+            reason_written = True
+            if _is_empty_reason(line):
+                lines[i] = f"{reason_indent}reason: {_yaml_scalar(reason)}\n"
+            else:
+                reason_preserved = True
+    if not (status_written and cases_written):
+        return False
+    if not reason_written:
+        reason_line = f"{reason_indent}reason: {_yaml_scalar(reason)}\n"
+        lines = _insert_after_key(lines, node_id, "triage:", reason_line)
+    open(LEDGER, "w", encoding="utf-8").write("".join(lines))
+    return not reason_preserved
+
+
+def _is_empty_reason(line: str) -> bool:
+    """`reason:` 行の値が null または空であるかを返す。"""
+    value = line.split(":", 1)[1].strip() if ":" in line else ""
+    value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
+    return value in ("", "null", "~", '""', "''")
+
+
+def _yaml_scalar(text: str) -> str:
+    """triage.reason に書ける 1 行の YAML 値にする。"""
+    if re.search(r"[:#]|^\s|\s$", text):
+        return json.dumps(text, ensure_ascii=False)
+    return text
+
+
+def _insert_after_key(lines: list[str], node_id: str, key: str, new_line: str) -> list[str]:
+    """対象ノードの key 行の直後に new_line を差し込む（key が無ければ先頭に追記しない）。"""
+    in_block = False
+    for i, line in enumerate(lines):
+        if line.startswith("- id: "):
+            in_block = line.split(":", 1)[1].strip() == node_id
+            continue
+        if in_block and re.match(rf"\s+{re.escape(key)}\s*$", line):
+            return lines[: i + 1] + [new_line] + lines[i + 1 :]
+    return lines
+
+
+def _rewrite_node(node_id: str, transform) -> bool:
+    """対象ノードのブロックで最初に transform が True を返した行を置換して書き戻す。"""
     if not os.path.exists(LEDGER):
         return False
     lines = open(LEDGER, encoding="utf-8").read().splitlines(keepends=True)
@@ -46,11 +154,55 @@ def mark_red(node_id: str) -> bool:
             in_block = line.split(":", 1)[1].strip() == node_id
             continue
         if in_block and re.match(r"\s+status:\s*", line):
-            indent = line[: len(line) - len(line.lstrip())]
-            lines[i] = f"{indent}status: red\n"
+            lines[i] = transform(i, line)
             open(LEDGER, "w", encoding="utf-8").write("".join(lines))
             return True
     return False
+
+
+def _replace_status(line: str, status: str) -> str:
+    indent = line[: len(line) - len(line.lstrip())]
+    return f"{indent}status: {status}\n"
+
+
+def count_original_cases(node_id: str) -> int | None:
+    """原典 Pekko テストのケース数を数える。原典が無ければ None（確かめられない）。
+
+    Java の @Test と、Scala の最小パターン（`it should` / `"..." in {`）だけを数える。
+    0 件は「ケースが無い」であり、移植の正しさを確かめられないため None とする。
+    """
+    root = os.environ.get("PEKKO_ORIGINAL_ROOT", DEFAULT_ORIGINAL_ROOT)
+    path = os.path.join(root, node_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        text = open(path, encoding="utf-8").read()
+    except (OSError, UnicodeDecodeError):
+        return None
+    java = len(re.findall(r"^\s*@Test\b", text, re.MULTILINE))
+    scala_it = len(re.findall(r"^\s*it should\b", text, re.MULTILINE))
+    scala_in = len(re.findall(r"^\s*\"[^\"]+\"\s+in\s*\{", text, re.MULTILINE))
+    total = java + scala_it + scala_in
+    return total if total > 0 else None
+
+
+def parse_passed(out: str) -> int | None:
+    """対象テストの通過ケース数を返す。失敗の要約を含む・0 件・要約が無い場合は None。
+
+    実 cargo は先頭に 0 件の test result（別バイナリの要約）を出し、続けて対象テストの
+    要約を出すことがある。先頭行だけを採ると対象テストの結果を取りこぼすため、
+    全文の要約をすべて合算し、1 行でも FAILED を含むなら None とする。
+    """
+    results = re.findall(r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed;",
+                         out, re.MULTILINE)
+    if not results:
+        return None
+    passed = 0
+    for status, p, f in results:
+        if status != "ok" or int(f) != 0:
+            return None
+        passed += int(p)
+    return passed if passed > 0 else None
 
 
 def main() -> int:
@@ -70,7 +222,13 @@ def main() -> int:
     )
     out = proc.stdout + proc.stderr
 
-    if "test result: ok" in out:
+    original_cases = count_original_cases(node)
+    passed = parse_passed(out)
+
+    already_green = passed is not None and original_cases is not None and passed == original_cases
+    if already_green:
+        classification = "already_green"
+    elif "test result: ok" in out:
         classification = "unexpected_pass"
     elif "test result: FAILED" in out:
         classification = "expected_assertion"
@@ -80,13 +238,23 @@ def main() -> int:
         classification = "unclassifiable"
 
     red_recorded = False
+    green_recorded = False
     if classification.startswith("expected_"):
         red_recorded = mark_red(node)
+    elif classification == "already_green":
+        reason = (
+            f"already_green: 原典 Pekko のケース数 {original_cases} と通過ケース数 "
+            f"{passed} が一致し、対象テストが全件成功している（前提の実装が契約を満たす）"
+        )
+        green_recorded = mark_green(node, passed, reason)
 
     print(json.dumps({
         "classification": classification,
         "node": node,
         "red_recorded": red_recorded,
+        "green_recorded": green_recorded,
+        "original_cases": original_cases,
+        "passed": passed,
         "detail": out[-1500:],
     }, ensure_ascii=False))
     return 0
