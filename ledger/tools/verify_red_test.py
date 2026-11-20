@@ -11,8 +11,13 @@ verify_red.py は「直前の port-test 応答」から node/crate/test_file を
 実リポジトリの台帳は書き換えない。
 
 確かめる契約（計画の完了契約）:
-  AG-CLASSIFY  移植が正しく実装が契約を満たす（全件成功 + 原典ケース数一致）とき
-               classification は already_green になる
+  AG-CLASSIFY  移植が正しく実装が契約を満たす（全件成功 + 原典ケース数と承認済み除外の
+               件数の和が通過数に一致）とき classification は already_green になる
+  AG-EXCLUDED  台帳の cases.excluded の件数を passed に足して原典件数と突き合わせ、
+               green の保存は total=原典件数、ported=passing=passed。除外が無いときは
+               従来と同じ結果になる
+  AG-COUNT     Scala のタグ付きケースも数え、既知の書式で全件を説明できない原典
+               （WordSpec の `"name" must {` など。対応書式との混在を含む）は None にする
   AG-FALLBACK  原典が無い・ケース数不一致・0 件成功・失敗のときは unexpected_pass
                （または従来どおりの分類）で、台帳は green にしない
   AG-LEDGER    already_green のとき status: green、cases.total/ported/passing が実数、
@@ -45,6 +50,7 @@ REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".takt" / "workflows" / "fraktor-port-node.yaml"
 
 NODE_ID = "actor-tests/src/test/java/org/apache/pekko/actor/AddressTest.java"
+SCALA_NODE_ID = "actor-tests/src/test/scala/org/apache/pekko/actor/AddressSpec.scala"
 CRATE = "fraktor-actor"
 TEST_FILE = "crates/fraktor-actor/tests/address_test.rs"
 
@@ -54,10 +60,18 @@ def write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def case_block(node_id: str, total, ported, passing, status: str = "unported") -> str:
+def case_block(node_id: str, total, ported, passing, status: str = "unported",
+               excluded: list[str] | None = None) -> str:
     """台帳の1ノード分の YAML。mark_red / already_green が触る欄だけを持つ。"""
     def val(x):
         return "null" if x is None else x
+
+    if excluded:
+        excluded_yaml = "\n" + "".join(
+            f"      - name: {name}\n        reason: 承認済みの除外\n" for name in excluded
+        )
+    else:
+        excluded_yaml = " []"
 
     return (
         f"- id: {node_id}\n"
@@ -81,7 +95,7 @@ def case_block(node_id: str, total, ported, passing, status: str = "unported") -
         f"    total: {val(total)}\n"
         f"    ported: {val(ported)}\n"
         f"    passing: {val(passing)}\n"
-        f"    excluded: []\n"
+        f"    excluded:{excluded_yaml}\n"
         f"  rust:\n"
         f"    crate: {CRATE}\n"
         f"    test_file: {TEST_FILE}\n"
@@ -102,6 +116,27 @@ def java_original(cases: int) -> str:
         "package org.apache.pekko.actor;\n\n"
         "import org.junit.Test;\n\n"
         "public class AddressTest {\n"
+        f"{body}"
+        "}\n"
+    )
+
+
+def scala_original(in_cases: int, tagged_cases: int = 0, must_case: bool = False) -> str:
+    """原典の Scala テスト。`"..." in {` と taggedAs つきの in を持つ。
+
+    must_case のとき、既知のケース書式ではない `"name" must {` のブロックを足す。
+    """
+    body = "".join(f'  "{name}" in {{\n  }}\n' for name in [f"plain {i}" for i in range(in_cases)])
+    body += "".join(
+        f'  "{name}" taggedAs TimingTest in {{\n  }}\n'
+        for name in [f"tagged {i}" for i in range(tagged_cases)]
+    )
+    if must_case:
+        body += '  "A suite" must {\n  }\n'
+    return (
+        "package org.apache.pekko.actor\n\n"
+        "import org.apache.pekko.testkit.PekkoSpec\n\n"
+        "class AddressSpec extends PekkoSpec {\n"
         f"{body}"
         "}\n"
     )
@@ -195,7 +230,9 @@ def install_cargo(root: Path, body: str, passed: int = 0) -> Path:
 
 
 def make_scenario(root: Path, *, nodes_yaml: str, cargo_body: str, passed: int,
-                  original_cases: int | None, with_original: bool) -> dict:
+                  original_cases: int | None, with_original: bool,
+                  original_text: str | None = None,
+                  node_id: str = NODE_ID) -> dict:
     """一時ワークスペースを作り、verify_red.py を走らせる準備をする。
 
     - ledger/nodes.yaml（一時）
@@ -207,11 +244,12 @@ def make_scenario(root: Path, *, nodes_yaml: str, cargo_body: str, passed: int,
     bindir = install_cargo(root, cargo_body, passed)
 
     original_root = root / "pekko"
-    if with_original and original_cases is not None:
-        write(original_root / NODE_ID, java_original(original_cases))
+    if with_original and (original_text is not None or original_cases is not None):
+        text = original_text if original_text is not None else java_original(original_cases)
+        write(original_root / node_id, text)
 
     response = root / "previous-response.txt"
-    write(response, f"node: {NODE_ID}\ncrate: {CRATE}\ntest_file: {TEST_FILE}\n")
+    write(response, f"node: {node_id}\ncrate: {CRATE}\ntest_file: {TEST_FILE}\n")
 
     env = {k: v for k, v in os.environ.items() if k != "TAKT_PREVIOUS_RESPONSE_FILE"}
     env["TAKT_PREVIOUS_RESPONSE_FILE"] = str(response)
@@ -634,6 +672,120 @@ def test_rollup_and_check_needs_do_not_break():
         print("11. rollup/check_needs run on already_green ledger (exit 0)")
 
 
+def test_excluded_cases_count_toward_green():
+    """承認済みの除外 1 件 + Rust 1 件成功で、原典 2 件が green になる。
+
+    already_green の条件は passed + len(excluded) == original_cases であり、保存は
+    total=原典件数、ported=passing=passed である。
+    """
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(NODE_ID, None, None, None,
+                                               excluded=["excluded case"])]),
+            cargo_body=CARGO_STUB_OK, passed=1,
+            original_cases=2, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["classification"] == "already_green", result
+        assert result["excluded"] == 1, result
+        node = node_entry(root)
+        assert node["status"] == "green", node
+        assert node["cases"]["total"] == 2, node["cases"]
+        assert node["cases"]["ported"] == 1, node["cases"]
+        assert node["cases"]["passing"] == 1, node["cases"]
+        assert node["cases"]["excluded"] == [
+            {"name": "excluded case", "reason": "承認済みの除外"}
+        ], node["cases"]
+        print("18. excluded counted: total =", node["cases"]["total"],
+              "ported =", node["cases"]["ported"])
+
+
+def test_excluded_without_full_pass_is_not_green():
+    """除外 1 件があっても、通過数 + 除外が原典件数に満たなければ already_green にしない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(NODE_ID, None, None, None,
+                                               excluded=["excluded case"])]),
+            cargo_body=CARGO_STUB_OK, passed=1,
+            original_cases=3, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["classification"] == "unexpected_pass", result
+        assert node_entry(root)["status"] == "unported", node_entry(root)
+        print("19. excluded but unaccounted → unexpected_pass:", result["classification"])
+
+
+def test_tagged_scala_cases_are_counted():
+    """taggedAs つきの Scala ケースも数え、Rust が全件通れば already_green になる。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(SCALA_NODE_ID, None, None, None)]),
+            cargo_body=CARGO_STUB_OK, passed=3,
+            original_cases=None, with_original=True,
+            original_text=scala_original(in_cases=1, tagged_cases=2),
+            node_id=SCALA_NODE_ID,
+        )
+        result = run_verify_red(scenario)
+        assert result["original_cases"] == 3, result
+        assert result["classification"] == "already_green", result
+        assert node_entry(root, SCALA_NODE_ID)["status"] == "green"
+        print("20. taggedAs cases counted:", result["original_cases"])
+
+
+def test_partially_countable_scala_original_is_not_green():
+    """既知の書式で全件を説明できない Scala 原典（`"name" must {`）は None で、green にしない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(SCALA_NODE_ID, None, None, None)]),
+            cargo_body=CARGO_STUB_OK, passed=1,
+            original_cases=None, with_original=True,
+            original_text=scala_original(in_cases=1, must_case=True),
+            node_id=SCALA_NODE_ID,
+        )
+        result = run_verify_red(scenario)
+        assert result["original_cases"] is None, result
+        assert result["classification"] == "unexpected_pass", result
+        assert node_entry(root, SCALA_NODE_ID)["status"] == "unported", node_entry(root, SCALA_NODE_ID)
+        print("21. unaccountable Scala original → unexpected_pass:", result["classification"])
+
+
+def test_mixed_supported_and_unsupported_scala_cases_not_partial():
+    """対応書式と未対応書式が混在する原典で、対応書式だけの部分件数を総数にしない。
+
+    `"ported" in {` だけを移植して Rust が 1 件通っても、未対応の `"A suite" must {`
+    の下に隠れたケースを見落とさないよう total は None になり、green にしない。
+    """
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        text = (
+            "package org.apache.pekko.actor\n\n"
+            "class AddressSpec extends PekkoSpec {\n"
+            '  "ported" in {\n  }\n'
+            '  "A suite" must {\n    "hidden" in {\n    }\n  }\n'
+            "}\n"
+        )
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(SCALA_NODE_ID, None, None, None)]),
+            cargo_body=CARGO_STUB_OK, passed=1,
+            original_cases=None, with_original=True,
+            original_text=text, node_id=SCALA_NODE_ID,
+        )
+        result = run_verify_red(scenario)
+        assert result["original_cases"] is None, result
+        assert result["classification"] == "unexpected_pass", result
+        assert node_entry(root, SCALA_NODE_ID)["status"] == "unported"
+        print("22. mixed formats not partially counted:", result["classification"])
+
+
 def main() -> int:
     tests = [
         test_already_green_when_ported_and_satisfied,
@@ -655,6 +807,11 @@ def main() -> int:
         test_parse_passed_sums_multiple_summaries,
         test_parse_passed_fails_when_last_summary_failed,
         test_rollup_and_check_needs_do_not_break,
+        test_excluded_cases_count_toward_green,
+        test_excluded_without_full_pass_is_not_green,
+        test_tagged_scala_cases_are_counted,
+        test_partially_countable_scala_original_is_not_green,
+        test_mixed_supported_and_unsupported_scala_cases_not_partial,
     ]
     failures = 0
     for test in tests:

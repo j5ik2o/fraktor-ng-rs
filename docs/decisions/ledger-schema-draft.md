@@ -126,7 +126,9 @@
 - `triage.reason` は、do_not_port の理由（人間だけが書ける）に加えて、run が
   `already_green: ` で始まる理由も書く。already_green は移植が正しく前提の実装が契約を
   満たしたことを確かめて green にした記録であり、status は green のまま（do_not_port に
-  しない）。run が書くのは `triage.reason` が null または空のときだけで、人間が書いた
+  しない）。この判定は上の green の条件（`passing == ported` かつ
+  `ported + len(excluded) == total`）と同じ勘定で行い、承認済みの除外は緑の判定に含める。
+  run が書くのは `triage.reason` が null または空のときだけで、人間が書いた
   既存の理由は上書きしない。この用途は do_not_port の人間専用規則を変えない
 
 ## 生成物

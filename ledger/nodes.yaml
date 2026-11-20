@@ -1212,7 +1212,7 @@ nodes:
   status: green
   triage:
     kind: pending
-    reason: "already_green: 原典 Pekko のケース数 1 と通過ケース数 1 が一致し、対象テストが全件成功している（前提の実装が契約を満たす）"
+    reason: "already_green: 原典 Pekko のケース数 1 と通過ケース数 1（承認済みの除外 0 件）が一致し、対象テストが全件成功している（前提の実装が契約を満たす）"
   needs:
     testkit: []
     premise_flags: []

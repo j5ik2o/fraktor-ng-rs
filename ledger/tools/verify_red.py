@@ -12,11 +12,12 @@
   unexpected_pass         最初から通ったが、移植の正しさを確かめられない
   unclassifiable          機械分類できない（軽量モデルの判定ステップへ）
 
-already_green は「移植の正しさ（原典 Pekko のケース数と、通過したケース数が一致し、
-1 件以上通っている）」と「前提の実装が契約を満たす（対象テストの全件成功）」の
-両方が確かめられる場合に限る。片方でも欠ける場合は unexpected_pass に倒す。
-原典が用意されていない環境（pekko/ が無い）では移植を確かめられないため
-already_green にはしない。
+already_green は「移植の正しさ（原典 Pekko のケース数と、人間が承認した除外の件数の和が、
+通過したケース数に一致し、1 件以上通っている）」と「前提の実装が契約を満たす（対象テストの
+全件成功）」の両方が確かめられる場合に限る。片方でも欠ける場合は unexpected_pass に倒す。
+原典が用意されていない環境（pekko/ が無い）、または原典のケースをすべて数えたと確認できない
+ファイル（WordSpec の `"name" must {` など既知の書式で全件を説明できない構文を含む）では
+移植を確かめられないため already_green にはしない。
 
 台帳の書き換えは外部ライブラリに頼らず、対象ノードのブロック内の
 status 行だけを置き換える（nodes.yaml は変換器の生成形式に依存する）。
@@ -36,6 +37,25 @@ LEDGER = "ledger/nodes.yaml"
 # cwd に pekko/ を用意する。環境依存パスをコードへ直書きしないため環境変数で上書きできる。
 DEFAULT_ORIGINAL_ROOT = "pekko"
 
+# 原典のケース書式。Java は @Test 注釈と、その直後の void メソッド宣言。
+JAVA_TEST = re.compile(r"^\s*@Test\b", re.MULTILINE)
+JAVA_TEST_DECL = re.compile(
+    r"^\s*@Test\b[^\n]*\n(?:\s*@[^\n]*\n)*\s*(?:public|protected|private)?\s*"
+    r"(?:static\s+)?(?:final\s+)?void\s+\w+\s*\(",
+    re.MULTILINE,
+)
+# Scala のケース書式。`"..." in {` の前に taggedAs が付く形も同じケースである。
+# `it should "..."` の書式も数える。`in {` に至る書式を 1 つの正規表現にまとめる。
+SCALA_CASE = re.compile(
+    r"""^\s*(?:
+        it\s+should\s+"[^"]*"\s+in\s*\{
+      | "[^"]*"(?:\s+taggedAs\b[^\n{]*?)?\s+in\s*\{
+    )""",
+    re.MULTILINE | re.VERBOSE,
+)
+# 既知の書式で説明できない名前付きブロック（`"name" must {`、`"name" should {` など）。
+SCALA_NAMED_PREFIX = re.compile(r'^\s*"[^"]+"\s+(?=\S)', re.MULTILINE)
+
 
 def parse_previous_response() -> dict:
     path = os.environ.get("TAKT_PREVIOUS_RESPONSE_FILE", "")
@@ -54,9 +74,11 @@ def mark_red(node_id: str) -> bool:
     return _rewrite_node(node_id, lambda i, line: _replace_status(line, "red"))
 
 
-def mark_green(node_id: str, cases: int, reason: str) -> bool:
+def mark_green(node_id: str, total: int, passed: int, reason: str) -> bool:
     """台帳の対象ノードを green にし、cases の実数を書き、理由を triage.reason へ書く。成功したら True。
 
+    total には原典のケース数、ported と passing には Rust の成功件数 passed を書く
+    （承認済みの除外がある場合、total = passed + len(excluded) になる）。
     新キーは増やさない。status・cases の total/ported/passing・既存の triage.reason だけを書き換える。
     triage.reason が null または空のときだけ理由を書き、人間が書いた既存の理由は上書きしない
     （その場合は台帳の理由を変えず False を返す）。triage.reason が無い台帳でも green と cases は書き、
@@ -100,7 +122,8 @@ def mark_green(node_id: str, cases: int, reason: str) -> bool:
         elif in_cases:
             m = re.match(r"(\s+)(total|ported|passing):", line)
             if m:
-                lines[i] = f"{m.group(1)}{m.group(2)}: {cases}\n"
+                value = total if m.group(2) == "total" else passed
+                lines[i] = f"{m.group(1)}{m.group(2)}: {value}\n"
                 cases_written = True
         elif in_triage and re.match(r"\s+reason:", line):
             reason_written = True
@@ -166,9 +189,14 @@ def _replace_status(line: str, status: str) -> str:
 
 
 def count_original_cases(node_id: str) -> int | None:
-    """原典 Pekko テストのケース数を数える。原典が無ければ None（確かめられない）。
+    """原典 Pekko テストのケース数を数える。原典が無い・全件を数えたと確認できないなら None。
 
-    Java の @Test と、Scala の最小パターン（`it should` / `"..." in {`）だけを数える。
+    Java の @Test と、Scala の `it should "..." in {` / `"..." in {` / `"..." taggedAs ... in {`
+    を数える。既知の書式で全件を説明できるかを、ファイル全体の構文本数と突き合わせて確かめる:
+    Java は @Test の数と、@Test に続く void メソッド宣言の数が一致すること。
+    Scala は先頭が文字列リテラルで始まる行の数が、上の書式で数えたケース数に一致すること
+    （`"name" must {`、`"name" should {` などはケース書式ではないため、そのファイルは
+    数えられないと判断する）。
     0 件は「ケースが無い」であり、移植の正しさを確かめられないため None とする。
     """
     root = os.environ.get("PEKKO_ORIGINAL_ROOT", DEFAULT_ORIGINAL_ROOT)
@@ -179,11 +207,66 @@ def count_original_cases(node_id: str) -> int | None:
         text = open(path, encoding="utf-8").read()
     except (OSError, UnicodeDecodeError):
         return None
-    java = len(re.findall(r"^\s*@Test\b", text, re.MULTILINE))
-    scala_it = len(re.findall(r"^\s*it should\b", text, re.MULTILINE))
-    scala_in = len(re.findall(r"^\s*\"[^\"]+\"\s+in\s*\{", text, re.MULTILINE))
-    total = java + scala_it + scala_in
+    if path.endswith(".java"):
+        java = len(JAVA_TEST.findall(text))
+        java_decl = len(JAVA_TEST_DECL.findall(text))
+        if java != java_decl:
+            return None
+        total = java
+    elif path.endswith(".scala"):
+        scala_cases = len(SCALA_CASE.findall(text))
+        named = len(SCALA_NAMED_PREFIX.findall(text))
+        if named != scala_cases:
+            return None
+        total = scala_cases
+    else:
+        return None
     return total if total > 0 else None
+
+
+def count_excluded(node_id: str) -> int | None:
+    """台帳の対象ノードの cases.excluded の件数を返す。読めないときは None。
+
+    excluded は人間が承認した除外の一覧（要素は {name, reason}）である。台帳の行を
+    対象ノードのブロック内で読み、`excluded:` がインラインの空配列・null なら 0、
+    ブロック配列なら `- ` で始まる要素行を数える。それ以外の書式（インライン配列など）は
+    読めないものとして None（除外の件数を確かめられないと判断する）。
+    台帳が無い・ノードが無いときも None。
+    """
+    if not os.path.exists(LEDGER):
+        return None
+    in_block = False
+    in_excluded = False
+    excluded_indent = 0
+    count = 0
+    for line in open(LEDGER, encoding="utf-8").read().splitlines():
+        if line.startswith("- id: "):
+            in_block = line.split(":", 1)[1].strip() == node_id
+            in_excluded = False
+            continue
+        if not in_block:
+            continue
+        m = re.match(r"(\s+)excluded:\s*(.*)$", line)
+        if m and not in_excluded:
+            value = re.split(r"\s+#", m.group(2), maxsplit=1)[0].strip()
+            if value in ("[]", "null", "~"):
+                return 0
+            if value:
+                return None
+            in_excluded = True
+            excluded_indent = len(m.group(1))
+            continue
+        if in_excluded:
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            indent = len(line) - len(line.lstrip())
+            if indent <= excluded_indent:
+                return count if count > 0 else None
+            if line.lstrip().startswith("- "):
+                count += 1
+    if not in_excluded:
+        return None
+    return count if count > 0 else None
 
 
 def parse_passed(out: str) -> int | None:
@@ -224,8 +307,12 @@ def main() -> int:
 
     original_cases = count_original_cases(node)
     passed = parse_passed(out)
+    excluded = count_excluded(node)
 
-    already_green = passed is not None and original_cases is not None and passed == original_cases
+    already_green = (
+        passed is not None and original_cases is not None and excluded is not None
+        and passed + excluded == original_cases
+    )
     if already_green:
         classification = "already_green"
     elif "test result: ok" in out:
@@ -244,9 +331,10 @@ def main() -> int:
     elif classification == "already_green":
         reason = (
             f"already_green: 原典 Pekko のケース数 {original_cases} と通過ケース数 "
-            f"{passed} が一致し、対象テストが全件成功している（前提の実装が契約を満たす）"
+            f"{passed}（承認済みの除外 {excluded} 件）が一致し、対象テストが全件成功している"
+            f"（前提の実装が契約を満たす）"
         )
-        green_recorded = mark_green(node, passed, reason)
+        green_recorded = mark_green(node, original_cases, passed, reason)
 
     print(json.dumps({
         "classification": classification,
@@ -255,6 +343,7 @@ def main() -> int:
         "green_recorded": green_recorded,
         "original_cases": original_cases,
         "passed": passed,
+        "excluded": excluded,
         "detail": out[-1500:],
     }, ensure_ascii=False))
     return 0
