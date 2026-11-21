@@ -2,13 +2,20 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    branches-ignore: [main]
   push:
     branches: [main]
+  workflow_call:
+    outputs:
+      check-result:
+        description: Outcome of the last required CI step
+        value: ${{ jobs.check.outputs.last-step-result }}
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    outputs:
+      last-step-result: ${{ steps.syn_checker.outcome }}
     steps:
       - uses: actions/checkout@v6
       - uses: Swatinem/rust-cache@v2
@@ -35,23 +42,8 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --check
       - name: syn checker
+        id: syn_checker
         run: |
           for dir in crates/*/; do
             cargo run --quiet --release --locked --manifest-path tools/syn-check/Cargo.toml -- --format json "${dir%/}"
           done
-
-  gate:
-    name: Fraktor CI Gate
-    needs: check
-    if: ${{ always() }}
-    permissions: {}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require CI success
-        env:
-          CHECK_RESULT: ${{ needs.check.result }}
-        run: |
-          if [[ "$CHECK_RESULT" != success ]]; then
-            printf 'Required CI job check returned %s\n' "${CHECK_RESULT:-<missing>}" >&2
-            exit 1
-          fi
