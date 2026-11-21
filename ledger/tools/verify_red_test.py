@@ -1212,6 +1212,92 @@ def test_non_target_invalid_date_does_not_affect_target():
     print("37b. non-target invalid date does not affect target; shared loader unchanged")
 
 
+def test_duplicate_excluded_key_does_not_hide_unapproved_item():
+    """重複した `excluded` キーで先の未承認除外を隠して already_green にしない（AC1）。
+
+    YAML のマッピングは後勝ちで重複キーを素通しするため、同じ `cases` に未承認の
+    `excluded` を先に、承認済みの `excluded` を後に書くと、先の未承認が隠れて
+    passed + excluded == original_cases が成り立ってしまう。専用ローダが重複キーを
+    拒否して count_excluded が None を返し、通常の分類経路で unexpected_pass になる。
+    """
+    unapproved = _unapproved_item("excluded case")
+    approved = _approved_item("excluded case", at='"2026-11-20"')
+    node = case_block(NODE_ID, None, None, None).replace(
+        "    excluded: []\n",
+        f"    excluded:{unapproved}\n"
+        f"    excluded:{approved}\n",
+    )
+    assert node.count("    excluded:") == 2, node
+    assert _count_excluded_for_ledger(ledger_yaml([node])) is None
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root, nodes_yaml=ledger_yaml([node]),
+            cargo_body=CARGO_STUB_OK, passed=1,
+            original_cases=2, with_original=True,
+        )
+        before = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        result = run_verify_red(scenario)
+        assert result["classification"] == "unexpected_pass", result
+        assert result["excluded"] is None, result
+        after = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        assert before == after
+        assert node_entry(root)["status"] == "unported", node_entry(root)
+    print("39. duplicate excluded key → unexpected_pass (unapproved not hidden)")
+
+
+def test_duplicate_mapping_key_outside_excluded_is_rejected():
+    """`excluded` 以外のマッピングでも重複キーを拒否し、正常な台帳は受理する。
+
+    重複拒否は `excluded` だけに限定せず、専用ローダが構築するマッピングに適用する。
+    対象ノードの `cases` 内の別キーを重複させても count_excluded は None になり、
+    重複のない台帳は承認済み件数を返す（正常系の保存）。
+    """
+    approved = _excluded_node(_approved_item("excluded case"))
+    assert _count_excluded_for_ledger(ledger_yaml([approved])) == 1
+    dup_total = approved.replace(
+        "    total: null\n", "    total: null\n    total: null\n")
+    assert dup_total.count("    total:") == 2, dup_total
+    assert _count_excluded_for_ledger(ledger_yaml([dup_total])) is None
+    print("40. duplicate mapping key outside excluded → None; unique key → count")
+
+
+def test_yaml_merge_does_not_import_other_node_approval():
+    """YAML merge (`<<`) で他ノードの承認記録を取り込ませない。
+
+    `approval: &approval {approved_by: ..., approved_at: ...}` を他ノードに置き、対象の
+    `cases.excluded` 要素へ `<<: *approval` と書くと、共有 SafeLoader の merge 展開では
+    他ノードの承認が要素へ流用され、未承認の除外が `already_green` に化ける。専用ローダは
+    merge を展開せず読み込みを拒否し、件数は `None`、通常分類は `unexpected_pass` になる。
+    この境界は「対象ノード/要素の直下に明示された記録だけを受理する」既存の制約の維持で
+    あり、通常の明示承認（merge なし）は従来どおり 1 件として受理する。
+    """
+    approved = _excluded_node(_approved_item("excluded case"))
+    assert _count_excluded_for_ledger(ledger_yaml([approved])) == 1
+    anchor = f"  approval: &approval\n    approved_by: {APPROVED_BY}\n    approved_at: {APPROVED_AT}\n"
+    merged = approved.replace(
+        "    excluded:\n",
+        f"    excluded:\n      - <<: *approval\n",
+    ).replace(
+        f"  status: unported\n",
+        f"  status: unported\n{anchor}",
+        1,
+    )
+    assert "&approval" in merged and "- <<: *approval" in merged, merged
+    assert _count_excluded_for_ledger(ledger_yaml([merged])) is None
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root, nodes_yaml=ledger_yaml([merged]),
+            cargo_body=CARGO_STUB_OK, passed=1,
+            original_cases=2, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["classification"] == "unexpected_pass", result
+        assert result["excluded"] is None, result
+    print("41. yaml merge key → unexpected_pass (explicit approval still accepted)")
+
+
 def test_verify_red_imports_without_pyyaml():
     """PyYAML 非依存で verify_red を import して mark_green できる。
 
@@ -1472,6 +1558,9 @@ def main() -> int:
         test_unquoted_invalid_calendar_date_is_unexpected_pass,
         test_excluded_timestamp_is_not_accepted_as_calendar_date,
         test_non_target_invalid_date_does_not_affect_target,
+        test_duplicate_excluded_key_does_not_hide_unapproved_item,
+        test_duplicate_mapping_key_outside_excluded_is_rejected,
+        test_yaml_merge_does_not_import_other_node_approval,
         test_verify_red_imports_without_pyyaml,
         test_tagged_scala_cases_are_counted,
         test_partially_countable_scala_original_is_not_green,
