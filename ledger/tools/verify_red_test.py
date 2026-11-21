@@ -1096,6 +1096,36 @@ def test_empty_excluded_is_still_counted_as_zero():
         print("34. empty excluded → 0 / already_green:", result["classification"])
 
 
+def test_count_excluded_rereads_ledger_at_call_time():
+    """count_excluded は呼出時点の LEDGER を読む（モジュール読込時のパスを固定しない）。
+
+    承認検査を別モジュールへ移すと、そのモジュールが台帳パスを読込時に取り込む
+    実装になりうる。すると 1 回目の呼出しの台帳だけを見続け、cwd で台帳を作り直す
+    既存の利用（テスト・隔離 tree）が別の台帳を読む。同じモジュールで cwd を変え、
+    2 回目の呼出しが 2 つ目の台帳の承認済み件数を返すことを確かめる。
+    """
+    import importlib
+    sys.path.insert(0, str(TOOLS))
+    try:
+        module = importlib.import_module("verify_red")
+    finally:
+        sys.path.remove(str(TOOLS))
+    cwd = os.getcwd()
+    try:
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            write(Path(first) / "ledger" / "nodes.yaml",
+                  ledger_yaml([_excluded_node(_approved_item("excluded case"))]))
+            write(Path(second) / "ledger" / "nodes.yaml",
+                  ledger_yaml([_excluded_node(_approved_item("a") + _approved_item("b"))]))
+            os.chdir(first)
+            assert module.count_excluded(NODE_ID) == 1, "first ledger"
+            os.chdir(second)
+            assert module.count_excluded(NODE_ID) == 2, "second ledger"
+    finally:
+        os.chdir(cwd)
+    print("35b. count_excluded rereads LEDGER at call time")
+
+
 def test_approval_belongs_only_to_target_node_cases_excluded():
     """承認記録は対象ノードの cases.excluded でのみ有効で、他の場所の記録を流用しない。
 
@@ -1554,6 +1584,7 @@ def main() -> int:
         test_excluded_without_full_pass_is_not_green,
         test_excluded_approval_table,
         test_empty_excluded_is_still_counted_as_zero,
+        test_count_excluded_rereads_ledger_at_call_time,
         test_approval_belongs_only_to_target_node_cases_excluded,
         test_unquoted_invalid_calendar_date_is_unexpected_pass,
         test_excluded_timestamp_is_not_accepted_as_calendar_date,
