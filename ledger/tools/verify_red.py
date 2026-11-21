@@ -21,9 +21,16 @@ already_green は「移植の正しさ（原典 Pekko のケース数と、人�
 
 台帳の書き換えは外部ライブラリに頼らず、対象ノードのブロック内の
 status 行だけを置き換える（nodes.yaml は変換器の生成形式に依存する）。
-already_green のときは status に加えて cases の total/ported/passing も実数で書き、
-triage.reason が null または空のときだけ理由を `already_green: ` で始めて書く（既存の理由は保持する）。
-新しいキーは増やさない。
+already_green のときは台帳を書き換えない。classification と件数（original_cases / passed /
+excluded）と理由（already_green: ...）を返すだけにし、status を green に永続化するのは
+verify_green と equivalence-review を通過した後の record-already-green（record_already_green.py）
+に任せる。triage は green を再投入しないため、この段階で green を書くと、等価性レビューが
+中断したときに未承認の green が残ってしまう。workflow は already_green を verify_green へ進める。
+
+already_green の判定結果（node / original_cases / passed / excluded / reason）は
+`.takt/already-green-result.json` へ書く。system step の次段へは台帳へ書く前に件数を渡せず、
+TAKT の system step 間の応答も JSON ではないため、record-already-green がこの固定パスを読む。
+already_green でないときは classification だけを持つ JSON を書く（record は何もしない）。
 """
 import json
 import os
@@ -32,6 +39,9 @@ import subprocess
 import sys
 
 LEDGER = "ledger/nodes.yaml"
+
+# already_green の判定結果を record-already-green へ渡す固定パス（cwd 相対）。
+ALREADY_GREEN_RESULT = os.path.join(".takt", "already-green-result.json")
 
 # 原典 Pekko のチェックアウト先。tools/pekko-source/prepare_pekko_source.sh が
 # cwd に pekko/ を用意する。環境依存パスをコードへ直書きしないため環境変数で上書きできる。
@@ -75,14 +85,17 @@ def mark_red(node_id: str) -> bool:
 
 
 def mark_green(node_id: str, total: int, passed: int, reason: str) -> bool:
-    """台帳の対象ノードを green にし、cases の実数を書き、理由を triage.reason へ書く。成功したら True。
+    """台帳の対象ノードを green にし、cases の実数と triage.reason を書く。成功したら True。
+
+    verify_green と equivalence-review を通過した後、record-already-green（record_already_green.py）
+    から呼ぶ。verify_red の already_green 分類では呼ばない（等価性レビュー中断時に未承認の
+    green を残さないため）。
 
     total には原典のケース数、ported と passing には Rust の成功件数 passed を書く
     （承認済みの除外がある場合、total = passed + len(excluded) になる）。
     新キーは増やさない。status・cases の total/ported/passing・既存の triage.reason だけを書き換える。
-    triage.reason が null または空のときだけ理由を書き、人間が書いた既存の理由は上書きしない
-    （その場合は台帳の理由を変えず False を返す）。triage.reason が無い台帳でも green と cases は書き、
-    理由は載せない。
+    triage.reason が null または空のときだけ `already_green: ` 理由を書き、人間が書いた既存の
+    理由は上書きしない。triage.reason キーが無い台帳でも green と cases は書き、理由は載せない。
     """
     if not os.path.exists(LEDGER):
         return False
@@ -288,14 +301,26 @@ def parse_passed(out: str) -> int | None:
     return passed if passed > 0 else None
 
 
+def write_result(result: dict) -> None:
+    """record-already-green が読む固定パスへ判定結果を書く。書けなくても分類は返す。"""
+    try:
+        os.makedirs(os.path.dirname(ALREADY_GREEN_RESULT), exist_ok=True)
+        with open(ALREADY_GREEN_RESULT, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
 def main() -> int:
     info = parse_previous_response()
     node = info.get("node")
     crate = info.get("crate")
     test_file = info.get("test_file")
     if not (node and crate and test_file):
-        print(json.dumps({"classification": "unclassifiable",
-                          "detail": "previous response lacks node/crate/test_file lines"}))
+        result = {"classification": "unclassifiable",
+                  "detail": "previous response lacks node/crate/test_file lines"}
+        write_result(result)
+        print(json.dumps(result))
         return 0
 
     stem = os.path.splitext(os.path.basename(test_file))[0]
@@ -326,6 +351,7 @@ def main() -> int:
 
     red_recorded = False
     green_recorded = False
+    reason = None
     if classification.startswith("expected_"):
         red_recorded = mark_red(node)
     elif classification == "already_green":
@@ -334,9 +360,8 @@ def main() -> int:
             f"{passed}（承認済みの除外 {excluded} 件）が一致し、対象テストが全件成功している"
             f"（前提の実装が契約を満たす）"
         )
-        green_recorded = mark_green(node, original_cases, passed, reason)
 
-    print(json.dumps({
+    result = {
         "classification": classification,
         "node": node,
         "red_recorded": red_recorded,
@@ -344,8 +369,11 @@ def main() -> int:
         "original_cases": original_cases,
         "passed": passed,
         "excluded": excluded,
+        "reason": reason,
         "detail": out[-1500:],
-    }, ensure_ascii=False))
+    }
+    write_result(result)
+    print(json.dumps(result, ensure_ascii=False))
     return 0
 
 

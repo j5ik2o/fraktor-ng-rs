@@ -20,14 +20,21 @@ verify_red.py は「直前の port-test 応答」から node/crate/test_file を
                （WordSpec の `"name" must {` など。対応書式との混在を含む）は None にする
   AG-FALLBACK  原典が無い・ケース数不一致・0 件成功・失敗のときは unexpected_pass
                （または従来どおりの分類）で、台帳は green にしない
-  AG-LEDGER    already_green のとき status: green、cases.total/ported/passing が実数、
-               新しいキーを増やさない、excluded は書き換えない
-  AG-REASON    already_green のとき、triage.reason が null/空なら `already_green: ` で始めて書き、
-               既存の非 null な理由（do_not_port の人間の理由）は上書きしない（green_recorded: false）。
-               新キーを増やさない。status は green のまま（do_not_port にしない）
+  AG-LEDGER    already_green のとき台帳は書き換えない（status は unported のまま）。green の
+               永続化は record-already-green（record_already_green.py）が行う。cases は増減させない
+  AG-REASON    already_green のとき stdout の reason が `already_green: ` で始まる。台帳の
+               triage.reason と green の永続化は、verify_green と equivalence-review を通過後に
+               record-already-green が呼ぶ mark_green が行う（AG-MARK-GREEN）
+  AG-MARK-GREEN mark_green は status: green・cases.total/ported/passing・triage.reason
+               （null/空のときだけ `already_green: `）を書き、既存の人間の理由は上書きしない
+  AG-RESULT    already_green の判定結果（node/original_cases/passed/excluded/reason）を
+               `.takt/already-green-result.json` へ書く（already_green でなければ classification のみ）
+  AG-RECORD    record_already_green.py は result JSON が already_green のときだけ台帳の
+               status/cases/triage.reason を書き、それ以外では台帳を変えない
   AG-MARK-RED  expected_* は従来どおり status: red（status 行だけを置換）
-  AG-WORKFLOW  workflow の verify_red に already_green → equivalence-review の分岐があり、
-               既存 4 分岐は残る（fallback の when(true) も含む）
+  AG-WORKFLOW  workflow の verify_red に already_green → verify_green の分岐があり、
+               既存 4 分岐は残る（fallback の when(true) も含む）。verify_green は
+               equivalence-review へ進む（already_green が機械ゲートを迂回しない）
   AG-LOOP      loop_monitors の cycle/threshold が変わっていない
   AG-PARSE     parse_passed は先頭の空 test result に引きずられず、対象テストの
                要約（最後の ok 行、または複数行の合計）から通過数を返す。
@@ -44,6 +51,7 @@ from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent
 VERIFY_RED = TOOLS / "verify_red.py"
+RECORD_ALREADY_GREEN = TOOLS / "record_already_green.py"
 ROLLUP = TOOLS / "rollup.py"
 CHECK_NEEDS = TOOLS / "check_needs.py"
 REPO = Path(__file__).resolve().parents[2]
@@ -284,7 +292,7 @@ def node_entry(root: Path, node_id: str = NODE_ID) -> dict:
 
 
 def test_already_green_when_ported_and_satisfied():
-    """全件成功 + 原典ケース数一致 → already_green、台帳は green。"""
+    """全件成功 + 原典ケース数一致 → already_green。台帳は書き換えない（green は ledger-update）。"""
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         scenario = make_scenario(
@@ -295,13 +303,53 @@ def test_already_green_when_ported_and_satisfied():
         )
         result = run_verify_red(scenario)
         assert result["classification"] == "already_green", result
+        assert result["green_recorded"] is False, result
         node = node_entry(root)
-        assert node["status"] == "green", node
-        assert node["cases"]["total"] == 2, node["cases"]
-        assert node["cases"]["ported"] == 2, node["cases"]
-        assert node["cases"]["passing"] == 2, node["cases"]
+        assert node["status"] == "unported", node
+        assert node["cases"]["total"] is None, node["cases"]
+        assert node["cases"]["ported"] is None, node["cases"]
+        assert node["cases"]["passing"] is None, node["cases"]
         print("1. already_green (ported+satisfied):", result["classification"],
               "status =", node["status"], "cases =", node["cases"])
+
+
+def test_already_green_writes_result_file():
+    """already_green の判定結果を `.takt/already-green-result.json` へ書く（AG-RESULT）。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(NODE_ID, None, None, None)]),
+            cargo_body=CARGO_STUB_OK, passed=2,
+            original_cases=2, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["classification"] == "already_green", result
+        saved = json.loads((root / ".takt" / "already-green-result.json").read_text(encoding="utf-8"))
+        assert saved["classification"] == "already_green", saved
+        assert saved["node"] == NODE_ID, saved
+        assert saved["original_cases"] == 2 and saved["passed"] == 2, saved
+        assert saved["excluded"] == 0, saved
+        assert saved["reason"].startswith("already_green: "), saved
+        print("1a. already_green writes result file:", saved["classification"])
+
+
+def test_non_already_green_result_file_has_no_reason():
+    """already_green でなければ result ファイルに classification だけを書き、record を no-op にする。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(NODE_ID, None, None, None)]),
+            cargo_body=CARGO_STUB_FAILED, passed=0,
+            original_cases=2, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["classification"] == "expected_assertion", result
+        saved = json.loads((root / ".takt" / "already-green-result.json").read_text(encoding="utf-8"))
+        assert saved["classification"] == "expected_assertion", saved
+        assert saved["node"] == NODE_ID, saved
+        print("1b. non-already_green result file:", saved["classification"])
 
 
 def test_unexpected_pass_when_original_missing():
@@ -414,8 +462,8 @@ def test_mark_red_only_touches_status_line():
         print("7. mark_red touches only status line")
 
 
-def test_already_green_adds_no_new_keys():
-    """already_green の書き込みで台帳の cases スキーマや他キーを増やさない（理由は triage.reason）。"""
+def test_already_green_leaves_ledger_untouched():
+    """already_green は台帳を書き換えない（byte 不変）。green の永続化は record-already-green。"""
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         scenario = make_scenario(
@@ -424,19 +472,24 @@ def test_already_green_adds_no_new_keys():
             cargo_body=CARGO_STUB_OK, passed=1,
             original_cases=1, with_original=True,
         )
+        before = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
         result = run_verify_red(scenario)
         assert result["classification"] == "already_green", result
+        after = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        assert before == after
         node = node_entry(root)
-        assert node["status"] == "green", node
+        assert node["status"] == "unported", node
         assert set(node["cases"].keys()) == {"total", "ported", "passing", "excluded"}, node["cases"]
-        assert node["cases"]["excluded"] == [], node["cases"]
         assert set(node["triage"].keys()) == {"kind", "reason"}, node["triage"]
-        assert node["triage"]["kind"] == "pending", node["triage"]
-        print("8. already_green keeps cases schema:", sorted(node["cases"].keys()))
+        print("8. already_green leaves ledger untouched:", node["status"])
 
 
-def test_workflow_has_already_green_branch_to_equivalence_review():
-    """workflow の verify_red に already_green → equivalence-review の分岐があり、既存分岐も残る。"""
+def test_workflow_has_already_green_branch_to_verify_green():
+    """workflow の verify_red に already_green → verify_green の分岐があり、既存分岐も残る。
+
+    already_green が equivalence-review へ直行すると verify_green の機械ゲートを迂回する。
+    遷移先は verify_green であり、verify_green は equivalence-review へ進む。
+    """
     import yaml
     doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     verify = next(s for s in doc["steps"] if s["name"] == "verify_red")
@@ -444,7 +497,8 @@ def test_workflow_has_already_green_branch_to_equivalence_review():
     target = [c for c in conditions if 'already_green' in c]
     assert target, conditions
     ag_rule = next(r for r in verify["rules"] if 'already_green' in r["condition"])
-    assert ag_rule.get("next") == "equivalence-review", ag_rule
+    assert ag_rule.get("next") == "verify_green", ag_rule
+    assert ag_rule.get("next") != "equivalence-review", ag_rule
     joined = "\n".join(conditions)
     for expected in ("expected_compile_error", "expected_assertion",
                      "unexpected_pass", "unclassifiable"):
@@ -452,7 +506,19 @@ def test_workflow_has_already_green_branch_to_equivalence_review():
     # fallback の when(true) → ABORT も残す
     assert any(r["condition"] == "when(true)" and r.get("next") == "ABORT"
                for r in verify["rules"]), verify["rules"]
-    print("9. workflow already_green →", ag_rule["next"], "(existing branches retained)")
+    # verify_green は all_pass で equivalence-review へ進む（機械ゲートを迂回しない）
+    vg = next(s for s in doc["steps"] if s["name"] == "verify_green")
+    assert any(r.get("next") == "equivalence-review" for r in vg["rules"]), vg["rules"]
+    # equivalence-review の通過後は record-already-green → ledger-update へ進む
+    eq = next(s for s in doc["steps"] if s["name"] == "equivalence-review")
+    assert any(r.get("next") == "record-already-green" for r in eq["rules"]), eq["rules"]
+    rec = next(s for s in doc["steps"] if s["name"] == "record-already-green")
+    assert rec.get("kind") == "system", rec
+    assert any(r.get("next") == "ledger-update" for r in rec["rules"]), rec["rules"]
+    # record-already-green は ledger-update の直前（台帳を緑にしてから完了判定へ渡す）
+    names = [s["name"] for s in doc["steps"]]
+    assert names.index("record-already-green") + 1 == names.index("ledger-update"), names
+    print("9. workflow already_green →", ag_rule["next"], "(record → ledger-update)")
 
 
 def test_loop_monitors_unchanged():
@@ -467,8 +533,8 @@ def test_loop_monitors_unchanged():
     print("10. loop_monitors verify_red cycle/threshold unchanged")
 
 
-def test_already_green_records_reason_in_triage_reason():
-    """already_green のとき理由を既存の triage.reason に書き、新キーを増やさない（AG-REASON）。"""
+def test_already_green_reason_returned_in_output():
+    """already_green の理由を stdout の reason で返し、台帳の triage.reason は変えない（AG-REASON）。"""
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         scenario = make_scenario(
@@ -479,22 +545,22 @@ def test_already_green_records_reason_in_triage_reason():
         )
         result = run_verify_red(scenario)
         assert result["classification"] == "already_green", result
+        assert result["green_recorded"] is False, result
+        reason = result["reason"]
+        assert isinstance(reason, str) and reason.strip(), result
+        assert reason.startswith("already_green: "), reason
         node = node_entry(root)
-        assert node["status"] == "green", node
-        assert node["triage"]["kind"] == "pending", node["triage"]
-        reason = node["triage"]["reason"]
-        assert isinstance(reason, str) and reason.strip(), node["triage"]
-        assert reason.startswith("already_green: "), node["triage"]
+        assert node["status"] == "unported", node
+        assert node["triage"]["reason"] is None, node["triage"]
         assert set(node.keys()) == {
             "id", "name", "kind", "pekko", "status", "triage", "needs",
             "depends_on_impl", "cases", "rust", "goal",
         }, node.keys()
-        assert set(node["triage"].keys()) == {"kind", "reason"}, node["triage"]
-        print("12. already_green records triage.reason:", reason)
+        print("12. already_green returns reason in stdout:", reason)
 
 
 def test_existing_non_null_reason_is_preserved():
-    """既存の非 null な triage.reason は already_green でも byte 不変・green_recorded: false（P4）。"""
+    """既存の非 null な triage.reason は already_green でも byte 不変（P4）。"""
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         nodes_yaml = ledger_yaml([case_block(NODE_ID, None, None, None)]).replace(
@@ -518,12 +584,141 @@ def test_existing_non_null_reason_is_preserved():
         assert after_reason == ["    reason: 以前の理由  # do_not_port のとき必須"], after_reason
         node = node_entry(root)
         assert node["triage"]["reason"] == "以前の理由", node["triage"]
-        assert node["status"] == "green", node
+        assert node["status"] == "unported", node
         print("13. existing non-null reason preserved:", node["triage"]["reason"])
 
 
-def test_null_reason_is_replaced_by_already_green_reason():
-    """triage.reason が null のときは理由を 1 行で書く（主操作の維持）。"""
+def _run_mark_green(root: Path, node_id: str, total: int, passed: int, reason: str) -> bool:
+    """一時台帳を作り、verify_red の mark_green をサブプロセスで呼ぶ（LEDGER は cwd 相対）。"""
+    import importlib
+    sys.path.insert(0, str(TOOLS))
+    try:
+        module = importlib.import_module("verify_red")
+    finally:
+        sys.path.remove(str(TOOLS))
+    cwd = os.getcwd()
+    try:
+        os.chdir(root)
+        return module.mark_green(node_id, total, passed, reason)
+    finally:
+        os.chdir(cwd)
+
+
+def test_mark_green_persists_green_and_reason():
+    """ledger-update 用の mark_green は status green・cases 実数・triage.reason を書く（green 記録）。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write(root / "ledger" / "nodes.yaml", ledger_yaml([case_block(NODE_ID, None, None, None)]))
+        reason = "already_green: 原典 Pekko のケース数 2 と通過ケース数 2（承認済みの除外 0 件）が一致"
+        assert _run_mark_green(root, NODE_ID, 2, 2, reason) is True
+        node = node_entry(root)
+        assert node["status"] == "green", node
+        assert node["cases"]["total"] == 2 and node["cases"]["ported"] == 2 \
+            and node["cases"]["passing"] == 2, node["cases"]
+        assert node["triage"]["reason"] == reason, node["triage"]
+        assert set(node["triage"].keys()) == {"kind", "reason"}, node["triage"]
+        print("13a. mark_green persists green + cases + reason:", node["status"])
+
+
+def test_mark_green_preserves_human_reason():
+    """mark_green は人間が書いた既存の triage.reason を上書きしない（False を返す）。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        nodes_yaml = ledger_yaml([case_block(NODE_ID, None, None, None)]).replace(
+            "    reason: null\n",
+            "    reason: 以前の理由  # do_not_port のとき必須\n",
+        )
+        write(root / "ledger" / "nodes.yaml", nodes_yaml)
+        assert _run_mark_green(root, NODE_ID, 1, 1, "already_green: 新しい理由") is False
+        node = node_entry(root)
+        assert node["triage"]["reason"] == "以前の理由", node["triage"]
+        assert node["status"] == "green", node
+        print("13a-2. mark_green preserves human reason:", node["triage"]["reason"])
+
+
+def _run_record_already_green(root: Path) -> dict:
+    """record_already_green.py を cwd=root で実行し、stdout の JSON を返す。"""
+    proc = subprocess.run(
+        [sys.executable, str(RECORD_ALREADY_GREEN)],
+        cwd=str(root), capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode == 0, (
+        f"record_already_green must always exit 0; got {proc.returncode}\n"
+        f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    )
+    return json.loads(proc.stdout)
+
+
+def test_record_already_green_writes_green_and_reason():
+    """result JSON が already_green のとき、台帳に status green・cases・triage.reason を書く。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write(root / "ledger" / "nodes.yaml", ledger_yaml([case_block(NODE_ID, None, None, None)]))
+        write(root / ".takt" / "already-green-result.json", json.dumps({
+            "classification": "already_green", "node": NODE_ID,
+            "original_cases": 2, "passed": 2, "excluded": 0,
+            "reason": "already_green: 原典 Pekko のケース数 2 と通過ケース数 2 が一致",
+        }, ensure_ascii=False))
+        result = _run_record_already_green(root)
+        assert result["recorded"] is True and result["already_green"] is True, result
+        node = node_entry(root)
+        assert node["status"] == "green", node
+        assert node["cases"]["total"] == 2 and node["cases"]["ported"] == 2 \
+            and node["cases"]["passing"] == 2, node["cases"]
+        assert node["triage"]["reason"].startswith("already_green: "), node["triage"]
+        print("13d. record-already-green writes green + cases + reason:", node["status"])
+
+
+def test_record_already_green_preserves_human_reason():
+    """result JSON が already_green でも、人間が書いた既存の triage.reason は上書きしない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        nodes_yaml = ledger_yaml([case_block(NODE_ID, None, None, None)]).replace(
+            "    reason: null\n", "    reason: 以前の理由  # do_not_port のとき必須\n",
+        )
+        write(root / "ledger" / "nodes.yaml", nodes_yaml)
+        write(root / ".takt" / "already-green-result.json", json.dumps({
+            "classification": "already_green", "node": NODE_ID,
+            "original_cases": 1, "passed": 1, "excluded": 0,
+            "reason": "already_green: 新しい理由",
+        }, ensure_ascii=False))
+        _run_record_already_green(root)
+        node = node_entry(root)
+        assert node["triage"]["reason"] == "以前の理由", node["triage"]
+        assert node["status"] == "green", node
+        print("13e. record-already-green preserves human reason:", node["triage"]["reason"])
+
+
+def test_record_already_green_skips_when_not_already_green():
+    """classification が already_green でなければ台帳を書き換えない（AG-RECORD）。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write(root / "ledger" / "nodes.yaml", ledger_yaml([case_block(NODE_ID, None, None, None)]))
+        write(root / ".takt" / "already-green-result.json", json.dumps({
+            "classification": "expected_assertion", "node": NODE_ID,
+        }, ensure_ascii=False))
+        before = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        result = _run_record_already_green(root)
+        assert result["already_green"] is False and result["recorded"] is False, result
+        after = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        assert before == after
+        print("13f. record-already-green leaves ledger untouched when not already_green")
+
+
+def test_record_already_green_without_result_file():
+    """result JSON が無ければ何も書かず success を返す（未実行の防御）。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write(root / "ledger" / "nodes.yaml", ledger_yaml([case_block(NODE_ID, None, None, None)]))
+        before = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        result = _run_record_already_green(root)
+        assert result["already_green"] is False, result
+        assert (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8") == before
+        print("13g. record-already-green with no result file is a no-op")
+
+
+def test_null_reason_stays_null_when_already_green():
+    """triage.reason が null のとき、already_green でも台帳には書かない（green は ledger-update）。"""
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         scenario = make_scenario(
@@ -534,17 +729,16 @@ def test_null_reason_is_replaced_by_already_green_reason():
         )
         result = run_verify_red(scenario)
         assert result["classification"] == "already_green", result
-        assert result.get("green_recorded") is True, result
+        assert result.get("green_recorded") is False, result
         text = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
         reason_lines = [l for l in text.splitlines() if l.strip().startswith("reason:")]
-        assert len(reason_lines) == 1, reason_lines
-        reason = node_entry(root)["triage"]["reason"]
-        assert reason.startswith("already_green: "), reason
-        print("13b. null reason replaced by single-line reason:", reason)
+        assert reason_lines == ["    reason: null"], reason_lines
+        assert node_entry(root)["triage"]["reason"] is None
+        print("13b. null reason stays null:", reason_lines)
 
 
-def test_empty_reason_is_replaced_by_already_green_reason():
-    """triage.reason が空文字列でも null と同様に理由を書く（境界値）。"""
+def test_empty_reason_stays_empty_when_already_green():
+    """triage.reason が空文字列でも、already_green は台帳を書き換えない（境界値）。"""
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         nodes_yaml = ledger_yaml([case_block(NODE_ID, None, None, None)]).replace(
@@ -557,17 +751,18 @@ def test_empty_reason_is_replaced_by_already_green_reason():
             cargo_body=CARGO_STUB_OK, passed=1,
             original_cases=1, with_original=True,
         )
+        before = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
         result = run_verify_red(scenario)
         assert result["classification"] == "already_green", result
-        assert result.get("green_recorded") is True, result
-        reason = node_entry(root)["triage"]["reason"]
-        assert isinstance(reason, str) and reason.startswith("already_green: "), reason
-        print("13c. empty reason replaced:", reason)
+        assert result.get("green_recorded") is False, result
+        after = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        assert before == after, (before, after)
+        print("13c. empty reason untouched")
 
 
 
-def test_already_green_not_blocked_when_reason_key_missing():
-    """triage.reason キーが無い台帳でも green にする（理由の欠落で classify を落とさない）。"""
+def test_already_green_does_not_add_reason_key():
+    """triage.reason キーが無い台帳でも、already_green はキーを追加しない。"""
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         nodes_yaml = ledger_yaml([case_block(NODE_ID, None, None, None)]).replace(
@@ -579,12 +774,16 @@ def test_already_green_not_blocked_when_reason_key_missing():
             cargo_body=CARGO_STUB_OK, passed=1,
             original_cases=1, with_original=True,
         )
+        before = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
         result = run_verify_red(scenario)
         assert result["classification"] == "already_green", result
-        assert result.get("green_recorded") is True, result
+        assert result.get("green_recorded") is False, result
+        after = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        assert before == after, (before, after)
         node = node_entry(root)
-        assert node["status"] == "green", node
-        print("14. already_green without reason key:", node["triage"])
+        assert "reason" not in node["triage"], node["triage"]
+        assert node["status"] == "unported", node
+        print("14. already_green without reason key untouched:", node["triage"])
 
 
 def test_parse_passed_skips_leading_empty_summary():
@@ -640,7 +839,7 @@ def test_parse_passed_fails_when_last_summary_failed():
 
 
 def test_rollup_and_check_needs_do_not_break():
-    """already_green で green にした台帳で、rollup.py と check_needs.py が壊れない。"""
+    """already_green → record-already-green で書いた台帳で rollup/check_needs が壊れない。"""
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         scenario = make_scenario(
@@ -649,7 +848,12 @@ def test_rollup_and_check_needs_do_not_break():
             cargo_body=CARGO_STUB_OK, passed=1,
             original_cases=1, with_original=True,
         )
-        run_verify_red(scenario)
+        result = run_verify_red(scenario)
+        assert result["classification"] == "already_green", result
+        # verify_red は台帳を書かない。green は equivalence-review 通過後の record-already-green が書く。
+        assert node_entry(root)["status"] == "unported"
+        recorded = _run_record_already_green(root)
+        assert recorded["recorded"] is True, recorded
         assert node_entry(root)["status"] == "green"
 
         caps = root / "ledger" / "capabilities.yaml"
@@ -687,19 +891,23 @@ def test_excluded_cases_count_toward_green():
             cargo_body=CARGO_STUB_OK, passed=1,
             original_cases=2, with_original=True,
         )
+        before = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
         result = run_verify_red(scenario)
         assert result["classification"] == "already_green", result
         assert result["excluded"] == 1, result
+        assert result["original_cases"] == 2, result
+        assert result["passed"] == 1, result
+        assert result["green_recorded"] is False, result
+        after = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        assert before == after
         node = node_entry(root)
-        assert node["status"] == "green", node
-        assert node["cases"]["total"] == 2, node["cases"]
-        assert node["cases"]["ported"] == 1, node["cases"]
-        assert node["cases"]["passing"] == 1, node["cases"]
+        assert node["status"] == "unported", node
+        assert node["cases"]["total"] is None, node["cases"]
         assert node["cases"]["excluded"] == [
             {"name": "excluded case", "reason": "承認済みの除外"}
         ], node["cases"]
-        print("18. excluded counted: total =", node["cases"]["total"],
-              "ported =", node["cases"]["ported"])
+        print("18. excluded counted in result: cases total =", result["original_cases"],
+              "excluded =", result["excluded"])
 
 
 def test_excluded_without_full_pass_is_not_green():
@@ -734,7 +942,7 @@ def test_tagged_scala_cases_are_counted():
         result = run_verify_red(scenario)
         assert result["original_cases"] == 3, result
         assert result["classification"] == "already_green", result
-        assert node_entry(root, SCALA_NODE_ID)["status"] == "green"
+        assert node_entry(root, SCALA_NODE_ID)["status"] == "unported"
         print("20. taggedAs cases counted:", result["original_cases"])
 
 
@@ -789,20 +997,28 @@ def test_mixed_supported_and_unsupported_scala_cases_not_partial():
 def main() -> int:
     tests = [
         test_already_green_when_ported_and_satisfied,
+        test_already_green_writes_result_file,
+        test_non_already_green_result_file_has_no_reason,
         test_unexpected_pass_when_original_missing,
         test_unexpected_pass_when_case_count_mismatch,
         test_unexpected_pass_when_zero_cases_pass,
         test_expected_compile_error_marks_red,
         test_expected_assertion_marks_red,
         test_mark_red_only_touches_status_line,
-        test_already_green_adds_no_new_keys,
-        test_workflow_has_already_green_branch_to_equivalence_review,
+        test_already_green_leaves_ledger_untouched,
+        test_workflow_has_already_green_branch_to_verify_green,
         test_loop_monitors_unchanged,
-        test_already_green_records_reason_in_triage_reason,
+        test_already_green_reason_returned_in_output,
         test_existing_non_null_reason_is_preserved,
-        test_null_reason_is_replaced_by_already_green_reason,
-        test_empty_reason_is_replaced_by_already_green_reason,
-        test_already_green_not_blocked_when_reason_key_missing,
+        test_mark_green_persists_green_and_reason,
+        test_mark_green_preserves_human_reason,
+        test_record_already_green_writes_green_and_reason,
+        test_record_already_green_preserves_human_reason,
+        test_record_already_green_skips_when_not_already_green,
+        test_record_already_green_without_result_file,
+        test_null_reason_stays_null_when_already_green,
+        test_empty_reason_stays_empty_when_already_green,
+        test_already_green_does_not_add_reason_key,
         test_parse_passed_skips_leading_empty_summary,
         test_parse_passed_sums_multiple_summaries,
         test_parse_passed_fails_when_last_summary_failed,
