@@ -22,6 +22,8 @@ verify_red.py は「直前の port-test 応答」から node/crate/test_file を
                あれば count_excluded は None を返し、passed + excluded == original_cases の
                件数式が合っていても already_green にしない（unexpected_pass）。既存の
                name/reason だけの要素は未承認として拒否する（APPROVAL_CASES の表で確認）
+               別ノードの引用なし不正日は対象ノードの判定に影響せず、対象の不正日だけが
+               fail closed する（共有 SafeLoader は書き換えない）
   AG-COUNT     Scala のタグ付きケースも数え、`it should "..." in {` 形式も既知の書式として数える。
                既知の書式で全件を説明できない原典（WordSpec の `"name" must {` など。対応書式との
                混在を含む）は None にする
@@ -1170,6 +1172,46 @@ def test_excluded_timestamp_is_not_accepted_as_calendar_date():
     print("37. timestamp is not accepted as calendar date")
 
 
+def test_non_target_invalid_date_does_not_affect_target():
+    """別ノードの引用なし不正日は対象ノードの承認判定に影響しない。
+
+    台帳全体の `yaml.safe_load` は引用なしの不正暦日（`2026-02-30`）で ValueError を
+    送出する。対象ノードの選択前にこれが起きると、対象ノードの承認記録が正しくても
+    count_excluded は None を返し、正常な移植が差し戻される。verify_red 専用の
+    SafeLoader で timestamp スカラーを文字列として構築し、対象ノードの approved_at
+    だけを暦日として検証することで、次の両方を同時に満たす:
+      - 対象の不正日は fail closed（None、unexpected_pass）
+      - 対象外の不正日は対象判定に影響しない（対象の承認済み件数を返す）
+    共有 `yaml.SafeLoader` の状態は変更しない。
+    """
+    import yaml
+
+    def assert_shared_loader_date_behavior():
+        assert yaml.safe_load("approved_at: 2026-11-20")["approved_at"] == datetime_date(
+            2026, 11, 20)
+        try:
+            yaml.safe_load("approved_at: 2026-02-30")
+        except (ValueError, yaml.YAMLError):
+            return
+        raise AssertionError("shared SafeLoader accepted an invalid calendar date")
+
+    target = _excluded_node(_approved_item("excluded case"))
+    other_bad = target.replace(f"- id: {NODE_ID}", f"- id: {OTHER_NODE_ID}").replace(
+        f"approved_at: {APPROVED_AT}", "approved_at: 2026-02-30")
+
+    assert_shared_loader_date_behavior()
+    # 対象外の不正日があっても、対象の承認済み 1 件を数える（影響しない）
+    assert _count_excluded_for_ledger(ledger_yaml([other_bad, target])) == 1, "other-before"
+    assert_shared_loader_date_behavior()
+    assert _count_excluded_for_ledger(ledger_yaml([target, other_bad])) == 1, "other-after"
+    assert_shared_loader_date_behavior()
+    # 対象の不正日は fail closed
+    target_bad = target.replace(f"approved_at: {APPROVED_AT}", "approved_at: 2026-02-30")
+    assert _count_excluded_for_ledger(ledger_yaml([other_bad, target_bad])) is None, "target-bad"
+    assert_shared_loader_date_behavior()
+    print("37b. non-target invalid date does not affect target; shared loader unchanged")
+
+
 def test_verify_red_imports_without_pyyaml():
     """PyYAML 非依存で verify_red を import して mark_green できる。
 
@@ -1429,6 +1471,7 @@ def main() -> int:
         test_approval_belongs_only_to_target_node_cases_excluded,
         test_unquoted_invalid_calendar_date_is_unexpected_pass,
         test_excluded_timestamp_is_not_accepted_as_calendar_date,
+        test_non_target_invalid_date_does_not_affect_target,
         test_verify_red_imports_without_pyyaml,
         test_tagged_scala_cases_are_counted,
         test_partially_countable_scala_original_is_not_green,

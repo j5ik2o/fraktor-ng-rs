@@ -243,12 +243,34 @@ def count_original_cases(node_id: str) -> int | None:
     return total if total > 0 else None
 
 
+def _ledger_loader():
+    """台帳を読む専用の SafeLoader。timestamp スカラーを文字列のまま構築する。
+
+    既定の `yaml.SafeLoader` は `approved_at: 2026-02-30` のような引用なしの不正な暦日で
+    ValueError を送出し、台帳全体の読み込みが失敗する。対象ノードの選択前に起きると、
+    別ノードの誤記だけで対象ノードの承認済み除外を数えられなくなる。専用ローダでは
+    timestamp を文字列として返し、暦日の妥当性は対象ノードの `approved_at` だけを
+    `_approved_by_human` で検証する（対象の不正日は fail closed、対象外は判定に影響しない）。
+    共有の `yaml.SafeLoader` は変更しない。
+    """
+    import yaml
+
+    class LedgerLoader(yaml.SafeLoader):
+        pass
+
+    LedgerLoader.add_constructor(
+        "tag:yaml.org,2002:timestamp",
+        lambda loader, node: loader.construct_scalar(node),
+    )
+    return LedgerLoader
+
+
 def count_excluded(node_id: str) -> int | None:
     """台帳の対象ノードの cases.excluded の件数を返す。読めないときは None。
 
     excluded は人間が承認した除外の一覧である。要素は `name`・`reason` に加えて、
     人による承認記録 `approved_by`（空白以外の文字列）と `approved_at`
-    （YYYY-MM-DD の暦日。YAML 読み取りで日付型になる引用なしの表記も可）を直下に持つ。
+    （YYYY-MM-DD の暦日。引用なしの表記は `_ledger_loader` が文字列として読む）を直下に持つ。
     承認記録が欠落・空欄・null・不正な日付・不正な型の要素が 1 件でもあれば None を返し、
     件数式（passed + excluded == original_cases）が成り立っても already_green にしない
     （既存の name/reason だけの要素も未承認として扱う）。
@@ -264,7 +286,7 @@ def count_excluded(node_id: str) -> int | None:
     import yaml
 
     try:
-        doc = yaml.safe_load(open(LEDGER, encoding="utf-8").read())
+        doc = yaml.load(open(LEDGER, encoding="utf-8").read(), Loader=_ledger_loader())
     except (yaml.YAMLError, ValueError, OSError, UnicodeDecodeError):
         return None
     nodes = doc.get("nodes") if isinstance(doc, dict) else None
@@ -293,8 +315,9 @@ def count_excluded(node_id: str) -> int | None:
 def _approved_by_human(item: dict) -> bool:
     """除外要素が人による承認記録（approved_by と approved_at）を直下に持つかを返す。
 
-    `approved_at` は暦日だけを受理する。`datetime.datetime` は `date` のサブクラスだが、
-    時刻を含む timestamp は日付だけの記録ではないため受理しない。
+    `approved_at` は暦日だけを受理する。台帳は `_ledger_loader` で読むため timestamp は
+    文字列で届き、`\\d{4}-\\d{2}-\\d{2}` の暦日だけを受理する（時刻を含む timestamp や
+    不正な暦日は文字列のまま一致せず拒否する）。
     """
     import datetime
 
@@ -302,10 +325,6 @@ def _approved_by_human(item: dict) -> bool:
     if not isinstance(by, str) or not by.strip():
         return False
     at = item.get("approved_at")
-    if isinstance(at, datetime.datetime):
-        return False
-    if isinstance(at, datetime.date):
-        return True
     if not isinstance(at, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", at):
         return False
     try:
