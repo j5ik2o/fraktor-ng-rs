@@ -31,6 +31,10 @@ already_green の判定結果（node / original_cases / passed / excluded / reas
 `.takt/already-green-result.json` へ書く。system step の次段へは台帳へ書く前に件数を渡せず、
 TAKT の system step 間の応答も JSON ではないため、record-already-green がこの固定パスを読む。
 already_green でないときは classification だけを持つ JSON を書く（record は何もしない）。
+同じパスには前回の実行の結果が残りうるため、判定結果は常にこの実行の内容で上書きし、
+書込みに失敗したときは既存の結果ファイルを削除して終了コード 1 で失敗する（古い
+already_green を record-already-green に読ませない。workflow の verify_red は分類 JSON を
+返さない終了コード 1 を when(true) で ABORT し、古い結果のまま台帳へ進ませない）。
 """
 import json
 import os
@@ -64,7 +68,9 @@ SCALA_CASE = re.compile(
     re.MULTILINE | re.VERBOSE,
 )
 # 既知の書式で説明できない名前付きブロック（`"name" must {`、`"name" should {` など）。
-SCALA_NAMED_PREFIX = re.compile(r'^\s*"[^"]+"\s+(?=\S)', re.MULTILINE)
+# `it should "..."` で始まる行も、文字列リテラルで始まる名前付きブロックとして数える
+# （SCALA_CASE 側でケースとして数えるため、突き合わせの両側で同じ行を数える）。
+SCALA_NAMED_PREFIX = re.compile(r'^\s*(?:it\s+should\s+)?"[^"]+"\s+(?=\S)', re.MULTILINE)
 
 
 def parse_previous_response() -> dict:
@@ -302,13 +308,24 @@ def parse_passed(out: str) -> int | None:
 
 
 def write_result(result: dict) -> None:
-    """record-already-green が読む固定パスへ判定結果を書く。書けなくても分類は返す。"""
+    """record-already-green が読む固定パスへ判定結果を書く。前回の結果は必ず置き換える。
+
+    前回の実行の already_green 結果が残ったまま record-already-green に読まれると、等価性
+    レビューを受けていない green が台帳に残る。そのため書く前に古い結果ファイルを消し、
+    書込みに失敗したときも古い結果を残さず OSError を呼出し側へ伝える。
+    """
+    os.makedirs(os.path.dirname(ALREADY_GREEN_RESULT), exist_ok=True)
+    _remove_stale_result()
+    with open(ALREADY_GREEN_RESULT, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False)
+
+
+def _remove_stale_result() -> None:
+    """古い判定結果を残さない。結果ファイルが無いときは何もしない。"""
     try:
-        os.makedirs(os.path.dirname(ALREADY_GREEN_RESULT), exist_ok=True)
-        with open(ALREADY_GREEN_RESULT, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False)
-    except OSError:
-        pass
+        os.remove(ALREADY_GREEN_RESULT)
+    except FileNotFoundError:
+        return
 
 
 def main() -> int:
@@ -319,7 +336,12 @@ def main() -> int:
     if not (node and crate and test_file):
         result = {"classification": "unclassifiable",
                   "detail": "previous response lacks node/crate/test_file lines"}
-        write_result(result)
+        try:
+            write_result(result)
+        except OSError as error:
+            print(json.dumps({**result, "result_write_failed": str(error)},
+                             ensure_ascii=False))
+            return 1
         print(json.dumps(result))
         return 0
 
@@ -372,7 +394,12 @@ def main() -> int:
         "reason": reason,
         "detail": out[-1500:],
     }
-    write_result(result)
+    try:
+        write_result(result)
+    except OSError as error:
+        print(json.dumps({**result, "result_write_failed": str(error)},
+                         ensure_ascii=False))
+        return 1
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

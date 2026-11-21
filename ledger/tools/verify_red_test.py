@@ -16,8 +16,9 @@ verify_red.py は「直前の port-test 応答」から node/crate/test_file を
   AG-EXCLUDED  台帳の cases.excluded の件数を passed に足して原典件数と突き合わせ、
                green の保存は total=原典件数、ported=passing=passed。除外が無いときは
                従来と同じ結果になる
-  AG-COUNT     Scala のタグ付きケースも数え、既知の書式で全件を説明できない原典
-               （WordSpec の `"name" must {` など。対応書式との混在を含む）は None にする
+  AG-COUNT     Scala のタグ付きケースも数え、`it should "..." in {` 形式も既知の書式として数える。
+               既知の書式で全件を説明できない原典（WordSpec の `"name" must {` など。対応書式との
+               混在を含む）は None にする
   AG-FALLBACK  原典が無い・ケース数不一致・0 件成功・失敗のときは unexpected_pass
                （または従来どおりの分類）で、台帳は green にしない
   AG-LEDGER    already_green のとき台帳は書き換えない（status は unported のまま）。green の
@@ -28,7 +29,9 @@ verify_red.py は「直前の port-test 応答」から node/crate/test_file を
   AG-MARK-GREEN mark_green は status: green・cases.total/ported/passing・triage.reason
                （null/空のときだけ `already_green: `）を書き、既存の人間の理由は上書きしない
   AG-RESULT    already_green の判定結果（node/original_cases/passed/excluded/reason）を
-               `.takt/already-green-result.json` へ書く（already_green でなければ classification のみ）
+               `.takt/already-green-result.json` へ書く（already_green でなければ classification のみ）。
+               書込みに失敗したときは前回の結果を削除して終了コード 1 で失敗し、古い結果を
+               record-already-green に読ませない
   AG-RECORD    record_already_green.py は result JSON が already_green のときだけ台帳の
                status/cases/triage.reason を書き、それ以外では台帳を変えない
   AG-MARK-RED  expected_* は従来どおり status: red（status 行だけを置換）
@@ -994,6 +997,141 @@ def test_mixed_supported_and_unsupported_scala_cases_not_partial():
         print("22. mixed formats not partially counted:", result["classification"])
 
 
+def test_it_should_in_cases_are_counted():
+    """`it should "..." in {` 形式の原典も、名前付きブロックとして数え already_green にできる。
+
+    SCALA_CASE は 1 件と数えるが SCALA_NAMED_PREFIX が 0 件と数えると件数不一致になり、
+    この形式だけの原典は常に None になる（Green にできない）。両側で同じ行を数える。
+    """
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        text = (
+            "package org.apache.pekko.actor\n\n"
+            "class AddressSpec extends PekkoSpec {\n"
+            '  it should "returns host" in {\n  }\n'
+            '  it should "returns port" in {\n  }\n'
+            "}\n"
+        )
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(SCALA_NODE_ID, None, None, None)]),
+            cargo_body=CARGO_STUB_OK, passed=2,
+            original_cases=None, with_original=True,
+            original_text=text, node_id=SCALA_NODE_ID,
+        )
+        result = run_verify_red(scenario)
+        assert result["original_cases"] == 2, result
+        assert result["classification"] == "already_green", result
+        print("23. it should in { cases counted:", result["original_cases"])
+
+
+def test_unknown_named_block_alongside_it_should_is_not_green():
+    """`it should` 形式と未知の名前付きブロックが混在する原典は、件数不一致で None にする。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        text = (
+            "package org.apache.pekko.actor\n\n"
+            "class AddressSpec extends PekkoSpec {\n"
+            '  it should "returns host" in {\n  }\n'
+            '  "A suite" must {\n    "hidden" in {\n    }\n  }\n'
+            "}\n"
+        )
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(SCALA_NODE_ID, None, None, None)]),
+            cargo_body=CARGO_STUB_OK, passed=1,
+            original_cases=None, with_original=True,
+            original_text=text, node_id=SCALA_NODE_ID,
+        )
+        result = run_verify_red(scenario)
+        assert result["original_cases"] is None, result
+        assert result["classification"] == "unexpected_pass", result
+        print("24. it should + unknown named block → unexpected_pass:", result["classification"])
+
+
+def test_stale_result_is_removed_when_write_fails():
+    """判定結果を書けないとき、前回の already_green 結果を残さず OSError を伝える。
+
+    古い結果が残ると record-already-green がそれを読み、等価性レビューを受けていない
+    green を台帳に書いてしまう。書込み失敗時は結果ファイルを削除して失敗させる。
+    """
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(NODE_ID, None, None, None)]),
+            cargo_body=CARGO_STUB_FAILED, passed=0,
+            original_cases=1, with_original=True,
+        )
+        result_path = root / ".takt" / "already-green-result.json"
+        write(result_path, json.dumps({
+            "classification": "already_green", "node": NODE_ID,
+            "original_cases": 1, "passed": 1, "excluded": 0,
+            "reason": "already_green: 前回の結果",
+        }, ensure_ascii=False))
+        # 結果の書込みだけを失敗させる（write_result の open("w") で OSError を送出する）。
+        # .takt を書込み不可にしても一部のファイルシステムでは通ってしまうため、
+        # open を差し替えて書込み失敗を確実に再現する。
+        import builtins
+        import importlib
+        sys.path.insert(0, str(TOOLS))
+        try:
+            verify_red_module = importlib.import_module("verify_red")
+        finally:
+            sys.path.remove(str(TOOLS))
+
+        def fail_open(*args, **kwargs):
+            raise OSError(28, "No space left on device (simulated)")
+
+        real_open = builtins.open
+        builtins.open = fail_open
+        cwd = os.getcwd()
+        try:
+            os.chdir(root)
+            verify_red_module.write_result({"classification": "expected_assertion"})
+        except OSError as error:
+            assert "simulated" in str(error), error
+        else:
+            raise AssertionError("write_result must propagate OSError")
+        finally:
+            os.chdir(cwd)
+            builtins.open = real_open
+        assert not result_path.exists(), result_path.read_text(encoding="utf-8")
+        # 以降の実行では書込みを戻し、record-already-green が古い結果ファイルを読まずに
+        # no-op（台帳を緑にしない）になることを確かめる
+        record = _run_record_already_green(root)
+        assert record["already_green"] is False and record["recorded"] is False, record
+        assert node_entry(root)["status"] == "unported", node_entry(root)
+        print("25. write failure removes stale result and record is a no-op")
+
+
+def test_main_exits_nonzero_when_result_cannot_be_written():
+    """判定結果を書けないとき、main の分類 JSON を返さず終了コード 1 で失敗する。
+
+    workflow の verify_red は分類 JSON が無いと when(true) で ABORT する。0 を返して
+    分類を出してしまうと、古い結果に頼った遷移が起きるため、失敗を明示する。
+    """
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(NODE_ID, None, None, None)]),
+            cargo_body=CARGO_STUB_FAILED, passed=0,
+            original_cases=1, with_original=True,
+        )
+        # .takt の代わりに同名の通常ファイルを置き、makedirs/open を確実に失敗させる
+        (root / ".takt").write_text("not a directory", encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(VERIFY_RED)],
+            cwd=str(root), env=scenario["env"],
+            capture_output=True, text=True, check=False,
+        )
+        assert proc.returncode == 1, (proc.returncode, proc.stdout, proc.stderr)
+        payload = json.loads(proc.stdout)
+        assert "result_write_failed" in payload, payload
+        print("26. write failure exits 1 without classification file")
+
+
 def main() -> int:
     tests = [
         test_already_green_when_ported_and_satisfied,
@@ -1028,6 +1166,10 @@ def main() -> int:
         test_tagged_scala_cases_are_counted,
         test_partially_countable_scala_original_is_not_green,
         test_mixed_supported_and_unsupported_scala_cases_not_partial,
+        test_it_should_in_cases_are_counted,
+        test_unknown_named_block_alongside_it_should_is_not_green,
+        test_stale_result_is_removed_when_write_fails,
+        test_main_exits_nonzero_when_result_cannot_be_written,
     ]
     failures = 0
     for test in tests:
