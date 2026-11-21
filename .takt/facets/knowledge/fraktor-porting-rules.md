@@ -16,8 +16,10 @@ Apache Pekko v1.7.1 のテストスイートを正として Rust へ移植する
   同期的な判断は差し込まない）。未承認の除外提案が出たら、run は提案を
   レポートに残して needs_human で終わる。人間が承認した場合、
   その記録は台帳の対象ノードの `cases.excluded` に人間自身が書く。
-  `cases.excluded` に項目があることは「承認済み」を意味し、再 run では
-  その除外を反映して進めてよい。`do_not_port` も人間が status に直接書く
+  `cases.excluded` の要素は、人間自身が `approved_by` と `approved_at` の
+  両方を記録して初めて「承認済み」を意味し、再 run ではその除外を反映して
+  進めてよい。承認記録が欠けた要素は未承認として扱い、needs_human に戻す。
+  `do_not_port` も人間が status に直接書く
 - ケース数は近似ではなく実数を数えて `cases` に記録する
 - ゴールの完了判定は `python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml
   --goal <ゴールID>` の終了コードで行う
