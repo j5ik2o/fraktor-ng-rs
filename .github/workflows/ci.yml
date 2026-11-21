@@ -18,6 +18,25 @@ jobs:
       last-step-result: ${{ steps.syn_checker.outcome }}
     steps:
       - uses: actions/checkout@v6
+      - name: Verify PR test merge parents
+        if: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' }}
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          checkout_sha=$(git rev-parse --verify HEAD)
+          # Read the commit header directly so shallow checkout still exposes both parents.
+          parents=$(git cat-file commit "$checkout_sha" | awk '
+            /^$/ { body = 1 }
+            !body && /^parent / { print $2 }
+          ')
+          printf 'Checkout SHA: %s\nCheckout parents:\n%s\nEvent base SHA: %s\nEvent head SHA: %s\n' \
+            "$checkout_sha" "$parents" "$BASE_SHA" "$HEAD_SHA"
+          if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" || "$parents" != "$BASE_SHA"$'\n'"$HEAD_SHA" ]]; then
+            echo '::error::The checkout is not a test merge of the event base and head.'
+            exit 1
+          fi
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
