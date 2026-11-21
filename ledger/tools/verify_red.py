@@ -244,7 +244,7 @@ def count_original_cases(node_id: str) -> int | None:
 
 
 def _ledger_loader():
-    """台帳を読む専用の SafeLoader。timestamp スカラーを文字列のまま構築する。
+    """台帳を読む専用の SafeLoader。timestamp を文字列にし、重複キーと merge を拒否する。
 
     既定の `yaml.SafeLoader` は `approved_at: 2026-02-30` のような引用なしの不正な暦日で
     ValueError を送出し、台帳全体の読み込みが失敗する。対象ノードの選択前に起きると、
@@ -252,11 +252,37 @@ def _ledger_loader():
     timestamp を文字列として返し、暦日の妥当性は対象ノードの `approved_at` だけを
     `_approved_by_human` で検証する（対象の不正日は fail closed、対象外は判定に影響しない）。
     共有の `yaml.SafeLoader` は変更しない。
+
+    マッピングの重複キーは後勝ちで先の値を失わせるため、同じ `cases` に未承認の
+    `excluded` を先、承認済みを後に書くと未承認が隠れる。merge キー (`<<`) は他ノードの
+    承認記録を要素へ取り込む。どちらも「対象ノード/要素の直下に明示された記録だけを
+    受理する」境界を破るので、読み込み境界で拒否する。標準の `construct_mapping` を
+    小さく上書きし、(1) `flatten_mapping` の前に生の `node.value` のキーが merge タグなら
+    拒否し、(2) `super().construct_mapping(node, deep=deep)` の結果キー数が元の項目数より
+    少なければ（後勝ちの上書きが起きた）重複として拒否する。明示キーのみの通常マッピングは
+    PyYAML 標準の構築をそのまま使い、キー数が一致するため受理する。拒否は既存の
+    `yaml.YAMLError` 捕捉対象へ伝える。
     """
     import yaml
 
     class LedgerLoader(yaml.SafeLoader):
-        pass
+
+        def construct_mapping(self, node, deep=False):
+            if isinstance(node, yaml.MappingNode):
+                for key_node, _ in node.value:
+                    if key_node.tag == "tag:yaml.org,2002:merge":
+                        raise yaml.constructor.ConstructorError(
+                            "while constructing a mapping", node.start_mark,
+                            "found merge key '<<' (approval records must be explicit)",
+                            key_node.start_mark)
+                entries = len(node.value)
+            mapping = super().construct_mapping(node, deep=deep)
+            if isinstance(node, yaml.MappingNode) and len(mapping) < entries:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping", node.start_mark,
+                    "found duplicate key (%d entries collapsed to %d)"
+                    % (entries, len(mapping)))
+            return mapping
 
     LedgerLoader.add_constructor(
         "tag:yaml.org,2002:timestamp",
@@ -280,6 +306,9 @@ def count_excluded(node_id: str) -> int | None:
     流用しない。`excluded:` が空配列・null なら 0。台帳が YAML として読めない、
     `cases` が無い、要素がマッピングでない、または `excluded` がリストでないときは None
     （除外の件数を確かめられないと判断する）。台帳が無い・ノードが無いときも None。
+    重複したマッピングキーや merge キー (`<<`) を含む台帳も、専用ローダが読み込みを
+    拒否するため None となる（先の未承認除外を隠す入力や、他ノードの承認記録の流用を
+    件数に反映しない）。
     """
     if not os.path.exists(LEDGER):
         return None
