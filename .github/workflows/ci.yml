@@ -2,12 +2,20 @@ name: CI
 
 on:
   pull_request:
+    branches-ignore: [main]
   push:
     branches: [main]
+  workflow_call:
+    outputs:
+      check-result:
+        description: Outcome of the last required CI step
+        value: ${{ jobs.check.outputs.last-step-result }}
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    outputs:
+      last-step-result: ${{ steps.syn_checker.outcome }}
     steps:
       - uses: actions/checkout@v6
       - uses: Swatinem/rust-cache@v2
@@ -34,6 +42,7 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --check
       - name: syn checker
+        id: syn_checker
         run: |
           for dir in crates/*/; do
             cargo run --quiet --release --locked --manifest-path tools/syn-check/Cargo.toml -- --format json "${dir%/}"
