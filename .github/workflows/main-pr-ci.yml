@@ -1,0 +1,31 @@
+name: Main PR CI
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+
+jobs:
+  ci:
+    name: Run CI
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  gate:
+    name: Fraktor CI Gate
+    needs: ci
+    if: ${{ always() }}
+    permissions: {}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require CI success
+        env:
+          CI_RESULT: ${{ needs.ci.result }}
+          CHECK_RESULT: ${{ needs.ci.outputs.check-result }}
+        run: |
+          if [[ "$CI_RESULT" != success || "$CHECK_RESULT" != success ]]; then
+            printf 'Required CI returned workflow=%s, check=%s\n' \
+              "${CI_RESULT:-<missing>}" "${CHECK_RESULT:-<missing>}" >&2
+            exit 1
+          fi
