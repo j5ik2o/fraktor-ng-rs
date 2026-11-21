@@ -30,17 +30,28 @@ def ledger_loader():
 
     マッピングの重複キーは後勝ちで先の値を失わせるため、同じ `cases` に未承認の
     `excluded` を先、承認済みを後に書くと未承認が隠れる。merge キー (`<<`) は他ノードの
-    承認記録を要素へ取り込む。どちらも「対象ノード/要素の直下に明示された記録だけを
+    承認記録を要素へ取り込む。alias (`*anchor`) は他ノードの承認済みマッピングを対象の
+    除外要素としてそのまま複製する。いずれも「対象ノード/要素の直下に明示された記録だけを
     受理する」境界を破るので、読み込み境界で拒否する。標準の `construct_mapping` を
     小さく上書きし、(1) `flatten_mapping` の前に生の `node.value` のキーが merge タグなら
     拒否し、(2) `super().construct_mapping(node, deep=deep)` の結果キー数が元の項目数より
-    少なければ（後勝ちの上書きが起きた）重複として拒否する。明示キーのみの通常マッピングは
-    PyYAML 標準の構築をそのまま使い、キー数が一致するため受理する。拒否は既存の
-    `yaml.YAMLError` 捕捉対象へ伝える。
+    少なければ（後勝ちの上書きが起きた）重複として拒否する。`compose_node` を上書きし、
+    alias を構築する前に `AliasEvent` を拒否する（anchor の解決を待たずに落とす）。明示キー
+    のみの通常マッピングは PyYAML 標準の構築をそのまま使い、キー数が一致するため受理する。
+    拒否は既存の `yaml.YAMLError` 捕捉対象へ伝える。
     """
     import yaml
 
     class LedgerLoader(yaml.SafeLoader):
+
+        def compose_node(self, parent, index):
+            if self.check_event(yaml.AliasEvent):
+                event = self.get_event()
+                raise yaml.constructor.ConstructorError(
+                    None, None,
+                    "found alias '*%s' (approval records must be explicit)"
+                    % event.anchor, event.start_mark)
+            return super().compose_node(parent, index)
 
         def construct_mapping(self, node, deep=False):
             if isinstance(node, yaml.MappingNode):

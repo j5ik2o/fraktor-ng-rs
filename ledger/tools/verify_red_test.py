@@ -1328,6 +1328,50 @@ def test_yaml_merge_does_not_import_other_node_approval():
     print("41. yaml merge key → unexpected_pass (explicit approval still accepted)")
 
 
+def test_yaml_alias_does_not_import_other_node_approval():
+    """YAML alias (`*anchor`) で他ノードの承認記録を対象の除外要素へ流用させない。
+
+    別ノードに `approval: &approved {name/reason/approved_by/approved_at}` の合成マッピングを
+    置き、対象の `cases.excluded` 要素から `*approved` を直接参照すると、共有 SafeLoader では
+    他ノードの承認記録がそのまま除外要素になり、対象に明示の承認がないのに件数1 /
+    already_green に化ける（Codex r4652760105 / CodeRabbit r4652786132 と同原因）。専用ローダは
+    alias を構築前に拒否し、件数は `None`、通常分類は `unexpected_pass` になる。この境界は
+    「対象ノード/要素の直下に明示された記録だけを受理する」既存の制約の維持であり、通常の
+    明示承認（alias なし）は従来どおり 1 件として受理する（正常系の保存）。
+    """
+    # 明示承認（alias なし）は従来どおり 1 件で受理する（正常系の保存）
+    approved = _excluded_node(_approved_item("excluded case"))
+    assert _count_excluded_for_ledger(ledger_yaml([approved])) == 1
+    # 別ノードに合成の承認マッピングを anchor として置き、対象の除外を *approved だけで構成する
+    other = case_block(OTHER_NODE_ID, None, None, None).replace(
+        "  status: unported\n",
+        f"  status: unported\n"
+        f"  approval: &approved\n"
+        f"    name: excluded case\n"
+        f"    reason: 承認済みの除外\n"
+        f"    approved_by: {APPROVED_BY}\n"
+        f"    approved_at: {APPROVED_AT}\n",
+        1,
+    )
+    aliased = case_block(NODE_ID, None, None, None).replace(
+        "    excluded: []\n",
+        "    excluded:\n      - *approved\n",
+    )
+    assert "&approved" in other and "- *approved" in aliased, (other, aliased)
+    assert _count_excluded_for_ledger(ledger_yaml([other, aliased])) is None
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root, nodes_yaml=ledger_yaml([other, aliased]),
+            cargo_body=CARGO_STUB_OK, passed=1,
+            original_cases=2, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["classification"] == "unexpected_pass", result
+        assert result["excluded"] is None, result
+    print("42. yaml alias → unexpected_pass (explicit approval still accepted)")
+
+
 def test_verify_red_imports_without_pyyaml():
     """PyYAML 非依存で verify_red を import して mark_green できる。
 
@@ -1592,6 +1636,7 @@ def main() -> int:
         test_duplicate_excluded_key_does_not_hide_unapproved_item,
         test_duplicate_mapping_key_outside_excluded_is_rejected,
         test_yaml_merge_does_not_import_other_node_approval,
+        test_yaml_alias_does_not_import_other_node_approval,
         test_verify_red_imports_without_pyyaml,
         test_tagged_scala_cases_are_counted,
         test_partially_countable_scala_original_is_not_green,

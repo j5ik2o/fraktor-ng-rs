@@ -66,6 +66,9 @@ uv run --with pyyaml python3 ledger/tools/check_needs.py \
   有効な除外にならず、`verify_red.py` の `count_excluded` は件数を返さない（`already_green` にしない）
 - `count_excluded` は対象ノードの `cases.excluded` だけを検査する。同じノードの `cases` の外や、
   除外要素の下位（`metadata` など）にある承認欄は流用しない
+- YAML の alias（`*anchor`）で他ノードの承認済みマッピングを対象の除外要素へ持ち込む記法は
+  専用ローダが読み込み前に拒否し、`count_excluded` は件数を返さない（`already_green` にしない）。
+  承認は対象ノード・除外要素の直下に明示値で書く
 - `count_excluded` は PyYAML を呼ぶときだけ遅延 import する。`record_already_green.py` は
   `uv run python3`（`--with pyyaml` なし）で起動し、`verify_red` を import する。除外の検査を
   行わない限り PyYAML なしで動く（verify_red の呼び出し側は `--with pyyaml` 付き）
