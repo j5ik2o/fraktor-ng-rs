@@ -39,7 +39,7 @@
     total: null                    # Pekko 側のケース総数。移植時に Pekko のソースから数える
     ported: null                   # Rust へ移植したケース数
     passing: null                  # 直近の実行で通ったケース数
-    excluded: []                   # 人間が承認した除外。要素は {name, reason}
+    excluded: []                   # 人間が承認した除外。要素は {name, reason, approved_by, approved_at}
   rust:
     crate: null                    # 移植先クレート（決まり次第）
     test_file: null                # 移植した Rust テストのパス
@@ -86,9 +86,22 @@
   taggedAs つきのケースも数える。`pekko.test_cases_approx` とは別の値である
 - `ported` は Rust へ移植したケース数、`passing` は直近の実行で通ったケース数である。
   どちらも Rust 側のテスト実行結果から取る
-- `excluded` は人間が承認した除外の一覧である。要素は `name`（Pekko 側のケース名）と
-  `reason` を持つ。書けるのは人間だけである。run は候補と理由を出すだけにする
-- green の条件は、`passing` が `ported` に等しく、かつ `ported` と `excluded` の件数の和が
+- `excluded` は人間が承認した除外の一覧である。要素は `name`（Pekko 側のケース名）、
+  `reason`、`approved_by`（承認した人間。空白以外の文字列）、`approved_at`
+  （承認日。`YYYY-MM-DD` の暦日）を持つ。書けるのは人間だけである。run は候補と理由を出すだけにする
+- `approved_by`・`approved_at` は人による承認の記録である。run は承認者を推測・捏造・代行しない。
+  承認を記録するのは人間である
+- `approved_by` と `approved_at` のどちらかが欠けた要素、空欄・null の要素は未承認として扱う。
+  `approved_at` は暦日だけを受理し、時刻を含む timestamp は受理しない
+- 承認記録のない既存の除外（`name`・`reason` だけの要素）は、記録を足すまで有効な除外にならない
+  （fail closed）。つまり `verify_red.py` の `count_excluded` は未承認の要素が 1 件でもあれば
+  件数を返さず、`already_green` にしない
+- `count_excluded` は対象ノードの `cases.excluded` だけを検査する。同じノードの `cases` の外や、
+  除外要素の下位（`metadata` など）にある承認欄は流用しない
+- `count_excluded` は PyYAML を呼ぶときだけ遅延 import する。`verify_red` を import する
+  `record_already_green.py`（`uv run python3`、`--with pyyaml` なし）は、除外の検査を行わない
+  限り PyYAML なしで動く
+- green の条件は、`passing` が `ported` に等しく、かつ `ported` と承認済みの `excluded` の件数の和が
   `total` に等しいことである
 - 候補の出し方は TAKT のワークフロー側で決める（未定）
 
