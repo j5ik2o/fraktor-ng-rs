@@ -246,46 +246,73 @@ def count_original_cases(node_id: str) -> int | None:
 def count_excluded(node_id: str) -> int | None:
     """台帳の対象ノードの cases.excluded の件数を返す。読めないときは None。
 
-    excluded は人間が承認した除外の一覧（要素は {name, reason}）である。台帳の行を
-    対象ノードのブロック内で読み、`excluded:` がインラインの空配列・null なら 0、
-    ブロック配列なら `- ` で始まる要素行を数える。それ以外の書式（インライン配列など）は
-    読めないものとして None（除外の件数を確かめられないと判断する）。
-    台帳が無い・ノードが無いときも None。
+    excluded は人間が承認した除外の一覧である。要素は `name`・`reason` に加えて、
+    人による承認記録 `approved_by`（空白以外の文字列）と `approved_at`
+    （YYYY-MM-DD の暦日。YAML 読み取りで日付型になる引用なしの表記も可）を直下に持つ。
+    承認記録が欠落・空欄・null・不正な日付・不正な型の要素が 1 件でもあれば None を返し、
+    件数式（passed + excluded == original_cases）が成り立っても already_green にしない
+    （既存の name/reason だけの要素も未承認として扱う）。
+
+    台帳を YAML として読み、対象ノードの `cases.excluded` だけを検査する。同じノードの
+    `cases` の外にある `excluded` や、除外要素の下位（metadata など）にある承認欄は
+    流用しない。`excluded:` が空配列・null なら 0。台帳が YAML として読めない、
+    `cases` が無い、要素がマッピングでない、または `excluded` がリストでないときは None
+    （除外の件数を確かめられないと判断する）。台帳が無い・ノードが無いときも None。
     """
     if not os.path.exists(LEDGER):
         return None
-    in_block = False
-    in_excluded = False
-    excluded_indent = 0
-    count = 0
-    for line in open(LEDGER, encoding="utf-8").read().splitlines():
-        if line.startswith("- id: "):
-            in_block = line.split(":", 1)[1].strip() == node_id
-            in_excluded = False
-            continue
-        if not in_block:
-            continue
-        m = re.match(r"(\s+)excluded:\s*(.*)$", line)
-        if m and not in_excluded:
-            value = re.split(r"\s+#", m.group(2), maxsplit=1)[0].strip()
-            if value in ("[]", "null", "~"):
-                return 0
-            if value:
-                return None
-            in_excluded = True
-            excluded_indent = len(m.group(1))
-            continue
-        if in_excluded:
-            if not line.strip() or line.lstrip().startswith("#"):
-                continue
-            indent = len(line) - len(line.lstrip())
-            if indent <= excluded_indent:
-                return count if count > 0 else None
-            if line.lstrip().startswith("- "):
-                count += 1
-    if not in_excluded:
+    import yaml
+
+    try:
+        doc = yaml.safe_load(open(LEDGER, encoding="utf-8").read())
+    except (yaml.YAMLError, ValueError, OSError, UnicodeDecodeError):
         return None
-    return count if count > 0 else None
+    nodes = doc.get("nodes") if isinstance(doc, dict) else None
+    if not isinstance(nodes, list):
+        return None
+    node = next((n for n in nodes
+                 if isinstance(n, dict) and n.get("id") == node_id), None)
+    if node is None:
+        return None
+    cases = node.get("cases")
+    if not isinstance(cases, dict) or "excluded" not in cases:
+        return None
+    excluded = cases["excluded"]
+    if excluded is None:
+        return 0
+    if not isinstance(excluded, list):
+        return None
+    if not excluded:
+        return 0
+    for item in excluded:
+        if not isinstance(item, dict) or not _approved_by_human(item):
+            return None
+    return len(excluded)
+
+
+def _approved_by_human(item: dict) -> bool:
+    """除外要素が人による承認記録（approved_by と approved_at）を直下に持つかを返す。
+
+    `approved_at` は暦日だけを受理する。`datetime.datetime` は `date` のサブクラスだが、
+    時刻を含む timestamp は日付だけの記録ではないため受理しない。
+    """
+    import datetime
+
+    by = item.get("approved_by")
+    if not isinstance(by, str) or not by.strip():
+        return False
+    at = item.get("approved_at")
+    if isinstance(at, datetime.datetime):
+        return False
+    if isinstance(at, datetime.date):
+        return True
+    if not isinstance(at, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", at):
+        return False
+    try:
+        datetime.date.fromisoformat(at)
+    except ValueError:
+        return False
+    return True
 
 
 def parse_passed(out: str) -> int | None:
