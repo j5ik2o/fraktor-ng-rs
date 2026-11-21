@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
@@ -38,3 +39,19 @@ jobs:
           for dir in crates/*/; do
             cargo run --quiet --release --locked --manifest-path tools/syn-check/Cargo.toml -- --format json "${dir%/}"
           done
+
+  gate:
+    name: Fraktor CI Gate
+    needs: check
+    if: ${{ always() }}
+    permissions: {}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require CI success
+        env:
+          CHECK_RESULT: ${{ needs.check.result }}
+        run: |
+          if [[ "$CHECK_RESULT" != success ]]; then
+            printf 'Required CI job check returned %s\n' "${CHECK_RESULT:-<missing>}" >&2
+            exit 1
+          fi
