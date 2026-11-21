@@ -183,6 +183,8 @@ steps:
         next: develop
       - condition: when(context.verify_red.result.json.classification == "expected_assertion")
         next: develop
+      - condition: when(context.verify_red.result.json.classification == "already_green")
+        next: verify_green
       - condition: when(context.verify_red.result.json.classification == "unexpected_pass")
         next: port-test
       - condition: when(context.verify_red.result.json.classification == "unclassifiable")
@@ -285,7 +287,7 @@ steps:
         optional_if_unrun: true
     rules:
       - condition: 指摘なし（原典との等価性に問題がない）
-        next: ledger-update
+        next: record-already-green
       - condition: 指摘あり（原典側の根拠つき）
         next: develop
       - condition: 指摘はないが、原典または移植側を確認できず、等価性を判断できない
@@ -294,6 +296,20 @@ steps:
       report:
         - name: equivalence-review.md
           format: equivalence-review
+  - name: record-already-green
+    # already_green の green 永続化は verify_green と equivalence-review を通過した後に限る。
+    # verify_red は判定結果を .takt/already-green-result.json に書くだけで台帳を変えず、
+    # ここで classification == already_green のときだけ status/cases/triage.reason を書く。
+    kind: system
+    system_inputs:
+      - type: command
+        as: result
+        command: uv run python3 ledger/tools/record_already_green.py
+        timeout_ms: 120000
+        output: json
+    rules:
+      - condition: when(true)
+        next: ledger-update
   - name: ledger-update
     edit: true
     persona: coder

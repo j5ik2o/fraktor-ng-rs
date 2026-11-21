@@ -28,7 +28,7 @@
   status: unported                 # unported | red | green | do_not_port
   triage:
     kind: pending                  # pending | as_is | adapt | do_not_port
-    reason: null                   # do_not_port のとき必須。人間だけが書ける
+    reason: null                   # do_not_port のとき必須。人間だけが書ける。run は already_green の理由も書く（下記）
   needs:
     testkit: null                  # 未抽出（下記）。判明したら機能名の配列
     premise_flags: null            # 未抽出（下記）
@@ -123,6 +123,13 @@
 
 - TAKT の manager / run は、ノードを do_not_port にできない
 - 履歴は git の差分で追う。台帳内に履歴配列は持たない
+- `triage.reason` は、do_not_port の理由（人間だけが書ける）に加えて、run が
+  `already_green: ` で始まる理由も書く。already_green は移植が正しく前提の実装が契約を
+  満たしたことを確かめて green にした記録であり、status は green のまま（do_not_port に
+  しない）。この判定は上の green の条件（`passing == ported` かつ
+  `ported + len(excluded) == total`）と同じ勘定で行い、承認済みの除外は緑の判定に含める。
+  run が書くのは `triage.reason` が null または空のときだけで、人間が書いた
+  既存の理由は上書きしない。この用途は do_not_port の人間専用規則を変えない
 
 ## 生成物
 
