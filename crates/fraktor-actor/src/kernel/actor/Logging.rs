@@ -12,6 +12,7 @@ mod log_event;
 mod log_level;
 mod log_marker;
 mod log_marker_adapter;
+mod log_publisher;
 mod logger_initialized;
 mod warning;
 
@@ -25,6 +26,7 @@ pub use log_event::LogEvent;
 pub use log_level::LogLevel;
 pub use log_marker::LogMarker;
 pub use log_marker_adapter::LogMarkerAdapter;
+pub use log_publisher::LogPublisher;
 pub use logger_initialized::LoggerInitialized;
 pub use warning::Warning;
 

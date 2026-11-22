@@ -3,6 +3,8 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::string::ToString;
+use alloc::sync::Arc;
+use core::any::Any;
 use core::fmt;
 
 use crate::kernel::actor::Logging::empty_mdc;
@@ -22,6 +24,7 @@ use crate::kernel::actor::Logging::Mdc;
 pub struct Error {
   cause: Option<String>,
   cause_message: Option<String>,
+  shared_cause: Option<Arc<dyn Any + Send + Sync>>,
   log_source: String,
   log_class: i32,
   message: String,
@@ -44,6 +47,7 @@ impl Error {
     Self {
       cause: None,
       cause_message: None,
+      shared_cause: None,
       log_source,
       log_class,
       message: message.to_string(),
@@ -63,6 +67,7 @@ impl Error {
     Self {
       cause: Some(format!("{:?}", cause)),
       cause_message: None,
+      shared_cause: None,
       log_source,
       log_class,
       message: message.to_string(),
@@ -82,6 +87,7 @@ impl Error {
     Self {
       cause: Some(cause_name.to_string()),
       cause_message: None,
+      shared_cause: None,
       log_source,
       log_class,
       message: message.to_string(),
@@ -107,6 +113,7 @@ impl Error {
     Self {
       cause: Some(cause_name),
       cause_message: Some(cause_message),
+      shared_cause: None,
       log_source,
       log_class,
       message: message.to_string(),
@@ -120,6 +127,44 @@ impl Error {
   pub(crate) fn with_marker(mut self, marker: LogMarker) -> Self {
     self.marker = Some(marker);
     self
+  }
+
+  /// Creates an error event that keeps `cause` itself, so a subscriber can
+  /// compare the delivered cause with the sent one by identity.
+  ///
+  /// Mirrors `Error(cause, logSource, logClass, message)` for the cause-carrying
+  /// entry of the logger: the cause name and message are still rendered for a
+  /// filter, and the shared cause is kept for the original's `assertSame`.
+  pub(crate) fn with_shared_cause<C>(cause: Arc<C>, log_source: String, log_class: i32, message: &str) -> Self
+  where
+    C: fmt::Debug + fmt::Display + Send + Sync + 'static,
+  {
+    Self {
+      cause: Some(format!("{:?}", cause)),
+      cause_message: Some(format!("{}", cause)),
+      shared_cause: Some(cause as Arc<dyn Any + Send + Sync>),
+      log_source,
+      log_class,
+      message: message.to_string(),
+      marker: None,
+      mdc: empty_mdc(),
+    }
+  }
+
+  /// Returns this event carrying `mdc`.
+  #[must_use]
+  pub(crate) fn with_mdc(mut self, mdc: Mdc) -> Self {
+    self.mdc = mdc;
+    self
+  }
+
+  /// Returns the shared cause this event carries, if it was built with one.
+  ///
+  /// Mirrors `LogEventWithCause.cause`: the original compares the delivered
+  /// cause with the sent one by identity, so the shared cause is returned
+  /// rather than a copy, and a subscriber downcasts it to the type it sent.
+  pub fn cause(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+    self.shared_cause.clone()
   }
 
   /// Returns the marker this event carries, if any.
