@@ -1079,7 +1079,7 @@ nodes:
     module: actor-tests
     class: ActorTimeoutSpec
     test_cases_approx: 2
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -1090,14 +1090,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 2
+    ported: 2
+    passing: 2
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/actor_timeout_spec.rs
+  goal: G0issue101
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorWithBoundedStashSpec.scala
   name: actor-tests:ActorWithBoundedStashSpec
   kind: test
