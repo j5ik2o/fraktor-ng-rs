@@ -79,7 +79,7 @@ fn empty_arguments_keep_the_placeholders_as_written() {
 }
 
 #[test]
-fn independent_stream_delivers_only_while_its_owner_is_alive() {
+fn independent_stream_without_unsubscriber_stops_delivering_after_drop() {
   let mut spec = FraktorSpec::new("LogPublisherOwnership");
   let mut probe = TestProbe::new(spec.system_mut());
   let stream = EventStream::new(spec.system().downgrade(), false);

@@ -90,6 +90,8 @@ Pekko commit `9a54d1294c3ac7821bbed3c940769c3d5027d1ff` の `LoggingAdapterTest.
 | 弱参照公開 | `crates/fraktor-actor/src/kernel/event.rs` | `pub(crate) use event_stream_bus::EventStreamBusWeak;` |
 | 公開 | `Logging.rs` | `pub use log_publisher::LogPublisher;` |
 
+原典は DEBUG 設定で4レベルのログを観測する。Rust では `LogPublisher` が発行する4クラスをテストで直接購読する。`EventStream::set_log_level` は既定ロガーの購読を調整し、個別の購読先は購読したレベルのイベントを受け取る。
+
 ## 第 2 工程の実測結果
 
 第 2 工程のテストとゴールを確定させた後に、指定コマンドを実行した。
@@ -145,9 +147,9 @@ uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml -
 
 ## EventStream 借用への修正と最終検証
 
-`CODE-NEW-log-publisher-L53` に対応し、`LogPublisher::new` の引数を `&EventStream` に変更した。既存の対象テスト3箇所と補助テスト3箇所は、購読に使う `stream` を借用する。内部は従来どおり `EventStreamBusWeak` のみを保持し、所有者を消費せず、寿命も延長しない。発行中は呼び出し側でストリームの所有者を保持する必要があり、最後の所有者の破棄後は `log` / `error` とも配送しない。この条件をコンストラクターの英語rustdocにも明記した。
+`CODE-NEW-log-publisher-L53` に対応し、`LogPublisher::new` の引数を `&EventStream` に変更した。既存の対象テスト3箇所と補助テスト3箇所は、購読に使う `stream` を借用する。内部は従来どおり `EventStreamBusWeak` のみを保持し、所有者を消費せず、寿命も延長しない。配送は購読テーブルへの強参照が残っている間続く。購読解除用のアクターもテーブルを保持できるため、最後の `EventStream` ハンドルを破棄した時点と配送停止の時点は一致するとは限らない。
 
-追加した補助ケース `independent_stream_delivers_only_while_its_owner_is_alive` は、システム既定ストリームとは独立した `EventStream::new(spec.system().downgrade(), false)` を唯一の所有者として保持する。DebugとErrorを購読し、同じ発行型から `owned {}` に `[7_i32]` を渡す。受信したDebug/Errorの本文 `owned 7`・レベル・空MDC、Errorの共有原因 `Arc<String>` の同一性を確認する。キューを読み切ってから `drop(stream)` だけを行い、同じ発行型・入力・原因・probeで再発行し、`run_until_idle` 後の `expect_no_message(Duration::ZERO)` で無配送を確認した。追加clone・固定sleep・モックは使っていない。原典4ケースと台帳の4/4/4には加算しない。
+追加した補助ケース `independent_stream_without_unsubscriber_stops_delivering_after_drop` は、システム既定ストリームとは独立した `EventStream::new(spec.system().downgrade(), false)` を唯一の所有者として保持する。DebugとErrorを購読し、同じ発行型から `owned {}` に `[7_i32]` を渡す。受信したDebug/Errorの本文 `owned 7`・レベル・空MDC、Errorの共有原因 `Arc<String>` の同一性を確認する。キューを読み切ってから `drop(stream)` だけを行い、同じ発行型・入力・原因・probeで再発行し、`run_until_idle` 後の `expect_no_message(Duration::ZERO)` で無配送を確認した。追加clone・固定sleep・モックは使っていない。原典4ケースと台帳の4/4/4には加算しない。
 
 以下は借用化と全利用側移行後に新規実行した結果であり、上記の修正前の成功記録とは別の証拠である。生出力の保存先はリポジトリ内の `.takt/issue-110-evidence/fix-borrow/`。表のログ名はこのディレクトリからの相対パスで、対応する `.exit` に終了コード、`rust-results.json` / `ledger-results.json` に引数列を保存した。台帳コマンドには作業ツリー内の `UV_CACHE_DIR=target/issue-110-uv-cache` を設定した。
 

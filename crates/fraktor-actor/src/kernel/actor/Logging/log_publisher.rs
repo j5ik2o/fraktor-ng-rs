@@ -30,12 +30,13 @@ use crate::kernel::event::EventStreamBusWeak;
 /// element type, and a heterogeneous array of `&dyn fmt::Display` values
 /// directly.
 ///
-/// The adapter keeps a non-owning handle to the subscription table instead of
-/// the [`EventStream`] itself: the stream owns an `Rc` and is not `Send`, while
-/// an adapter captured by a `Props` factory must be `Send + Sync` to move into
-/// the factory's closure and the actor it starts. A publish that runs after the
-/// stream is gone does nothing, the same silence the weak table gives its late
-/// publishers.
+/// Direct subscribers receive the events they subscribe to at every level.
+/// [`EventStream::set_log_level`] controls the subscriptions of default loggers.
+///
+/// The publisher holds a weak reference to the shared subscription table,
+/// allowing a `Props` factory to capture it. Publishing stops when the last
+/// strong reference to the table is dropped. An unsubscriber can keep the
+/// table alive after the last [`EventStream`] handle is dropped.
 #[derive(Clone)]
 pub struct LogPublisher {
   bus: EventStreamBusWeak,
@@ -51,10 +52,9 @@ impl LogPublisher {
   /// source of every event, and the log class is carried unchanged. The
   /// diagnostic context starts empty, as Pekko's adapter starts without one.
   ///
-  /// Borrows the stream only to obtain a non-owning publish handle. The caller
-  /// must keep an owner of the stream alive while publishing. The publisher
-  /// does not extend that lifetime; after the last owner is dropped, calls to
-  /// [`Self::log`] and [`Self::error`] deliver no events.
+  /// Borrows the stream to obtain a weak reference to its subscription table.
+  /// Calls to [`Self::log`] and [`Self::error`] deliver events while the stream
+  /// or another strong owner keeps that table alive.
   pub fn new(event_stream: &EventStream, log_source: &str, log_class: LogClass) -> Self {
     Self { bus: event_stream.downgrade(), log_source: log_source.to_string(), log_class, mdc: empty_mdc() }
   }
