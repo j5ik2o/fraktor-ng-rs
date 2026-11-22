@@ -949,7 +949,7 @@ nodes:
     module: actor-tests
     class: ActorSystemScala213PlusSpec
     test_cases_approx: 1
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -960,14 +960,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 1
+    ported: 1
+    passing: 1
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/actor_system_scala213_plus_spec.rs
+  goal: G0issue99
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/setup/ActorSystemSetupSpec.scala
   name: actor-tests:ActorSystemSetupSpec
   kind: test
