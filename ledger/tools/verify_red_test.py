@@ -548,16 +548,16 @@ def test_workflow_has_already_green_branch_to_verify_green():
     print("9. workflow already_green →", ag_rule["next"], "(record → ledger-update)")
 
 
-def test_loop_monitors_unchanged():
-    """loop_monitors の cycle/threshold が従来の定義のままである。"""
+def test_verify_red_loop_monitor_matches_send_back_paths():
+    """応答保存と任意の分類を除いて、5 回の red 差し戻しを数える。"""
     import yaml
     doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     cycles = [m["cycle"] for m in doc["loop_monitors"]]
     assert ["port-test", "verify_red"] in cycles, cycles
     vr = next(m for m in doc["loop_monitors"] if m["cycle"] == ["port-test", "verify_red"])
-    assert vr.get("ignore_steps") == ["classify-red"], vr
+    assert vr.get("ignore_steps") == ["save-port-test-response", "classify-red"], vr
     assert vr.get("threshold") == 5, vr
-    print("10. loop_monitors verify_red cycle/threshold unchanged")
+    print("10. verify_red loop monitor matches both send-back paths")
 
 
 def test_already_green_reason_returned_in_output():
@@ -1608,7 +1608,7 @@ def main() -> int:
         test_mark_red_only_touches_status_line,
         test_already_green_leaves_ledger_untouched,
         test_workflow_has_already_green_branch_to_verify_green,
-        test_loop_monitors_unchanged,
+        test_verify_red_loop_monitor_matches_send_back_paths,
         test_already_green_reason_returned_in_output,
         test_existing_non_null_reason_is_preserved,
         test_mark_green_persists_green_and_reason,
