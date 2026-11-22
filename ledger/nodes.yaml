@@ -1097,7 +1097,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue101
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorWithBoundedStashSpec.scala
   name: actor-tests:ActorWithBoundedStashSpec
   kind: test
