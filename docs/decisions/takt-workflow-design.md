@@ -561,7 +561,7 @@ review 系と同じく judge が判定する（2026-11-11、ユーザー決定�
 
 | ループ | cycle | 数える差し戻し | 連続が切れる場合 |
 |---|---|---|---|
-| verify_red | port-test、verify_red（classify-red は照合から外す） | テストが最初から通る、または classify-red が想定外と判断して、port-test へ戻る | 想定どおりの red になって develop へ進む |
+| verify_red | port-test、verify_red（save-port-test-response と classify-red は照合から外す） | unexpected_pass、または classify-red が想定外と判断して、port-test へ戻る | 想定どおりの red や already_green で先へ進む |
 | verify_green | develop、verify_green | 機械ゲートが落ちて develop へ戻る | ゲートを通って equivalence-review へ進む |
 
 - judge が呼ばれるのは、差し戻しで cycle の先頭（port-test または develop）へ
@@ -593,6 +593,11 @@ review 系と同じく judge が判定する（2026-11-11、ユーザー決定�
 - 回数はノードごとに数える。子ワークフローは呼び出しのたびに新しい状態で始まる
 - judge が判定すると、3 本の loop monitor の回数がすべて 0 に戻る。takt の
   検出器が 1 つの履歴を共有するためである
+
+親のゴール完了関門は、`port_node → goal_complete_gate → port_node` が連続 5 回に
+達した時点で別の judge を呼ぶ。直近の関門出力と子の報告履歴を照らし合わせ、
+同じ阻害要因が続いて進展がなければ ABORT する。関門が通過した場合は COMPLETE へ進む。
+`node_green` で次のノードに移った場合は関門を通らないため、この連続回数には入らない。
 
 この 2 本を足す前に verify 系の差し戻しを止めていたのは、`max_steps` だけで
 ある（takt 0.74.0 のコードで確認した）。
