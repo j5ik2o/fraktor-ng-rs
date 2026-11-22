@@ -45,6 +45,13 @@ impl Info {
   pub fn marker(&self) -> Option<LogMarker> {
     self.marker
   }
+
+  /// Returns this event carrying `mdc`.
+  #[must_use]
+  pub(crate) fn with_mdc(mut self, mdc: Mdc) -> Self {
+    self.mdc = mdc;
+    self
+  }
 }
 
 impl LogEvent for Info {

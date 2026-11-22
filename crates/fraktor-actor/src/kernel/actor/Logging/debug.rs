@@ -29,6 +29,13 @@ impl Debug {
   pub fn new(log_source: String, log_class: i32, message: &str) -> Self {
     Self { log_source, log_class, message: message.to_string(), mdc: empty_mdc() }
   }
+
+  /// Returns this event carrying `mdc`.
+  #[must_use]
+  pub(crate) fn with_mdc(mut self, mdc: Mdc) -> Self {
+    self.mdc = mdc;
+    self
+  }
 }
 
 impl LogEvent for Debug {
