@@ -30,7 +30,7 @@ Pekko v1.7.1 commit `9a54d1294c3ac7821bbed3c940769c3d5027d1ff` の `ActorTimeout
 
 fixture は `FraktorSpec::test_kit_settings()` の `dilated` を通して200 msと500 msを個別に生成する。[TestKitSettings](../../crates/fraktor-testkit/src/test_kit_extension/test_kit_settings.rs) の現在の time factor は1.0なので、ask の期限は200 ms、呼び出し側の待機上限は200 + 500 = 700 msとなる。500 msは待機余裕であり、ask の期限へ足さない。fixture 所有の200 msは、このテストの既定値であり、TestKitSettings の汎用 default timeout（5秒）とは別である。
 
-[ask の実装](../../crates/fraktor-actor/src/adaptor/ask_future.rs) は `ask_with_timeout` の送信時点で期限を生成し、`start_ask` が共有 `AskState` に保持して `tell` で配送する。`try_await_result` は別の待機上限を生成する。`AskState::result` は未完了の ask を期限到達時に `AskTimedOut` とし、`result_for_wait` は単一の driver ステップが両期限を過ぎても先に到達した期限を区別する。`AskError::AskTimedOut` と `AskError::WaitTimedOut` は別の enum variant である。
+[ask の実装](../../crates/fraktor-actor/src/adaptor/ask_future.rs) は `ask_with_timeout` の送信時点で期限を生成し、`start_ask` が共有 `AskState` に保持して `tell` で配送する。`try_await_result` は別の待機上限を生成する。`AskState::outcome_at` は期限に達した未完了の ask を失敗として確定する。`result_for_wait` は単一の driver ステップが両期限を過ぎても、先に達した期限を `AskError::AskTimedOut` または `AskError::WaitTimedOut` として返す。
 
 [FraktorSpec](../../crates/fraktor-testkit/src/fraktorspec/fraktor_spec.rs) は system 作成時に `attach_wait_driver` を呼ぶ。[待機 driver](../../crates/fraktor-actor/src/adaptor/ask_driver.rs) は宛先と同じ shard のキーを使い、`try_await_result` → `drive_until` → `WeakActorSystem::run_one` → executor の `deliver` を通じてアクターを実行する。原典の background dispatcher に対し、この移植では待機スレッドが system を駆動する。単に待機して配送を省略するテストではない。
 
@@ -91,3 +91,9 @@ needs と各 rollup は、既定 uv キャッシュへの一時ファイル作�
 過去採証は指定 evidence の保存ファイル、作業ツリーの採証は run の Report Directory に保存されている。後者の終了コードは `cargo-current-results.json`、`ledger-current-results.json`／`ledger-current-retry-results.json`、`diff-check-current-results.json` に記録し、needs と各 rollup の初回・再実行は `needs-current.log`／`needs-current-retry.log`、`rollup-<goal>-current.log`／`rollup-<goal>-current-retry.log`、差分確認は `diff-check-current.log` に対応する。
 
 過去の終了コード（初回 compile-red は保存レポート、否定対照と統合 commit の隔離展開はユーザー報告）、期限無効化・復元の操作順序、採用 run の識別と外側の `must` による自動計数 null の説明、先行差分の却下・停止履歴は、ログ本文から独立に実証した情報と区別する。新たな負の対照や補助プローブは実行していない。
+
+## PR レビューで確認した回帰
+
+期限付き ask では、共有状態が最初の返信の受理時刻を記録する。呼び出し側の待機上限を過ぎてから ask の期限前に返信が届くと、その待機は `WaitTimedOut` を返し、次の待機は保存された返信を受け取れる。期限指定のない既存の `ask` は従来の返信処理を維持する。
+
+追加の単体テストでは、この返信の再取得と、200 ms と異なる明示値が使われることを確認する。実装の期限を200 msに固定すると、後者は `WaitTimedOut` を受けて失敗した。台帳の原典対応は2件、除外0件。

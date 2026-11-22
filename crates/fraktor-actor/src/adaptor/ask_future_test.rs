@@ -1,13 +1,18 @@
 //! Unit tests for [`AskFuture`](super::AskFuture).
 
+use core::time::Duration;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Instant;
 
+use crate::adaptor::attach_wait_driver;
+use crate::adaptor::AskError;
 use crate::adaptor::ChannelBoundary;
 use crate::kernel::actor::{Actor, ActorContext, Props};
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::actor_system::ActorSystem;
 use crate::kernel::message::Message;
+use crate::kernel::timeout::Timeout;
 
 use super::AskFuture;
 
@@ -157,4 +162,40 @@ fn an_unanswered_ask_on_a_registered_driver_times_out_within_max() {
   // `drive_until` spends up to `max` driving the shard; the fallback wait must
   // reuse that budget, so the total stays close to `max`, not `2 * max`.
   assert!(elapsed < max + core::time::Duration::from_millis(250), "waited {elapsed:?}, more than about one {max:?}");
+}
+
+struct DelayedReply;
+
+impl Actor for DelayedReply {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    std::thread::sleep(Duration::from_millis(150));
+    context.sender().tell(message, context.self_ref());
+  }
+}
+
+#[test]
+fn a_reply_after_the_wait_limit_is_available_to_a_later_wait() {
+  let mut system = system();
+  attach_wait_driver(&system);
+  let actor = system.actor_of(Props::new(|| DelayedReply));
+  let ask = actor.ask_with_timeout("question", Timeout::new(Duration::from_secs(2)));
+
+  let first = ask.try_await_result(Duration::from_millis(100));
+  assert!(matches!(first, Err(AskError::WaitTimedOut)), "{first:?}");
+  assert!(ask.is_completed(), "the actor should have replied during the first wait");
+  assert_eq!(ask.try_await_result(Duration::ZERO).expect("the reply arrived within the ask deadline"), "question");
+}
+
+#[test]
+fn an_explicit_ask_deadline_is_used_instead_of_a_fixed_timeout() {
+  let mut system = system();
+  attach_wait_driver(&system);
+  let actor = system.actor_of(Props::new(|| SilentActor));
+  let timeout = Duration::from_millis(40);
+  let started = Instant::now();
+  let ask = actor.ask_with_timeout("question", Timeout::new(timeout));
+
+  let outcome = ask.try_await_result(Duration::from_millis(150));
+  assert!(matches!(outcome, Err(AskError::AskTimedOut)), "{outcome:?}");
+  assert!(started.elapsed() >= timeout);
 }

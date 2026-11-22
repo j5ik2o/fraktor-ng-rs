@@ -27,13 +27,18 @@ static NEXT_REPLIER: AtomicU64 = AtomicU64::new(0);
 
 /// Owns the ask deadline, its terminal result, and pending success recipients.
 ///
-/// Keeping both in one value under one lock is what makes `pipe_to` and the
+/// Keeping them under one lock is what makes `pipe_to` and the
 /// reply order-independent: whichever arrives second sees the first and makes
 /// the send happen exactly once.
 struct AskState {
   deadline: Option<Instant>,
-  result: Option<Result<Message, AskError>>,
+  outcome: Option<AskOutcome>,
   pending: Vec<PipedRecipient>,
+}
+
+enum AskOutcome {
+  Reply { message: Message, received_at: Instant },
+  TimedOut,
 }
 
 /// A recipient waiting for the reply, with the sender to send it from.
@@ -44,15 +49,15 @@ struct PipedRecipient {
 
 impl AskState {
   fn new(deadline: Option<Instant>) -> Self {
-    Self { deadline, result: None, pending: Vec::new() }
+    Self { deadline, outcome: None, pending: Vec::new() }
   }
 
-  fn result(&mut self) -> Option<Result<Message, AskError>> {
-    if self.result.is_none() && self.deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-      self.result = Some(Err(AskError::AskTimedOut));
+  fn outcome_at(&mut self, now: Instant) -> Option<&AskOutcome> {
+    if self.outcome.is_none() && self.deadline.is_some_and(|deadline| now >= deadline) {
+      self.outcome = Some(AskOutcome::TimedOut);
       self.pending.clear();
     }
-    self.result.clone()
+    self.outcome.as_ref()
   }
 
   fn wait_deadline(&self, outer: Instant) -> Instant {
@@ -60,13 +65,18 @@ impl AskState {
   }
 
   fn result_for_wait(&mut self, outer: Instant) -> Option<Result<Message, AskError>> {
-    match self.result()? {
+    let deadline = self.deadline;
+    match self.outcome_at(Instant::now())? {
       // A single driver step can overrun both deadlines. Preserve which
       // deadline came first without changing the ask's terminal result.
-      | Err(AskError::AskTimedOut) if self.deadline.is_some_and(|deadline| outer < deadline) => {
+      | AskOutcome::TimedOut if deadline.is_some_and(|deadline| outer < deadline) => Some(Err(AskError::WaitTimedOut)),
+      | AskOutcome::TimedOut => Some(Err(AskError::AskTimedOut)),
+      // A deadline-bound ask may accept a reply after this wait has expired.
+      // Keep the reply available to any later wait.
+      | AskOutcome::Reply { received_at, .. } if deadline.is_some() && *received_at > outer => {
         Some(Err(AskError::WaitTimedOut))
       },
-      | result => Some(result),
+      | AskOutcome::Reply { message, .. } => Some(Ok(message.clone())),
     }
   }
 
@@ -74,18 +84,19 @@ impl AskState {
   ///
   /// Later replies are dropped, matching Pekko's future, which completes once.
   fn complete(&mut self, message: Message) -> Vec<PipedRecipient> {
-    if self.result().is_some() {
+    let received_at = Instant::now();
+    if self.outcome_at(received_at).is_some() {
       return Vec::new();
     }
-    self.result = Some(Ok(message));
+    self.outcome = Some(AskOutcome::Reply { message, received_at });
     core::mem::take(&mut self.pending)
   }
 
   /// Returns the reply if it has already arrived, otherwise queues `recipient`.
   fn pipe(&mut self, recipient: ActorRef, sender: ActorRef) -> Option<Message> {
-    match self.result() {
-      | Some(Ok(message)) => Some(message),
-      | Some(Err(_)) => None,
+    match self.outcome_at(Instant::now()) {
+      | Some(AskOutcome::Reply { message, .. }) => Some(message.clone()),
+      | Some(AskOutcome::TimedOut) => None,
       | None => {
         self.pending.push(PipedRecipient { recipient, sender });
         None
@@ -114,15 +125,14 @@ impl AskFuture {
 
   /// Returns whether a reply or the ask's own deadline has completed the ask.
   pub fn is_completed(&self) -> bool {
-    lock(&self.slot.0).result().is_some()
+    lock(&self.slot.0).outcome_at(Instant::now()).is_some()
   }
 
-  /// Waits at most `max` for the reply and returns it.
+  /// Waits for the reply using `max` as the waiting limit.
   ///
   /// # Panics
   ///
-  /// Panics with the elapsed time when no reply has arrived within `max`,
-  /// mirroring the `TimeoutException` that `Await.result` throws.
+  /// Panics if the wait or the ask expires before a reply is returned.
   pub fn await_result(&self, max: Duration) -> Message {
     match self.try_await_result(max) {
       | Ok(message) => message,
@@ -131,10 +141,11 @@ impl AskFuture {
     }
   }
 
-  /// Waits at most `max`, distinguishing the ask deadline from this wait.
+  /// Waits for a reply and distinguishes the ask deadline from the wait limit.
   ///
-  /// A wait timeout leaves the ask pending. The ask deadline starts at send
-  /// time and is shared by every wait and by the reply handler.
+  /// A wait timeout does not cancel the ask. When an ask has its own deadline,
+  /// a reply that arrives after this wait's limit can still be read by a later wait.
+  /// If this wait drives the actor, it can only return after the current step finishes.
   pub fn try_await_result(&self, max: Duration) -> Result<Message, AskError> {
     let deadline = Instant::now() + max;
     crate::adaptor::ask_driver::drive_until(
