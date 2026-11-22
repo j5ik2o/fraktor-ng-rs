@@ -44,6 +44,13 @@ impl Warning {
   {
     Self { cause: Some(format!("{:?}", cause)), log_source, log_class, message: message.to_string(), mdc }
   }
+
+  /// Returns this event carrying `mdc`.
+  #[must_use]
+  pub(crate) fn with_mdc(mut self, mdc: Mdc) -> Self {
+    self.mdc = mdc;
+    self
+  }
 }
 
 impl LogEvent for Warning {

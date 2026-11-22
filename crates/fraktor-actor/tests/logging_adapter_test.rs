@@ -8,25 +8,24 @@
 // event classes of the system's own event stream, drives the log through the
 // production entry point, and reads the delivered event back from that probe.
 //
-// The port needs two things that the original gets from the logging adapter and
-// that this crate does not have yet:
-//   * a logging adapter built from an event stream and a log source, mirroring
-//     `Logging.getLogger(system, this)`, that publishes a formatted event at one
-//     level through a single entry `log(level, message, args)`, that has one
-//     cause-carrying entry `log_with_cause(level, cause, message, args)`, and
-//     that holds a diagnostic context through `set_mdc` / `clear_mdc`, mirroring
-//     `DiagnosticLoggingAdapter`. The adapter must be `Send + Sync`, because an
-//     actor is started from a `Props` factory that is `Send + Sync` and holds the
-//     adapter;
-//   * an error event that exposes the cause that the adapter published, so the
+// The port takes the logger the original gets from the logging adapter from
+// this crate's logger and its events:
+//   * a logger built from an event stream, a log source and a log class,
+//     mirroring `Logging.getLogger(system, this)`, that publishes a formatted
+//     event at one level through a single entry `log(level, message, args)`,
+//     that has one cause-carrying entry `error(cause, message, args)`, and that
+//     holds a diagnostic context through `set_mdc` / `clear_mdc`, mirroring
+//     `DiagnosticLoggingAdapter`. The logger is `Send + Sync`, because an actor
+//     is started from a `Props` factory that is `Send + Sync` and holds it;
+//   * an error event that exposes the cause that the logger published, so the
 //     ported cause case can compare the received cause with the sent one through
 //     `Arc::ptr_eq`, mirroring `LogEventWithCause.cause()` and the original's
 //     `assertSame`.
-// The port asks for them by name (`LoggingAdapter`, `LoggingAdapter::log`,
-// `LoggingAdapter::log_with_cause`, `LoggingAdapter::set_mdc`,
-// `LoggingAdapter::clear_mdc`, `Error::cause`) and does not implement them here,
-// because this milestone only ports the tests; a missing entry is the expected
-// red, as it was for the marker logging milestone.
+// The port asks for them by name (`LogPublisher`, `LogPublisher::log`,
+// `LogPublisher::error`, `LogPublisher::set_mdc`, `LogPublisher::clear_mdc`,
+// `Error::cause`). The milestone names the logger `LogPublisher` rather than
+// carrying the original's `LoggingAdapter`, because the product does not use the
+// adapter name.
 //
 // The original `LoggingAdapter` mixes arity overloads (`error(message)` and
 // `error(template, arg)`). Rust has no same-name arity overloads, so the port
@@ -35,7 +34,8 @@
 // `&dyn Display` the third, so an empty slice is the plain message. The mirror of
 // Java's `Object[]` arguments is therefore `&[&dyn Display]`; a Java `int[]`
 // argument becomes the same slice of borrowed integers, which keeps the
-// primitive-array case distinct from the heterogeneous-object case.
+// primitive-array case distinct from the heterogeneous-object case. The
+// cause-carrying entry is Error-only, so the cause never reaches another level.
 //
 // Differences from the original that need a note:
 //   * The original subscribes to `LogEvent.class`, the common parent of every
@@ -67,7 +67,7 @@ use core::fmt;
 use std::sync::Arc;
 
 use fraktor_actor::kernel::actor::Logging::{
-  empty_mdc, Debug, Error, Info, LogEvent, LogLevel, LoggingAdapter, Mdc, Warning,
+  empty_mdc, Debug, Error, Info, LogClass, LogEvent, LogLevel, LogPublisher, Mdc, Warning,
 };
 use fraktor_actor::kernel::actor::{Actor, ActorContext, Props};
 use fraktor_actor::kernel::event::EventClass;
@@ -160,7 +160,7 @@ fn must_format_message() {
   {
     assert!(stream.subscribe(Some(probe.ref_handle()), class).expect("the probe actor is not null"));
   }
-  let log = LoggingAdapter::new(spec.system().event_stream(), SPEC_CLASS);
+  let log = LogPublisher::new(&stream, SPEC_CLASS, LogClass::new(0));
 
   // `log.error("One arg message: {}", "the arg")`
   log.log(LogLevel::Error, "One arg message: {}", &[&"the arg"]);
@@ -172,7 +172,7 @@ fn must_format_message() {
 
   // `log.error(cause, "Two args message: {}, {}", "an arg", "another arg")`
   let cause = Arc::new(IllegalStateException::new("This state is illegal"));
-  log.log_with_cause(LogLevel::Error, cause.clone(), "Two args message: {}, {}", &[&"an arg", &"another arg"]);
+  log.error(cause.clone(), "Two args message: {}, {}", &[&"an arg", &"another arg"]);
   spec.system_mut().run_until_idle();
   let error: Error = probe.expect_msg_type();
   assert_eq!(error.level(), LogLevel::Error);
@@ -185,7 +185,7 @@ fn must_format_message() {
   assert!(Arc::ptr_eq(&cause, &received_cause), "the delivered cause is the sent cause");
 
   // `int[] primitiveArgs = {10, 20, 30}; log.warning(..., primitiveArgs)`
-  let primitive_args: [&dyn fmt::Display; 3] = [&10, &20, &30];
+  let primitive_args = [10_i32, 20, 30];
   log.log(LogLevel::Warning, "Args as array of primitives: {}, {}, {}", &primitive_args);
   spec.system_mut().run_until_idle();
   let warning: Warning = probe.expect_msg_type();
@@ -256,11 +256,11 @@ fn length_mdc(length: &str) -> Mdc {
 // because it holds a sendable publish handle rather than the event stream
 // itself. The actor keeps that adapter across messages and logs through it.
 struct ActorWithMdc {
-  adapter: LoggingAdapter,
+  adapter: LogPublisher,
 }
 
 impl ActorWithMdc {
-  fn new(adapter: LoggingAdapter) -> Self {
+  fn new(adapter: LogPublisher) -> Self {
     Self { adapter }
   }
 }
@@ -280,7 +280,7 @@ impl Actor for ActorWithMdc {
       self.adapter.set_mdc(Some(&length_mdc(&log.message.chars().count().to_string())));
     }
 
-    self.adapter.log(log.level, log.message.as_str(), &[]);
+    self.adapter.log(log.level, log.message.as_str(), &[] as &[&str]);
 
     self.adapter.clear_mdc();
   }
@@ -297,7 +297,7 @@ fn must_call_mdc_for_every_log() {
   {
     assert!(stream.subscribe(Some(probe.ref_handle()), class).expect("the probe actor is not null"));
   }
-  let adapter = LoggingAdapter::new(spec.system().event_stream(), SPEC_CLASS);
+  let adapter = LogPublisher::new(&stream, SPEC_CLASS, LogClass::new(0));
   // `system.actorOf(Props.create(ActorWithMDC.class))`: the factory captures a
   // clone of the adapter, and the child started under the probe sends its
   // events into the probe's queue.
@@ -353,7 +353,7 @@ fn must_support_mdc_null() {
   let mut probe = TestProbe::new(spec.system_mut());
   let stream = spec.system().event_stream();
   assert!(stream.subscribe(Some(probe.ref_handle()), EventClass::of::<Info>()).expect("the probe actor is not null"));
-  let adapter = LoggingAdapter::new(spec.system().event_stream(), SPEC_CLASS);
+  let adapter = LogPublisher::new(&stream, SPEC_CLASS, LogClass::new(0));
   let ref_handle = probe.child_actor_of(Props::new(move || ActorWithMdc::new(adapter.clone())));
 
   probe.send(&ref_handle, Log::new(LogLevel::Info, "Null MDC"));

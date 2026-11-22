@@ -12,6 +12,7 @@ pub use actor_event_bus::ActorEventBus;
 pub use event_class::EventClass;
 pub use event_stream::EventStream;
 pub use event_stream_bus::EventStreamBus;
+pub(crate) use event_stream_bus::EventStreamBusWeak;
 pub use lookup_event_bus::LookupEventBus;
 pub use null_subscriber::NullSubscriber;
 pub use scanning_event_bus::ScanningEventBus;
