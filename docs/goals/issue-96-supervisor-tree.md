@@ -1,8 +1,8 @@
-# ゴール G0Issue96：SupervisorTreeSpec
+# ゴール G0issue96：SupervisorTreeSpec
 
-状態: 定義済み・未発行（2026-11-22 の準備時点）。この文書は、GitHub issue #96（https://github.com/j5ik2o/fraktor-ng-rs/issues/96）の単一ノードのゴール定義である。`goal_complete_gate.py` の完了関門が先頭行から ID を取るため、ゴール ID は専用の `G0Issue96` とする（この準備では `Issue96` を `G0Issue96` に置き換える）。
+状態: 定義済み・未発行（2026-11-22 の準備時点）。この文書は、GitHub issue #96（https://github.com/j5ik2o/fraktor-ng-rs/issues/96）の単一ノードのゴール定義である。`goal_complete_gate.py` の完了関門が先頭行から ID を取るため、ゴール ID は専用の `G0issue96` とする。CI の実文書検証が小文字の ID を要求するため、準備時の `G0Issue96` から台帳とこの文書を合わせて改めた。
 
-この準備タスク自体は、ゴール文書の作成と台帳への `goal: G0Issue96` のタグ付けだけを行い、そこでは止まる（Rust テスト作成、本番編集、`status` の `green` 化、CI・workflow 変更、後続タスクの登録・開始、PR 公開、merge はしない）。一方、この文書が定義するゴールそのものの完了は、後続の `fraktor-porting-ng` run が `status` を `unported` から green へ遷移させ、単一の merge-ready な PR として提出するところまでを指す。以下の完了条件と必須ゲートは、そのゴール完了（単一の merge-ready PR）に対する要求である。
+この準備タスク自体は、ゴール文書の作成と台帳への `goal: G0issue96` のタグ付けだけを行い、そこでは止まる（Rust テスト作成、本番編集、`status` の `green` 化、CI・workflow 変更、後続タスクの登録・開始、PR 公開、merge はしない）。一方、この文書が定義するゴールそのものの完了は、後続の `fraktor-porting-ng` run が `status` を `unported` から green へ遷移させ、単一の merge-ready な PR として提出するところまでを指す。以下の完了条件と必須ゲートは、そのゴール完了（単一の merge-ready PR）に対する要求である。
 
 kind: single（ノード 1 件の移植。基盤ゴールの G0a〜G0f とは別系統の単発ゴール）
 requires: なし（前提とするテスト基盤は、G0a〜G0f が main に入って green 済みであること。2026-11-22 に `rollup.py --goal G0a` から `--goal G0f` を実行し、すべて exit 0 であることを確認した）
@@ -53,7 +53,7 @@ requires: なし（前提とするテスト基盤は、G0a〜G0f が main に入
 
 ## 対象ノード（明示列挙、1 件）
 
-`goal_complete_gate.py` は、この節の最初の表の `id` 列を読み、`goal` の列が `G0Issue96` の台帳ノードの集合と一致することを確かめる。したがって、表はこの位置に置き、`id` 列に完全なノード ID をバッククォートで 1 件だけ記載する。このタグはこの準備タスクで適用済みである。
+`goal_complete_gate.py` は、この節の最初の表の `id` 列を読み、`goal` の列が `G0issue96` の台帳ノードの集合と一致することを確かめる。したがって、表はこの位置に置き、`id` 列に完全なノード ID をバッククォートで 1 件だけ記載する。このタグはこの準備タスクで適用済みである。
 
 | id | kind | ケース数（概数） | needs.testkit |
 |:---|:---|:---|:---|
@@ -112,9 +112,9 @@ requires: なし（前提とするテスト基盤は、G0a〜G0f が main に入
 - AC5: `cargo fmt --check` が通る
 - AC6: `node scripts/aislop-check-bootstrap.mjs check`（`npm run check:aislop` と同じ）が通る
 - AC7: `cargo run --quiet --release --locked --manifest-path tools/syn-check/Cargo.toml -- --format json crates/fraktor-actor` が違反 0 で終わる
-- AC8: `uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0Issue96` が 0 を返す（対象ノードが green）
+- AC8: `uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0issue96` が 0 を返す（対象ノードが green）
 - AC9: 同じ rollup を `--goal G0a` から `--goal G0f` で実行し、すべて 0 を返す（G0a〜G0f の退行なし）
-- AC10: `uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0Issue96` が 0 を返す
+- AC10: `uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0issue96` が 0 を返す
 - AC11: 台帳の差分が、対象ノードの `cases`/`status`/`rust.crate`/`rust.test_file` の欄に限られ、`cases.total` が実数で記録されている
 - AC12: 成果物は単一の merge-ready な PR（ドラフトではなく、レビュー可能な完成状態）として提出し、次の必須の GitHub コンテキストがすべて green であること
   - `Fraktor CI Gate`（`.github/workflows/main-pr-ci.yml` の `gate` ジョブ。`ci.yml` を `needs` し、CI の成否と check-result を必須にする）
@@ -131,9 +131,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 node scripts/aislop-check-bootstrap.mjs check
 cargo run --quiet --release --locked --manifest-path tools/syn-check/Cargo.toml -- --format json crates/fraktor-actor
-uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0Issue96
+uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0issue96
 for g in G0a G0b G0c G0d G0e G0f; do uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal $g; done
-uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0Issue96
+uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0issue96
 ```
 
 `verify_green.py` の機械ゲート（`cargo test -p <crate>`、`clippy`、`fmt`、syn-checker、aislop）と、上の AC は同じ対象を判定する（`ledger/tools/verify_green.py:238` 以降）。
@@ -142,11 +142,11 @@ uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.y
 
 committed origin/main の親ワークフロー `fraktor-porting-ng` は、`ledger/tools/goal_complete_gate.py` でゴール完了を機械判定する。判定条件は次の 3 つであり、この文書はそれに合わせた形にしてある。
 
-- ゴール文書の**先頭行だけ**が `^# ゴール (G0[a-zA-Z0-9]+)：` に一致すること（`goal_complete_gate.py:34`、`:84`）。先頭行は `# ゴール G0Issue96：SupervisorTreeSpec` である。
+- ゴール文書の**先頭行だけ**が `^# ゴール (G0[a-zA-Z0-9]+)：` に一致すること（`goal_complete_gate.py:34`、`:84`）。先頭行は `# ゴール G0issue96：SupervisorTreeSpec` である。
 - `## 対象ノード` 節の**最初の表**の `id` 列から、バッククォート区切りの完全なノード ID を読むこと（`:95`、`:106`、`:135`）。表はこの節の先頭に置き、`id` 列にバッククォートで 1 件だけ記載する。
-- その ID 集合が、台帳で `goal == G0Issue96` のノード集合と一致すること（`:146`、`:197`）。その後に `rollup.py --goal G0Issue96` の終了コードを返す（`:202`）。
+- その ID 集合が、台帳で `goal == G0issue96` のノード集合と一致すること（`:146`、`:197`）。その後に `rollup.py --goal G0issue96` の終了コードを返す（`:202`）。
 
-専用 ID の `G0Issue96` を台帳の `goal` に付けることで、この関門と既存の `rollup.py`／`check_needs.py` を変更せずに通せる。2026-11-22 に、`goal_complete_gate.py` の関数（`goal_id_from_document`、`table_ids_from_document`、`ledger_goal_ids`）をこの文書と台帳へ直接適用し、ID が `G0Issue96`、文書側と台帳側の ID 集合がともに `actor-tests/src/test/scala/org/apache/pekko/actor/SupervisorTreeSpec.scala` 1 件で一致することを確認した。合成した context で関門スクリプトを端から端まで実行すると、`{"exit_code": 1, "goal": "G0Issue96", ...}`（rollup の未完了終了コード）を返した。green 化後は同じ経路で `exit_code` が 0 になる見込みである。
+CI の `goal_complete_gate_test.py` は実物のゴール文書を読み、`G0[a-z0-9]+` の ID と台帳の所属ノードを照合する。この文書と台帳を `G0issue96` にそろえることで、既存の完了関門で対象1件の完了を判定できる。
 
 ## G0a〜G0f の回帰
 
@@ -161,7 +161,7 @@ committed origin/main の親ワークフロー `fraktor-porting-ng` は、`ledge
 
 ## この準備タスクの境界（完了を止める位置）
 
-この準備タスクは、上の「対象ノード」と台帳の `goal: G0Issue96` のタグだけを行って止まる。Rust テスト作成、本番コードの編集、`status` の `green` 化、CI・workflow 変更、後続タスクの登録・開始、PR 公開、merge、git add・commit・push は、この準備タスクでは行わない（git のステージング・コミット・プッシュは TAKT のタスク後処理に委ねる）。これらの作業は、この文書が定義するゴール完了（上記「完了条件」と「必須ゲート」を満たす単一の merge-ready PR）を担う後続 run が行う。
+この準備タスクは、上の「対象ノード」と台帳の `goal: G0issue96` のタグだけを行って止まる。Rust テスト作成、本番コードの編集、`status` の `green` 化、CI・workflow 変更、後続タスクの登録・開始、PR 公開、merge、git add・commit・push は、この準備タスクでは行わない（git のステージング・コミット・プッシュは TAKT のタスク後処理に委ねる）。これらの作業は、この文書が定義するゴール完了（上記「完了条件」と「必須ゲート」を満たす単一の merge-ready PR）を担う後続 run が行う。
 
 ## 前提と残るリスク
 
@@ -172,6 +172,6 @@ committed origin/main の親ワークフロー `fraktor-porting-ng` は、`ledge
 
 ## 台帳のタグ付け（この準備タスクで適用済み）
 
-1. 対象ノードの `goal: null` を `goal: G0Issue96` に書き換える（台帳の差分は 1 行だけ。`ledger/nodes.yaml:4672`）。この準備タスクで適用済みである。
+1. 対象ノードの `goal: null` を `goal: G0issue96` に書き換える（台帳の差分は 1 行だけ。`ledger/nodes.yaml:4672`）。この準備タスクで適用済みである。
 2. `status: unported` は変更しない（`:4654`）。
-3. 2026-11-22 の事前確認では、台帳のコピーで前処理を行うと `rollup.py --goal G0Issue96` は「対象 1 件、unported 1」で exit 1 になり（未完了なので期待どおり）、`rollup.py --goal G0a`〜`G0f` はすべて exit 0、`check_needs.py --goal G0Issue96` は exit 0 になる見込みである。前処理を実際に適用した後に、上のコマンドで確定させる
+3. 2026-11-22 の事前確認では、台帳のコピーで前処理を行うと `rollup.py --goal G0issue96` は「対象 1 件、unported 1」で exit 1 になり（未完了なので期待どおり）、`rollup.py --goal G0a`〜`G0f` はすべて exit 0、`check_needs.py --goal G0issue96` は exit 0 になる見込みである。前処理を実際に適用した後に、上のコマンドで確定させる

@@ -4669,7 +4669,7 @@ nodes:
   rust:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/supervisor_tree_spec.rs
-  goal: G0Issue96
+  goal: G0issue96
 - id: actor-tests/src/test/scala/org/apache/pekko/util/SwitchSpec.scala
   name: actor-tests:SwitchSpec
   kind: test
