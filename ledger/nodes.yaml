@@ -4546,7 +4546,7 @@ nodes:
     module: actor-tests
     class: StatusReplyTest
     test_cases_approx: 6
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -4557,14 +4557,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 6
+    ported: 6
+    passing: 6
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/status_reply_test.rs
+  goal: G0issue103
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/SupervisorHierarchySpec.scala
   name: actor-tests:SupervisorHierarchySpec
   kind: test
