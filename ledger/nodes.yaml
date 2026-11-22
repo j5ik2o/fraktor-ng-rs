@@ -3426,7 +3426,7 @@ nodes:
     module: actor-tests
     class: MarkerLoggingSpec
     test_cases_approx: 2
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -3437,14 +3437,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 2
+    ported: 2
+    passing: 2
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/marker_logging_spec.rs
+  goal: G0issue108
 - id: actor-tests/src/test/java/org/apache/pekko/japi/MatchBuilderTest.java
   name: actor-tests:MatchBuilderTest
   kind: test
