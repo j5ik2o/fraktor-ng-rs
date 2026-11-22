@@ -14,15 +14,15 @@
 | --- | --- | --- |
 | `pattern match success` | `success_payload_downcasts_to_the_stored_string_type_and_rejects_int` | 成功値の型消去、`i32` downcast が失敗し、`&'static str` downcast と値 `"woho!"` が一致 |
 | `pattern match success (Ack)` | `ack_success_payload_downcasts_to_the_ack_unit_struct` | `StatusReply::ack()` の成功ペイロードが公開 `StatusReplyAck` に downcast し単位値と一致 |
-| `not throw exception if null` | `null_reply_is_neither_success_nor_error` | `Option::<StatusReply>::None` が成功・失敗のどちらにも一致しない |
+| `not throw exception if null` | `null_reply_is_neither_success_nor_error` | `StatusReply::match_reply(None)` が成功・失敗のどちらにも一致しない |
 | `pattern match error with text` | `text_error_reply_carries_a_concrete_error_message` | 失敗状態、具象 `ErrorMessage` と本文 `"boho!"` |
 | `pattern match error with exception` | `typed_error_reply_carries_the_original_exception` | 失敗状態、元の `TestException` と本文 `"boho!"` |
-| `flatten a Future[StatusReply]` | `flatten_status_future_unwraps_value_ack_and_both_error_kinds` | 1テスト内で成功値・Ack・文字列エラー・型付きエラーの4分岐。エラーは `Arc` の具象型と本文を検査 |
+| `flatten a Future[StatusReply]` | `flatten_status_future_unwraps_value_ack_and_both_error_kinds` | 1テスト内で原典の成功値・Ack・文字列エラー・型付きエラーの4分岐を検査。受信前の失敗も同じエラーを返す |
 | `askWithStatus unwrap success` | `ask_with_status_unwraps_success_value` | 実配送、保存された送信元への返信、展開された成功値 |
 | `askWithStatus unwrap Error with message` | `ask_with_status_unwraps_text_error` | 同じ配送と返信経路、`StatusAskError::Reply` 内の `ErrorMessage` と本文 |
 | `askWithStatus unwrap Error with exception` | `ask_with_status_unwraps_original_exception` | 同じ配送と返信経路、`StatusAskError::Reply` 内の元の `TestException` と本文 |
 
-Scala の null 分岐は Rust の `Option::<StatusReply>::None` に対応し、成功・失敗のどちらにも一致しないこととして検査する。型付きエラーは `Arc` に保持された具象型を downcast して本文を比較する。flatten の戻り値は通常の Future を意図し、テストは ask 専用の `.try_await_result` をここで使わず、小さな helper `poll_ready`（`core::pin::pin!`、`Context::from_waker(Waker::noop())`、`Future::poll`）で1回 poll して完了を直接検査する。`core::future::ready` 入力のため初回 poll で `Ready` になる。ask の3件は `FraktorSpec` の実システムに `TestProbe` を登録し、3秒の期限付き ask を送り、`expect_msg` で受信した保存送信元にのみ返信し、`try_await_result` で結果を取得する。
+Scala の null は Rust の `Option<&StatusReply>` の `None` に対応する。`StatusReply::match_reply` に空入力、成功、文字列エラー、型付きエラーを渡し、抽出結果の型と値を検査する。平坦化テストは完了済み Future を `poll_ready` で直接 poll する。返信前に Future が失敗する場合は、入力と出力の `Arc` が同じエラーを指すことを確認する。ask の3件は `FraktorSpec` の実 ActorSystem に `TestProbe` を登録する。3秒の期限付き ask の要求を `expect_msg` で受信し、保存された送信元に返信して `try_await_result` で結果を取得する。
 
 ## 本番変更前の採証
 
@@ -221,7 +221,8 @@ error: could not compile `fraktor-actor` (test "status_reply_spec") due to 7 pre
 - `crates/fraktor-actor/src/adaptor.rs`: 非公開モジュール `status_reply_ack` を宣言し `pub use` で再公開。
 - `crates/fraktor-actor/src/adaptor/status_reply.rs`:
   - `StatusReply::ack()` を `Self::success(StatusReplyAck)` として追加。
-  - `StatusReply::flatten_status_future(future: impl Future<Output = Self>) -> Result<Message, Arc<dyn Error + Send + Sync>>` を追加。`future.await.result` で所有する `Result` を移動して返し、値・具象エラーを保持する。実行器・待機 API は追加していない。
+  - `StatusReply::match_reply` は、返信があれば値か具象エラーへの参照を返す。空入力には `None` を返す。
+  - `StatusReply::flatten_status_future` は `Result<StatusReply, Arc<dyn Error + Send + Sync>>` を出力する Future を受け取る。返信が届けば内側の結果を取り出し、Future 自体が失敗すれば元のエラーを返す。
 - 既存の `success`/`error_message`/`error`、`get_value`/`get_error`、`ask_with_status`、`StatusAskFuture`、期限付き ask、`result(&self)` は変更していない。
 
 ### 実測結果
@@ -256,8 +257,10 @@ Ack の rustdoc 英語化後に `cargo run --quiet --release --locked --manifest
 
 ### 台帳更新
 
+発行時に TAKT ゴール `68f64af2-9718-4e70-b4ce-dd80fe805e50` へ対象の Scala ノードを記録した。ゴールタグを発行時に台帳へ付ける手順は、`fraktor-porting-ng` が移植対象を選ぶためのもの。今回は本番変更前の採証を独立したタスクに分けるため `simple` を使用し、第2工程で移植と回帰の結果を確認してからタグと実測を台帳に記録した。
+
 `ledger/nodes.yaml` の Scala `StatusReplySpec.scala` 1ノードのみを `status: green`、`cases: total/ported/passing 各9, excluded []`、`rust.crate: fraktor-actor`、`rust.test_file: crates/fraktor-actor/tests/status_reply_spec.rs`、`goal: G0issue105` に更新した。Java 側ノード・既存ゴール・capabilities は変更していない。除外は0件。
 
 ### 変更前生出力の位置づけ
 
-冒頭から「第1工程での未確認範囲」までの採証・生出力は、本番変更前（実装前）の時点の記録として保持している。現在は上記の最小実装により9件が green であり、変更前の red は過去の採証として扱う。
+採証欄の生出力は第1工程のテストを本番変更前に実行した記録。PR レビュー後は同じ9件の中で、本番の照合 API を通した空入力と、平坦化の返信前失敗も検証した。

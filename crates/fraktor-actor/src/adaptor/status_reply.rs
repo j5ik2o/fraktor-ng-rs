@@ -59,17 +59,22 @@ impl StatusReply {
     self.get_value().err()
   }
 
+  /// Returns the outcome of a present reply. An absent reply matches neither outcome.
+  pub fn match_reply(reply: Option<&Self>) -> Option<Result<&Message, &(dyn Error + Send + Sync + 'static)>> {
+    reply.map(Self::get_value)
+  }
+
   pub(super) fn result(&self) -> Result<Message, Arc<dyn Error + Send + Sync>> {
     self.result.clone()
   }
 
-  /// Unwraps a future that resolves to a [StatusReply], returning its value or error directly.
+  /// Unwraps a future that delivers a [StatusReply].
   ///
-  /// Preserves the carried value and the original concrete error; no executor or
-  /// waiting API is added. Mirrors Pekko's `flattenStatusFuture`.
+  /// Returns the successful value or propagates the original error from either
+  /// the future or the reply.
   pub async fn flatten_status_future(
-    future: impl Future<Output = Self>,
+    future: impl Future<Output = Result<Self, Arc<dyn Error + Send + Sync>>>,
   ) -> Result<Message, Arc<dyn Error + Send + Sync>> {
-    future.await.result
+    future.await?.result
   }
 }

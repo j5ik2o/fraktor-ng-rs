@@ -11,6 +11,7 @@ use core::task::Context;
 use core::task::Poll;
 use core::task::Waker;
 use core::time::Duration;
+use std::sync::Arc;
 
 use fraktor_actor::adaptor::ErrorMessage;
 use fraktor_actor::adaptor::StatusAskError;
@@ -38,7 +39,7 @@ impl Error for TestException {}
 #[test]
 fn success_payload_downcasts_to_the_stored_string_type_and_rejects_int() {
   let reply = StatusReply::success("woho!");
-  let message = reply.get_value().expect("successful reply");
+  let message = StatusReply::match_reply(Some(&reply)).expect("present reply").expect("successful reply");
 
   assert!(message.downcast_ref::<i32>().is_none(), "a String payload must not match Int");
   let text = message.downcast_ref::<&'static str>().expect("stored payload is a string");
@@ -57,11 +58,7 @@ fn ack_success_payload_downcasts_to_the_ack_unit_struct() {
 // not throw exception if null
 #[test]
 fn null_reply_is_neither_success_nor_error() {
-  let reply: Option<StatusReply> = None;
-
-  assert!(reply.as_ref().is_none_or(|value| !value.is_success()), "None must not match success");
-  assert!(reply.as_ref().is_none_or(|value| !value.is_error()), "None must not match error");
-  assert!(reply.is_none());
+  assert!(StatusReply::match_reply(None).is_none(), "an absent reply must match neither outcome");
 }
 
 // pattern match error with text
@@ -71,7 +68,7 @@ fn text_error_reply_carries_a_concrete_error_message() {
 
   assert!(reply.is_error());
   assert!(!reply.is_success());
-  let error = reply.get_value().expect_err("a failed reply has no value");
+  let error = StatusReply::match_reply(Some(&reply)).expect("present reply").expect_err("failed reply");
   assert_eq!(error.downcast_ref::<ErrorMessage>().expect("text error").to_string(), "boho!");
 }
 
@@ -82,30 +79,35 @@ fn typed_error_reply_carries_the_original_exception() {
 
   assert!(reply.is_error());
   assert!(!reply.is_success());
-  let error = reply.get_value().expect_err("a failed reply has no value");
+  let error = StatusReply::match_reply(Some(&reply)).expect("present reply").expect_err("failed reply");
   assert_eq!(error.downcast_ref::<TestException>().expect("original error").to_string(), "boho!");
 }
 
 // flatten a Future[StatusReply]
 #[test]
 fn flatten_status_future_unwraps_value_ack_and_both_error_kinds() {
-  let value = poll_ready(StatusReply::flatten_status_future(core::future::ready(StatusReply::success("woho"))))
+  let value = poll_ready(StatusReply::flatten_status_future(core::future::ready(Ok(StatusReply::success("woho")))))
     .expect("flattened success");
   assert_eq!(value.downcast_ref::<&'static str>(), Some(&"woho"));
 
   let ack =
-    poll_ready(StatusReply::flatten_status_future(core::future::ready(StatusReply::ack()))).expect("flattened ack");
+    poll_ready(StatusReply::flatten_status_future(core::future::ready(Ok(StatusReply::ack())))).expect("flattened ack");
   assert_eq!(ack.downcast_ref::<StatusReplyAck>(), Some(&StatusReplyAck));
 
   let text_error =
-    poll_ready(StatusReply::flatten_status_future(core::future::ready(StatusReply::error_message("boo"))))
+    poll_ready(StatusReply::flatten_status_future(core::future::ready(Ok(StatusReply::error_message("boo")))))
       .expect_err("flattened text error");
   assert_eq!(text_error.downcast_ref::<ErrorMessage>().expect("text error").to_string(), "boo");
 
   let typed_error =
-    poll_ready(StatusReply::flatten_status_future(core::future::ready(StatusReply::error(TestException("boo")))))
+    poll_ready(StatusReply::flatten_status_future(core::future::ready(Ok(StatusReply::error(TestException("boo"))))))
       .expect_err("flattened typed error");
   assert_eq!(typed_error.downcast_ref::<TestException>().expect("original error").to_string(), "boo");
+
+  let delivery_error: Arc<dyn Error + Send + Sync> = Arc::new(TestException("delivery failed"));
+  let error = poll_ready(StatusReply::flatten_status_future(core::future::ready(Err(Arc::clone(&delivery_error)))))
+    .expect_err("the future failed before returning a reply");
+  assert!(Arc::ptr_eq(&error, &delivery_error));
 }
 
 // askWithStatus unwrap success
