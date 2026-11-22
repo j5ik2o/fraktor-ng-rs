@@ -39,8 +39,8 @@ impl Actor for TreeLinkActor {
   // Original: `override val supervisorStrategy = OneForOneStrategy(maxNrOfRetries
   // = 3, withinTimeRange = 1.second)(List(classOf[Exception]))`
   //
-  // `ActorKilledException` is one of the `Exception`s the original restarts, and
-  // the port's `one_for_one` makes the same decision for a `Kill`.
+  // The original's one-second retry window cannot affect its single Kill.
+  // Both strategies restart on that first failure under the three-retry limit.
   fn supervisor_strategy(&self) -> SupervisorStrategy {
     SupervisorStrategy::one_for_one(3)
   }
