@@ -1020,7 +1020,7 @@ impl Executor {
     match decision {
       | Ok(Directive::Restart) => {
         cell.record_restart_request();
-        self.restart_cell(target, cell, cause_name, message);
+        self.restart_cell(target, cell, FailureKind::MessageHandling, cause_name, message);
       },
       | Ok(Directive::Stop) => {
         self.cells.push(cell);
@@ -1107,7 +1107,14 @@ impl Executor {
   /// `PostRestartException` to stop. The stop path then skips the old
   /// instance's `post_stop`, because `preRestart` already ran it and the
   /// instance must not run it twice.
-  fn restart_cell(&mut self, target: &ActorRef, mut cell: ActorCell, cause_name: &str, message: &str) {
+  fn restart_cell(
+    &mut self,
+    target: &ActorRef,
+    mut cell: ActorCell,
+    failure: FailureKind,
+    cause_name: &str,
+    message: &str,
+  ) {
     let reason = self.failure_reason(target, cause_name, message);
     let reason_box: Box<dyn core::any::Any + Send> = Box::new(reason);
     let catcher = self.catcher.clone();
@@ -1127,6 +1134,18 @@ impl Executor {
     if let RunOutcome::Failed { message } = pre_restart_failed {
       self.publish_child_failure(target, RUNTIME_CAUSE, &message);
     }
+    // Pekko's finishRecreate snapshots surviving children before the new
+    // instance can spawn its own. Apply that propagation to a supervised Kill.
+    let survivors = if failure == FailureKind::Killed {
+      self
+        .cells
+        .iter()
+        .filter(|child| child.is_child_of(target) && child.is_created())
+        .map(ActorCell::self_ref)
+        .collect::<Vec<_>>()
+    } else {
+      Vec::new()
+    };
     let catcher = self.catcher.clone();
     let mut stack = BehaviorStack::new();
     self.enter_frame(target);
@@ -1148,6 +1167,15 @@ impl Executor {
         // A retained child's decider can fail again; defer that failure until
         // this recovery returns instead of restarting the same parent inside it.
         self.enter_frame(target);
+        for child in survivors {
+          if self.pending_stops.contains(target) || self.pending_stops.contains(&child) {
+            continue;
+          }
+          if let Some(index) = self.cells.iter().position(|cell| cell.accepts(&child)) {
+            let cell = self.cells.remove(index);
+            self.restart_cell(&child, cell, failure, cause_name, message);
+          }
+        }
         let children: Vec<ActorRef> = self
           .cells
           .iter()
@@ -1188,7 +1216,7 @@ impl Executor {
     match decision {
       | Ok(Directive::Restart) => {
         cell.record_restart_request();
-        self.restart_cell(recipient, cell, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE);
+        self.restart_cell(recipient, cell, FailureKind::Killed, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE);
       },
       | Ok(Directive::Stop) => {
         self.cells.push(cell);

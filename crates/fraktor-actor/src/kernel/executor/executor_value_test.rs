@@ -310,6 +310,49 @@ fn repeated_child_recovery_failures_do_not_nest_parent_recovery() {
 }
 
 #[test]
+fn a_retained_child_handles_messages_with_a_fresh_behavior_after_kill_recovery() {
+  let mut system = ActorSystem::new("RecoverySpec", Arc::new(ChannelBoundary::new()));
+  let guardian = system.actor_of(Props::new(|| Guardian));
+  let observations = Arc::new(Mutex::new(RecoveryObservations::default()));
+  let parent = system.downgrade().spawn_child(
+    &guardian,
+    Props::new({
+      let observations = Arc::clone(&observations);
+      move || RecoveringParent {
+        observations: Arc::clone(&observations),
+        failures: 0,
+        stop_on_success: false,
+        spawn_worker: false,
+        strategy: SupervisorStrategy::default_strategy(),
+      }
+    }),
+    Some("parent"),
+    SupervisorStrategy::one_for_one(3),
+  );
+  let values = Arc::new(Mutex::new(Vec::new()));
+  let child = system.downgrade().spawn_child(
+    &parent,
+    Props::new({
+      let values = Arc::clone(&values);
+      move || HealthyChild { value: 0, values: Arc::clone(&values) }
+    }),
+    Some("child"),
+    SupervisorStrategy::default_strategy(),
+  );
+  child.tell("increment", guardian.clone());
+  child.tell("read", guardian.clone());
+  system.run_until_idle();
+
+  parent.tell("Kill", guardian.clone());
+  system.run_until_idle();
+  child.tell("read", guardian);
+  system.run_until_idle();
+
+  assert_eq!(observations.lock().unwrap().restarts, 1);
+  assert_eq!(*values.lock().unwrap(), alloc::vec![(child.clone(), 1), (child, 0)]);
+}
+
+#[test]
 fn repeated_child_recovery_failures_obey_parent_retry_limit() {
   assert_eq!(run_recovery(3, 2, None, false, false), (3, 2, 1, true, true, 1));
 }
