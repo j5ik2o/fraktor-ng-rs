@@ -27,4 +27,10 @@ Pekko v1.7.1 の classic ActorSystem のテストを1ケース移植する。原
 
 原典には `"Scala's Using automatically terminates ActorSystem" in` が1件ある。自動カウンターは外側の `must` も名前付きブロックに数えるため、実ケース数を確定できない。独立レビューではスコープ終了を観測する方法と負の対照を原典に照合し、境界の変化に加えてアクター本体の解放も確かめることとした。台帳の件数は原典と実測に基づく。
 
+## 回収時の台帳更新
+
+準備の TAKT 実行を停止したため、監督者は #99 に限り、回収担当が検証と独立レビューの結果に基づいて台帳を更新する手順を承認した。独立レビューの指摘を受けてアクター本体の解放を検査に加え、対象テストと負の対照を再実行した。本番実装で1件成功し、`Drop` の終了処理を無効にするとスコープ直後のアサーションで1件失敗した。
+
+`verify_red.py` の結果は `unexpected_pass` のまま保存した。actor と testkit は、既存の `verify_green.py --crate <crate>` でテスト、Clippy、フォーマット、syn-check、aislop を確認した。台帳の `green` は、この検証、独立レビュー、原典の1ケースと Rust の1件の通過を根拠とする。
+
 対象テストは `cargo test -p fraktor-actor --test actor_system_scala213_plus_spec` で実行する。最終確認には actor と testkit の回帰、G0issue99 の `check_needs.py` と `rollup.py`、G0a〜G0f の `rollup.py`、PR 最終 HEAD の `Fraktor CI Gate` と `Check unresolved comments` を含める。
