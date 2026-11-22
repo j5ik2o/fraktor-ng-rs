@@ -4903,7 +4903,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue98
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/TimerSpec.scala
   name: actor-tests:TimerSpec
   kind: test
