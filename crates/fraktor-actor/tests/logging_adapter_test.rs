@@ -30,19 +30,15 @@
 // The original `LoggingAdapter` mixes arity overloads (`error(message)` and
 // `error(template, arg)`). Rust has no same-name arity overloads, so the port
 // uses one signature for every level and every argument count: the level is the
-// first argument, the template the second, and the arguments one slice of
-// `&dyn Display` the third, so an empty slice is the plain message. The mirror of
-// Java's `Object[]` arguments is therefore `&[&dyn Display]`; a Java `int[]`
-// argument becomes the same slice of borrowed integers, which keeps the
-// primitive-array case distinct from the heterogeneous-object case. The
-// cause-carrying entry is Error-only, so the cause never reaches another level.
+// first argument, the template the second, and a slice of Display values the
+// third. The numeric case passes an i32 array directly. The heterogeneous case
+// passes an array of Display references. An empty slice gives a plain message.
+// The cause-carrying entry publishes Error events.
 //
 // Differences from the original that need a note:
 //   * The original subscribes to `LogEvent.class`, the common parent of every
-//     log event. The port subscribes to the concrete class of each expected
-//     event, because the port's stream matches a subscription by the exact
-//     event type and does not widen to a parent; the ported cases expect the
-//     same events in the same order, so the difference is not observable.
+//     log event. The port subscribes to the four concrete classes directly since
+//     implementing LogEvent does not register a class hierarchy in EventStream.
 //   * The original reads the MDC with `log.getMDC().toString()`, which renders
 //     a Scala map as `{messageLength=8}` and an empty map as `{}`. The port
 //     keeps the MDC as a `BTreeMap`, so it compares the map itself: an empty

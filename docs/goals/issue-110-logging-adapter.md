@@ -11,14 +11,11 @@
 |:---|:---|---:|
 | `actor-tests/src/test/java/org/apache/pekko/event/LoggingAdapterTest.java` | `crates/fraktor-actor/tests/logging_adapter_test.rs` | 4 |
 
-原典のケース名は `mustFormatMessage`、`mustCallMdcForEveryLog`、`mustSupportMdcNull`、`mustBeAbleToCreateLogEventsWithOldConstructor`。除外は 0 件。`ActorWithMDC.java` はケースではなく、`mustCallMdcForEveryLog` と `mustSupportMdcNull` が使うアクターであり、独立したケースとしては数えない。この第 1 工程はテストの保存と初回 red の採証までで、台帳（`ledger/`）の登録・ステータス更新は行わない。
+原典のケース名は `mustFormatMessage`、`mustCallMdcForEveryLog`、`mustSupportMdcNull`、`mustBeAbleToCreateLogEventsWithOldConstructor`。除外は 0 件。`ActorWithMDC.java` はケースではなく、`mustCallMdcForEveryLog` と `mustSupportMdcNull` が使うアクターであり、独立したケースとしては数えない。第1工程でテストを移植して red を採証し、第2工程で実装と台帳更新を行った。
 
-## write_scope
+## 変更範囲
 
-- 対象の統合テスト `crates/fraktor-actor/tests/logging_adapter_test.rs`。
-- このゴール文書 `docs/goals/issue-110-logging-adapter.md`。
-
-製品コード、既存テスト、依存定義、台帳、PR、`main`、ゴール登録状態は変更しない。
+対象テスト、書式化・MDC・原因の保持に必要なログ発行口と既存イベントの拡張、補助テスト、対象ノードの台帳欄、このゴール文書。
 
 ## 原典とテストの個別照合
 
@@ -27,7 +24,7 @@ Pekko commit `9a54d1294c3ac7821bbed3c940769c3d5027d1ff` の `LoggingAdapterTest.
 | 原典のケース | Rust のケース | 駆動入口 | 購読・受信 | 直接観測する契約 |
 |:---|:---|:---|:---|:---|
 | `mustFormatMessage` | `must_format_message` | `LogPublisher` の単一入口 `log(level, message, args)` と Error 専用の原因付き `error(cause, message, args)` | 同じ `ActorSystem` の `event_stream` に `TestProbe` を `Error`/`Warning`/`Info`/`Debug` で購読し、`probe.expect_msg_type::<E>` で受信 | 1 引数 Error 本文 `One arg message: the arg`・空 MDC／原因付き 2 引数 Error 本文 `Two args message: an arg, another arg`・`Arc::ptr_eq` で送信原因と受信原因の同一性／数値配列 Warning 本文 `Args as array of primitives: 10, 20, 30`／異種配列 Info 本文 `Args as array of objects: A String, Sun Feb 10 16:02:20 UTC 2019, 4192af46-487c-4132-84e8-87890cbb00a6`／4 引数 Debug 本文 `Four args message: 1, 2, 3, 4`。各イベントのレベルと空 MDC を比較 |
-| `mustCallMdcForEveryLog` | `must_call_mdc_for_every_log` | `ActorWithMDC` 相当の `ActorWithMdc` を `Props::new` で 1 度だけ起動し、5 メッセージを順に送る（`Props` factory は `adapter.clone()` を捕捉し、`Actor::receive` が同じ adapter を保持する） | 同じ `ActorSystem` の `event_stream` に `TestProbe` を購読し、同じ probe のキューから期待レベルの具象型（`Error`/`Warning`/`Info`/`Debug`/`Debug`）で `expect_msg_type` を順に読む（`Debug` 一型で読まない／別キューで読まない） | 5 回の発行の本文・レベル・MDC 全体を比較。MDC は `messageLength` が `8`・`9`・`9`（空）・`29`。4 回目（`No MDC for 4th call`）が空、直後の 5 回目（`And now yes, a debug with MDC`）が `29` へ復帰することを同じアクターの連続処理として観測 |
+| `mustCallMdcForEveryLog` | `must_call_mdc_for_every_log` | `ActorWithMDC` 相当の `ActorWithMdc` を `Props::new` で 1 度だけ起動し、5 メッセージを順に送る（`Props` factory は `adapter.clone()` を捕捉し、`Actor::receive` が同じ adapter を保持する） | 同じ `ActorSystem` の `event_stream` に `TestProbe` を購読し、同じ probe のキューから期待レベルの具象型（`Error`/`Warning`/`Info`/`Debug`/`Debug`）で `expect_msg_type` を順に読む（`Debug` 一型で読まない／別キューで読まない） | 5 回の発行の本文・レベル・MDC 全体を比較。MDC は `messageLength` が `8`・`9`・`9`・空・`29`。4 回目（`No MDC for 4th call`）が空、直後の 5 回目（`And now yes, a debug with MDC`）が `29` へ復帰することを同じアクターの連続処理として観測 |
 | `mustSupportMdcNull` | `must_support_mdc_null` | `Props::new` で起動した `ActorWithMdc` へ `Null MDC` を 1 通送る（アダプターへ MDC 未指定＝`None` を渡す） | 同じ `ActorSystem` の `event_stream` に `TestProbe` を `Info` で購読し受信 | 未指定（null 相当）で実発行された Info の本文 `Null MDC`・レベル Info・空 MDC |
 | `mustBeAbleToCreateLogEventsWithOldConstructor` | `must_be_able_to_create_log_events_with_old_constructor` | 既存コンストラクター `Error::with_cause`、`Error::new`、`Warning::new`、`Info::new`、`Debug::new` | 購読なし。生成したイベントを直接読む | 原典の 5 つの `new` に対応する 5 経路がイベントを生成し、本文 `The message` と各レベル、空 MDC を持つ。原因付き Error は `cause_name()` が原因の `Debug` を返す |
 
@@ -37,7 +34,7 @@ Pekko commit `9a54d1294c3ac7821bbed3c940769c3d5027d1ff` の `LoggingAdapterTest.
 
 | 項目 | 原典（Java） | Rust の扱い | 等価根拠 |
 |:---|:---|:---|:---|
-| 購読の型 | `system.getEventStream().subscribe(getRef(), LogEvent.class)` で共通親 `LogEvent` を購読 | 期待する各イベントの具象クラス（`Error`/`Warning`/`Info`/`Debug`）を購読し、`mustCallMdcForEveryLog` は同じ probe のキューから期待レベルの具象型で `expect_msg_type` を順に読む | 原典の各ケースは 1 メッセージにつき 1 レベルだけを発行する。この port のストリームは購読型の完全一致で配送し親へ広げないため、具象クラス購読で同じイベントを同じ順序で受信する。受信対象と順序は原典と一致し、差異は観測できない |
+| 購読の型 | `system.getEventStream().subscribe(getRef(), LogEvent.class)` で共通親 `LogEvent` を購読 | 期待する各イベントの具象クラス（`Error`/`Warning`/`Info`/`Debug`）を購読し、`mustCallMdcForEveryLog` は同じ probe のキューから期待レベルの具象型で `expect_msg_type` を順に読む | 原典の各ケースは 1 メッセージにつき 1 レベルだけを発行する。Rust の `LogEvent` trait の実装はイベントストリームのクラス階層に登録されないため、4つの具象クラスを直接購読する。受信対象と順序は原典と一致する |
 | MDC の比較 | `log.getMDC().toString()` で `{messageLength=8}` や `{}` という文字列に変換して比較 | MDC を `BTreeMap<String, String>` のまま比較（空は `Mdc::new()`） | 原典が比較しているのは Map の内容である。port は Map を直接比較するので、キー `messageLength` の有無と値が一致することを確認できる。文字列表現の差（`{}` や `=`）は表現上の差にすぎない |
 | `messageLength` の型 | `Int`（`log.message.length()`） | `String`（`"8"` などの ASCII 数字） | port の `Mdc` は値が `String` である。`messageLength` の数値 `8`・`9`・`9`・`29` を同じ値の文字列表現として比較する。`length()` は UTF-16 コード単位、port は `chars().count()` を使うが、原典の 5 メッセージはすべて ASCII なので結果は一致する |
 | `new Date()` / `UUID.randomUUID()` | 実行時の値と `toString()` | `Display` が固定日時文字列 `Sun Feb 10 16:02:20 UTC 2019` と固定 UUID 文字列 `4192af46-487c-4132-84e8-87890cbb00a6` を返す型 | 原典が読むのは各値の `toString()` だけである。port は同じ種類の文字列出力を持つ別型（`JavaDate`・`JavaUuid`・`&str`）を渡し、配列が異種型のまま（全要素を文字列化しない）であることを保つ。時計と乱数は使わない |
@@ -71,7 +68,7 @@ Pekko commit `9a54d1294c3ac7821bbed3c940769c3d5027d1ff` の `LoggingAdapterTest.
 
 - `git status --short` でこの作業ツリーの未追跡・変更は `crates/fraktor-actor/tests/logging_adapter_test.rs` と本ゴール文書のみ。製品クレート、依存定義、既存テストは未変更。
 - 診断コード `E0432`・`E0599` は「製品に入口が存在しない」ことを示し、テスト側の型・パス誤りではない。テスト本体の構文・型エラーは上記 2 件以外にない。
-- レビュー修正後の red を再採証した。さらに、未実装の `LoggingAdapter` と `Error::cause` を一時的な stub（`unsafe impl Send/Sync` 付き）に置き換えた使い捨てコピーをビルドし、`Props::new` factory・`Actor::receive`・`probe.child_actor_of`・`expect_msg_type`・`Error::with_cause` など既存 API の使い方に型・境界の誤りがないこと（stub 下でコンパイル成功・エラー 0）を確認した。stub は確認後に元ファイルへ戻し、リポジトリに残していない。したがって red は未実装入口のみが原因である。
+- 第1工程の統合 SHA `50859f1c4d0817858f46a4f355ce1dfc79038f38` を Orca 子ワークスペースで再実行し、同じ2診断と終了値101を確認した。対象テスト以外の製品差分がないことを Git で照合した。生出力は正規チェックアウトの `.takt/issue-110-evidence/stage1-orca-red.log` に保存した。
 - 作業 SHA: `fac859141be2fa970cbc0beaf3fdf649c4db0e98`。
 
 ## 第 2 工程で実装した最小契約
