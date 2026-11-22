@@ -42,6 +42,8 @@ import re
 import subprocess
 import sys
 
+import excluded_approvals
+
 LEDGER = "ledger/nodes.yaml"
 
 # already_green の判定結果を record-already-green へ渡す固定パス（cwd 相対）。
@@ -244,48 +246,14 @@ def count_original_cases(node_id: str) -> int | None:
 
 
 def count_excluded(node_id: str) -> int | None:
-    """台帳の対象ノードの cases.excluded の件数を返す。読めないときは None。
+    """台帳の対象ノードの cases.excluded のうち、人間が承認した件数を返す。
 
-    excluded は人間が承認した除外の一覧（要素は {name, reason}）である。台帳の行を
-    対象ノードのブロック内で読み、`excluded:` がインラインの空配列・null なら 0、
-    ブロック配列なら `- ` で始まる要素行を数える。それ以外の書式（インライン配列など）は
-    読めないものとして None（除外の件数を確かめられないと判断する）。
-    台帳が無い・ノードが無いときも None。
+    読み込み（厳格な SafeLoader）、承認記録の判定、件数計算は同ディレクトリの
+    `excluded_approvals` が持つ。ここでは呼出し時点の `LEDGER`（cwd 相対）を渡すだけにし、
+    台帳パスをモジュール読込時に固定しない。未承認・不正な承認記録が 1 件でもあれば
+    None を返し、already_green を許可しない（詳細は `excluded_approvals.count_excluded`）。
     """
-    if not os.path.exists(LEDGER):
-        return None
-    in_block = False
-    in_excluded = False
-    excluded_indent = 0
-    count = 0
-    for line in open(LEDGER, encoding="utf-8").read().splitlines():
-        if line.startswith("- id: "):
-            in_block = line.split(":", 1)[1].strip() == node_id
-            in_excluded = False
-            continue
-        if not in_block:
-            continue
-        m = re.match(r"(\s+)excluded:\s*(.*)$", line)
-        if m and not in_excluded:
-            value = re.split(r"\s+#", m.group(2), maxsplit=1)[0].strip()
-            if value in ("[]", "null", "~"):
-                return 0
-            if value:
-                return None
-            in_excluded = True
-            excluded_indent = len(m.group(1))
-            continue
-        if in_excluded:
-            if not line.strip() or line.lstrip().startswith("#"):
-                continue
-            indent = len(line) - len(line.lstrip())
-            if indent <= excluded_indent:
-                return count if count > 0 else None
-            if line.lstrip().startswith("- "):
-                count += 1
-    if not in_excluded:
-        return None
-    return count if count > 0 else None
+    return excluded_approvals.count_excluded(LEDGER, node_id)
 
 
 def parse_passed(out: str) -> int | None:

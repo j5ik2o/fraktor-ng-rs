@@ -16,6 +16,14 @@ verify_red.py は「直前の port-test 応答」から node/crate/test_file を
   AG-EXCLUDED  台帳の cases.excluded の件数を passed に足して原典件数と突き合わせ、
                green の保存は total=原典件数、ported=passing=passed。除外が無いときは
                従来と同じ結果になる
+  AG-APPROVED  対象ノードの cases.excluded の各要素が、人間が記録する approved_by
+               （空白以外の文字列）と approved_at（YYYY-MM-DD。引用なしの YAML 日付も可）を
+               持つときだけ件数へ数える。欠落・空欄・null・不正な日付・不正な型が 1 件でも
+               あれば count_excluded は None を返し、passed + excluded == original_cases の
+               件数式が合っていても already_green にしない（unexpected_pass）。既存の
+               name/reason だけの要素は未承認として拒否する（APPROVAL_CASES の表で確認）
+               別ノードの引用なし不正日は対象ノードの判定に影響せず、対象の不正日だけが
+               fail closed する（共有 SafeLoader は書き換えない）
   AG-COUNT     Scala のタグ付きケースも数え、`it should "..." in {` 形式も既知の書式として数える。
                既知の書式で全件を説明できない原典（WordSpec の `"name" must {` など。対応書式との
                混在を含む）は None にする
@@ -50,6 +58,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from datetime import date as datetime_date
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent
@@ -71,15 +80,27 @@ def write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+APPROVED_BY = "synthetic-human-approver"
+APPROVED_AT = "2026-11-20"
+
+
 def case_block(node_id: str, total, ported, passing, status: str = "unported",
                excluded: list[str] | None = None) -> str:
-    """台帳の1ノード分の YAML。mark_red / already_green が触る欄だけを持つ。"""
+    """台帳の1ノード分の YAML。mark_red / already_green が触る欄だけを持つ。
+
+    除外要素は name/reason に加えて、人による承認記録（approved_by/approved_at）を
+    合成値で持つ。承認記録の妥当性は APPROVAL_CASES の表と _approved_item で確かめる。
+    """
     def val(x):
         return "null" if x is None else x
 
     if excluded:
         excluded_yaml = "\n" + "".join(
-            f"      - name: {name}\n        reason: 承認済みの除外\n" for name in excluded
+            f"      - name: {name}\n"
+            f"        reason: 承認済みの除外\n"
+            f"        approved_by: {APPROVED_BY}\n"
+            f"        approved_at: {APPROVED_AT}\n"
+            for name in excluded
         )
     else:
         excluded_yaml = " []"
@@ -112,6 +133,9 @@ def case_block(node_id: str, total, ported, passing, status: str = "unported",
         f"    test_file: {TEST_FILE}\n"
         f"  goal: G0d\n"
     )
+
+
+OTHER_NODE_ID = "actor-tests/src/test/java/org/apache/pekko/actor/OtherTest.java"
 
 
 def ledger_yaml(nodes: list[str]) -> str:
@@ -907,7 +931,8 @@ def test_excluded_cases_count_toward_green():
         assert node["status"] == "unported", node
         assert node["cases"]["total"] is None, node["cases"]
         assert node["cases"]["excluded"] == [
-            {"name": "excluded case", "reason": "承認済みの除外"}
+            {"name": "excluded case", "reason": "承認済みの除外",
+             "approved_by": APPROVED_BY, "approved_at": datetime_date(2026, 11, 20)}
         ], node["cases"]
         print("18. excluded counted in result: cases total =", result["original_cases"],
               "excluded =", result["excluded"])
@@ -928,6 +953,444 @@ def test_excluded_without_full_pass_is_not_green():
         assert result["classification"] == "unexpected_pass", result
         assert node_entry(root)["status"] == "unported", node_entry(root)
         print("19. excluded but unaccounted → unexpected_pass:", result["classification"])
+
+
+def _excluded_node(excluded_yaml: str, node_id: str = NODE_ID) -> str:
+    """case_block の除外部分だけを差し替えたノード YAML。
+
+    excluded_yaml は `    excluded:` の値以降（空配列なら " []"、要素があれば先頭改行と
+    `- ` 行）。ノードの他の欄は既存 case_block を再利用する。
+    """
+    node = case_block(node_id, None, None, None).replace(
+        "    excluded: []\n", f"    excluded:{excluded_yaml}\n")
+    assert f"    excluded:{excluded_yaml}\n" in node, node
+    return node
+
+
+def _count_excluded_for(excluded_yaml: str, node_id: str = NODE_ID) -> int | None:
+    """1 ノードの台帳を一時ディレクトリに置き、verify_red.count_excluded を呼ぶ。"""
+    return _count_excluded_for_ledger(ledger_yaml([_excluded_node(excluded_yaml, node_id)]),
+                                      node_id)
+
+
+def _count_excluded_for_ledger(nodes_yaml: str, node_id: str = NODE_ID) -> int | None:
+    """与えた台帳 YAML を一時ディレクトリに置き、verify_red.count_excluded を呼ぶ。"""
+    import importlib
+    sys.path.insert(0, str(TOOLS))
+    try:
+        module = importlib.import_module("verify_red")
+    finally:
+        sys.path.remove(str(TOOLS))
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write(root / "ledger" / "nodes.yaml", nodes_yaml)
+        cwd = os.getcwd()
+        try:
+            os.chdir(root)
+            return module.count_excluded(node_id)
+        finally:
+            os.chdir(cwd)
+
+
+def _approved_item(name: str = "a", *, by: str | None = None,
+                   at: str | None = None) -> str:
+    """承認記録付きの除外要素（合成値）。by/at は YAML の値表記をそのまま渡す。
+
+    引用付きの日付・引用なしの日付・timestamp・ValueError を出す表記を試すときは、
+    呼び出し側が at に YAML の表記（引用を含む）をそのまま渡す。
+    """
+    by = APPROVED_BY if by is None else by
+    at = APPROVED_AT if at is None else at
+    return (
+        f"\n      - name: {name}\n"
+        f"        reason: 承認済みの除外\n"
+        f"        approved_by: {by}\n"
+        f"        approved_at: {at}"
+    )
+
+
+def _unapproved_item(name: str = "excluded case") -> str:
+    """承認記録を持たない除外要素（既存の name/reason だけ）。"""
+    return f"\n      - name: {name}\n        reason: 承認済みの除外"
+
+
+# (説明, 除外要素の YAML, 期待する count_excluded, 分類回帰を取るか)
+# 分類回帰は passed + excluded == original_cases（原典2・成功1・除外1）で組み立てる。
+APPROVAL_CASES = [
+    ("name/reason だけ（承認記録なし）", _unapproved_item(), None, True),
+    ("approved_at だけ", "\n      - name: a\n        reason: r\n"
+                        f"        approved_at: {APPROVED_AT}", None, True),
+    ("approved_by だけ", "\n      - name: a\n        reason: r\n"
+                        f"        approved_by: {APPROVED_BY}", None, True),
+    ("approved_by が空文字列", _approved_item(by='""'), None, True),
+    ("approved_by が空白のみ", _approved_item(by='"  "'), None, False),
+    ("approved_by が null", _approved_item(by="null"), None, False),
+    ("approved_at が空文字列", _approved_item(at='""'), None, False),
+    ("approved_at が null", _approved_item(at="null"), None, False),
+    ("approved_at が不正な月", _approved_item(at='"2026-13-01"'), None, False),
+    ("approved_at が不正な日", _approved_item(at='"2026-02-30"'), None, False),
+    ("approved_at が日付でない文字列", _approved_item(at="yesterday"), None, False),
+    ("approved_at が YYYYMMDD", _approved_item(at='"20261120"'), None, False),
+    ("approved_at がゼロ詰めなし", _approved_item(at='"2026-1-05"'), None, False),
+    ("approved_at が日時", _approved_item(at='"2026-11-20T00:00:00"'), None, False),
+    ("approved_by が数値", _approved_item(by="42"), None, False),
+    ("approved_by が bool", _approved_item(by="true"), None, False),
+    ("approved_by がリスト", _approved_item(by="[someone]"), None, False),
+    ("approved_at が bool", _approved_item(at="true"), None, False),
+    ("approved_at が数値", _approved_item(at="42"), None, False),
+    ("approved_at がマップ",
+     _approved_item(at="{y: 2026, m: 11, d: 20}"), None, False),
+    ("引用付きの承認済み", _approved_item(at='"2026-11-20"'), 1, True),
+    ("引用なし（YAML 日付）の承認済み", _approved_item(at=APPROVED_AT), 1, True),
+    ("全件承認済み（2 件）", _approved_item("a") + _approved_item("b"), 2, False),
+    ("一部だけ未承認（1 件目だけ承認）",
+     _approved_item("a") + _unapproved_item("b"), None, True),
+    ("一部だけ未承認（2 件目だけ承認）",
+     _unapproved_item("a") + _approved_item("b"), None, False),
+    ("別要素の承認記録を流用しない",
+     _approved_item("other case") + _unapproved_item(), None, False),
+]
+
+
+def test_excluded_approval_table():
+    """承認記録の有無・妥当性の表を count_excluded で一括して確かめる（AG-APPROVED）。
+
+    件数式が成り立つ未承認の除外があれば None、全件承認済みなら件数を返す。
+    分類回帰が要る行は passed=1・原典2 で unexpected_pass を、承認済み行は already_green を確かめる。
+    """
+    for label, excluded_yaml, expected, classify in APPROVAL_CASES:
+        actual = _count_excluded_for(excluded_yaml)
+        assert actual == expected, (label, actual)
+        if not classify:
+            continue
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scenario = make_scenario(
+                root, nodes_yaml=ledger_yaml([_excluded_node(excluded_yaml)]),
+                cargo_body=CARGO_STUB_OK, passed=1,
+                original_cases=2, with_original=True,
+            )
+            result = run_verify_red(scenario)
+            want = "already_green" if expected else "unexpected_pass"
+            assert result["classification"] == want, (label, result)
+            assert result["excluded"] == expected, (label, result)
+            assert node_entry(root)["status"] == "unported", node_entry(root)
+    print(f"27. approval table → {len(APPROVAL_CASES)} cases "
+          f"({sum(1 for c in APPROVAL_CASES if c[3])} with classification)")
+
+
+def test_empty_excluded_is_still_counted_as_zero():
+    """除外なし（空配列）は従来どおり 0 件で、承認検査を加えても Green を妨げない（AC2）。"""
+    assert _count_excluded_for(" []") == 0
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(NODE_ID, None, None, None)]),
+            cargo_body=CARGO_STUB_OK, passed=2,
+            original_cases=2, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["excluded"] == 0, result
+        assert result["classification"] == "already_green", result
+        print("34. empty excluded → 0 / already_green:", result["classification"])
+
+
+def test_count_excluded_rereads_ledger_at_call_time():
+    """count_excluded は呼出時点の LEDGER を読む（モジュール読込時のパスを固定しない）。
+
+    承認検査を別モジュールへ移すと、そのモジュールが台帳パスを読込時に取り込む
+    実装になりうる。すると 1 回目の呼出しの台帳だけを見続け、cwd で台帳を作り直す
+    既存の利用（テスト・隔離 tree）が別の台帳を読む。同じモジュールで cwd を変え、
+    2 回目の呼出しが 2 つ目の台帳の承認済み件数を返すことを確かめる。
+    """
+    import importlib
+    sys.path.insert(0, str(TOOLS))
+    try:
+        module = importlib.import_module("verify_red")
+    finally:
+        sys.path.remove(str(TOOLS))
+    cwd = os.getcwd()
+    try:
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            write(Path(first) / "ledger" / "nodes.yaml",
+                  ledger_yaml([_excluded_node(_approved_item("excluded case"))]))
+            write(Path(second) / "ledger" / "nodes.yaml",
+                  ledger_yaml([_excluded_node(_approved_item("a") + _approved_item("b"))]))
+            os.chdir(first)
+            assert module.count_excluded(NODE_ID) == 1, "first ledger"
+            os.chdir(second)
+            assert module.count_excluded(NODE_ID) == 2, "second ledger"
+    finally:
+        os.chdir(cwd)
+    print("35b. count_excluded rereads LEDGER at call time")
+
+
+def test_approval_belongs_only_to_target_node_cases_excluded():
+    """承認記録は対象ノードの cases.excluded でのみ有効で、他の場所の記録を流用しない。
+
+    - 別ノードの承認済み除外（対象ノードは先頭と末尾の両方に置く）
+    - 同一ノードの cases.excluded の外（トップレベルの excluded と cases の別キー）
+    - 除外要素の下位（metadata）に置いた承認欄
+    いずれも対象の除外の承認としては流用しない。
+    """
+    approved = _excluded_node(_approved_item("excluded case"))
+    target = _excluded_node(_unapproved_item("excluded case"))
+    other = approved.replace(f"- id: {NODE_ID}", f"- id: {OTHER_NODE_ID}")
+    assert _count_excluded_for_ledger(ledger_yaml([other, target])) is None
+    assert _count_excluded_for_ledger(ledger_yaml([target, other])) is None
+    misplaced = target.replace(
+        "    excluded:\n",
+        "    excluded_allowed:\n"
+        f"      - name: excluded case\n        approved_by: {APPROVED_BY}\n"
+        f"        approved_at: {APPROVED_AT}\n"
+        "    excluded:\n"
+        "      - name: excluded case\n"
+        "        reason: 承認済みの除外\n",
+    )
+    assert _count_excluded_for_ledger(ledger_yaml([misplaced])) is None
+    # 同一ノードの cases の外（トップレベルの excluded）の承認済み要素は流用しない
+    top_level = target.replace(
+        f"  cases:\n",
+        f"  excluded:\n"
+        f"    - name: excluded case\n      approved_by: {APPROVED_BY}\n"
+        f"      approved_at: {APPROVED_AT}\n"
+        f"  cases:\n",
+    )
+    assert _count_excluded_for_ledger(ledger_yaml([top_level])) is None
+    # 除外要素の下位（metadata）の承認欄は直下の承認として数えない
+    nested = _excluded_node(
+        "\n      - name: excluded case\n"
+        "        reason: 承認済みの除外\n"
+        "        metadata:\n"
+        f"          approved_by: {APPROVED_BY}\n"
+        f"          approved_at: {APPROVED_AT}"
+    )
+    assert _count_excluded_for_ledger(ledger_yaml([nested])) is None
+    print("35. approval scoped to target node cases.excluded")
+
+
+def test_unquoted_invalid_calendar_date_is_unexpected_pass():
+    """引用なしの不正な暦日（YAML が ValueError を出す）でも unexpected_pass に倒す。
+
+    PyYAML は引用なし `2026-02-30` で yaml.YAMLError ではなく ValueError を送出する。
+    count_excluded はこれを握って None を返し、分類は unexpected_pass になる。
+    """
+    excluded_yaml = _approved_item(at="2026-02-30")
+    assert _count_excluded_for(excluded_yaml) is None
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root, nodes_yaml=ledger_yaml([_excluded_node(excluded_yaml)]),
+            cargo_body=CARGO_STUB_OK, passed=1,
+            original_cases=2, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["classification"] == "unexpected_pass", result
+        assert result["excluded"] is None, result
+        assert "\n  status: unported\n" in (root / "ledger" / "nodes.yaml").read_text(
+            encoding="utf-8")
+    print("36. unquoted invalid date (ValueError) → unexpected_pass")
+
+
+def test_excluded_timestamp_is_not_accepted_as_calendar_date():
+    """時刻付き timestamp（datetime）は暦日の承認日として受理しない。"""
+    excluded_yaml = _approved_item(at="2026-11-20T00:00:00Z")
+    assert _count_excluded_for(excluded_yaml) is None
+    excluded_yaml2 = _approved_item(at="2026-11-20 00:00:00")
+    assert _count_excluded_for(excluded_yaml2) is None
+    print("37. timestamp is not accepted as calendar date")
+
+
+def test_non_target_invalid_date_does_not_affect_target():
+    """別ノードの引用なし不正日は対象ノードの承認判定に影響しない。
+
+    台帳全体の `yaml.safe_load` は引用なしの不正暦日（`2026-02-30`）で ValueError を
+    送出する。対象ノードの選択前にこれが起きると、対象ノードの承認記録が正しくても
+    count_excluded は None を返し、正常な移植が差し戻される。verify_red 専用の
+    SafeLoader で timestamp スカラーを文字列として構築し、対象ノードの approved_at
+    だけを暦日として検証することで、次の両方を同時に満たす:
+      - 対象の不正日は fail closed（None、unexpected_pass）
+      - 対象外の不正日は対象判定に影響しない（対象の承認済み件数を返す）
+    共有 `yaml.SafeLoader` の状態は変更しない。
+    """
+    import yaml
+
+    def assert_shared_loader_date_behavior():
+        assert yaml.safe_load("approved_at: 2026-11-20")["approved_at"] == datetime_date(
+            2026, 11, 20)
+        try:
+            yaml.safe_load("approved_at: 2026-02-30")
+        except (ValueError, yaml.YAMLError):
+            return
+        raise AssertionError("shared SafeLoader accepted an invalid calendar date")
+
+    target = _excluded_node(_approved_item("excluded case"))
+    other_bad = target.replace(f"- id: {NODE_ID}", f"- id: {OTHER_NODE_ID}").replace(
+        f"approved_at: {APPROVED_AT}", "approved_at: 2026-02-30")
+
+    assert_shared_loader_date_behavior()
+    # 対象外の不正日があっても、対象の承認済み 1 件を数える（影響しない）
+    assert _count_excluded_for_ledger(ledger_yaml([other_bad, target])) == 1, "other-before"
+    assert_shared_loader_date_behavior()
+    assert _count_excluded_for_ledger(ledger_yaml([target, other_bad])) == 1, "other-after"
+    assert_shared_loader_date_behavior()
+    # 対象の不正日は fail closed
+    target_bad = target.replace(f"approved_at: {APPROVED_AT}", "approved_at: 2026-02-30")
+    assert _count_excluded_for_ledger(ledger_yaml([other_bad, target_bad])) is None, "target-bad"
+    assert_shared_loader_date_behavior()
+    print("37b. non-target invalid date does not affect target; shared loader unchanged")
+
+
+def test_duplicate_excluded_key_does_not_hide_unapproved_item():
+    """重複した `excluded` キーで先の未承認除外を隠して already_green にしない（AC1）。
+
+    YAML のマッピングは後勝ちで重複キーを素通しするため、同じ `cases` に未承認の
+    `excluded` を先に、承認済みの `excluded` を後に書くと、先の未承認が隠れて
+    passed + excluded == original_cases が成り立ってしまう。専用ローダが重複キーを
+    拒否して count_excluded が None を返し、通常の分類経路で unexpected_pass になる。
+    """
+    unapproved = _unapproved_item("excluded case")
+    approved = _approved_item("excluded case", at='"2026-11-20"')
+    node = case_block(NODE_ID, None, None, None).replace(
+        "    excluded: []\n",
+        f"    excluded:{unapproved}\n"
+        f"    excluded:{approved}\n",
+    )
+    assert node.count("    excluded:") == 2, node
+    assert _count_excluded_for_ledger(ledger_yaml([node])) is None
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root, nodes_yaml=ledger_yaml([node]),
+            cargo_body=CARGO_STUB_OK, passed=1,
+            original_cases=2, with_original=True,
+        )
+        before = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        result = run_verify_red(scenario)
+        assert result["classification"] == "unexpected_pass", result
+        assert result["excluded"] is None, result
+        after = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        assert before == after
+        assert node_entry(root)["status"] == "unported", node_entry(root)
+    print("39. duplicate excluded key → unexpected_pass (unapproved not hidden)")
+
+
+def test_duplicate_mapping_key_outside_excluded_is_rejected():
+    """`excluded` 以外のマッピングでも重複キーを拒否し、正常な台帳は受理する。
+
+    重複拒否は `excluded` だけに限定せず、専用ローダが構築するマッピングに適用する。
+    対象ノードの `cases` 内の別キーを重複させても count_excluded は None になり、
+    重複のない台帳は承認済み件数を返す（正常系の保存）。
+    """
+    approved = _excluded_node(_approved_item("excluded case"))
+    assert _count_excluded_for_ledger(ledger_yaml([approved])) == 1
+    dup_total = approved.replace(
+        "    total: null\n", "    total: null\n    total: null\n")
+    assert dup_total.count("    total:") == 2, dup_total
+    assert _count_excluded_for_ledger(ledger_yaml([dup_total])) is None
+    print("40. duplicate mapping key outside excluded → None; unique key → count")
+
+
+def test_yaml_merge_does_not_import_other_node_approval():
+    """YAML merge (`<<`) で他ノードの承認記録を取り込ませない。
+
+    `approval: &approval {approved_by: ..., approved_at: ...}` を他ノードに置き、対象の
+    `cases.excluded` 要素へ `<<: *approval` と書くと、共有 SafeLoader の merge 展開では
+    他ノードの承認が要素へ流用され、未承認の除外が `already_green` に化ける。専用ローダは
+    merge を展開せず読み込みを拒否し、件数は `None`、通常分類は `unexpected_pass` になる。
+    この境界は「対象ノード/要素の直下に明示された記録だけを受理する」既存の制約の維持で
+    あり、通常の明示承認（merge なし）は従来どおり 1 件として受理する。
+    """
+    approved = _excluded_node(_approved_item("excluded case"))
+    assert _count_excluded_for_ledger(ledger_yaml([approved])) == 1
+    anchor = f"  approval: &approval\n    approved_by: {APPROVED_BY}\n    approved_at: {APPROVED_AT}\n"
+    merged = approved.replace(
+        "    excluded:\n",
+        f"    excluded:\n      - <<: *approval\n",
+    ).replace(
+        f"  status: unported\n",
+        f"  status: unported\n{anchor}",
+        1,
+    )
+    assert "&approval" in merged and "- <<: *approval" in merged, merged
+    assert _count_excluded_for_ledger(ledger_yaml([merged])) is None
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root, nodes_yaml=ledger_yaml([merged]),
+            cargo_body=CARGO_STUB_OK, passed=1,
+            original_cases=2, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["classification"] == "unexpected_pass", result
+        assert result["excluded"] is None, result
+    print("41. yaml merge key → unexpected_pass (explicit approval still accepted)")
+
+
+def test_yaml_alias_does_not_import_other_node_approval():
+    """YAML alias (`*anchor`) で他ノードの承認記録を対象の除外要素へ流用させない。
+
+    別ノードに `approval: &approved {name/reason/approved_by/approved_at}` の合成マッピングを
+    置き、対象の `cases.excluded` 要素から `*approved` を直接参照すると、共有 SafeLoader では
+    他ノードの承認記録がそのまま除外要素になり、対象に明示の承認がないのに件数1 /
+    already_green に化ける（Codex r4652760105 / CodeRabbit r4652786132 と同原因）。専用ローダは
+    alias を構築前に拒否し、件数は `None`、通常分類は `unexpected_pass` になる。この境界は
+    「対象ノード/要素の直下に明示された記録だけを受理する」既存の制約の維持であり、通常の
+    明示承認（alias なし）は従来どおり 1 件として受理する（正常系の保存）。
+    """
+    # 明示承認（alias なし）は従来どおり 1 件で受理する（正常系の保存）
+    approved = _excluded_node(_approved_item("excluded case"))
+    assert _count_excluded_for_ledger(ledger_yaml([approved])) == 1
+    # 別ノードに合成の承認マッピングを anchor として置き、対象の除外を *approved だけで構成する
+    other = case_block(OTHER_NODE_ID, None, None, None).replace(
+        "  status: unported\n",
+        f"  status: unported\n"
+        f"  approval: &approved\n"
+        f"    name: excluded case\n"
+        f"    reason: 承認済みの除外\n"
+        f"    approved_by: {APPROVED_BY}\n"
+        f"    approved_at: {APPROVED_AT}\n",
+        1,
+    )
+    aliased = case_block(NODE_ID, None, None, None).replace(
+        "    excluded: []\n",
+        "    excluded:\n      - *approved\n",
+    )
+    assert "&approved" in other and "- *approved" in aliased, (other, aliased)
+    assert _count_excluded_for_ledger(ledger_yaml([other, aliased])) is None
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root, nodes_yaml=ledger_yaml([other, aliased]),
+            cargo_body=CARGO_STUB_OK, passed=1,
+            original_cases=2, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["classification"] == "unexpected_pass", result
+        assert result["excluded"] is None, result
+    print("42. yaml alias → unexpected_pass (explicit approval still accepted)")
+
+
+def test_verify_red_imports_without_pyyaml():
+    """PyYAML 非依存で verify_red を import して mark_green できる。
+
+    HEAD のワークフローは `uv run python3 ledger/tools/record_already_green.py`
+    （--with pyyaml なし）で起動し、そのスクリプトが verify_red を import する。
+    count_excluded が呼ばれない限り PyYAML を要求しない（遅延 import）ことを確かめる。
+    """
+    code = (
+        "import sys; sys.path.insert(0, %r);\n"
+        "import verify_red;\n"
+        "assert 'yaml' not in sys.modules, 'yaml imported eagerly';\n"
+        "print('ok')\n" % str(TOOLS)
+    )
+    proc = subprocess.run([sys.executable, "-S", "-c", code],
+                          capture_output=True, text=True, check=False)
+    # -S で site-packages を外すと PyYAML は解決できない。それでも import が成功する。
+    assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr)
+    assert "ok" in proc.stdout, proc.stdout
+    print("38. verify_red imports without PyYAML (lazy import)")
 
 
 def test_tagged_scala_cases_are_counted():
@@ -1163,6 +1626,18 @@ def main() -> int:
         test_rollup_and_check_needs_do_not_break,
         test_excluded_cases_count_toward_green,
         test_excluded_without_full_pass_is_not_green,
+        test_excluded_approval_table,
+        test_empty_excluded_is_still_counted_as_zero,
+        test_count_excluded_rereads_ledger_at_call_time,
+        test_approval_belongs_only_to_target_node_cases_excluded,
+        test_unquoted_invalid_calendar_date_is_unexpected_pass,
+        test_excluded_timestamp_is_not_accepted_as_calendar_date,
+        test_non_target_invalid_date_does_not_affect_target,
+        test_duplicate_excluded_key_does_not_hide_unapproved_item,
+        test_duplicate_mapping_key_outside_excluded_is_rejected,
+        test_yaml_merge_does_not_import_other_node_approval,
+        test_yaml_alias_does_not_import_other_node_approval,
+        test_verify_red_imports_without_pyyaml,
         test_tagged_scala_cases_are_counted,
         test_partially_countable_scala_original_is_not_green,
         test_mixed_supported_and_unsupported_scala_cases_not_partial,

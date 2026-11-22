@@ -53,6 +53,27 @@ uv run --with pyyaml python3 ledger/tools/check_needs.py \
   --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0b
 ```
 
+## ケース除外の承認記録
+
+`cases.excluded` は人間が承認した除外の一覧である。各要素は `name`・`reason` に加えて、
+人による承認を記録する `approved_by`（承認した人間。空白以外の文字列）と
+`approved_at`（承認日。`YYYY-MM-DD` の暦日）を持つ。
+
+- 承認を記録するのは人間だけである。run は承認者を推測・捏造・代行しない
+- `approved_by` と `approved_at` のどちらかが欠けた要素、空欄・null の要素は未承認として扱う。
+  `approved_at` は暦日だけを受理し、時刻を含む timestamp は受理しない
+- 承認記録のない既存の除外（`name`・`reason` だけの要素）は fail closed になる。記録を足すまで
+  有効な除外にならず、`verify_red.py` の `count_excluded` は件数を返さない（`already_green` にしない）
+- `count_excluded` は対象ノードの `cases.excluded` だけを検査する。同じノードの `cases` の外や、
+  除外要素の下位（`metadata` など）にある承認欄は流用しない
+- YAML の alias（`*anchor`）で他ノードの承認済みマッピングを対象の除外要素へ持ち込む記法は
+  専用ローダが読み込み前に拒否し、`count_excluded` は件数を返さない（`already_green` にしない）。
+  承認は対象ノード・除外要素の直下に明示値で書く
+- `count_excluded` は PyYAML を呼ぶときだけ遅延 import する。`record_already_green.py` は
+  `uv run python3`（`--with pyyaml` なし）で起動し、`verify_red` を import する。除外の検査を
+  行わない限り PyYAML なしで動く（verify_red の呼び出し側は `--with pyyaml` 付き）
+- スキーマの詳細は `docs/decisions/ledger-schema-draft.md` の `cases` を参照する
+
 ## 未決定
 
 - 台帳スキーマの欄の名前と並び（叩き台のまま。粒度、ID、種別、ケース単位の除外は承認済み）
