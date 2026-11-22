@@ -39,9 +39,7 @@
 use core::fmt;
 use core::time::Duration;
 
-use fraktor_actor::kernel::actor::Logging::{Error, Info, LogEvent};
-use fraktor_actor::kernel::actor::LogMarkerAdapter;
-use fraktor_actor::kernel::actor::property::LogMarker;
+use fraktor_actor::kernel::actor::Logging::{Error, Info, LogEvent, LogMarker, LogMarkerAdapter};
 use fraktor_actor::kernel::actor_system::ActorSystem;
 use fraktor_actor::kernel::event::EventClass;
 use fraktor_testkit::event_filter::EventFilter;
@@ -117,7 +115,7 @@ fn add_markers_to_logging() {
   // `val info = expectMsgType[Info3]`
   let info: Info = spec.within(default_timeout(), |_| probe.expect_msg_type());
   assert_eq!(info.message(), "This is a security problem");
-  assert_eq!(info.marker().name(), "SECURITY");
+  assert_eq!(info.marker().map(|marker| marker.name()), Some("SECURITY"));
 
   spec.terminate();
 }
@@ -151,6 +149,8 @@ fn allow_cause_exceptions_in_error_messages() {
   // Pekko reads the cause's `getMessage`, which is the cause's Display text. The
   // port must not answer with the cause's type name, which is `MyException`.
   assert_eq!(error.cause_message(), Some("Security Exception"));
+  // The error keeps the marker the call sent, as `error(marker, ...)` did.
+  assert_eq!(error.marker(), Some(LogMarker::Security));
 
   spec.terminate();
 }

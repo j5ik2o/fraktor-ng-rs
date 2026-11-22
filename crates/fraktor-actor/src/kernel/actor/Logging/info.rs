@@ -6,6 +6,7 @@ use alloc::string::ToString;
 use crate::kernel::actor::Logging::empty_mdc;
 use crate::kernel::actor::Logging::log_event::LogEvent;
 use crate::kernel::actor::Logging::log_level::LogLevel;
+use crate::kernel::actor::Logging::LogMarker;
 use crate::kernel::actor::Logging::Mdc;
 
 /// An informational event.
@@ -19,6 +20,7 @@ pub struct Info {
   log_source: String,
   log_class: i32,
   message: String,
+  marker: Option<LogMarker>,
   mdc: Mdc,
 }
 
@@ -27,7 +29,21 @@ impl Info {
   ///
   /// Mirrors `Info(logSource, logClass, message = "")`.
   pub fn new(log_source: String, log_class: i32, message: &str) -> Self {
-    Self { log_source, log_class, message: message.to_string(), mdc: empty_mdc() }
+    Self { log_source, log_class, message: message.to_string(), marker: None, mdc: empty_mdc() }
+  }
+
+  /// Returns this event carrying `marker`.
+  ///
+  /// Mirrors `Info3`, the event Pekko publishes for `info(marker, message)`.
+  #[must_use]
+  pub(crate) fn with_marker(mut self, marker: LogMarker) -> Self {
+    self.marker = Some(marker);
+    self
+  }
+
+  /// Returns the marker this event carries, if any.
+  pub fn marker(&self) -> Option<LogMarker> {
+    self.marker
   }
 }
 
