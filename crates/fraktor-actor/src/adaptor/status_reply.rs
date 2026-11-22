@@ -3,8 +3,10 @@
 use alloc::sync::Arc;
 use core::any::Any;
 use core::error::Error;
+use core::future::Future;
 
 use crate::adaptor::ErrorMessage;
+use crate::adaptor::StatusReplyAck;
 use crate::kernel::message::Message;
 
 /// A classic actor reply carrying either a value or a recoverable error.
@@ -20,6 +22,11 @@ impl StatusReply {
   /// Creates a successful reply carrying the given value.
   pub fn success(value: impl Any + Send + Sync) -> Self {
     Self { result: Ok(Message::new(value)) }
+  }
+
+  /// Creates a successful reply carrying the [StatusReplyAck] acknowledgement.
+  pub fn ack() -> Self {
+    Self::success(StatusReplyAck)
   }
 
   /// Creates a failed reply whose error is an [ErrorMessage].
@@ -54,5 +61,15 @@ impl StatusReply {
 
   pub(super) fn result(&self) -> Result<Message, Arc<dyn Error + Send + Sync>> {
     self.result.clone()
+  }
+
+  /// Unwraps a future that resolves to a [StatusReply], returning its value or error directly.
+  ///
+  /// Preserves the carried value and the original concrete error; no executor or
+  /// waiting API is added. Mirrors Pekko's `flattenStatusFuture`.
+  pub async fn flatten_status_future(
+    future: impl Future<Output = Self>,
+  ) -> Result<Message, Arc<dyn Error + Send + Sync>> {
+    future.await.result
   }
 }

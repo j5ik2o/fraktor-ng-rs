@@ -39,7 +39,7 @@ Scala の null 分岐は Rust の `Option::<StatusReply>::None` に対応し、�
 | 実行件数 | 0（コンパイル失敗のため未実行） |
 | red 根拠 | 本番 API 不在による診断7件。テストの誤記・fixture 欠陥・環境障害は含まない |
 
-診断7件はすべて、後続工程で実装する見込みの本番 API が現行 `adaptor` に存在しないことによる。
+診断7件はすべて、当時の `adaptor` に後続工程で実装予定の本番 API が存在しなかったことによる。
 
 - E0432 `unresolved import fraktor_actor::adaptor::StatusReplyAck`（`status_reply_spec.rs:18`）
 - E0599 `ack` not found（`status_reply_spec.rs:51`、`status_reply_spec.rs:97`）
@@ -198,13 +198,66 @@ error: could not compile `fraktor-actor` (test "status_reply_spec") due to 7 pre
 
 ## 期待される red の説明
 
-このファイルのテストは、後続工程で実装する本番 API（`StatusReply::ack()`、公開 `StatusReplyAck`、`StatusReply::flatten_status_future`）を対象に書かれている。基点時点の本番にはこれらが存在しないため、`order.md:2` の指示どおりテストにローカル定義を置かず、コンパイル失敗を今回の期待成果として記録する。不足は `StatusReplyAck` の未解決 import 1件と、`ack` および `flatten_status_future` の未実装メソッド呼び出し6件で、合計7件。テストの実行件数は0で、9件は通過していない。本番を修正する要件はこのタスクに存在しない。
+第1工程では、後続工程で実装する本番 API（`StatusReply::ack()`、公開 `StatusReplyAck`、`StatusReply::flatten_status_future`）を対象にテストを作成した。基点時点の本番にはこれらが存在しなかったため、テストにローカル定義を置かず、本番 API の不在によるコンパイル失敗を期待成果として採証した。不足は `StatusReplyAck` の未解決 import 1件と、`ack` および `flatten_status_future` の未実装メソッド呼び出し6件で、合計7件だった。当時の実行件数は0で、9件の実行時合否は未確認だった。第1工程はテスト追加と採証のみを対象とし、本番実装は後述の工程で行った。
 
 通常 Future の直接 poll への修正版（整形前）の採証前に、`flatten_status_future` を ask 専用 `.try_await_result` から通常 Future の直接 poll へ変更する前の初期版の生出力も保全している。初期版も同じ本番未変更・同じ基点で、終了コード101、診断7件（`StatusReplyAck` E0432 1件、`ack` E0599 2件、`flatten_status_future` E0599 4件）だった。診断の種類と件数は修正版と同じで、位置だけが編集前の行番号（`status_reply_spec.rs:20`、`:53`、`:94`、`:99`、`:99`、`:104`、`:109`）である。整形前の修正版は同じ未変更本番で再採証し、当時の編集後の行番号（`:18`、`:51`、`:92`、`:96`、`:96`、`:100`、`:105`）で同じ7診断を得た。
 
-今回の整形後の再採証では、診断位置は `:18`、`:51`、`:92`、`:97`、`:97`、`:101`、`:106` となった。不足APIによる7診断・終了101・宣言9件・実行0件は変わらない。上記の生出力はこの最新実行を示す。`rustfmt --check crates/fraktor-actor/tests/status_reply_spec.rs` と `cargo fmt --check` はともに終了0で整形差分なし（既存設定のnightly専用項目についてstableから警告あり）。旧ログ `status_reply_spec.v1.out`、`status_reply_spec.rev2.out`、`status_reply_spec.verify.out` は同じ保存ディレクトリで上書きせず保持した。
+第1工程の整形後の再採証では、診断位置は `:18`、`:51`、`:92`、`:97`、`:97`、`:101`、`:106` となった。不足APIによる7診断・終了101・宣言9件・実行0件は変わらなかった。上記の生出力は本番変更前の最終実行を示す。当時の `rustfmt --check crates/fraktor-actor/tests/status_reply_spec.rs` と `cargo fmt --check` はともに終了0で整形差分なし（既存設定のnightly専用項目についてstableから警告あり）だった。旧ログ `status_reply_spec.v1.out`、`status_reply_spec.rev2.out`、`status_reply_spec.verify.out` は同じ保存ディレクトリで上書きせず保持した。
 
-## 未確認範囲
+## 第1工程での未確認範囲
 
-- 9件の各 assertion の実行時合否は、本番 API 不在のため未確認（実行0件）。後続工程で API を実装した後に `cargo test -p fraktor-actor --test status_reply_spec` を再実行し、9件が green になることを確認する。
-- 台帳更新、既存 #103 テスト・文書の変更、PR 作成、外部公開、canonical main checkout の変更は本タスクの対象外。実施していない。
+- 9件の各 assertion の実行時合否は、当時は本番 API 不在のため未確認（実行0件）だった。API 実装後の再実行で9件が green になることの確認は、後続工程に残していた。
+- 台帳更新、既存 #103 テスト・文書の変更、PR 作成、外部公開、canonical main checkout の変更は第1工程の対象外であり、当時は実施しなかった。
+
+第1工程で未確認だった実行時合否と、後続工程で実施した台帳更新の結果は以下に記録する。既存 #103 テスト・文書、PR、外部公開、canonical main checkout は変更していない。
+
+## 実装と検証（本番変更後）
+
+最小実装を行い、対象テスト9件と既存テスト6件の成功を確認した。その後に actor・testkit の全体テストと品質チェックを実行し、台帳更新、needs 閉性と7ゴールの rollup の検証、本ゴール文書への結果記録の順で進めた。
+
+### 最小実装
+
+- `crates/fraktor-actor/src/adaptor/status_reply_ack.rs`（新規）: 公開単位構造体 `StatusReplyAck` を定義（`Clone, Copy, Debug, PartialEq, Eq`）。
+- `crates/fraktor-actor/src/adaptor.rs`: 非公開モジュール `status_reply_ack` を宣言し `pub use` で再公開。
+- `crates/fraktor-actor/src/adaptor/status_reply.rs`:
+  - `StatusReply::ack()` を `Self::success(StatusReplyAck)` として追加。
+  - `StatusReply::flatten_status_future(future: impl Future<Output = Self>) -> Result<Message, Arc<dyn Error + Send + Sync>>` を追加。`future.await.result` で所有する `Result` を移動して返し、値・具象エラーを保持する。実行器・待機 API は追加していない。
+- 既存の `success`/`error_message`/`error`、`get_value`/`get_error`、`ask_with_status`、`StatusAskFuture`、期限付き ask、`result(&self)` は変更していない。
+
+### 実測結果
+
+| コマンド | 成功（passed） | 失敗（failed） | 除外（ignored） | 結果 |
+| --- | --- | --- | --- | --- |
+| `cargo test -p fraktor-actor --test status_reply_spec --test status_reply_test` | 15（spec 9、test 6） | 0 | 0 | 終了0 |
+| `cargo test -p fraktor-actor` | 267 | 0 | 0 | 終了0 |
+| `cargo test -p fraktor-testkit` | 61 | 0 | 0 | 終了0 |
+| `cargo fmt --check` | — | — | — | 終了0（nightly専用設定の警告のみ） |
+| `cargo clippy --workspace --all-targets -- -D warnings` | — | — | — | 終了0 |
+
+全体テストの件数は、各コマンドの全 `test result` 行（doc-test を含め actor 30行、testkit 7行）の passed・failed・ignored をそれぞれ合計した。対象テスト15件による代用ではない。
+
+Ack の rustdoc 英語化後に `cargo run --quiet --release --locked --manifest-path tools/syn-check/Cargo.toml -- --format json crates/fraktor-actor` を実行し、終了0、`clean: true`、109ファイル、違反0件、parse failure 0件を確認した。実行された規則には `rustdoc` が含まれる。
+
+台帳コマンド:
+
+- `check_needs.py --goal G0issue105`: ノード1件、needs 閉性 OK、終了0。
+
+`uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal <goal>` を次の7ゴールに個別実行した。green 件数は全体集計ではなく、各出力の「ゴール <goal>」行の status 内訳から記録した。
+
+| ゴール | ノード数 | green 件数 | 判定 | 終了コード |
+| --- | --- | --- | --- | --- |
+| `G0issue105` | 1 | 1 | 完了：全ノードが green か do_not_port | 0 |
+| `G0a` | 2 | 2 | 完了：全ノードが green か do_not_port | 0 |
+| `G0b` | 4 | 4 | 完了：全ノードが green か do_not_port | 0 |
+| `G0c` | 2 | 2 | 完了：全ノードが green か do_not_port | 0 |
+| `G0d` | 2 | 2 | 完了：全ノードが green か do_not_port | 0 |
+| `G0e` | 2 | 2 | 完了：全ノードが green か do_not_port | 0 |
+| `G0f` | 2 | 2 | 完了：全ノードが green か do_not_port | 0 |
+
+### 台帳更新
+
+`ledger/nodes.yaml` の Scala `StatusReplySpec.scala` 1ノードのみを `status: green`、`cases: total/ported/passing 各9, excluded []`、`rust.crate: fraktor-actor`、`rust.test_file: crates/fraktor-actor/tests/status_reply_spec.rs`、`goal: G0issue105` に更新した。Java 側ノード・既存ゴール・capabilities は変更していない。除外は0件。
+
+### 変更前生出力の位置づけ
+
+冒頭から「第1工程での未確認範囲」までの採証・生出力は、本番変更前（実装前）の時点の記録として保持している。現在は上記の最小実装により9件が green であり、変更前の red は過去の採証として扱う。
