@@ -13,6 +13,25 @@ workflow_config:
     prepare:
       - tools/pekko-source/prepare_pekko_source.sh
 initial_step: port_node
+loop_monitors:
+  # node_green で次のノードに進んだ場合は完了関門を通らず、連続回数が切れる
+  - cycle:
+      - port_node
+      - goal_complete_gate
+    threshold: 5
+    judge:
+      input_reports:
+        - from_step: port_node
+          reports: all
+          history:
+            previous: 2
+      persona: supervisor
+      instruction: fraktor-goal-complete-loop-judge
+      rules:
+        - condition: 健全（台帳、検証結果、判明した原因に具体的な進展がある）
+          next: port_node
+        - condition: 非生産的（同じ完了阻害要因が続き、進展がない）
+          next: ABORT
 steps:
   - name: port_node
     description: ノードを1件移植する（triage から台帳更新まで）
