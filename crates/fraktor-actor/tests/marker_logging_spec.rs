@@ -39,7 +39,7 @@
 use core::fmt;
 use core::time::Duration;
 
-use fraktor_actor::kernel::actor::Logging::{Error, Info, LogEvent, LogMarker, LogMarkerAdapter};
+use fraktor_actor::kernel::actor::Logging::{Error, Info, LogClass, LogEvent, LogMarker, LogMarkerAdapter};
 use fraktor_actor::kernel::actor_system::ActorSystem;
 use fraktor_actor::kernel::event::EventClass;
 use fraktor_testkit::event_filter::EventFilter;
@@ -48,9 +48,9 @@ use fraktor_testkit::test_kit::TestProbe;
 
 // The original names the suite's class in `getClass.getName` and passes
 // `this.getClass` as the log class; the port keeps the name as the log source
-// and the class as an integer, which is the form the other ported events use.
+// and the class as a `LogClass`, which is the form the marker logging entry
+// takes.
 const SPEC_CLASS: &str = "org.apache.pekko.event.MarkerLoggingSpec";
-const SPEC_LOG_CLASS: i32 = 3;
 
 // Pekko's argument-less `expectMsgType` uses `single-expect-default`; the port
 // spells that wait out.
@@ -64,8 +64,11 @@ fn default_timeout() -> Duration {
 // The handle is built from the event stream the subscription already sits on,
 // before the case drives the system, so a case never holds `system_mut()` and
 // borrows `system()` again from inside a body.
-fn marker_logging(system: &ActorSystem) -> LogMarkerAdapter {
-  LogMarkerAdapter::new(system.event_stream(), SPEC_CLASS, SPEC_LOG_CLASS)
+//
+// The log class goes through `LogClass` so every `i32` the case passes reaches
+// the delivered events unchanged, including the extremes exercised below.
+fn marker_logging(system: &ActorSystem, log_class: i32) -> LogMarkerAdapter {
+  LogMarkerAdapter::new(system.event_stream(), SPEC_CLASS, LogClass::new(log_class))
 }
 
 // The original declares `class MyException(message) extends Exception(message)`.
@@ -98,11 +101,14 @@ impl fmt::Display for MyException {
 // "A MarkerLoggerAdapter" must { "add markers to logging" in { ... } }
 #[test]
 fn add_markers_to_logging() {
+  // The original passes `this.getClass` as the log class. The two ported cases
+  // use opposite ends of the `i32` range to check that
+  // `LogClass` preserves the class through delivery without repeating a case.
   let mut spec = FraktorSpec::new("MarkerLoggingSpec");
   let mut probe = TestProbe::new(spec.system_mut());
   let stream = spec.system().event_stream();
   assert!(stream.subscribe(Some(probe.ref_handle()), EventClass::of::<Info>()).expect("the probe actor is not null"));
-  let logging = marker_logging(spec.system());
+  let logging = marker_logging(spec.system(), i32::MIN);
 
   // `markerLogging.info(LogMarker.Security, "This is a security problem")`
   //
@@ -116,6 +122,8 @@ fn add_markers_to_logging() {
   let info: Info = spec.within(default_timeout(), |_| probe.expect_msg_type());
   assert_eq!(info.message(), "This is a security problem");
   assert_eq!(info.marker().map(|marker| marker.name()), Some("SECURITY"));
+  // The `LogClass` reaches the event unchanged, so no value is narrowed.
+  assert_eq!(info.log_class(), i32::MIN);
 
   spec.terminate();
 }
@@ -127,7 +135,7 @@ fn allow_cause_exceptions_in_error_messages() {
   let mut probe = TestProbe::new(spec.system_mut());
   let stream = spec.system().event_stream();
   assert!(stream.subscribe(Some(probe.ref_handle()), EventClass::of::<Error>()).expect("the probe actor is not null"));
-  let logging = marker_logging(spec.system());
+  let logging = marker_logging(spec.system(), i32::MAX);
 
   // `markerLogging.error(LogMarker.Security, new MyException("Security Exception"), "this is a security crash")`
   //
@@ -151,6 +159,8 @@ fn allow_cause_exceptions_in_error_messages() {
   assert_eq!(error.cause_message(), Some("Security Exception"));
   // The error keeps the marker the call sent, as `error(marker, ...)` did.
   assert_eq!(error.marker(), Some(LogMarker::Security));
+  // The `LogClass` reaches the error event unchanged, as it does for `info`.
+  assert_eq!(error.log_class(), i32::MAX);
 
   spec.terminate();
 }

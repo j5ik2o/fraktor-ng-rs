@@ -26,7 +26,7 @@ Pekko v1.7.1 commit `9a54d1294c3ac7821bbed3c940769c3d5027d1ff` の `MarkerLoggin
 
 `add_markers_to_logging` は本文比較と、マーカー名 `SECURITY` の比較を維持する。`allow_cause_exceptions_in_error_messages` は本文比較と、原典のミュート `EventFilter[MyException]("this is a security crash")` を、受信済み `Error` への既存 `EventFilter` 適用として維持し、加えて error に付けた `LogMarker::Security` が受信 `Error` の `marker()` に保持されることを確認する。原典の `cause.getMessage` は `cause_message()` で読む。
 
-`LogMarker` と `LogMarkerAdapter` は既存 `Logging` 配下（`Logging::LogMarker` / `Logging::LogMarkerAdapter`）に公開入口を集約した。原因メッセージは adapter が原因の `Display` から直接生成し、任意の `String` を別渡しする公開 API は持たない。組み立て用の `Error::with_cause_and_message` は crate 内に閉じ、既存 `Error::with_cause` の `Debug` 限定も維持する。
+`LogMarker` と `LogMarkerAdapter` は既存 `Logging` 配下（`Logging::LogMarker` / `Logging::LogMarkerAdapter`）に公開入口を集約した。新入口のログクラスは `Logging::LogClass` の専用型で受け、既存 `Info`/`Error` へ渡す整数への変換は `LogClass::value`（crate 内）に閉じており、既存イベントの `i32` 契約は変えない。`LogClass::new` は任意の `i32` をそのまま保持し、値域を狭めない。公開しているのは新入口の利用に必要な `LogClass`、`LogClass::new`、`LogMarker`、`LogMarkerAdapter` に限る。原因メッセージは adapter が原因の `Display` から直接生成し、任意の `String` を別渡しする公開 API は持たない。組み立て用の `Error::with_cause_and_message` は crate 内に閉じ、既存 `Error::with_cause` の `Debug` 限定も維持する。
 
 ## 原典との意図的な差異
 
