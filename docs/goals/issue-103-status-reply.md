@@ -1,6 +1,14 @@
-# G0issue103 — classic StatusReplyTest
+# ゴール G0issue103：classic StatusReplyTest
 
 [GitHub #103](https://github.com/j5ik2o/fraktor-ng-rs/issues/103) の対象は、Pekko v1.7.1 の [Java classic StatusReplyTest](https://github.com/apache/pekko/blob/v1.7.1/actor-tests/src/test/java/org/apache/pekko/pattern/StatusReplyTest.java) の6件。台帳ノードは `actor-tests/src/test/java/org/apache/pekko/pattern/StatusReplyTest.java`。Rust 側は `crates/fraktor-actor/tests/status_reply_test.rs` の6件で、除外は0件。
+
+## 対象ノード
+
+| id | Rust の統合テスト | 原典のケース数 |
+| --- | --- | --- |
+| `actor-tests/src/test/java/org/apache/pekko/pattern/StatusReplyTest.java` | `crates/fraktor-actor/tests/status_reply_test.rs` | 6 |
+
+## 原典のケース対応
 
 | Java 原典 | Rust | 観測する結果 |
 | --- | --- | --- |

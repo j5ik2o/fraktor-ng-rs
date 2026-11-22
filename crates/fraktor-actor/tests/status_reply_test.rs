@@ -1,4 +1,6 @@
 //! Port of the six cases in Pekko v1.7.1's Java classic StatusReplyTest.
+//!
+//! Upstream: `actor-tests/src/test/java/org/apache/pekko/pattern/StatusReplyTest.java`.
 
 use core::error::Error;
 use core::fmt;
