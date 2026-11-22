@@ -82,7 +82,7 @@ fn be_able_to_kill_the_middle_actor_and_see_itself_and_its_child_restarted() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   // Keep the filter armed across the whole timed case while TestKit borrows the spec.
   let sink = spec.system().event_sink().expect("the spec system has an event sink");
-  let registry = sink.into_any().downcast::<EventSinkRegistry>().ok().expect("the spec uses an EventSinkRegistry");
+  let registry = sink.into_any().downcast::<EventSinkRegistry>().expect("the spec uses an EventSinkRegistry");
   let armed = registry.arm(EventFilter::typed("ActorKilledException"));
   spec.within(Duration::from_secs(5), |spec| {
     let test_actor = spec.test_actor();
