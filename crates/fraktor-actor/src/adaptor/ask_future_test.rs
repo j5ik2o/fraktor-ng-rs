@@ -173,17 +173,21 @@ impl Actor for DelayedReply {
   }
 }
 
-#[test]
-fn a_reply_after_the_wait_limit_is_available_to_a_later_wait() {
+fn check_delayed_reply(timeout: Duration) {
   let mut system = system();
   attach_wait_driver(&system);
   let actor = system.actor_of(Props::new(|| DelayedReply));
-  let ask = actor.ask_with_timeout("question", Timeout::new(Duration::from_secs(2)));
+  let ask = actor.ask_with_timeout("question", Timeout::new(timeout));
 
   let first = ask.try_await_result(Duration::from_millis(100));
   assert!(matches!(first, Err(AskError::WaitTimedOut)), "{first:?}");
   assert!(ask.is_completed(), "the actor should have replied during the first wait");
   assert_eq!(ask.try_await_result(Duration::ZERO).expect("the reply arrived within the ask deadline"), "question");
+}
+
+#[test]
+fn a_reply_after_the_wait_limit_is_available_to_a_later_wait() {
+  check_delayed_reply(Duration::from_secs(2));
 }
 
 #[test]
@@ -198,4 +202,9 @@ fn an_explicit_ask_deadline_is_used_instead_of_a_fixed_timeout() {
   let outcome = ask.try_await_result(Duration::from_millis(150));
   assert!(matches!(outcome, Err(AskError::AskTimedOut)), "{outcome:?}");
   assert!(started.elapsed() >= timeout);
+}
+
+#[test]
+fn a_timeout_beyond_the_clock_range_still_sends_the_question() {
+  check_delayed_reply(Duration::MAX);
 }

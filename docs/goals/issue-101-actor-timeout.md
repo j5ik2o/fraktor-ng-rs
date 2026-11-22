@@ -38,7 +38,7 @@ fixture は `FraktorSpec::test_kit_settings()` の `dilated` を通して200 ms�
 
 原典の警告 mute は fixture 設定であり、警告件数を検証するケースではない。Rust も `EventFilter::warning()` を登録し、fixture の `Drop` で system 終了とフィルタ解除を行う。原典のメッセージ pattern と Rust の警告フィルタは同一の絞り込みではないが、警告内容・件数を ask の成功条件には使っていない。
 
-旧 API の `ActorRef::ask` は `start_ask(message, None)` を呼び、`AskFuture::await_result` は返信を返すか待機上限で panic する入口を保持している。actor 回帰には、既存の `pipe_to` の返信配送、`a_reply_to_the_piped_sender_is_dropped_and_the_result_is_unchanged` の `await_result`、`an_unanswered_ask_on_a_registered_driver_times_out_within_max` の待機上限を含む。新しい期限 API へ既存 API の呼び出しを置換していない。
+旧 API の `ActorRef::ask` は期限指定なしで送信し、`AskFuture::await_result` は返信を返すか待機上限で panic する入口を保持する。actor 回帰には `pipe_to` の返信配送、既存の `await_result` による返信取得、返信がない場合の待機上限を確認するテストを含む。
 
 ## 初回失敗と隔離候補の採証
 
@@ -97,3 +97,5 @@ needs と各 rollup は、既定 uv キャッシュへの一時ファイル作�
 期限付き ask では、共有状態が最初の返信の受理時刻を記録する。呼び出し側の待機上限を過ぎてから ask の期限前に返信が届くと、その待機は `WaitTimedOut` を返し、次の待機は保存された返信を受け取れる。期限指定のない既存の `ask` は従来の返信処理を維持する。
 
 追加の単体テストでは、この返信の再取得と、200 ms と異なる明示値が使われることを確認する。実装の期限を200 msに固定すると、後者は `WaitTimedOut` を受けて失敗した。台帳の原典対応は2件、除外0件。
+
+`Duration::MAX` を指定した単体テストは、修正前には期限の計算で panic した。`Instant` で表現できない ask 期限は時計が表せる範囲内では満了せず、呼び出し側の待機上限は適用する。修正後は実アクターに配送され、最初の待機が期限切れになった後、次の待機で返信を取得できた。

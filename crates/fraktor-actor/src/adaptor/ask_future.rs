@@ -31,9 +31,25 @@ static NEXT_REPLIER: AtomicU64 = AtomicU64::new(0);
 /// reply order-independent: whichever arrives second sees the first and makes
 /// the send happen exactly once.
 struct AskState {
-  deadline: Option<Instant>,
+  deadline: AskDeadline,
   outcome: Option<AskOutcome>,
   pending: Vec<PipedRecipient>,
+}
+
+#[derive(Clone, Copy)]
+enum AskDeadline {
+  Unspecified,
+  At(Instant),
+  BeyondClockRange,
+}
+
+impl AskDeadline {
+  fn instant(self) -> Option<Instant> {
+    match self {
+      | Self::At(deadline) => Some(deadline),
+      | Self::Unspecified | Self::BeyondClockRange => None,
+    }
+  }
 }
 
 enum AskOutcome {
@@ -48,12 +64,12 @@ struct PipedRecipient {
 }
 
 impl AskState {
-  fn new(deadline: Option<Instant>) -> Self {
+  fn new(deadline: AskDeadline) -> Self {
     Self { deadline, outcome: None, pending: Vec::new() }
   }
 
   fn outcome_at(&mut self, now: Instant) -> Option<&AskOutcome> {
-    if self.outcome.is_none() && self.deadline.is_some_and(|deadline| now >= deadline) {
+    if self.outcome.is_none() && self.deadline.instant().is_some_and(|deadline| now >= deadline) {
       self.outcome = Some(AskOutcome::TimedOut);
       self.pending.clear();
     }
@@ -61,7 +77,7 @@ impl AskState {
   }
 
   fn wait_deadline(&self, outer: Instant) -> Instant {
-    self.deadline.map_or(outer, |deadline| deadline.min(outer))
+    self.deadline.instant().map_or(outer, |deadline| deadline.min(outer))
   }
 
   fn result_for_wait(&mut self, outer: Instant) -> Option<Result<Message, AskError>> {
@@ -69,11 +85,15 @@ impl AskState {
     match self.outcome_at(Instant::now())? {
       // A single driver step can overrun both deadlines. Preserve which
       // deadline came first without changing the ask's terminal result.
-      | AskOutcome::TimedOut if deadline.is_some_and(|deadline| outer < deadline) => Some(Err(AskError::WaitTimedOut)),
+      | AskOutcome::TimedOut if deadline.instant().is_some_and(|deadline| outer < deadline) => {
+        Some(Err(AskError::WaitTimedOut))
+      },
       | AskOutcome::TimedOut => Some(Err(AskError::AskTimedOut)),
       // A deadline-bound ask may accept a reply after this wait has expired.
       // Keep the reply available to any later wait.
-      | AskOutcome::Reply { received_at, .. } if deadline.is_some() && *received_at > outer => {
+      | AskOutcome::Reply { received_at, .. }
+        if !matches!(deadline, AskDeadline::Unspecified) && *received_at > outer =>
+      {
         Some(Err(AskError::WaitTimedOut))
       },
       | AskOutcome::Reply { message, .. } => Some(Ok(message.clone())),
@@ -204,16 +224,21 @@ impl ActorRef {
   /// replying actor returns, which is why the caller can observe completion
   /// straight after the send.
   pub fn ask<M: core::any::Any + Send + Sync>(&self, message: M) -> AskFuture {
-    self.start_ask(message, None)
+    self.start_ask(message, AskDeadline::Unspecified)
   }
 
   /// Sends a question whose result expires after `timeout`, independently
   /// of how long any caller waits for it.
+  ///
+  /// A deadline beyond the range of [`Instant`] does not expire within the
+  /// clock's range. Each caller's waiting limit still applies.
   pub fn ask_with_timeout<M: core::any::Any + Send + Sync>(&self, message: M, timeout: Timeout) -> AskFuture {
-    self.start_ask(message, Some(Instant::now() + timeout.duration()))
+    let deadline =
+      Instant::now().checked_add(timeout.duration()).map_or(AskDeadline::BeyondClockRange, AskDeadline::At);
+    self.start_ask(message, deadline)
   }
 
-  fn start_ask<M: core::any::Any + Send + Sync>(&self, message: M, deadline: Option<Instant>) -> AskFuture {
+  fn start_ask<M: core::any::Any + Send + Sync>(&self, message: M, deadline: AskDeadline) -> AskFuture {
     let slot = Arc::new((Mutex::new(AskState::new(deadline)), Condvar::new()));
     let reply = slot.clone();
     let handler = move |_sender: &ActorRef, reply_message: Message| {
