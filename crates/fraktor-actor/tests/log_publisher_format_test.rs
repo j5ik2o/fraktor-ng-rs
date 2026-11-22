@@ -16,7 +16,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use fraktor_actor::kernel::actor::Logging::{Debug, Error, LogClass, LogEvent, LogLevel, LogPublisher};
+use fraktor_actor::kernel::actor::Logging::{Debug, Error, LogClass, LogEvent, LogLevel, LogPublisher, Mdc};
 use fraktor_actor::kernel::event::{EventClass, EventStream};
 use fraktor_testkit::fraktorspec::FraktorSpec;
 use fraktor_testkit::test_kit::TestProbe;
@@ -75,6 +75,30 @@ fn empty_arguments_keep_the_placeholders_as_written() {
   let debug: Debug = probe.expect_msg_type();
   assert_eq!(debug.message(), "Value {}");
 
+  spec.terminate();
+}
+
+#[test]
+fn clearing_diagnostic_context_removes_it_from_later_events() {
+  let mut spec = FraktorSpec::new("LogPublisherMdc");
+  let mut probe = TestProbe::new(spec.system_mut());
+  let stream = spec.system().event_stream();
+  assert!(stream.subscribe(Some(probe.ref_handle()), EventClass::of::<Debug>()).expect("the probe actor is not null"));
+  let mut log = LogPublisher::new(&stream, SPEC_CLASS, LogClass::new(SPEC_LOG_CLASS));
+  let mdc = Mdc::from([("messageLength".to_owned(), "3".to_owned())]);
+
+  log.set_mdc(Some(&mdc));
+  log.log(LogLevel::Debug, "abc", &[] as &[&str]);
+  log.clear_mdc();
+  log.log(LogLevel::Debug, "def", &[] as &[&str]);
+  spec.system_mut().run_until_idle();
+
+  let before_clear: Debug = probe.expect_msg_type();
+  assert_eq!(before_clear.message(), "abc");
+  assert_eq!(before_clear.mdc(), &mdc);
+  let after_clear: Debug = probe.expect_msg_type();
+  assert_eq!(after_clear.message(), "def");
+  assert!(after_clear.mdc().is_empty());
   spec.terminate();
 }
 

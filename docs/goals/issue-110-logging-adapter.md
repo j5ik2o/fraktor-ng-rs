@@ -173,4 +173,8 @@ uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml -
 
 セルフスキャン対象は `Logging::log_publisher` と移行した2統合テスト。全定義・全7呼び出しを検索し、値受け取りの互換入口・未移行呼び出し・未使用importの残存はない。追加importはテスト側の標準ライブラリと公開kernel APIのみで、製品の依存方向は変更していない。対応するmodule mock / doubleはなく、既存 `ActorWithMdc` fixtureを同じ借用入口へ移行して上記Cargoの対象テストで確認した。npmにはRust統合テストの実行・分類スクリプトがなく、Cargoの `tests/` 自動検出と上記対象・クレート回帰で配線を確認した。今回の修正では台帳を編集せず、対象ノードのgreen・4/4/4・除外0・既存needsを保持した。
 
+## PR レビューで追加した MDC クリアの回帰テスト
+
+`clearing_diagnostic_context_removes_it_from_later_events` は同じロガーで MDC を設定して発行し、クリア後は再設定せずに発行する。最初の受信イベントが設定値を保持し、次の受信イベントが空になることを確認する。原典の4ケースに加え、`clear_mdc` 自体の作用を観測する補助テストである。隔離ワークスペースで `clear_mdc` を空処理にした場合にこのテストが失敗することを確認し、製品コードを復元した。
+
 第1工程の無加工ログ `stage1-orca-red.log` / `.exit` と `stage1-integration.json` はこの作業ツリーにはなく、原本の照合は未確認としてsuperviseへ引き継ぐ。managerによる成果SHAの受け入れ確認は完了イベント後に行われるもので、本節の検証成功に含めない。
