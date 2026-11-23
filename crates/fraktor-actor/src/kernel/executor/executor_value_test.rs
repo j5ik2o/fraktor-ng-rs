@@ -72,6 +72,138 @@ impl Actor for HealthyChild {
 
 struct Guardian;
 
+mod initialization_restart_window {
+  use super::*;
+  use crate::kernel::supervision::RestartWindow;
+
+  struct ControlledClock(Mutex<Duration>);
+
+  impl Clock for ControlledClock {
+    fn monotonic(&self) -> Duration {
+      *self.0.lock().unwrap()
+    }
+  }
+
+  struct Worker {
+    clock: Arc<ControlledClock>,
+    cleanup_time: Duration,
+  }
+
+  impl Actor for Worker {
+    fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+
+    fn post_stop(&mut self) {
+      *self.clock.0.lock().unwrap() += self.cleanup_time;
+    }
+  }
+
+  #[derive(Default)]
+  struct Observations {
+    attempts: Vec<ActorRef>,
+    worker: Option<ActorRef>,
+    received: Vec<ActorRef>,
+    terminated: Vec<ActorRef>,
+  }
+
+  struct Employee {
+    clock: Arc<ControlledClock>,
+    cleanup_time: Duration,
+    observed: Arc<Mutex<Observations>>,
+  }
+
+  impl Actor for Employee {
+    fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+      let attempt = {
+        let mut observed = self.observed.lock().unwrap();
+        observed.attempts.push(context.self_ref());
+        observed.attempts.len()
+      };
+      if attempt == 1 {
+        let clock = self.clock.clone();
+        let cleanup_time = self.cleanup_time;
+        let worker = context.actor_of(Props::new(move || Worker { clock: clock.clone(), cleanup_time }), "worker");
+        self.observed.lock().unwrap().worker = Some(worker.expect("worker starts"));
+        *self.clock.0.lock().unwrap() = Duration::from_millis(100);
+      }
+      assert!(attempt > 2, "initialization fails twice");
+    }
+
+    fn receive(&mut self, context: &mut ActorContext<'_>, _message: Message) {
+      self.observed.lock().unwrap().received.push(context.self_ref());
+    }
+  }
+
+  struct Parent {
+    props: Props,
+    strategy: SupervisorStrategy,
+    child: Arc<Mutex<Option<ActorRef>>>,
+  }
+
+  impl Actor for Parent {
+    fn receive(&mut self, context: &mut ActorContext<'_>, _message: Message) {
+      *self.child.lock().unwrap() = Some(context.actor_of(self.props.clone(), "employee").expect("employee starts"));
+    }
+
+    fn supervisor_strategy(&self) -> SupervisorStrategy {
+      self.strategy.clone()
+    }
+  }
+
+  fn run(cleanup_millis: u64, expected_attempts: usize, stopped: bool) {
+    let observed = Arc::new(Mutex::new(Observations::default()));
+    let clock = Arc::new(ControlledClock(Mutex::new(Duration::ZERO)));
+    let props = Props::new({
+      let observed = observed.clone();
+      let clock = clock.clone();
+      move || Employee {
+        clock: clock.clone(),
+        cleanup_time: Duration::from_millis(cleanup_millis),
+        observed: observed.clone(),
+      }
+    });
+    let notices = observed.clone();
+    let strategy =
+      SupervisorStrategy::one_for_one_with_window(Some(1), RestartWindow::Within(Duration::from_millis(10)))
+        .with_decider(|_, _| Directive::Restart)
+        .with_child_terminated(move |_, child, _| notices.lock().unwrap().terminated.push(child.clone()));
+    let child = Arc::new(Mutex::new(None));
+    let mut system = ActorSystem::with_failure_catcher(
+      "InitializationWindow",
+      Arc::new(ChannelBoundary::new()),
+      Arc::new(UnwindCatcher),
+    );
+    system.set_clock(clock.clone());
+    let parent = system.actor_of(Props::new({
+      let child = child.clone();
+      move || Parent { props: props.clone(), strategy: strategy.clone(), child: child.clone() }
+    }));
+    parent.tell("start", system.dead_letters());
+    system.run_until_idle();
+    let child = child.lock().unwrap().clone().expect("same employee handle returned");
+    let worker = observed.lock().unwrap().worker.clone().expect("first attempt created worker");
+    assert!(system.is_actor_terminated(&worker));
+    assert_eq!(clock.monotonic(), Duration::from_millis(100 + cleanup_millis));
+    assert_eq!(system.is_actor_terminated(&child), stopped);
+    child.tell("ping", parent.clone());
+    system.run_until_idle();
+    let observed = observed.lock().unwrap();
+    assert_eq!(observed.attempts.len(), expected_attempts);
+    assert!(observed.attempts.iter().all(|attempt| attempt == &child));
+    assert_eq!(observed.received, if stopped { Vec::new() } else { alloc::vec![child.clone()] });
+    assert_eq!(observed.terminated, if stopped { alloc::vec![child] } else { Vec::new() });
+  }
+
+  #[test]
+  fn cleanup_past_the_window_allows_the_same_child_to_finish_initializing() {
+    run(11, 3, false);
+  }
+
+  #[test]
+  fn cleanup_at_the_inclusive_boundary_stops_the_same_child() {
+    run(10, 2, true);
+  }
+}
+
 impl Actor for Guardian {
   fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
 }
