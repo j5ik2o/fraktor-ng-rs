@@ -487,8 +487,8 @@ mod uid_clash_restart {
     // What this actor saw for the grandchild it watched and then stopped in
     // `pre_restart`.
     grandchild_terminated_notice: Option<bool>,
-    survivor_terminated_notice: Option<bool>,
-    survivor: Option<ActorRef>,
+    old_grandchild: Option<ActorRef>,
+    sibling_alive_in_post_restart: Option<bool>,
   }
 
   // A leaf actor that does nothing; the restart cases only need it to exist and
@@ -505,6 +505,7 @@ mod uid_clash_restart {
   struct RestartedParent {
     observations: Arc<Mutex<RestartObservations>>,
     grandchild: Option<ActorRef>,
+    sibling: Option<ActorRef>,
   }
 
   impl Actor for RestartedParent {
@@ -524,10 +525,13 @@ mod uid_clash_restart {
     }
 
     fn pre_restart(&mut self, context: &mut ActorContext<'_>, _reason: &(dyn core::any::Any + Send)) {
+      if let Some(sibling) = &self.sibling {
+        context.stop(sibling);
+      }
       if let Some(grandchild) = self.grandchild.clone() {
         let mut observations = self.observations.lock().expect("observations are not poisoned");
         observations.steps.push("pre_restart");
-        observations.survivor = Some(grandchild.clone());
+        observations.old_grandchild = Some(grandchild.clone());
         drop(observations);
         context.stop(&grandchild);
       }
@@ -537,12 +541,14 @@ mod uid_clash_restart {
       // Read the old grandchild from shared state, not `self`: the replacement
       // is a fresh instance whose own `grandchild` is still `None` at this
       // point, so only the shared handle reaches the instance that stopped it.
-      let old_grandchild = self.observations.lock().expect("observations are not poisoned").survivor.clone();
+      let old_grandchild = self.observations.lock().expect("observations are not poisoned").old_grandchild.clone();
       let stopped = old_grandchild.map(|old_grandchild| context.is_terminated(&old_grandchild));
       {
         let mut observations = self.observations.lock().expect("observations are not poisoned");
         observations.steps.push("post_restart");
         observations.grandchild_stopped_before_post_restart = stopped;
+        observations.sibling_alive_in_post_restart =
+          self.sibling.as_ref().map(|sibling| !context.is_terminated(sibling));
       }
     }
   }
@@ -551,11 +557,16 @@ mod uid_clash_restart {
     system: &mut ActorSystem,
     guardian: &ActorRef,
     observations: &Arc<Mutex<RestartObservations>>,
+    sibling: Option<ActorRef>,
   ) -> ActorRef {
     let observations = Arc::clone(observations);
     system.downgrade().spawn_child(
       guardian,
-      Props::new(move || RestartedParent { observations: Arc::clone(&observations), grandchild: None }),
+      Props::new(move || RestartedParent {
+        observations: Arc::clone(&observations),
+        grandchild: None,
+        sibling: sibling.clone(),
+      }),
       Some("parent"),
       SupervisorStrategy::one_for_one(1),
     )
@@ -568,7 +579,7 @@ mod uid_clash_restart {
     let observations = Arc::new(Mutex::new(RestartObservations::default()));
     let mut system = system("RestartGuardSpec");
     let guardian = system.actor_of(Props::new(|| Leaf));
-    let parent = spawn_restarted_parent(&mut system, &guardian, &observations);
+    let parent = spawn_restarted_parent(&mut system, &guardian, &observations, None);
     parent.tell("fail", parent.clone());
     system.run_until_idle();
     let observed = observations.lock().expect("observations are not poisoned");
@@ -589,7 +600,7 @@ mod uid_clash_restart {
     let observations = Arc::new(Mutex::new(RestartObservations::default()));
     let mut system = system("RestartWatchSpec");
     let guardian = system.actor_of(Props::new(|| Leaf));
-    let parent = spawn_restarted_parent(&mut system, &guardian, &observations);
+    let parent = spawn_restarted_parent(&mut system, &guardian, &observations, None);
     parent.tell("fail", parent.clone());
     system.run_until_idle();
     let observed = observations.lock().expect("observations are not poisoned");
@@ -598,87 +609,32 @@ mod uid_clash_restart {
     system.terminate();
   }
 
-  // A parent with one child that is restarted and one sibling that is stopped in
-  // the same delivery. The restart must not consume the sibling's stop request;
-  // the stop must still reach the sibling's watcher afterwards.
-  struct TwoChildrenParent {
-    restarted: Option<ActorRef>,
-    survivor: Option<ActorRef>,
-    requested: bool,
-    observations: Arc<Mutex<RestartObservations>>,
-  }
-
-  impl Actor for TwoChildrenParent {
-    fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
-      if let Some(terminated) = message.downcast_ref::<Terminated>() {
-        if Some(&terminated.target().clone()) == self.survivor.as_ref() {
-          self.observations.lock().expect("observations are not poisoned").survivor_terminated_notice = Some(true);
-        }
-        return;
-      }
-      if message.downcast_ref::<&'static str>() != Some(&"go") || self.requested {
-        return;
-      }
-      self.requested = true;
-      let restarted = self.restarted.clone().expect("pre_start created the restart child");
-      let survivor = self.survivor.clone().expect("pre_start created the survivor");
-      context.stop(&survivor);
-      context.tell(&restarted, "fail");
-    }
-
-    fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
-      self.requested = false;
-    }
-
-    fn pre_start(&mut self, context: &mut ActorContext<'_>) {
-      let restarted = context.actor_of(Props::new(|| Leaf), "restarted").expect("the restart name is free");
-      let survivor = context.actor_of(Props::new(|| Leaf), "survivor").expect("the survivor name is free");
-      context.watch(&survivor);
-      self.restarted = Some(restarted);
-      self.survivor = Some(survivor.clone());
-      self.observations.lock().expect("observations are not poisoned").survivor = Some(survivor);
-    }
-
-    fn supervisor_strategy(&self) -> SupervisorStrategy {
-      SupervisorStrategy::one_for_one(1).with_decider(move |_child, _kind: FailureKind| Directive::Restart)
-    }
-  }
-
   #[test]
   fn a_restart_of_one_child_keeps_the_other_child_stop_waiting() {
-    // The survivor stop is requested in the same delivery that fails the
-    // restarted child. After the restart finishes, the survivor must be gone and
-    // its watcher must have learned of it through the ordinary path.
     let observations = Arc::new(Mutex::new(RestartObservations::default()));
     let mut system = system("RestartSiblingStopSpec");
     let guardian = system.actor_of(Props::new(|| Leaf));
-    let parent = system.downgrade().spawn_child(
+    let sibling = system.downgrade().spawn_child(
       &guardian,
-      Props::new({
-        let observations = Arc::clone(&observations);
-        move || TwoChildrenParent {
-          restarted: None,
-          survivor: None,
-          requested: false,
-          observations: Arc::clone(&observations),
-        }
-      }),
-      Some("parent"),
+      Props::new(|| Leaf),
+      Some("sibling"),
       SupervisorStrategy::one_for_one(1),
     );
-    parent.tell("go", guardian.clone());
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let inbox = received.clone();
+    let watcher = system.actor_of(Props::new(move || super::TerminationRecorder(inbox.clone())));
+    system.watch(&watcher, &sibling);
+    let restarted = spawn_restarted_parent(&mut system, &guardian, &observations, Some(sibling.clone()));
+
+    // The failing child requests both stops in pre_restart. Its own child's
+    // stop completes before post_restart, while the sibling's stays pending.
+    restarted.tell("fail", guardian.clone());
     system.run_until_idle();
-    let survivor = {
-      let observed = observations.lock().expect("observations are not poisoned");
-      observed.survivor.clone()
-    };
-    let survivor_running = survivor.as_ref().map(|survivor| !system.is_actor_terminated(survivor));
-    let survivor_terminated = {
-      let observed = observations.lock().expect("observations are not poisoned");
-      observed.survivor_terminated_notice
-    };
-    assert_eq!(survivor_running, Some(false), "the survivor must be stopped after the restart");
-    assert_eq!(survivor_terminated, Some(true), "the survivor's stop must reach its watcher");
-    system.terminate();
+
+    let observed = observations.lock().unwrap();
+    assert_eq!(observed.grandchild_stopped_before_post_restart, Some(true));
+    assert_eq!(observed.sibling_alive_in_post_restart, Some(true));
+    assert!(system.is_actor_terminated(&sibling));
+    assert_eq!(*received.lock().unwrap(), alloc::vec![sibling]);
   }
 }
