@@ -61,7 +61,7 @@ impl Subscribers {
   /// the broadcaster is the sender, as Pekko's `implicit self` names the
   /// enclosing actor when `gossip` runs inside it. The message is built once
   /// and cloned per subscriber so every delivery shares one payload.
-  pub fn gossip<M>(&self, message: M, context: &mut ActorContext<'_>)
+  pub fn broadcast<M>(&self, message: M, context: &mut ActorContext<'_>)
   where
     M: core::any::Any + Send + Sync,
   {

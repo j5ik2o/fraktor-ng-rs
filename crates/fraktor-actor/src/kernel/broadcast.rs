@@ -2,7 +2,7 @@
 //!
 //! Mirrors `org.apache.pekko.routing.Listeners`: an actor owns the set of
 //! subscribers, updates it through the management messages, applies an
-//! operation to each current subscriber, and delivers a gossip message to them.
+//! operation to each current subscriber, and broadcasts a message to them.
 //! The port keeps only that actor-local set; it has no system-wide table and
 //! does not watch the subscribers.
 

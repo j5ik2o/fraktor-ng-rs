@@ -16,10 +16,10 @@ Pekko v1.7.1 commit `9a54d1294c3ac7821bbed3c940769c3d5027d1ff` の `ListenerSpec
 
 | 原典のケース | Rust のケース | 観測する契約 |
 |:---|:---|:---|
-| `listen` | `listen` | 3 名登録・1 名解除、`WithSubscribers(_ ! "foo")` による現在集合への `foo` 配送、別 `"foo"` 契機の `gossip("bar")` 配送、残る各 2 名の両受信、解除者の無配送、`bar` 総数 2 |
+| `listen` | `listen` | 3 名を登録し、1 名を解除する。`WithSubscribers` で `foo` を送り、broadcaster が別の `foo` を受けて `broadcast` で `bar` を送る。残る 2 名は両方を受け取り、解除した 1 名にはどちらも届かない。`bar` は計 2 件 |
 | （なし。補助） | `subscribe_same_listener_twice_delivers_once_per_path` | 同一 actor の重複登録が 1 エントリに留まり、各経路 1 回だけ配送される |
 
-原典は `TestLatch` と `AtomicInteger` で 2 件の `foo` と 2 件の `bar` を待ち、`bar` 総数を数える。Rust は各リスナーの実アクターのメールボックスを、自分の `TestProbe` で有界に観測する。`a1` と `a2` は各自 `foo` と `bar` を期限付きで受信し、`a3` は生存したまま期限付きで何も受信せず、各リスナーは共有カウンタで `bar` を数える。
+原典は `TestLatch` と `AtomicInteger` で 2 件の `foo` と 2 件の `bar` を待ち、`bar` の総数を数える。Rust では実アクターのリスナーごとに `TestProbe` を使う。`a1` と `a2` は期限内に `foo` と `bar` を各 1 件受け取り、共有カウンタで `bar` の総数を確認する。`a3` はどちらも受け取らず、その確認後に直接送ったメッセージには応答できる。
 
 ## 原典との意図的な差異
 
@@ -27,13 +27,13 @@ Pekko v1.7.1 commit `9a54d1294c3ac7821bbed3c940769c3d5027d1ff` の `ListenerSpec
 |:---|:---|:---|
 | 待ち合わせ | `TestLatch` で 2 件ずつ待つ | 各受信先 `TestProbe` の期限付き観測に置換。順不問の 1 件ずつ受信は `fish_for_message` で次メッセージを取り出して検証し、`expect_no_message` は毎ループで executor の `run_one` を駆動して空なら期限まで有界に待つ。TestLatch を Rust へ移植せず、台帳の `test-latch` 依存を残さない |
 | 集合順 | `TreeSet`（ActorRef 順） | 登録順の `Vec`。原典ケースは集合順をアサートしないため、順序一致を契約にしない |
-| 受信順 | `fooLatch`/`barLatch` は別々に 2 件ずつ待つだけで順序をアサートしない | 2 経路は別キュー（`WithSubscribers` は broadcaster の `receive` 内で callback 送信、`"foo"` は `ActorContext::tell` で `gossip`）を通るため `Executor::run_one` の取り込み順で `bar` が `foo` を追い越し得る。各 probe は「`foo` と `bar` を順不問で 1 件ずつ」受けたことを検証する。固定 sleep は加えない |
-| sender | `gossip` は Pekko `Actor.scala` の暗黙 `self` を修飾子にする | `Actor::receive` 内から `gossip` を呼ぶため配信 sender は通常 broadcaster 自身。原典ケースは sender をアサートしないため、一致を契約にしない |
-| 管理 API 名 | `Listeners`、`Listen`、`Deafen`、`WithListeners` | 製品命名規則に従い `Subscribers`、`Subscribe`、`Unsubscribe`、`WithSubscribers` へ改名した |
+| 受信順 | `fooLatch` と `barLatch` がそれぞれ 2 件の到着を待つ | 各 probe が `foo` と `bar` を 1 件ずつ受信したことを確認する。受信順は問わない |
+| sender | `gossip` を Actor 内から呼ぶと暗黙の `self` が使われる | `broadcast` は `ActorContext::tell` で broadcaster 自身を sender にする |
+| API 名 | `Listeners`、`Listen`、`Deafen`、`WithListeners`、`gossip` | `Subscribers`、`Subscribe`、`Unsubscribe`、`WithSubscribers`、`broadcast` |
 
 ## 実装
 
-`crates/fraktor-actor/src/kernel/broadcast.rs` が子モジュールを宣言し、直属の公開型を再公開する。集合 `Subscribers` は broadcaster が保持し、`handle_management` が管理メッセージを識別して集合を更新する。`handle_management` は `ActorContext` を受け取らず、戻り値の `bool` は「そのメッセージを管理メッセージとして処理したか」だけを表す（重複 `Subscribe` や存在しない actor への `Unsubscribe` でも集合が変わらず `true` を返す）。`gossip` が現在の集合へ配信する。既存の `ActorRef::tell`、`ActorContext::tell`、`Message` の共有 payload を再利用し、system 全体の共有表・監視・永続化・再試行は追加していない。未使用の公開マーカートレイトは追加していない。
+`Subscribers` は broadcaster が保持する。`handle_management` は管理メッセージを処理すると `true` を返す。重複した `Subscribe` や未登録の actor を指定した `Unsubscribe` もこれに含まれる。`broadcast` は `ActorContext::tell` で現在の購読先すべてに配信する。各配送は `Message` のペイロードを共有する。
 
 ## 初回 red の採証
 
@@ -47,7 +47,7 @@ Pekko v1.7.1 commit `9a54d1294c3ac7821bbed3c940769c3d5027d1ff` の `ListenerSpec
 |:---|:---|
 | 解除の無効化（`remove` を no-op） | `listen` が `test_kit_base.rs:255` で「received unexpected message \"foo\"」— a3 への `expect_no_message` で検出 |
 | 操作配送の無効化（`for_each` を no-op） | `listen` が `test_kit_base.rs:289` で「timeout (5s) during fishForMessage」— path1 の `foo` が届かない |
-| broadcast 配送の無効化（`gossip` を no-op） | `listen` が `test_kit_base.rs:289` で「timeout (5s) during fishForMessage」— path2 の `bar` が届かず 2 件目待ちでタイムアウト |
+| `broadcast` による配送の無効化 | 2 件目の `bar` の待機が `test_kit_base.rs:289` でタイムアウトする |
 
 件数の区分: 台帳 `cases` は原典ケース 1 件（1/1/1、除外 0）を数え、補助ケース `subscribe_same_listener_twice_delivers_once_per_path` は原典外として台帳件数に含めない。統合テストファイルは原典 1 件＋補助 1 件の計 2 件を実行する。
 

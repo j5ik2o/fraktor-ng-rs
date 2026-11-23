@@ -15,13 +15,13 @@
 // `Deafen`, `WithListeners`) into the broadcaster actor. The port renames that
 // vocabulary to `Subscribers`, `Subscribe`, `Unsubscribe`, and `WithSubscribers`
 // and calls the matching production API from the broadcaster; the management set
-// and the gossip fan-out itself stay in production code and are not
+// and the broadcast itself stay in production code and are not
 // re-implemented in the test.
 //
 // Two delivery paths are kept apart:
 //   1. `WithSubscribers(_ ! "foo")` -> subscriber management callback -> each live
 //      subscriber receives `foo`.
-//   2. a plain `"foo"` to the broadcaster -> production `gossip("bar")` -> each
+//   2. a plain `"foo"` to the broadcaster -> production `broadcast("bar")` -> each
 //      live subscriber receives `bar`.
 //
 // The original does not assert the order of the listener set or the sender of
@@ -47,13 +47,8 @@ fn no_delivery_timeout() -> Duration {
   Duration::from_millis(100)
 }
 
-// The two delivery paths run on separate queues: `WithSubscribers` hands `foo`
-// to each subscriber from inside the broadcaster's `receive`, while `"foo"`
-// makes the broadcaster `gossip("bar")` through `ActorContext::tell`. The
-// boundary queue and the local queue are drained by `Executor::run_one` in an
-// order the original case does not fix, and the original asserts no order. So
-// each probe is checked for exactly one `foo` and one `bar` in any order, then
-// no further delivery, rather than a fixed `foo`-then-`bar` sequence.
+// Each probe must receive one `foo` and one `bar` in either order, matching
+// the original case's two independent latches.
 fn next_message(probe: &mut TestProbe) -> Message {
   probe.fish_for_message(expect_timeout(), |_| true)
 }
@@ -74,7 +69,7 @@ fn expect_foo_and_bar_in_any_order(probe: &mut TestProbe) {
 // The broadcaster holds the production listener management for its whole life,
 // as the original's `Actor with Listeners` trait keeps the listener set on the
 // instance. It defers to the production listener management for the management
-// messages and, for a plain `"foo"`, asks the production gossip to deliver
+// messages and, for a plain `"foo"`, asks the production API to broadcast
 // `"bar"` to the current listeners.
 struct Broadcaster {
   subscribers: Subscribers,
@@ -86,7 +81,7 @@ impl Actor for Broadcaster {
       return;
     }
     if message == "foo" {
-      self.subscribers.gossip("bar", context);
+      self.subscribers.broadcast("bar", context);
     }
   }
 }
@@ -147,15 +142,15 @@ fn listen() {
     .tell(WithSubscribers::new(move |listener: &ActorRef| listener.tell("foo", foo_sender.clone())), sender.clone());
   broadcast.tell("foo", sender);
 
-  // Path 1 and path 2 each deliver one message to the listeners that stay
-  // registered. The two paths run on different queues, so the order of `foo`
-  // and `bar` at each probe is not fixed; the original asserts no order.
+  // Each path delivers one message to each listener that stays registered.
   expect_foo_and_bar_in_any_order(&mut a1_probe);
   expect_foo_and_bar_in_any_order(&mut a2_probe);
 
   // The deafened listener stays alive (deafened, not stopped) and receives
   // nothing from either path.
   a3_probe.expect_no_message(no_delivery_timeout());
+  a3.tell("still alive", spec.test_actor());
+  assert_eq!(next_message(&mut a3_probe), "still alive");
 
   // No delivery beyond the expected ones: a1 and a2 have consumed exactly one
   // `foo` and one `bar`, so their queues are empty.
