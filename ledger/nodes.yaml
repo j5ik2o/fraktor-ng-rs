@@ -32805,7 +32805,7 @@ nodes:
     module: testkit
     class: ExplicitlyTriggeredSchedulerSpec
     test_cases_approx: 8
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -32816,14 +32816,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 8
+    ported: 8
+    passing: 8
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-testkit
+    test_file: crates/fraktor-testkit/tests/explicitly_triggered_scheduler_spec.rs
+  goal: G0issue119
 - id: testkit/src/test/scala/org/apache/pekko/testkit/ImplicitSenderSpec.scala
   name: testkit:ImplicitSenderSpec
   kind: test
