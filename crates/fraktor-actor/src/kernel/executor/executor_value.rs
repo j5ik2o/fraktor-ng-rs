@@ -111,6 +111,12 @@ struct ParentEntry {
 /// One callback that the executor runs with the handle of a stopped actor.
 type TerminationCallback = Box<dyn Fn(&ActorRef)>;
 
+/// A DeathWatch notice that can still be cancelled before local delivery.
+struct PendingTermination {
+  watcher: ActorRef,
+  notice: Terminated,
+}
+
 /// Creates actors of one shard, runs their messages, and owns their state.
 ///
 /// Mirrors the role of `org.apache.pekko.actor.ActorCell` together with a
@@ -128,6 +134,7 @@ pub(crate) struct Executor {
   queue: ShardQueue,
   root: ActorPath,
   watchers: Vec<(ActorRef, ActorRef)>,
+  pending_terminations: Vec<Arc<PendingTermination>>,
   function_refs: Vec<ActorRef>,
   catcher: Option<Arc<dyn FailureCatcher>>,
   event_sink: Option<Arc<dyn EventSink>>,
@@ -154,6 +161,7 @@ impl Executor {
       queue: ShardQueue::new(boundary),
       root,
       watchers: Vec::new(),
+      pending_terminations: Vec::new(),
       function_refs: Vec::new(),
       catcher: None,
       event_sink: None,
@@ -533,6 +541,34 @@ impl Executor {
     }
   }
 
+  /// Carries out the pending stops aimed at the children of `parent` now.
+  ///
+  /// Mirrors the part of Pekko's `faultRecreate` that finishes recreating a
+  /// parent only after the children it stopped in `preRestart` are gone: the
+  /// replacement's `postRestart` runs after they have stopped. Only stops whose
+  /// target is a live child of `parent` are taken here; any other pending stop
+  /// belongs to a frame around this one and stays for `finish_boundary`, so a
+  /// sibling's or an outer actor's stop is not consumed early. A child that is
+  /// still running a frame of its own is left in place rather than stopped
+  /// underneath it.
+  fn complete_child_stops_of(&mut self, parent: &ActorRef) {
+    let mut deferred = Vec::new();
+    let mut ready = Vec::new();
+    for target in core::mem::take(&mut self.pending_stops) {
+      let is_child = self.cells.iter().any(|cell| cell.accepts(&target) && cell.is_child_of(parent));
+      let is_running = self.running.iter().any(|running| running == &target);
+      if is_child && !is_running {
+        ready.push(target);
+      } else {
+        deferred.push(target);
+      }
+    }
+    self.pending_stops = deferred;
+    for target in ready {
+      self.stop(&target);
+    }
+  }
+
   /// Runs a child-terminated notice whose parent is no longer executing.
   fn flush_ready_child_terminated(&mut self) {
     loop {
@@ -724,6 +760,8 @@ impl Executor {
       }
     }
     self.forget_child(target);
+    self.watchers.retain(|(watcher, _)| watcher != target);
+    self.pending_terminations.retain(|pending| &pending.watcher != target);
     self.notify_watchers(target, true, false);
     for callback in &self.termination_callbacks {
       callback(target);
@@ -889,6 +927,9 @@ impl Executor {
   /// test actors. A live target of either kind is registered as a watcher; the
   /// notice comes when it is stopped.
   ///
+  /// Detached targets are registered but never send a watch response. Their
+  /// watch is distinct from a watch of the original delivery reference.
+  ///
   /// Anything else is outside that scope: an actor of another system, a
   /// reference that has already stopped, and the temporary reply address that
   /// an `ask` creates. Those are reported at once with `existence_confirmed =
@@ -896,8 +937,12 @@ impl Executor {
   /// target that keeps running out of scope is therefore indistinguishable from
   /// a stopped one, which is the documented limit of this port.
   pub(crate) fn watch(&mut self, watcher: &ActorRef, target: &ActorRef) {
-    if self.is_live(target) {
-      if !self.watchers.iter().any(|(existing, watched)| existing == watcher && watched == target) {
+    if target.is_detached() || self.is_live(target) {
+      if !self
+        .watchers
+        .iter()
+        .any(|(existing, watched)| existing == watcher && Self::same_watch_target(watched, target))
+      {
         self.watchers.push((watcher.clone(), target.clone()));
       }
     } else {
@@ -909,9 +954,13 @@ impl Executor {
   ///
   /// Mirrors `ActorContext.unwatch`, which Pekko's event stream unsubscriber
   /// calls once a subscriber holds no subscription. Removing a watch that is
-  /// not registered changes nothing, as `unwatch` is idempotent.
+  /// not registered changes nothing. A local notice still queued for the
+  /// removed watch is also cancelled.
   pub(crate) fn unwatch(&mut self, watcher: &ActorRef, target: &ActorRef) {
-    self.watchers.retain(|(existing, watched)| existing != watcher || watched != target);
+    self.watchers.retain(|(existing, watched)| existing != watcher || !Self::same_watch_target(watched, target));
+    self
+      .pending_terminations
+      .retain(|pending| &pending.watcher != watcher || !Self::same_watch_target(pending.notice.target(), target));
   }
 
   /// Delivers every message that is waiting, whether it is in the shard or at
@@ -965,6 +1014,8 @@ impl Executor {
     self.function_refs.clear();
     self.cells.clear();
     self.queue.clear();
+    self.watchers.clear();
+    self.pending_terminations.clear();
     self.deferred_replies.clear();
     self.parents.clear();
     self.pending_stops.clear();
@@ -991,6 +1042,15 @@ impl Executor {
   /// in this shard and reports true, the same limit `watch` documents.
   pub(crate) fn is_actor_terminated(&self, target: &ActorRef) -> bool {
     !self.is_live(target)
+  }
+
+  pub(crate) fn stopped_noop_ref(&self, old: &ActorRef) -> ActorRef {
+    assert!(
+      old.shares_boundary_with(self.queue.boundary()) && self.is_actor_terminated(old),
+      "expected a stopped actor on this shard: {}",
+      old.path()
+    );
+    old.detached_noop()
   }
 
   /// Returns the identity of the shard boundary this executor posts to.
@@ -1041,6 +1101,15 @@ impl Executor {
   /// carries out a stop-after-reply once the actor returns.
   fn deliver(&mut self, envelope: Envelope) {
     let (recipient, message, sender) = envelope.into_parts();
+    let message = if let Some(pending) = message.downcast_ref::<Arc<PendingTermination>>() {
+      let Some(index) = self.pending_terminations.iter().position(|queued| Arc::ptr_eq(queued, pending)) else {
+        return;
+      };
+      self.pending_terminations.swap_remove(index);
+      Message::new(pending.notice.clone())
+    } else {
+      message
+    };
     let Some(index) = self.cells.iter().position(|cell| cell.accepts(&recipient)) else {
       return;
     };
@@ -1317,10 +1386,17 @@ impl Executor {
         },
       }
     };
-    self.exit_frame();
     if let RunOutcome::Failed { message } = pre_restart_failed {
       self.publish_child_failure(target, RUNTIME_CAUSE, &message);
     }
+    // Pekko's `faultRecreate` stops the actor's children and runs the new
+    // instance's `postRestart` only after they have finished stopping. The
+    // port records `context.stop` from `pre_restart` as a pending stop; carry
+    // out the ones aimed at this actor's own children now, before the
+    // replacement is created, so `post_restart` already sees them stopped.
+    // Stops asked for by frames around this one are left to `finish_boundary`.
+    self.complete_child_stops_of(target);
+    self.exit_frame();
     // Pekko's finishRecreate snapshots surviving children before the new
     // instance can spawn its own. Apply that propagation to a supervised Kill.
     let survivors = if failure == FailureKind::Killed {
@@ -1447,20 +1523,32 @@ impl Executor {
   }
 
   fn notify_watchers(&mut self, target: &ActorRef, existence_confirmed: bool, address_terminated: bool) {
-    let watchers: Vec<ActorRef> =
-      self.watchers.iter().filter(|(_, watched)| watched == target).map(|(watcher, _)| watcher.clone()).collect();
-    self.watchers.retain(|(_, watched)| watched != target);
+    let watchers: Vec<ActorRef> = self
+      .watchers
+      .iter()
+      .filter(|(_, watched)| Self::same_watch_target(watched, target))
+      .map(|(watcher, _)| watcher.clone())
+      .collect();
+    self.watchers.retain(|(_, watched)| !Self::same_watch_target(watched, target));
     for watcher in watchers {
       self.enqueue_to(watcher, Terminated::new(target.clone(), existence_confirmed, address_terminated));
     }
   }
 
+  /// The original and a detached reference can compare equal while addressing
+  /// different delivery boundaries.
+  fn same_watch_target(watched: &ActorRef, target: &ActorRef) -> bool {
+    watched == target && watched.shares_boundary_with(target.boundary())
+  }
+
   fn enqueue_to(&mut self, recipient: ActorRef, message: Terminated) {
     let sender = recipient.clone();
-    let envelope = Envelope::new(recipient.clone(), Message::new(message), sender);
-    match envelope.into_local_if_same_shard(self.queue.boundary()) {
-      | Ok(local) => self.queue.enqueue_locally(local),
-      | Err(remote) => remote.post_to_boundary(),
+    if recipient.shares_boundary_with(self.queue.boundary()) {
+      let pending = Arc::new(PendingTermination { watcher: recipient.clone(), notice: message });
+      self.pending_terminations.push(pending.clone());
+      self.queue.enqueue_locally(Envelope::new(recipient, Message::new(pending), sender));
+    } else {
+      Envelope::new(recipient, Message::new(message), sender).post_to_boundary();
     }
   }
 }

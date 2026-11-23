@@ -149,6 +149,30 @@ impl<'a> ActorContext<'a> {
     target.clone()
   }
 
+  /// Stops this actor from watching `target`.
+  ///
+  /// Mirrors `ActorContext.unwatch(ref)`, which returns `ref`. Removing a watch
+  /// that was never registered changes nothing, as Pekko's `unwatch` is
+  /// idempotent. Cancels a DeathWatch notice that is still queued for delivery
+  /// to this actor.
+  pub fn unwatch(&mut self, target: &ActorRef) -> ActorRef {
+    let watcher = self.self_ref();
+    self.executor.unwatch(&watcher, target);
+    target.clone()
+  }
+
+  /// Returns a no-op reference with the same identity as a stopped local actor.
+  ///
+  /// Mirrors the colliding reference the original UidClash case watches in
+  /// `postRestart`: `old`'s identifier, generation, and path over a delivery
+  /// entity that ignores ordinary messages and does not answer a watch.
+  ///
+  /// # Panics
+  /// Panics if `old` is live or does not address an actor on this shard.
+  pub fn stopped_noop_ref(&self, old: &ActorRef) -> ActorRef {
+    self.executor.stopped_noop_ref(old)
+  }
+
   /// Returns whether `target` no longer has a running actor behind it.
   ///
   /// Mirrors `ActorRef.isTerminated` from inside an actor: a handle reports

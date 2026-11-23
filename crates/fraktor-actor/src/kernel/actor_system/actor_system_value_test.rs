@@ -503,6 +503,34 @@ fn watching_a_live_function_ref_sends_no_terminated() {
 }
 
 #[test]
+fn watching_an_already_stopped_actor_of_this_shard_still_reports_it_once() {
+  // A stopped reference of this shard must keep the immediate notice: the
+  // silent watch is only for the detached/no-op reference the UidClash case
+  // builds, so an ordinary stop-and-watch does not lose its Terminated.
+  let observed = Arc::new(Mutex::new(Vec::<Terminated>::new()));
+  let watched = Arc::new(Mutex::new(None));
+  let mut system = system("PekkoCustomSpec");
+  let watcher = system.actor_of(Props::new({
+    let observed = Arc::clone(&observed);
+    let watched = Arc::clone(&watched);
+    move || StopWatcher { observed: Arc::clone(&observed), watched: Arc::clone(&watched) }
+  }));
+  let target = system.actor_of(Props::new(|| NoOp));
+
+  system.stop(&target);
+  system.run_until_idle();
+  *watched.lock().unwrap() = Some(target.clone());
+
+  system.watch(&watcher, &target);
+  system.run_until_idle();
+
+  let seen = observed.lock().unwrap();
+  assert_eq!(seen.len(), 1, "a stopped actor of this shard was not reported exactly once");
+  assert!(!seen[0].existence_confirmed(), "a watch of an already stopped actor was reported as a confirmed existence");
+  assert_eq!(seen[0].target(), &target, "the notice must name the stopped actor");
+}
+
+#[test]
 fn stopping_a_parent_stops_its_child_first_and_tells_the_child_watcher() {
   let order = Arc::new(Mutex::new(Vec::<&'static str>::new()));
   let child_seen = Arc::new(Mutex::new(Vec::<Terminated>::new()));
