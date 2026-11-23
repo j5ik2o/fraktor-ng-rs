@@ -45,49 +45,17 @@ struct PingMyself;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RestartedSafely;
 
-// Original: the "ignore everything" nature of `EvilCollidingActorRef`. The port
-// expresses it as a boundary that swallows every message, which is what a
-// stopped/no-op reference does with ordinary traffic. It is combined with the
-// old child's own identifier so the handle collides with the old child while
-// staying a distinct reference.
-struct NoOpBoundary;
-
-impl fraktor_actor::kernel::executor::ShardBoundary for NoOpBoundary {
-  fn post(&self, _envelope: fraktor_actor::kernel::message::Envelope) {}
-
-  fn poll(&self) -> Option<fraktor_actor::kernel::message::Envelope> {
-    None
-  }
-
-  fn poll_within(&self, _max: core::time::Duration) -> Option<fraktor_actor::kernel::message::Envelope> {
-    None
-  }
-
-  fn has_pending(&self) -> bool {
-    false
-  }
-
-  fn close(&self) {}
-}
-
 // The original reuses the old child's own identity for the colliding reference
 // (`system.provider`, `oldActor.path`, and the live UID). A colliding reference
 // is a second `ActorRef` over the old child's own identity, so the test asks the
 // production surface for one instead of writing the identity by hand: the fixed
-// `ActorRef::new(0, 0, ...)` values are not used. The port has no such operation
-// today: the fields of `ActorRef` are private and `ActorRef::new` is
-// `pub(crate)` (`crates/fraktor-actor/src/kernel/actor_ref/actor_ref_value.rs:31`),
-// and equality uses only the identifier and the generation (`:79`), so a
-// reference the test builds by any other route cannot collide with the old
-// child. `ActorRef::with_boundary` is the typed operation the test calls: it
-// reuses the recipient's identifier, generation, and path and swaps only the
-// boundary, and is called on the old child's own handle so the identity is never
-// written by hand. `boundary_key_eq` proves the result is a separate reference
-// over that same identity. Until the production surface offers them, these
-// calls are the intended compile red, and the second phase adds them instead of
-// weakening the case.
-fn create_colliding_ref(old: &ActorRef) -> ActorRef {
-  old.with_boundary(Arc::new(NoOpBoundary))
+// `ActorRef::new(0, 0, ...)` values are not used. `ActorContext::stopped_noop_ref`
+// is that limited operation: it reuses the stopped actor's identifier,
+// generation, and path over a delivery entity that ignores everything, and
+// refuses an actor that has not stopped. The ActorRef unit test checks that the
+// new handle has a separate delivery boundary.
+fn create_colliding_ref(context: &ActorContext<'_>, old: &ActorRef) -> ActorRef {
+  context.stopped_noop_ref(old)
 }
 
 // Records the delivery of a Terminated to the restarted child. The port cannot
@@ -114,6 +82,15 @@ fn record_termination(shared: &Shared, terminated: &Terminated) {
 // Original: `class RestartedActor`, whose `receive` treats a Terminated as the
 // failure, pings itself, and answers a ping with RestartedSafely.
 //
+// The original throws `TerminatedForNonWatchedActor` from `receive`; its
+// supervisor strategy maps that exception to `context.stop(self); Stop`. The port
+// expresses the same failure as a panic so the supervision machinery sees it:
+// the receipt is first recorded in the shared report (the value a caught panic
+// would otherwise hide), the original's `context.stop(self)` becomes stopping
+// the driver, and the panic drives the parent's strategy to `Stop` just as the
+// original's `Stop` does. Merely returning after the stop would never reach the
+// decider, so the panic is what makes the failure branch real.
+//
 // The original's `preStart` creates and watches one grandchild, so the port
 // keeps that single child in a field instead of asking the context for its
 // children, and `preRestart` reuses the kept handle rather than scanning a
@@ -133,7 +110,7 @@ impl Actor for RestartedActor {
       record_termination(&self.shared, terminated);
       let driver = self.driver.clone();
       context.stop(&driver);
-      return;
+      panic!("received Terminated for a reference the restarted actor did not watch");
     }
     if message.downcast_ref::<PingMyself>().is_some() {
       let self_ref = context.self_ref();
@@ -159,15 +136,9 @@ impl Actor for RestartedActor {
   //
   // The original iterates `context.children.foreach`; the case has exactly one
   // grandchild, held in `self.child`, so the kept handle is reused instead of a
-  // children getter. The original calls `context.unwatch(child)`. The port's
-  // `ActorContext` has no `unwatch` yet; the minimum operation the test needs is
-  // `unwatch(target)`, which drops this actor's watch on `target` alone. Routing
-  // it through `WeakActorSystem::unwatch` does not work: that handle is
-  // `!Send + !Sync` (`crates/fraktor-actor/src/kernel/actor_system/weak_actor_system.rs:27`)
-  // and would re-borrow the same executor the hook is running inside. So the
-  // hook keeps the single-argument `context.unwatch(&child)` call and the
-  // missing method stays the intended compile red for the first phase; the
-  // second phase adds `unwatch(target)`.
+  // children getter. `context.unwatch(child)` drops this actor's watch on the
+  // child alone; routing it through `WeakActorSystem::unwatch` would re-borrow
+  // the executor the hook is running inside, so it goes through this context.
   fn pre_restart(&mut self, context: &mut ActorContext<'_>, _reason: &(dyn core::any::Any + Send)) {
     let child = self.child.clone().expect("pre_start created the grandchild");
     *self.shared.old_actor.lock().expect("the old actor slot is not poisoned") = Some(child.clone());
@@ -178,21 +149,14 @@ impl Actor for RestartedActor {
 
   // Original: `postRestart` watches the colliding reference and pings itself.
   //
-  // The original relies on the old child having stopped during the restart. The
-  // port checks that same precondition through the context before it watches,
-  // so a watch of a still-live child is a test failure rather than a silent
-  // pass.
+  // `stopped_noop_ref` refuses an actor that is still live, so a watch of a
+  // still-live child is a test failure rather than a silent pass.
   fn post_restart(&mut self, context: &mut ActorContext<'_>) {
     let old = self.shared.old_actor.lock().expect("the old actor slot is not poisoned").clone();
     let old = old.expect("pre_restart saved the old child");
-    assert!(
-      context.is_terminated(&old),
-      "the old child must be stopped before post_restart watches the colliding reference"
-    );
-    let colliding = create_colliding_ref(&old);
+    let colliding = create_colliding_ref(context, &old);
     assert_eq!(colliding.path(), old.path(), "the colliding reference must carry the old child's full path");
     assert!(colliding == old, "the colliding reference must carry the old child's live UID");
-    assert!(!colliding.boundary_key_eq(&old), "the colliding reference must be a distinct reference");
     let _ = context.watch(&colliding);
     let self_ref = context.self_ref();
     context.tell(&self_ref, PingMyself);
