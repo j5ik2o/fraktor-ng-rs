@@ -113,22 +113,19 @@ fn invalid_time_factors_are_rejected() {
 fn await_cond_returns_at_once_when_the_condition_already_holds() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let mut probe = TestProbe::new(spec.system_mut());
-  let evaluations = Arc::new(Mutex::new(0_u32));
+  let mut evaluations = 0;
 
   let start = Instant::now();
-  {
-    let evaluations = Arc::clone(&evaluations);
-    probe.await_cond(
-      || {
-        *evaluations.lock().unwrap() += 1;
-        true
-      },
-      one_second(),
-    );
-  }
+  probe.await_cond(
+    || {
+      evaluations += 1;
+      true
+    },
+    one_second(),
+  );
   let elapsed = start.elapsed();
 
-  assert_eq!(*evaluations.lock().unwrap(), 1, "the condition must be evaluated exactly once");
+  assert_eq!(evaluations, 1, "the condition must be evaluated exactly once");
   assert!(elapsed < Duration::from_millis(500), "an already true condition must not wait, waited {elapsed:?}");
 
   spec.terminate();

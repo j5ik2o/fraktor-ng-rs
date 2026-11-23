@@ -220,9 +220,10 @@ impl FraktorSpec {
     let previous = *scope.borrow();
     let started = Instant::now();
     let dilated_max = self.test_kit.test_kit_settings().dilated(max);
-    let remaining =
-      previous.map_or(f64::INFINITY, |previous| previous.saturating_duration_since(started).as_secs_f64());
-    assert!(remaining >= min.as_secs_f64(), "required min time {min:?} not possible, only {remaining}s left");
+    if let Some(previous) = previous {
+      let remaining = previous.saturating_duration_since(started);
+      assert!(remaining >= min, "required min time {min:?} not possible, only {remaining:?} left");
+    }
     let requested = started + dilated_max;
     let deadline = previous.map_or(requested, |previous| requested.min(previous));
     let max_diff = deadline.saturating_duration_since(started);

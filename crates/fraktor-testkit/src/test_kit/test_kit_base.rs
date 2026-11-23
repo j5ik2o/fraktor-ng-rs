@@ -33,6 +33,8 @@ static TEST_ACTOR_ID: AtomicUsize = AtomicUsize::new(0);
 /// The interval at which a waiting test checks for a message while it waits on
 /// a boundary that does not signal arrivals by itself.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// The default interval at which Pekko's `awaitCond` evaluates a condition.
+const CONDITION_INTERVAL: Duration = Duration::from_millis(100);
 
 /// The part of a test kit that receives messages and checks them.
 ///
@@ -370,7 +372,7 @@ impl TestKitBase {
   /// between evaluations, so a message that makes the condition true is
   /// delivered during the wait. A condition that never holds fails with a
   /// `timeout` assertion; a panic raised by the condition itself propagates.
-  pub(crate) fn await_cond(&mut self, condition: impl Fn() -> bool, max: Duration) {
+  pub(crate) fn await_cond(&mut self, mut condition: impl FnMut() -> bool, max: Duration) {
     let stop = Instant::now() + max;
     loop {
       if condition() {
@@ -378,7 +380,7 @@ impl TestKitBase {
       }
       let remaining = stop.saturating_duration_since(Instant::now());
       assert!(remaining > Duration::ZERO, "timeout {max:?} expired");
-      self.drive_for(remaining.min(POLL_INTERVAL));
+      self.drive_for(remaining.min(CONDITION_INTERVAL));
     }
   }
 
