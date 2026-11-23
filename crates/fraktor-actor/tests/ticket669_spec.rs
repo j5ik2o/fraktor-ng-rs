@@ -6,7 +6,7 @@ use core::time::Duration;
 use fraktor_actor::kernel::actor::{Actor, ActorContext, Props};
 use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::message::Message;
-use fraktor_actor::kernel::supervision::SupervisorStrategy;
+use fraktor_actor::kernel::supervision::{RestartWindow, SupervisorStrategy};
 use fraktor_testkit::event_filter::{EventFilter, EventSinkRegistry};
 use fraktor_testkit::fraktorspec::FraktorSpec;
 use fraktor_testkit::implicit_sender::ImplicitSender;
@@ -129,7 +129,7 @@ fn run_case(strategy: SupervisorStrategy, expected_reply: &'static str) {
 #[test]
 fn be_able_to_reply_on_failure_during_pre_restart() {
   // Original: `AllForOneStrategy(5, 10.seconds)(List(classOf[Exception]))`
-  run_case(SupervisorStrategy::all_for_one(5, Duration::from_secs(10)), "failure1");
+  run_case(SupervisorStrategy::all_for_one(5, RestartWindow::Within(Duration::from_secs(10))), "failure1");
 }
 
 // "A supervised actor with lifecycle PERMANENT" should {
@@ -140,5 +140,5 @@ fn be_able_to_reply_on_failure_during_post_stop() {
   // Original: `AllForOneStrategy(maxNrOfRetries = 0)(List(classOf[Exception]))`.
   // The default `withinTimeRange` is `Duration.Inf`, so the port names it
   // explicitly as no window.
-  run_case(SupervisorStrategy::all_for_one(0, Duration::MAX), "failure2");
+  run_case(SupervisorStrategy::all_for_one(0, RestartWindow::Unbounded), "failure2");
 }

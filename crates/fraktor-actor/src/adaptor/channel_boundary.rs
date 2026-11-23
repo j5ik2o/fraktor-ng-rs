@@ -6,8 +6,10 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Mutex;
 
+use crate::adaptor::SystemClock;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
+use crate::kernel::Clock;
 
 #[cfg(test)]
 #[path = "channel_boundary_test.rs"]
@@ -29,13 +31,20 @@ pub struct ChannelBoundary {
   receiver: Mutex<Receiver<Envelope>>,
   open: Mutex<bool>,
   pending: AtomicUsize,
+  clock: SystemClock,
 }
 
 impl ChannelBoundary {
   /// Creates a boundary whose two ends are held by this one object.
   pub fn new() -> Self {
     let (sender, receiver) = mpsc::channel();
-    Self { sender, receiver: Mutex::new(receiver), open: Mutex::new(true), pending: AtomicUsize::new(0) }
+    Self {
+      sender,
+      receiver: Mutex::new(receiver),
+      open: Mutex::new(true),
+      pending: AtomicUsize::new(0),
+      clock: SystemClock::new(),
+    }
   }
 
   fn lock_receiver(&self) -> std::sync::MutexGuard<'_, Receiver<Envelope>> {
@@ -61,6 +70,10 @@ impl Default for ChannelBoundary {
 }
 
 impl ShardBoundary for ChannelBoundary {
+  fn monotonic_time(&self) -> Option<Duration> {
+    Some(self.clock.monotonic())
+  }
+
   fn post(&self, envelope: Envelope) {
     let open = self.lock_open();
     if !*open {

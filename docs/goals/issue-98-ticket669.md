@@ -200,4 +200,6 @@ uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.y
 
 再開実行は対象テストを通過した。TAKT が前段の `plan.md` を読み戻せず等価性レビューに入れなかったため、保存した差分を回収して原典との照合と検証を行った。時間窓内の許可は兄弟ごとに記録し、全員が許可される場合に再起動する。受信失敗時の送信者は失敗した子にだけ渡し、通常の停止フックには dead letters を渡す。既存の `post_stop` は追加フックの既定実装から呼ばれる。
 
-`cargo test -p fraktor-actor -p fraktor-testkit` は356件成功した。対象 needs、対象と G0a〜G0f の rollup、ゴール文書の検証26件、`verify_green.py`、clippy、fmt、aislop、syn-check も成功した。
+`cargo test -p fraktor-actor -p fraktor-testkit` はレビュー対応後に361件成功した。対象 needs、対象と G0a〜G0f の rollup、ゴール文書の検証26件、`verify_green.py`、clippy、fmt、aislop、syn-check も成功した。
+
+レビュー対応では、兄弟すべてに監督判断を適用してから、フックが要求した停止を処理するようにした。公開 API では有限の `RestartWindow::Within` と累積の `RestartWindow::Unbounded` を区別する。標準のチャネル境界は単調時刻を提供し、独自の境界には時計を指定できる。

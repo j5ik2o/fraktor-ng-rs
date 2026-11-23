@@ -13,6 +13,14 @@ use crate::kernel::message::Envelope;
 /// expressed here as a port so that the kernel stays free of threading and IO
 /// and the standard-library implementation lives in the adaptor.
 pub trait ShardBoundary: Send + Sync {
+  /// Reports elapsed monotonic time when the boundary supplies platform time.
+  ///
+  /// A system using a custom boundary without a clock can install one before
+  /// starting actors whose supervisor counts restarts in a finite window.
+  fn monotonic_time(&self) -> Option<Duration> {
+    None
+  }
+
   /// Posts one envelope for another shard to pick up.
   fn post(&self, envelope: Envelope);
 

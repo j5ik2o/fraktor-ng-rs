@@ -51,7 +51,6 @@ impl FraktorSpec {
   pub fn with_hooks(system_name: &str, hooks: Box<dyn FraktorSpecHooks>) -> Self {
     let system =
       ActorSystem::with_failure_catcher(system_name, Arc::new(ChannelBoundary::new()), Arc::new(UnwindCatcher));
-    system.set_clock(Arc::new(fraktor_actor::adaptor::SystemClock::new()));
     let registry = Arc::new(EventSinkRegistry::new());
     system.set_event_sink(registry);
     fraktor_actor::adaptor::attach_wait_driver(&system);

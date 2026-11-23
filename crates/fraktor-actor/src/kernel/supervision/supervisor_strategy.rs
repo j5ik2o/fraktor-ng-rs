@@ -9,6 +9,7 @@ use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::supervision::Directive;
 use crate::kernel::supervision::FailureKind;
 use crate::kernel::supervision::RestartLimit;
+use crate::kernel::supervision::RestartWindow;
 
 #[cfg(test)]
 #[path = "supervisor_strategy_test.rs"]
@@ -110,7 +111,7 @@ enum Policy {
     /// The number of restart requests that are allowed per child.
     max_retries: RestartLimit,
     /// The time range the restart requests are counted in, if any.
-    window: Option<Duration>,
+    window: RestartWindow,
   },
 }
 
@@ -165,12 +166,9 @@ impl SupervisorStrategy {
   /// initialization, and killed exceptions. Every sibling must grant restart
   /// permission before any sibling restarts; otherwise all siblings stop.
   /// [`SupervisorStrategy::with_decider`] replaces that decision when needed.
-  /// `within` is the time range the restart count is measured in;
-  /// [`Duration::MAX`] means no range, as `Duration.Inf` does in Pekko.
-  /// Install a monotonic clock on the actor system before starting actors
-  /// supervised with a finite range.
-  pub fn all_for_one(max_retries: u32, within: Duration) -> Self {
-    let window = if within == Duration::MAX { None } else { Some(within) };
+  /// `window` determines when the restart count resets. A finite window
+  /// requires monotonic time from the system boundary or an installed clock.
+  pub fn all_for_one(max_retries: u32, window: RestartWindow) -> Self {
     Self {
       policy: Policy::AllForOne { max_retries: RestartLimit::new(max_retries), window },
       decider: Some(Arc::new(restart_on_exception)),
@@ -190,7 +188,7 @@ impl SupervisorStrategy {
   /// [`RestartHistory`](crate::kernel::supervision) is asked to permit against.
   pub(crate) fn restart_permission(&self) -> Option<(RestartLimit, Option<Duration>)> {
     match self.policy {
-      | Policy::AllForOne { max_retries, window } => Some((max_retries, window)),
+      | Policy::AllForOne { max_retries, window } => Some((max_retries, window.duration())),
       | Policy::RestartAlways | Policy::StopAlways | Policy::OneForOne { .. } => None,
     }
   }

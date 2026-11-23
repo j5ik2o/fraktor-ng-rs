@@ -231,20 +231,28 @@ impl Executor {
   /// Installs the monotonic clock that a time-windowed strategy reads.
   ///
   /// Mirrors the `System.nanoTime` clock a Pekko `withinTimeRange` reads. The
-  /// kernel keeps the port and the adaptor supplies the system clock; a test
-  /// may supply a clock it drives by hand. A finite restart window panics when
-  /// it runs without a clock, because the executor cannot measure the window
-  /// without one and must not fall back to a fixed time.
+  /// override is useful with a custom boundary or a clock a test drives by
+  /// hand. The standard channel boundary already supplies monotonic time.
   pub(crate) fn set_clock(&mut self, clock: Arc<dyn Clock>) {
     self.clock = Some(clock);
   }
 
-  /// Returns the monotonic time from the installed clock.
-  ///
-  /// Panics when no clock is installed, which only a time-windowed strategy
-  /// reaches; every other strategy decides without reading the time.
+  /// Returns the monotonic time that a finite restart window uses.
   fn now(&self) -> Duration {
-    self.clock.as_ref().expect("a finite restart window needs a clock on the executor").monotonic()
+    self
+      .clock
+      .as_ref()
+      .map(|clock| clock.monotonic())
+      .or_else(|| self.queue.boundary().monotonic_time())
+      .expect("a finite restart window needs a monotonic clock")
+  }
+
+  fn require_restart_clock(&self, strategy: &SupervisorStrategy) {
+    if let Some((limit, Some(_))) = strategy.restart_permission() {
+      if !limit.forbids_restart() {
+        self.now();
+      }
+    }
   }
 
   /// Installs the event stream the system publishes its own events to.
@@ -283,6 +291,11 @@ impl Executor {
     name: Option<&str>,
     strategy: SupervisorStrategy,
   ) -> ActorRef {
+    assert!(
+      !self.parents.iter().any(|entry| &entry.parent == parent && entry.stopping),
+      "{}",
+      InvalidActorNameException::terminating()
+    );
     self.spawn_child_with_origin(parent, props, name, strategy, false)
   }
 
@@ -296,6 +309,7 @@ impl Executor {
     strategy_inherited: bool,
   ) -> ActorRef {
     self.assert_running();
+    self.require_restart_clock(&strategy);
     let label = match name {
       | Some(name) => name.to_string(),
       | None => alloc::format!("${}", next_spawn_name()),
@@ -327,6 +341,7 @@ impl Executor {
   /// The executor stores it apart from the parent's cell because the cell is
   /// out of the table while the parent handles a message.
   pub(crate) fn register_parent_strategy(&mut self, parent: ActorRef, strategy: SupervisorStrategy) {
+    self.require_restart_clock(&strategy);
     match self.parents.iter_mut().find(|entry| entry.parent == parent) {
       | Some(entry) => entry.strategy = strategy,
       | None => self.parents.push(ParentEntry { parent, strategy, children: Vec::new(), stopping: false }),
@@ -473,7 +488,7 @@ impl Executor {
   /// that asked for them has returned to its cell. A nested frame, such as a
   /// child that an actor starts from `pre_start`, must not consume the requests
   /// of the frames around it, so only the outermost boundary drains them.
-  pub(crate) fn finish_boundary(&mut self) {
+  fn finish_boundary(&mut self) {
     if !self.running.is_empty() || self.boundary_active {
       return;
     }
@@ -681,6 +696,12 @@ impl Executor {
   /// registry.
   pub(crate) fn stop(&mut self, target: &ActorRef) {
     self.stop_with_sender(target, None);
+  }
+
+  /// Completes an external stop and drains requests made by its hooks.
+  pub(crate) fn stop_at_boundary(&mut self, target: &ActorRef) {
+    self.request_stop(target.clone());
+    self.finish_boundary();
   }
 
   fn stop_with_sender(&mut self, target: &ActorRef, sender: Option<ActorRef>) {
@@ -1028,8 +1049,7 @@ impl Executor {
       return;
     }
     if message == POISON_PILL {
-      self.stop(&recipient);
-      self.finish_boundary();
+      self.stop_at_boundary(&recipient);
       return;
     }
     let mut cell = self.cells.remove(index);
@@ -1167,6 +1187,9 @@ impl Executor {
         }
       }
     }
+    // Hooks can request another sibling's stop. Drain those requests only
+    // after every sibling has received this supervision decision.
+    let was_active = core::mem::replace(&mut self.boundary_active, true);
     if permitted {
       for sibling in siblings {
         if &sibling == target && failure == FailureKind::Initialization {
@@ -1185,6 +1208,7 @@ impl Executor {
         self.stop_with_sender(&sibling, sender);
       }
     }
+    self.boundary_active = was_active;
     permitted && failure == FailureKind::Initialization
   }
 
@@ -1394,9 +1418,9 @@ impl Executor {
       | Err(message) => {
         self.cells.push(cell);
         self.fail_supervisor(supervisor, recipient, &message);
-        self.finish_boundary();
       },
     }
+    self.finish_boundary();
   }
 
   /// Builds an `Error` event with `cause_name` and `message`, raised by

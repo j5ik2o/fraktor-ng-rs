@@ -10,10 +10,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use fraktor_actor::adaptor::{attach_wait_driver, ChannelBoundary, UnwindCatcher};
 use fraktor_actor::kernel::actor::{Actor, ActorContext, Props};
 use fraktor_actor::kernel::actor_ref::ActorRef;
+use fraktor_actor::kernel::actor_system::ActorSystem;
 use fraktor_actor::kernel::message::Message;
-use fraktor_actor::kernel::supervision::{Directive, FailureKind, SupervisorStrategy};
+use fraktor_actor::kernel::supervision::{Directive, FailureKind, RestartWindow, SupervisorStrategy};
 use fraktor_actor::kernel::Clock;
 use fraktor_testkit::fraktorspec::FraktorSpec;
 use fraktor_testkit::implicit_sender::ImplicitSender;
@@ -93,7 +95,8 @@ fn an_all_for_one_stop_stops_every_sibling_and_only_the_failed_child_sees_the_se
   let dead_letters_path = spec.system().dead_letters().path().to_string();
   let reports: StopReports = Arc::new(Mutex::new(Vec::new()));
 
-  let supervisor = spec.system_mut().actor_of(supervisor_props(SupervisorStrategy::all_for_one(0, Duration::MAX)));
+  let supervisor =
+    spec.system_mut().actor_of(supervisor_props(SupervisorStrategy::all_for_one(0, RestartWindow::Unbounded)));
   let failing = child_under(&supervisor, reporting_props(Arc::clone(&reports)));
   let sibling = child_under(&supervisor, reporting_props(Arc::clone(&reports)));
 
@@ -160,7 +163,8 @@ fn counting_props(count: Arc<AtomicUsize>, restart_senders: StopReports, fail_st
 fn all_siblings_restart_and_only_the_failed_child_inherits_the_message_sender() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let reports: StopReports = Arc::new(Mutex::new(Vec::new()));
-  let supervisor = spec.system_mut().actor_of(supervisor_props(SupervisorStrategy::all_for_one(2, Duration::MAX)));
+  let supervisor =
+    spec.system_mut().actor_of(supervisor_props(SupervisorStrategy::all_for_one(2, RestartWindow::Unbounded)));
   let failing = child_under(&supervisor, counting_props(Arc::new(AtomicUsize::new(0)), Arc::clone(&reports), false));
   let sibling = child_under(&supervisor, counting_props(Arc::new(AtomicUsize::new(0)), Arc::clone(&reports), false));
   let sender = spec.test_actor();
@@ -187,7 +191,8 @@ fn a_panicking_all_for_one_decider_restarts_its_supervisor() {
     move || {
       generations.fetch_add(1, Ordering::SeqCst);
       SupervisorActor {
-        strategy: SupervisorStrategy::all_for_one(2, Duration::MAX).with_decider(|_, _| panic!("decider failure")),
+        strategy: SupervisorStrategy::all_for_one(2, RestartWindow::Unbounded)
+          .with_decider(|_, _| panic!("decider failure")),
         created: 0,
       }
     }
@@ -207,7 +212,7 @@ fn kill_stops_all_siblings_and_cannot_bypass_a_zero_restart_limit() {
   for restart in [false, true] {
     let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
     let dead_letters = spec.system().dead_letters().path().to_string();
-    let strategy = SupervisorStrategy::all_for_one(0, Duration::MAX).with_decider(move |_, _| {
+    let strategy = SupervisorStrategy::all_for_one(0, RestartWindow::Unbounded).with_decider(move |_, _| {
       if restart {
         Directive::Restart
       } else {
@@ -234,7 +239,7 @@ fn initialization_failure_stops_all_siblings_and_obeys_restart_permission() {
     let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
     let dead_letters = spec.system().dead_letters().path().to_string();
     let attempts = Arc::new(AtomicUsize::new(0));
-    let strategy = SupervisorStrategy::all_for_one(1, Duration::MAX).with_decider(move |_, kind| {
+    let strategy = SupervisorStrategy::all_for_one(1, RestartWindow::Unbounded).with_decider(move |_, kind| {
       assert_eq!(kind, FailureKind::Initialization);
       if restart {
         Directive::Restart
@@ -266,7 +271,7 @@ fn initialization_failure_stops_all_siblings_and_obeys_restart_permission() {
 fn kill_restarts_all_siblings_when_permitted_and_stops_them_when_exhausted() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let reports = Arc::new(Mutex::new(Vec::new()));
-  let strategy = SupervisorStrategy::all_for_one(1, Duration::MAX);
+  let strategy = SupervisorStrategy::all_for_one(1, RestartWindow::Unbounded);
   let supervisor = spec.system_mut().actor_of(supervisor_props(strategy));
   let first = child_under(&supervisor, counting_props(Arc::new(AtomicUsize::new(0)), Arc::clone(&reports), false));
   let second = child_under(&supervisor, counting_props(Arc::new(AtomicUsize::new(0)), Arc::clone(&reports), false));
@@ -294,7 +299,7 @@ fn kill_restarts_all_siblings_when_permitted_and_stops_them_when_exhausted() {
 fn initialization_retry_creates_the_failed_child_and_restarts_its_sibling() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let reports = Arc::new(Mutex::new(Vec::new()));
-  let strategy = SupervisorStrategy::all_for_one(1, Duration::MAX);
+  let strategy = SupervisorStrategy::all_for_one(1, RestartWindow::Unbounded);
   let supervisor = spec.system_mut().actor_of(supervisor_props(strategy));
   let sibling = child_under(&supervisor, counting_props(Arc::new(AtomicUsize::new(0)), Arc::clone(&reports), false));
   let attempts = Arc::new(AtomicUsize::new(0));
@@ -327,7 +332,7 @@ fn decider_panics_on_kill_and_initialization_fail_the_supervisor() {
       move || {
         generations.fetch_add(1, Ordering::SeqCst);
         SupervisorActor {
-          strategy: SupervisorStrategy::all_for_one(1, Duration::MAX).with_decider(move |_, kind| {
+          strategy: SupervisorStrategy::all_for_one(1, RestartWindow::Unbounded).with_decider(move |_, kind| {
             assert_eq!(kind, failure);
             panic!("decider failure");
           }),
@@ -376,8 +381,9 @@ fn a_restart_window_includes_its_boundary_and_reopens_after_expiry() {
     let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
     let clock = Arc::new(ControlledClock(AtomicUsize::new(0)));
     spec.system().set_clock(clock.clone());
-    let supervisor =
-      spec.system_mut().actor_of(supervisor_props(SupervisorStrategy::all_for_one(1, Duration::from_secs(10))));
+    let supervisor = spec
+      .system_mut()
+      .actor_of(supervisor_props(SupervisorStrategy::all_for_one(1, RestartWindow::Within(Duration::from_secs(10)))));
     let generations = Arc::new(AtomicUsize::new(0));
     let child =
       child_under(&supervisor, counting_props(Arc::clone(&generations), Arc::new(Mutex::new(Vec::new())), false));
@@ -398,8 +404,9 @@ fn a_new_siblings_unused_allowance_does_not_replace_an_older_childs_history() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let clock = Arc::new(ControlledClock(AtomicUsize::new(0)));
   spec.system().set_clock(clock.clone());
-  let supervisor =
-    spec.system_mut().actor_of(supervisor_props(SupervisorStrategy::all_for_one(1, Duration::from_secs(10))));
+  let supervisor = spec
+    .system_mut()
+    .actor_of(supervisor_props(SupervisorStrategy::all_for_one(1, RestartWindow::Within(Duration::from_secs(10)))));
   let older_count = Arc::new(AtomicUsize::new(0));
   let older =
     child_under(&supervisor, counting_props(Arc::clone(&older_count), Arc::new(Mutex::new(Vec::new())), false));
@@ -417,4 +424,143 @@ fn a_new_siblings_unused_allowance_does_not_replace_an_older_childs_history() {
   assert_eq!(older_count.load(Ordering::SeqCst), 2);
   assert_eq!(newer_count.load(Ordering::SeqCst), 1);
   spec.terminate();
+}
+
+struct StopFromHook(ActorRef);
+
+impl Actor for StopFromHook {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+
+  fn post_stop_with_context(&mut self, context: &mut ActorContext<'_>) {
+    context.stop(&self.0);
+  }
+}
+
+#[test]
+fn kill_and_weak_stop_drain_requests_from_post_stop() {
+  for kill in [false, true] {
+    let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
+    let other = spec.system_mut().actor_of(reporting_props(Arc::new(Mutex::new(Vec::new()))));
+    let stopping = spec.system_mut().actor_of(Props::new({
+      let other = other.clone();
+      move || StopFromHook(other.clone())
+    }));
+    if kill {
+      stopping.tell("Kill", spec.test_actor());
+    } else {
+      spec.system().downgrade().stop(&stopping);
+    }
+    spec.system_mut().run_until_idle();
+    assert!(spec.system().is_actor_terminated(&other));
+    spec.terminate();
+  }
+}
+
+struct SpawnFromStop(Arc<AtomicUsize>);
+
+impl Actor for SpawnFromStop {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+
+  fn post_stop_with_context(&mut self, context: &mut ActorContext<'_>) {
+    context.actor_of_with_strategy(
+      counting_props(Arc::clone(&self.0), Arc::new(Mutex::new(Vec::new())), false),
+      SupervisorStrategy::default_strategy(),
+    );
+  }
+}
+
+#[test]
+fn post_stop_cannot_create_an_explicitly_supervised_child() {
+  let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
+  let starts = Arc::new(AtomicUsize::new(0));
+  let parent = spec.system_mut().actor_of(Props::new({
+    let starts = Arc::clone(&starts);
+    move || SpawnFromStop(Arc::clone(&starts))
+  }));
+  spec.system_mut().stop(&parent);
+  assert!(spec.system().is_actor_terminated(&parent));
+  assert_eq!(starts.load(Ordering::SeqCst), 0);
+  spec.terminate();
+}
+
+struct StopsSiblingDuringRestart(Arc<Mutex<Option<ActorRef>>>);
+
+impl Actor for StopsSiblingDuringRestart {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+
+  fn pre_restart(&mut self, context: &mut ActorContext<'_>, _reason: &(dyn core::any::Any + Send)) {
+    context.stop(self.0.lock().unwrap().as_ref().unwrap());
+  }
+}
+
+struct ReplyOnFailure;
+
+impl Actor for ReplyOnFailure {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {
+    panic!("boom");
+  }
+
+  fn pre_restart(&mut self, context: &mut ActorContext<'_>, _reason: &(dyn core::any::Any + Send)) {
+    context.sender().tell("restarting", context.self_ref());
+  }
+
+  fn post_stop_with_context(&mut self, context: &mut ActorContext<'_>) {
+    context.sender().tell("stopping", context.self_ref());
+  }
+}
+
+#[test]
+fn sibling_restart_hook_cannot_stop_the_failed_child_before_its_reply() {
+  let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
+  let supervisor =
+    spec.system_mut().actor_of(supervisor_props(SupervisorStrategy::all_for_one(1, RestartWindow::Unbounded)));
+  let failed_child = Arc::new(Mutex::new(None));
+  child_under(
+    &supervisor,
+    Props::new({
+      let failed_child = Arc::clone(&failed_child);
+      move || StopsSiblingDuringRestart(Arc::clone(&failed_child))
+    }),
+  );
+  let failing = child_under(&supervisor, Props::new(|| ReplyOnFailure));
+  *failed_child.lock().unwrap() = Some(failing.clone());
+  failing.tell("boom", spec.test_actor());
+  spec.system_mut().run_until_idle();
+  spec.expect_msg(&"restarting");
+  assert!(spec.system().is_actor_terminated(&failing));
+  spec.terminate();
+}
+
+#[test]
+fn sibling_termination_hook_cannot_stop_the_failed_child_before_its_reply() {
+  let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
+  let failed_child: Arc<Mutex<Option<ActorRef>>> = Arc::new(Mutex::new(None));
+  let strategy = SupervisorStrategy::all_for_one(0, RestartWindow::Unbounded).with_child_terminated({
+    let failed_child = Arc::clone(&failed_child);
+    move |context, _, _| context.stop(failed_child.lock().unwrap().as_ref().unwrap())
+  });
+  let supervisor = spec.system_mut().actor_of(supervisor_props(strategy));
+  child_under(&supervisor, reporting_props(Arc::new(Mutex::new(Vec::new()))));
+  let failing = child_under(&supervisor, Props::new(|| ReplyOnFailure));
+  *failed_child.lock().unwrap() = Some(failing.clone());
+  failing.tell("boom", spec.test_actor());
+  spec.system_mut().run_until_idle();
+  spec.expect_msg(&"stopping");
+  spec.terminate();
+}
+
+#[test]
+fn a_finite_restart_window_works_with_the_standard_channel_boundary() {
+  let mut system =
+    ActorSystem::with_failure_catcher(SPEC_SYSTEM_NAME, Arc::new(ChannelBoundary::new()), Arc::new(UnwindCatcher));
+  attach_wait_driver(&system);
+  let strategy = SupervisorStrategy::all_for_one(1, RestartWindow::Within(Duration::from_secs(10)));
+  let supervisor = system.actor_of(supervisor_props(strategy));
+  let generations = Arc::new(AtomicUsize::new(0));
+  let child =
+    child_under(&supervisor, counting_props(Arc::clone(&generations), Arc::new(Mutex::new(Vec::new())), false));
+  child.tell("boom", system.dead_letters());
+  system.run_until_idle();
+  assert_eq!(generations.load(Ordering::SeqCst), 2);
+  system.terminate();
 }
