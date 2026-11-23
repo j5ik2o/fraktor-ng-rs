@@ -28,6 +28,7 @@ use crate::kernel::supervision::FailureCatcher;
 use crate::kernel::supervision::FailureKind;
 use crate::kernel::supervision::RunOutcome;
 use crate::kernel::supervision::SupervisorStrategy;
+use crate::kernel::Clock;
 
 #[cfg(test)]
 #[path = "executor_value_test.rs"]
@@ -142,6 +143,7 @@ pub(crate) struct Executor {
   boundary_active: bool,
   hook_child_creation_refused: bool,
   terminated: bool,
+  clock: Option<Arc<dyn Clock>>,
 }
 
 impl Executor {
@@ -167,6 +169,7 @@ impl Executor {
       boundary_active: false,
       hook_child_creation_refused: false,
       terminated: false,
+      clock: None,
     };
     executor.function_refs.push(executor.dead_letters.clone());
     executor
@@ -225,6 +228,33 @@ impl Executor {
     self.event_sink = Some(sink);
   }
 
+  /// Installs the monotonic clock that a time-windowed strategy reads.
+  ///
+  /// Mirrors the `System.nanoTime` clock a Pekko `withinTimeRange` reads. The
+  /// override is useful with a custom boundary or a clock a test drives by
+  /// hand. The standard channel boundary already supplies monotonic time.
+  pub(crate) fn set_clock(&mut self, clock: Arc<dyn Clock>) {
+    self.clock = Some(clock);
+  }
+
+  /// Returns the monotonic time that a finite restart window uses.
+  fn now(&self) -> Duration {
+    self
+      .clock
+      .as_ref()
+      .map(|clock| clock.monotonic())
+      .or_else(|| self.queue.boundary().monotonic_time())
+      .expect("a finite restart window needs a monotonic clock")
+  }
+
+  fn require_restart_clock(&self, strategy: &SupervisorStrategy) {
+    if let Some((limit, Some(_))) = strategy.restart_permission() {
+      if !limit.forbids_restart() {
+        self.now();
+      }
+    }
+  }
+
   /// Installs the event stream the system publishes its own events to.
   ///
   /// Mirrors the stream `FaultHandling.publish` reaches through
@@ -261,6 +291,11 @@ impl Executor {
     name: Option<&str>,
     strategy: SupervisorStrategy,
   ) -> ActorRef {
+    assert!(
+      !self.parents.iter().any(|entry| &entry.parent == parent && entry.stopping),
+      "{}",
+      InvalidActorNameException::terminating()
+    );
     self.spawn_child_with_origin(parent, props, name, strategy, false)
   }
 
@@ -274,6 +309,7 @@ impl Executor {
     strategy_inherited: bool,
   ) -> ActorRef {
     self.assert_running();
+    self.require_restart_clock(&strategy);
     let label = match name {
       | Some(name) => name.to_string(),
       | None => alloc::format!("${}", next_spawn_name()),
@@ -305,6 +341,7 @@ impl Executor {
   /// The executor stores it apart from the parent's cell because the cell is
   /// out of the table while the parent handles a message.
   pub(crate) fn register_parent_strategy(&mut self, parent: ActorRef, strategy: SupervisorStrategy) {
+    self.require_restart_clock(&strategy);
     match self.parents.iter_mut().find(|entry| entry.parent == parent) {
       | Some(entry) => entry.strategy = strategy,
       | None => self.parents.push(ParentEntry { parent, strategy, children: Vec::new(), stopping: false }),
@@ -560,6 +597,27 @@ impl Executor {
           self.cells.insert(index, cell);
           self.publish_child_failure(&self_ref, ACTOR_INITIALIZATION_CAUSE, &message);
           let strategy = self.effective_strategy(&self.cells[index]);
+          if strategy.is_all_for_one() {
+            let retry = self.apply_all_for_one(
+              &self_ref,
+              &strategy,
+              FailureKind::Initialization,
+              ACTOR_INITIALIZATION_CAUSE,
+              &message,
+              None,
+            );
+            if !retry {
+              self.finish_boundary();
+              return;
+            }
+            self.stop_children_of(&self_ref);
+            let Some(found) = self.cells.iter().position(|cell| cell.accepts(&self_ref)) else {
+              self.finish_boundary();
+              return;
+            };
+            index = found;
+            continue;
+          }
           let count = self.cells[index].restart_count();
           let decision = self.decide_catching(strategy, &self_ref, count, FailureKind::Initialization);
           match decision {
@@ -637,6 +695,16 @@ impl Executor {
   /// request against it is refused as terminating instead of reviving a stale
   /// registry.
   pub(crate) fn stop(&mut self, target: &ActorRef) {
+    self.stop_with_sender(target, None);
+  }
+
+  /// Completes an external stop and drains requests made by its hooks.
+  pub(crate) fn stop_at_boundary(&mut self, target: &ActorRef) {
+    self.request_stop(target.clone());
+    self.finish_boundary();
+  }
+
+  fn stop_with_sender(&mut self, target: &ActorRef, sender: Option<ActorRef>) {
     let is_cell = self.cells.iter().any(|cell| cell.accepts(target));
     let is_function_ref = self.function_refs.contains(target);
     if !is_cell && !is_function_ref {
@@ -650,10 +718,10 @@ impl Executor {
       reference.boundary().close();
     }
     if let Some(index) = self.cells.iter().position(|cell| cell.accepts(target)) {
-      if !self.cells[index].post_stop_suppressed() {
-        self.run_post_stop(index);
+      let mut cell = self.cells.remove(index);
+      if !cell.post_stop_suppressed() {
+        self.run_post_stop(&mut cell, sender);
       }
-      self.cells.remove(index);
     }
     self.forget_child(target);
     self.notify_watchers(target, true, false);
@@ -759,16 +827,32 @@ impl Executor {
   ///
   /// Mirrors `dungeon.FaultHandling`: a `postStop` that throws is logged as an
   /// error and the stop continues. A failure here never restarts the actor.
-  fn run_post_stop(&mut self, index: usize) {
-    let self_ref = self.cells[index].self_ref();
-    match self.catcher.clone() {
+  /// The hook runs with the actor's context so a `postStop` that reads
+  /// `sender()` sees the sender of the failing message when the actor is
+  /// stopping because it failed a message, as Pekko's `postStop` does; every
+  /// other stop gives the hook dead letters.
+  fn run_post_stop(&mut self, cell: &mut ActorCell, sender: Option<ActorRef>) {
+    let self_ref = cell.self_ref();
+    let hook_sender = sender.unwrap_or_else(|| self.dead_letters());
+    let mut stack = BehaviorStack::new();
+    self.enter_frame(&self_ref);
+    let catcher = self.catcher.clone();
+    match catcher {
       | Some(catcher) => {
-        if let RunOutcome::Failed { message } = catcher.run(&mut || self.cells[index].post_stop()) {
+        let ran = {
+          let mut context = ActorContext::new(self_ref.clone(), hook_sender, self, &mut stack);
+          catcher.run(&mut || cell.post_stop_with_context(&mut context))
+        };
+        if let RunOutcome::Failed { message } = ran {
           self.publish_child_failure(&self_ref, EXCEPTION_CAUSE, &message);
         }
       },
-      | None => self.cells[index].post_stop(),
+      | None => {
+        let mut context = ActorContext::new(self_ref.clone(), hook_sender, self, &mut stack);
+        cell.post_stop_with_context(&mut context);
+      },
     }
+    self.exit_frame();
   }
 
   /// Registers a reply to `reply_to` after `target` stops.
@@ -965,7 +1049,7 @@ impl Executor {
       return;
     }
     if message == POISON_PILL {
-      self.stop(&recipient);
+      self.stop_at_boundary(&recipient);
       return;
     }
     let mut cell = self.cells.remove(index);
@@ -974,7 +1058,7 @@ impl Executor {
     let catcher = self.catcher.clone();
     self.enter_frame(&recipient);
     let outcome = {
-      let mut context = ActorContext::new(recipient.clone(), sender, self, &mut stack);
+      let mut context = ActorContext::new(recipient.clone(), sender.clone(), self, &mut stack);
       match catcher {
         | Some(catcher) => catcher.run(&mut || cell.deliver(&mut context, delivered.clone())),
         | None => {
@@ -995,9 +1079,9 @@ impl Executor {
       | RunOutcome::Failed { message } => {
         if self.deferred_stop(&recipient) {
           self.cells.push(cell);
-          self.stop(&recipient);
+          self.stop_with_sender(&recipient, Some(sender));
         } else {
-          self.apply_failure(cell, &recipient, RUNTIME_CAUSE, &message);
+          self.apply_failure(cell, &recipient, RUNTIME_CAUSE, &message, Some(sender));
         }
       },
     }
@@ -1011,26 +1095,121 @@ impl Executor {
 
   /// Applies the supervisor's decision to a failure during `receive`, then
   /// carries out the requests the actor recorded before it failed.
-  fn apply_failure(&mut self, mut cell: ActorCell, target: &ActorRef, cause_name: &str, message: &str) {
+  ///
+  /// `original_sender` is the sender of the message whose handling failed, and
+  /// is handed to the failed child's lifecycle hooks so a hook that reads
+  /// `sender()` sees it. Only the message-handling path supplies it; every
+  /// other failure entry passes `None`.
+  fn apply_failure(
+    &mut self,
+    mut cell: ActorCell,
+    target: &ActorRef,
+    cause_name: &str,
+    message: &str,
+    original_sender: Option<ActorRef>,
+  ) {
     self.publish_child_failure(target, cause_name, message);
     let strategy = self.effective_strategy(&cell);
+    if strategy.is_all_for_one() {
+      self.cells.push(cell);
+      self.apply_all_for_one(target, &strategy, FailureKind::MessageHandling, cause_name, message, original_sender);
+      return;
+    }
     let count = cell.restart_count();
     let supervisor = cell.parent();
     let decision = self.decide_catching(strategy, target, count, FailureKind::MessageHandling);
     match decision {
       | Ok(Directive::Restart) => {
         cell.record_restart_request();
-        self.restart_cell(target, cell, FailureKind::MessageHandling, cause_name, message);
+        self.restart_cell(target, cell, FailureKind::MessageHandling, cause_name, message, original_sender);
       },
       | Ok(Directive::Stop) => {
         self.cells.push(cell);
-        self.stop(target);
+        self.stop_with_sender(target, original_sender);
       },
       | Err(message) => {
         self.cells.push(cell);
         self.fail_supervisor(supervisor, target, &message);
       },
     }
+  }
+
+  /// Applies an all-for-one decision: restart every direct sibling when all of
+  /// them may still restart, or stop every one otherwise.
+  ///
+  /// Mirrors `AllForOneStrategy.processFailure`: the failed child's failure is
+  /// judged for the whole sibling set. When the failed child's directive is
+  /// `Restart` and every sibling has a restart left in the retry count and time
+  /// window, each sibling restarts; the failed child keeps the message's
+  /// original sender so its hooks see it, and every other sibling gets `None`.
+  /// When any sibling has no restart left, or the failed child's directive is
+  /// not `Restart`, every sibling stops. The failed cell must already be back
+  /// in the table when this runs.
+  /// Returns whether a failed initial creation may retry in its caller's loop;
+  /// a cell that has not been created has no old instance to restart.
+  fn apply_all_for_one(
+    &mut self,
+    target: &ActorRef,
+    strategy: &SupervisorStrategy,
+    failure: FailureKind,
+    cause_name: &str,
+    message: &str,
+    original_sender: Option<ActorRef>,
+  ) -> bool {
+    let Some(parent) = self.cells.iter().find(|cell| cell.accepts(target)).and_then(ActorCell::parent) else {
+      return false;
+    };
+    let siblings: Vec<ActorRef> =
+      self.cells.iter().filter(|cell| cell.is_child_of(&parent)).map(ActorCell::self_ref).collect();
+    let restart = match self.decide_catching(strategy.clone(), target, 0, failure) {
+      | Ok(directive) => directive == Directive::Restart,
+      | Err(message) => {
+        self.fail_supervisor(Some(parent), target, &message);
+        return false;
+      },
+    };
+    let mut permitted = restart;
+    if restart {
+      if let Some((limit, window)) = strategy.restart_permission() {
+        let now = if window.is_some() && !limit.forbids_restart() { self.now() } else { Duration::ZERO };
+        for sibling in &siblings {
+          let Some(index) = self.cells.iter().position(|cell| cell.accepts(sibling)) else {
+            permitted = false;
+            break;
+          };
+          let mut history = self.cells[index].restart_history();
+          let allowed = history.request_permission(limit, window, now);
+          self.cells[index].set_restart_history(history);
+          if !allowed {
+            permitted = false;
+            break;
+          }
+        }
+      }
+    }
+    // Hooks can request another sibling's stop. Drain those requests only
+    // after every sibling has received this supervision decision.
+    let was_active = core::mem::replace(&mut self.boundary_active, true);
+    if permitted {
+      for sibling in siblings {
+        if &sibling == target && failure == FailureKind::Initialization {
+          continue;
+        }
+        let Some(index) = self.cells.iter().position(|cell| cell.accepts(&sibling)) else {
+          continue;
+        };
+        let cell = self.cells.remove(index);
+        let sender = if &sibling == target { original_sender.clone() } else { None };
+        self.restart_cell(&sibling, cell, failure, cause_name, message, sender);
+      }
+    } else {
+      for sibling in siblings {
+        let sender = if &sibling == target { original_sender.clone() } else { None };
+        self.stop_with_sender(&sibling, sender);
+      }
+    }
+    self.boundary_active = was_active;
+    permitted && failure == FailureKind::Initialization
   }
 
   /// Asks `strategy` for the directive for `child`, catching a decider panic.
@@ -1095,7 +1274,7 @@ impl Executor {
       return;
     };
     let cell = self.cells.remove(index);
-    self.apply_failure(cell, supervisor, RUNTIME_CAUSE, message);
+    self.apply_failure(cell, supervisor, RUNTIME_CAUSE, message, None);
   }
 
   /// Re-creates the actor of `cell` and runs its `postRestart`, stopping it when
@@ -1107,6 +1286,12 @@ impl Executor {
   /// `PostRestartException` to stop. The stop path then skips the old
   /// instance's `post_stop`, because `preRestart` already ran it and the
   /// instance must not run it twice.
+  ///
+  /// `original_sender` is the sender of the message whose handling failed, and
+  /// becomes the `sender()` the old instance's `pre_restart` sees, as Pekko's
+  /// `preRestart` sees the sender of the failing message. When it is `None`,
+  /// as for a `Kill` or a supervisor failure, the hook sees the actor's own
+  /// handle.
   fn restart_cell(
     &mut self,
     target: &ActorRef,
@@ -1114,14 +1299,16 @@ impl Executor {
     failure: FailureKind,
     cause_name: &str,
     message: &str,
+    original_sender: Option<ActorRef>,
   ) {
     let reason = self.failure_reason(target, cause_name, message);
     let reason_box: Box<dyn core::any::Any + Send> = Box::new(reason);
     let catcher = self.catcher.clone();
     let mut old_stack = cell.take_stack();
     self.enter_frame(target);
+    let hook_sender = original_sender.unwrap_or_else(|| target.clone());
     let pre_restart_failed = {
-      let mut context = ActorContext::new(target.clone(), target.clone(), self, &mut old_stack);
+      let mut context = ActorContext::new(target.clone(), hook_sender, self, &mut old_stack);
       match catcher {
         | Some(catcher) => catcher.run(&mut || cell.pre_restart(&mut context, reason_box.as_ref())),
         | None => {
@@ -1173,7 +1360,7 @@ impl Executor {
           }
           if let Some(index) = self.cells.iter().position(|cell| cell.accepts(&child)) {
             let cell = self.cells.remove(index);
-            self.restart_cell(&child, cell, failure, cause_name, message);
+            self.restart_cell(&child, cell, failure, cause_name, message, None);
           }
         }
         let children: Vec<ActorRef> = self
@@ -1210,13 +1397,19 @@ impl Executor {
     self.publish_child_failure(recipient, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE);
     let mut cell = self.cells.remove(index);
     let strategy = self.effective_strategy(&cell);
+    if strategy.is_all_for_one() {
+      self.cells.push(cell);
+      self.apply_all_for_one(recipient, &strategy, FailureKind::Killed, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE, None);
+      self.finish_boundary();
+      return;
+    }
     let count = cell.restart_count();
     let supervisor = cell.parent();
     let decision = self.decide_catching(strategy, recipient, count, FailureKind::Killed);
     match decision {
       | Ok(Directive::Restart) => {
         cell.record_restart_request();
-        self.restart_cell(recipient, cell, FailureKind::Killed, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE);
+        self.restart_cell(recipient, cell, FailureKind::Killed, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE, None);
       },
       | Ok(Directive::Stop) => {
         self.cells.push(cell);
@@ -1225,9 +1418,9 @@ impl Executor {
       | Err(message) => {
         self.cells.push(cell);
         self.fail_supervisor(supervisor, recipient, &message);
-        self.finish_boundary();
       },
     }
+    self.finish_boundary();
   }
 
   /// Builds an `Error` event with `cause_name` and `message`, raised by

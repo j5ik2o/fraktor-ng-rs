@@ -9,6 +9,7 @@ mod status_ask_error;
 mod status_ask_future;
 mod status_reply;
 mod status_reply_ack;
+mod system_clock;
 mod unwind_catcher;
 
 pub use ask_driver::attach_wait_driver;
@@ -20,4 +21,5 @@ pub use status_ask_error::StatusAskError;
 pub use status_ask_future::StatusAskFuture;
 pub use status_reply::StatusReply;
 pub use status_reply_ack::StatusReplyAck;
+pub use system_clock::SystemClock;
 pub use unwind_catcher::UnwindCatcher;

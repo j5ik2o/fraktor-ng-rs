@@ -9,6 +9,7 @@ use crate::kernel::actor::BehaviorStack;
 use crate::kernel::actor::Props;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::message::Message;
+use crate::kernel::supervision::RestartHistory;
 use crate::kernel::supervision::SupervisorStrategy;
 
 /// An actor that the executor owns and drives.
@@ -27,7 +28,7 @@ pub(crate) struct ActorCell {
   props: Props,
   strategy: SupervisorStrategy,
   strategy_inherited: bool,
-  restart_count: u32,
+  restart_history: RestartHistory,
   post_stop_suppressed: bool,
 }
 
@@ -49,7 +50,7 @@ impl ActorCell {
       props,
       strategy,
       strategy_inherited,
-      restart_count: 0,
+      restart_history: RestartHistory::new(),
       post_stop_suppressed: false,
     }
   }
@@ -103,12 +104,22 @@ impl ActorCell {
 
   /// Returns the number of restart requests this actor has already made.
   pub(crate) fn restart_count(&self) -> u32 {
-    self.restart_count
+    self.restart_history.count()
   }
 
   /// Records one more restart request.
   pub(crate) fn record_restart_request(&mut self) {
-    self.restart_count = self.restart_count.saturating_add(1);
+    self.restart_history.record_plain();
+  }
+
+  /// Returns this actor's restart history, for a time-windowed strategy.
+  pub(crate) fn restart_history(&self) -> RestartHistory {
+    self.restart_history
+  }
+
+  /// Replaces this actor's restart history after a permission check.
+  pub(crate) fn set_restart_history(&mut self, history: RestartHistory) {
+    self.restart_history = history;
   }
 
   /// Takes the behaviour stack out of the cell so the executor can lend it to
@@ -151,7 +162,6 @@ impl ActorCell {
       behavior.pre_restart(context, reason);
     }
   }
-
   /// Replaces the behaviour with a fresh instance from the recipe and runs its
   /// `post_restart`, which is what Pekko's default `postRestart` does.
   ///
@@ -173,10 +183,17 @@ impl ActorCell {
     self.behavior = Some(behavior);
   }
 
-  /// Runs `post_stop` on the behaviour, if the actor was created.
-  pub(crate) fn post_stop(&mut self) {
+  /// Runs the context-carrying stop hook on the behaviour, if the actor was
+  /// created.
+  ///
+  /// The hook defaults to `post_stop`, so a behaviour that only overrides
+  /// `post_stop` keeps working, while a behaviour that needs the message's
+  /// original sender in `post_stop_with_context` receives it. This is the hook
+  /// the stop path runs, so the failing child's original sender reaches only
+  /// it.
+  pub(crate) fn post_stop_with_context(&mut self, context: &mut ActorContext<'_>) {
     if let Some(behavior) = self.behavior.as_mut() {
-      behavior.post_stop();
+      behavior.post_stop_with_context(context);
     }
   }
 

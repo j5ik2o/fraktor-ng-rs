@@ -96,7 +96,7 @@ impl WeakActorSystem {
   /// Mirrors `ActorSystem.stop` reached through a non-owning handle, which is
   /// how a probe or a test that only holds a `Weak` back-edge stops an actor.
   pub fn stop(&self, target: &ActorRef) {
-    self.upgrade().borrow_mut().stop(target);
+    self.upgrade().borrow_mut().stop_at_boundary(target);
   }
 
   /// Returns whether `target` no longer has a running actor behind it.
