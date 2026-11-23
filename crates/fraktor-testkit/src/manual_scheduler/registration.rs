@@ -17,6 +17,7 @@ pub(crate) struct Registration {
 impl Registration {
   /// Makes a registration that repeats every `interval`.
   pub(crate) fn repeating(interval: Duration, callback: Callback) -> Self {
+    assert!(!interval.is_zero(), "a repeating schedule needs a non-zero interval");
     Self { interval: Some(interval), callback }
   }
 

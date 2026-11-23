@@ -25,12 +25,11 @@ impl ManualSchedulerTask {
     Self { shared, id }
   }
 
-  /// Cancels the registration and returns whether it was still pending.
+  /// Cancels the registration and returns whether it had any work left to cancel.
   ///
-  /// Returns true when the registration had not run to completion (for a
-  /// one-shot registration) or been cancelled yet. A second call, a call after
-  /// the registration ran, or a call after the scheduler was dropped returns
-  /// false.
+  /// A pending registration can be cancelled. Cancelling a running repeat
+  /// stops subsequent executions. Cancelling a completed or already cancelled
+  /// registration, or cancelling after the scheduler is dropped, returns false.
   pub fn cancel(&self) -> bool {
     match self.shared.upgrade() {
       | Some(shared) => shared.remove(self.id),

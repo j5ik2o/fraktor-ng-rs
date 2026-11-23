@@ -20,6 +20,7 @@ use std::thread;
 use std::time::Duration;
 
 use super::ManualScheduler;
+use super::ManualSchedulerTask;
 
 fn counter() -> (Arc<AtomicUsize>, Arc<dyn Fn() + Send + Sync>) {
   let counter = Arc::new(AtomicUsize::new(0));
@@ -98,21 +99,51 @@ fn time_passes_does_not_run_a_task_before_its_deadline() {
 }
 
 #[test]
-fn a_callback_that_cancels_another_due_registration_skips_it_safely() {
+fn delayed_registration_does_not_run_another_due_callback_before_cancellation() {
   let (count_b, runnable_b) = counter();
-  let scheduler = ManualScheduler::new();
-  let sibling = Arc::new(scheduler.schedule_once(Duration::from_secs(1), runnable_b));
-  let canceller = {
-    let sibling = Arc::clone(&sibling);
+  let scheduler = Arc::new(ManualScheduler::new());
+  let weak = Arc::downgrade(&scheduler);
+  let sibling = Arc::new(Mutex::new(None::<ManualSchedulerTask>));
+  let pending = Arc::clone(&sibling);
+  scheduler.schedule_once(
+    Duration::from_secs(1),
     Arc::new(move || {
-      sibling.cancel();
-    }) as Arc<dyn Fn() + Send + Sync>
-  };
-  scheduler.schedule_once(Duration::from_millis(500), canceller);
+      let scheduler = weak.upgrade().unwrap();
+      scheduler.schedule_once(Duration::from_secs(1), Arc::new(|| {}));
+      scheduler.schedule(Duration::from_secs(1), Duration::from_secs(1), Arc::new(|| {}));
+      assert!(pending.lock().unwrap().take().unwrap().cancel());
+    }),
+  );
+  *sibling.lock().unwrap() = Some(scheduler.schedule_once(Duration::from_secs(1), runnable_b));
 
-  scheduler.time_passes(Duration::from_secs(2));
+  scheduler.time_passes(Duration::from_secs(1));
 
   assert_eq!(count(&count_b), 0, "a registration cancelled by an earlier callback in the same advance must not run");
+}
+
+#[test]
+fn cancelling_a_callback_can_drop_a_value_that_cancels_another_registration() {
+  struct CancelOnDrop(ManualSchedulerTask);
+
+  impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+      assert!(self.0.cancel());
+    }
+  }
+
+  let (count, runnable) = counter();
+  let scheduler = ManualScheduler::new();
+  let cleanup = CancelOnDrop(scheduler.schedule_once(Duration::from_secs(1), runnable));
+  let task = scheduler.schedule_once(
+    Duration::from_secs(1),
+    Arc::new(move || {
+      let _cleanup = &cleanup;
+    }),
+  );
+
+  assert!(task.cancel());
+  scheduler.time_passes(Duration::from_secs(1));
+  assert_eq!(count.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -126,6 +157,25 @@ fn cancel_returns_true_only_for_a_registration_that_is_still_pending() {
 
   scheduler.time_passes(Duration::from_secs(7));
   assert_eq!(count(&counter), 0);
+}
+
+#[test]
+fn a_repeating_callback_can_cancel_its_own_future_runs() {
+  let (count, runnable) = counter();
+  let scheduler = ManualScheduler::new();
+  let handle = Arc::new(Mutex::new(None::<ManualSchedulerTask>));
+  let own_handle = Arc::clone(&handle);
+  *handle.lock().unwrap() = Some(scheduler.schedule(
+    Duration::from_secs(1),
+    Duration::from_secs(1),
+    Arc::new(move || {
+      runnable();
+      assert!(own_handle.lock().unwrap().take().unwrap().cancel());
+    }),
+  ));
+
+  scheduler.time_passes(Duration::from_secs(3));
+  assert_eq!(count.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -161,6 +211,21 @@ fn schedule_rejects_when_the_first_deadline_overflows() {
 
   scheduler.time_passes(Duration::from_secs(1));
   assert_eq!(count(&counter), 0, "a rejected registration must never run");
+}
+
+#[test]
+fn immediate_repeating_registration_checks_its_next_deadline_before_insertion() {
+  let (count, runnable) = counter();
+  let scheduler = ManualScheduler::new();
+  scheduler.time_passes(Duration::MAX - Duration::from_secs(1));
+
+  let result = catch_unwind(AssertUnwindSafe(|| {
+    scheduler.schedule(Duration::ZERO, Duration::from_secs(2), runnable);
+  }));
+
+  assert!(result.is_err());
+  scheduler.time_passes(Duration::from_secs(1));
+  assert_eq!(count.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -251,21 +316,22 @@ fn time_passes_releases_its_advance_when_a_callback_panics() {
 
 #[test]
 fn a_rejected_nested_advance_does_not_release_the_outer_advance() {
-  let scheduler = Arc::new(ManualScheduler::new());
-  let weak = Arc::downgrade(&scheduler);
-  scheduler.schedule_once(
-    Duration::from_secs(1),
-    Arc::new(move || {
-      let scheduler = weak.upgrade().unwrap();
-      for _ in 0..2 {
-        assert!(catch_unwind(AssertUnwindSafe(|| scheduler.time_passes(Duration::ZERO))).is_err());
-      }
-    }),
-  );
+  for delay in [Duration::ZERO, Duration::from_secs(1)] {
+    let scheduler = Arc::new(ManualScheduler::new());
+    let weak = Arc::downgrade(&scheduler);
+    scheduler.schedule_once(
+      delay,
+      Arc::new(move || {
+        let scheduler = weak.upgrade().unwrap();
+        for _ in 0..2 {
+          assert!(catch_unwind(AssertUnwindSafe(|| scheduler.time_passes(Duration::ZERO))).is_err());
+        }
+      }),
+    );
 
-  scheduler.time_passes(Duration::from_secs(3));
-  assert_eq!(scheduler.shared.now(), Duration::from_secs(3));
-  scheduler.time_passes(Duration::ZERO);
+    scheduler.time_passes(Duration::from_secs(3));
+    assert_eq!(scheduler.shared.now(), Duration::from_secs(3));
+  }
 }
 
 #[test]

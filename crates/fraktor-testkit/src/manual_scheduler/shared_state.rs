@@ -10,6 +10,7 @@ use std::sync::MutexGuard;
 
 use super::registration::Registration;
 use super::registration_id::RegistrationId;
+use super::Callback;
 
 /// The scheduler's current time and the registrations keyed by identifier.
 ///
@@ -33,7 +34,8 @@ struct Inner {
 }
 
 struct Entry {
-  deadline: Duration,
+  // A running repeat stays in the table for cancellation but is not due.
+  deadline: Option<Duration>,
   registration: Registration,
 }
 
@@ -50,9 +52,43 @@ pub(crate) struct AdvanceGuard<'a> {
   shared: &'a SharedState,
 }
 
+/// Keeps a running registration cancellable and clears it if the callback panics.
+pub(crate) struct RunningRegistration<'a> {
+  shared: &'a SharedState,
+  id: RegistrationId,
+  callback: Callback,
+}
+
 impl Drop for AdvanceGuard<'_> {
   fn drop(&mut self) {
     self.shared.advancing.store(false, Ordering::SeqCst);
+  }
+}
+
+impl RunningRegistration<'_> {
+  /// Runs the callback and restores the next deadline if the repeat is still registered.
+  pub(crate) fn run(self, next_deadline: Option<Duration>) {
+    (self.callback)();
+    if let Some(deadline) = next_deadline {
+      if let Some(entry) = self.shared.lock().registrations.get_mut(&self.id) {
+        entry.deadline = Some(deadline);
+      }
+    }
+  }
+}
+
+impl Drop for RunningRegistration<'_> {
+  fn drop(&mut self) {
+    let retired = {
+      let mut inner = self.shared.lock();
+      let still_running = inner.registrations.get(&self.id).is_some_and(|entry| entry.deadline.is_none());
+      if still_running {
+        inner.registrations.remove(&self.id)
+      } else {
+        None
+      }
+    };
+    drop(retired);
   }
 }
 
@@ -101,14 +137,8 @@ impl SharedState {
     let mut inner = self.lock();
     let id = inner.next_id;
     inner.next_id = id.next();
-    inner.registrations.insert(id, Entry { deadline, registration });
+    inner.registrations.insert(id, Entry { deadline: Some(deadline), registration });
     id
-  }
-
-  /// Stores a registration that has just run under its existing identifier at
-  /// its next `deadline`, keeping the cancel handle of that registration valid.
-  pub(crate) fn insert_at(&self, id: RegistrationId, registration: Registration, deadline: Duration) {
-    self.lock().registrations.insert(id, Entry { deadline, registration });
   }
 
   /// Returns the earliest registration due at or before `target`, if any.
@@ -117,22 +147,28 @@ impl SharedState {
     inner
       .registrations
       .iter()
-      .filter(|(_, entry)| entry.deadline <= target)
-      .map(|(id, entry)| (entry.deadline, *id, entry.registration.interval()))
+      .filter_map(|(id, entry)| Some((entry.deadline?, *id, entry.registration.interval())))
+      .filter(|(deadline, _, _)| *deadline <= target)
       .min_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)))
       .map(|(deadline, id, interval)| DueRegistration { id, deadline, interval })
   }
 
-  /// Removes the registration with `id` and returns its callback.
-  pub(crate) fn take_callback(&self, id: RegistrationId) -> Option<super::Callback> {
-    self.lock().registrations.remove(&id).map(|entry| entry.registration.callback())
+  /// Claims a registration for execution and removes one-shots from the table.
+  pub(crate) fn start(&self, id: RegistrationId) -> Option<RunningRegistration<'_>> {
+    let mut inner = self.lock();
+    let entry = inner.registrations.get_mut(&id)?;
+    entry.deadline.take()?;
+    let callback = entry.registration.callback();
+    if entry.registration.interval().is_none() {
+      inner.registrations.remove(&id);
+    }
+    Some(RunningRegistration { shared: self, id, callback })
   }
 
   /// Acquires an advance and ties its release to the returned guard.
   ///
-  /// Returns `None` when another advance is already running, which happens when
-  /// a callback calls `time_passes` again. The scheduler refuses that re-entry
-  /// so the clock cannot move backwards underneath the outer advance.
+  /// Returns `None` when a clock advance or an immediate callback already owns
+  /// execution. The clock cannot advance again until that owner returns.
   pub(crate) fn begin_advance(&self) -> Option<AdvanceGuard<'_>> {
     self.advancing.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).ok()?;
     Some(AdvanceGuard { shared: self })
@@ -141,11 +177,12 @@ impl SharedState {
   /// Checks every pending repetition through `target` before any callback runs.
   pub(crate) fn validate_advance(&self, target: Duration) {
     let inner = self.lock();
-    for entry in inner.registrations.values().filter(|entry| entry.deadline <= target) {
-      if let Some(interval) = entry.registration.interval() {
+    for entry in inner.registrations.values() {
+      if let (Some(deadline), Some(interval)) = (entry.deadline, entry.registration.interval()) {
+        let Some(elapsed) = target.checked_sub(deadline) else { continue };
         // Subtract the remainder to find the last due time without walking
         // every repetition. Nanoseconds fit in u128 even at Duration::MAX.
-        let remainder = (target - entry.deadline).as_nanos() % interval.as_nanos();
+        let remainder = elapsed.as_nanos() % interval.as_nanos();
         let last = target.as_nanos() - remainder;
         assert!(
           last + interval.as_nanos() <= Duration::MAX.as_nanos(),
@@ -155,10 +192,10 @@ impl SharedState {
     }
   }
 
-  /// Removes the registration with `id` because it was cancelled, returning
-  /// whether one was present.
+  /// Removes a pending or running registration and drops it outside the lock.
   pub(crate) fn remove(&self, id: RegistrationId) -> bool {
-    self.lock().registrations.remove(&id).is_some()
+    let removed = self.lock().registrations.remove(&id);
+    removed.is_some()
   }
 
   fn lock(&self) -> MutexGuard<'_, Inner> {
