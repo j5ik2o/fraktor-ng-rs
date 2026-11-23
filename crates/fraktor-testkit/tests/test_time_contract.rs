@@ -34,6 +34,7 @@ use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::message::Message;
 use fraktor_testkit::fraktorspec::FraktorSpec;
 use fraktor_testkit::test_kit::TestProbe;
+use fraktor_testkit::test_kit_extension::TestTimeFactor;
 
 const SPEC_SYSTEM_NAME: &str = "Issue121TimeContractSpec";
 
@@ -63,7 +64,7 @@ where
 // given factor, and the probe built from those settings dilates the same way.
 #[test]
 fn a_finite_positive_time_factor_reaches_the_settings_and_the_probe() {
-  let mut spec = FraktorSpec::with_time_factor(SPEC_SYSTEM_NAME, 2.0);
+  let mut spec = FraktorSpec::with_time_factor(SPEC_SYSTEM_NAME, TestTimeFactor::new(2.0));
 
   let settings = spec.test_kit_settings();
   assert_eq!(settings.test_time_factor(), 2.0, "the spec settings must report the configured factor");
@@ -101,7 +102,7 @@ fn the_default_time_factor_stays_one() {
 fn invalid_time_factors_are_rejected() {
   for factor in [0.0_f64, -1.0, f64::INFINITY, f64::NAN] {
     let outcome = catch_unwind(AssertUnwindSafe(|| {
-      let _ = FraktorSpec::with_time_factor(SPEC_SYSTEM_NAME, factor);
+      let _ = TestTimeFactor::new(factor);
     }));
     assert!(outcome.is_err(), "a time factor of {factor} must be rejected");
   }
@@ -186,7 +187,7 @@ fn await_cond_returns_early_when_an_actor_message_delivered_during_the_wait_make
 // for less than the raw `min` fails even when the dilated `max` would allow it.
 #[test]
 fn within_does_not_dilate_the_minimum() {
-  let mut spec = FraktorSpec::with_time_factor(SPEC_SYSTEM_NAME, 2.0);
+  let mut spec = FraktorSpec::with_time_factor(SPEC_SYSTEM_NAME, TestTimeFactor::new(2.0));
 
   let payload = expect_failure(AssertUnwindSafe(|| {
     spec.within_range(Duration::from_millis(400), Duration::from_millis(300), |_spec| {
@@ -205,7 +206,7 @@ fn within_does_not_dilate_the_minimum() {
 
 #[test]
 fn within_accepts_a_body_between_the_raw_and_dilated_minimum_and_returns_its_value() {
-  let mut spec = FraktorSpec::with_time_factor(SPEC_SYSTEM_NAME, 2.0);
+  let mut spec = FraktorSpec::with_time_factor(SPEC_SYSTEM_NAME, TestTimeFactor::new(2.0));
   let min = Duration::from_secs(1);
   let max = Duration::from_secs(2);
   let expected = "within body value";
@@ -256,7 +257,7 @@ fn a_nested_within_restores_the_outer_deadline() {
 fn a_panicking_within_restores_the_outer_deadline() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
 
-  let _ = spec.within_range(Duration::ZERO, Duration::from_secs(2), |spec| {
+  let outer = spec.within_range(Duration::ZERO, Duration::from_secs(2), |spec| {
     let payload = expect_failure(AssertUnwindSafe(|| {
       spec.within_range(Duration::ZERO, Duration::from_millis(100), |_spec| {
         panic!("body fails inside the inner scope");
@@ -266,7 +267,6 @@ fn a_panicking_within_restores_the_outer_deadline() {
     spec.remaining()
   });
 
-  let outer = spec.within_range(Duration::ZERO, Duration::from_secs(2), |spec| spec.remaining());
   assert!(
     outer > Duration::from_millis(200),
     "the outer deadline must be restored after a panicking inner scope, got {outer:?}"

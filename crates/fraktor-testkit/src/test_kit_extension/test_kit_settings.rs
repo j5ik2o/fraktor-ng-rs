@@ -5,12 +5,13 @@ use core::time::Duration;
 use fraktor_actor::kernel::actor_system::ActorSystem;
 use fraktor_actor::kernel::timeout::Timeout;
 
+use crate::test_kit_extension::TestTimeFactor;
+
 #[cfg(test)]
 #[path = "test_kit_settings_test.rs"]
 mod tests;
 
 // Defaults from `testkit/src/main/resources/reference.conf` in Pekko v1.7.1.
-const TEST_TIME_FACTOR: f64 = 1.0;
 const SINGLE_EXPECT_DEFAULT_TIMEOUT: Duration = Duration::from_secs(3);
 const EXPECT_NO_MESSAGE_DEFAULT_TIMEOUT: Duration = Duration::from_millis(100);
 const TEST_EVENT_FILTER_LEEWAY: Duration = Duration::from_secs(3);
@@ -26,7 +27,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 /// `DefaultTimeout` and `FraktorSpec::test_kit_settings`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TestKitSettings {
-  test_time_factor: f64,
+  test_time_factor: TestTimeFactor,
   single_expect_default_timeout: Duration,
   expect_no_message_default_timeout: Duration,
   test_event_filter_leeway: Duration,
@@ -36,24 +37,12 @@ pub struct TestKitSettings {
 impl TestKitSettings {
   /// Returns the settings for the given actor system.
   pub fn from_system(_system: &ActorSystem) -> Self {
-    Self::build(TEST_TIME_FACTOR)
+    Self::with_time_factor(TestTimeFactor::default())
   }
 
   /// Returns the settings with `factor` as `fraktor.test.timefactor`.
   ///
-  /// Mirrors `TestKitExtension.Settings`, which requires the factor to be a
-  /// finite positive number; any other value is rejected rather than silently
-  /// scaling waits by an unusable factor.
-  ///
-  /// # Panics
-  ///
-  /// Panics when `factor` is zero, negative, or not finite.
-  pub fn with_time_factor(_system: &ActorSystem, factor: f64) -> Self {
-    assert!(factor.is_finite() && factor > 0.0, "the time factor must be a finite positive number, was {factor}");
-    Self::build(factor)
-  }
-
-  fn build(test_time_factor: f64) -> Self {
+  pub(crate) fn with_time_factor(test_time_factor: TestTimeFactor) -> Self {
     Self {
       test_time_factor,
       single_expect_default_timeout: SINGLE_EXPECT_DEFAULT_TIMEOUT,
@@ -65,7 +54,7 @@ impl TestKitSettings {
 
   /// Returns `fraktor.test.timefactor`.
   pub fn test_time_factor(&self) -> f64 {
-    self.test_time_factor
+    self.test_time_factor.value()
   }
 
   /// Returns `fraktor.test.single-expect-default`.
@@ -94,6 +83,6 @@ impl TestKitSettings {
   /// Mirrors `org.apache.pekko.testkit.TestKitSettings.dilated`, used by the
   /// test kit to scale every waiting time.
   pub fn dilated(&self, duration: Duration) -> Duration {
-    duration.mul_f64(self.test_time_factor)
+    self.test_time_factor.dilate(duration)
   }
 }

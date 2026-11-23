@@ -17,6 +17,7 @@ use std::time::Instant;
 
 use fraktor_testkit::fraktorspec::FraktorSpec;
 use fraktor_testkit::test_kit::TestProbe;
+use fraktor_testkit::test_kit_extension::TestTimeFactor;
 
 const CUSTOM_SPEC_SYSTEM_NAME: &str = "PekkoCustomSpec";
 
@@ -39,7 +40,9 @@ impl TestTimeSpecCase {
     // The original passes the time factor to the spec constructor. The port
     // expresses the same call through the spec's time-factor entry point so
     // that `test_kit_settings().dilated` scales by 2.0.
-    Self { fraktor_spec: FraktorSpec::with_time_factor(CUSTOM_SPEC_SYSTEM_NAME, test_time_factor()) }
+    Self {
+      fraktor_spec: FraktorSpec::with_time_factor(CUSTOM_SPEC_SYSTEM_NAME, TestTimeFactor::new(test_time_factor())),
+    }
   }
 
   fn test_probe(&mut self) -> TestProbe {

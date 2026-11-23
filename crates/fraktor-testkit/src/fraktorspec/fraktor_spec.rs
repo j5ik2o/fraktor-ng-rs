@@ -19,6 +19,7 @@ use crate::test_kit::expected_messages::ClassOf;
 use crate::test_kit::AutoPilot;
 use crate::test_kit::TestKit;
 use crate::test_kit_extension::TestKitSettings;
+use crate::test_kit_extension::TestTimeFactor;
 
 #[cfg(test)]
 #[path = "fraktor_spec_test.rs"]
@@ -56,22 +57,22 @@ impl FraktorSpec {
   ///
   /// Mirrors `PekkoSpec(Map("pekko.test.timefactor" -> factor))`: every dilated
   /// duration the spec and the probes built from it use is scaled by `factor`.
-  ///
-  /// # Panics
-  ///
-  /// Panics when `factor` is zero, negative, or not finite.
-  pub fn with_time_factor(system_name: &str, factor: f64) -> Self {
+  pub fn with_time_factor(system_name: &str, factor: TestTimeFactor) -> Self {
     Self::with_hooks_and_settings(system_name, Box::new(NoHooks), Some(factor))
   }
 
-  fn with_hooks_and_settings(system_name: &str, hooks: Box<dyn FraktorSpecHooks>, factor: Option<f64>) -> Self {
+  fn with_hooks_and_settings(
+    system_name: &str,
+    hooks: Box<dyn FraktorSpecHooks>,
+    factor: Option<TestTimeFactor>,
+  ) -> Self {
     let system =
       ActorSystem::with_failure_catcher(system_name, Arc::new(ChannelBoundary::new()), Arc::new(UnwindCatcher));
     let registry = Arc::new(EventSinkRegistry::new());
     system.set_event_sink(registry);
     fraktor_actor::adaptor::attach_wait_driver(&system);
     let settings = match factor {
-      | Some(factor) => TestKitSettings::with_time_factor(&system, factor),
+      | Some(factor) => TestKitSettings::with_time_factor(factor),
       | None => TestKitSettings::from_system(&system),
     };
     let mut spec = Self { test_kit: TestKit::with_settings(system, settings), hooks, terminated: false };
