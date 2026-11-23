@@ -3242,25 +3242,25 @@ nodes:
     module: actor-tests
     class: ListenerSpec
     test_cases_approx: 1
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
   needs:
-    testkit: ['extends-pekko-spec', 'pekko-spec', 'default-timeout', 'test-latch']
+    testkit: ['extends-pekko-spec', 'pekko-spec', 'test-actor', 'test-probe', 'fish-for-message', 'expect-no-message']
     premise_flags: []
   depends_on_impl:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 1
+    ported: 1
+    passing: 1
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/listener_spec.rs
+  goal: G0issue113
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/LocalActorRefProviderSpec.scala
   name: actor-tests:LocalActorRefProviderSpec
   kind: test
