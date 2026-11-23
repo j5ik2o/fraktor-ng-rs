@@ -9,7 +9,11 @@ use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::next_actor_ref;
 use crate::kernel::supervision::Directive;
 use crate::kernel::supervision::FailureKind;
+use crate::kernel::supervision::RestartLimit;
+use crate::kernel::supervision::RestartWindow;
 use crate::kernel::supervision::SupervisorStrategy;
+
+use core::time::Duration;
 
 /// Builds a handle the decider tests pass in place of a failing child.
 fn child_ref(name: &str) -> ActorRef {
@@ -214,4 +218,54 @@ fn a_cloned_strategy_preserves_the_decider_and_retry_limit() {
     assert_eq!(strategy.decide_for_child(&child, count, failure), expected);
     assert_eq!(cloned.decide_for_child(&child, count, failure), expected);
   }
+}
+
+#[test]
+fn one_for_one_without_a_maximum_and_no_window_restarts_without_a_limit() {
+  let strategy = SupervisorStrategy::one_for_one_with_window(RestartLimit::unlimited(), RestartWindow::Unbounded);
+
+  assert_eq!(strategy.decide(0, FailureKind::MessageHandling), Directive::Restart);
+  assert_eq!(strategy.decide(1_000, FailureKind::MessageHandling), Directive::Restart);
+  assert!(strategy.restart_permission().is_none(), "no window uses the directive decision, not the history");
+}
+
+#[test]
+fn one_for_one_without_a_maximum_still_stops_an_initialization_failure() {
+  let strategy = SupervisorStrategy::one_for_one_with_window(RestartLimit::unlimited(), RestartWindow::Unbounded);
+
+  assert_eq!(strategy.decide(0, FailureKind::Initialization), Directive::Stop);
+}
+
+#[test]
+fn one_for_one_with_a_finite_window_defers_the_limit_to_the_history() {
+  let child = child_ref("child");
+  let strategy = SupervisorStrategy::one_for_one_with_window(
+    RestartLimit::new(2),
+    RestartWindow::Within(Duration::from_millis(500)),
+  )
+  .with_decider(|_, _| Directive::Restart);
+
+  // A finite window must not pre-empt the restart from the cumulative count;
+  // the history is asked after the directive, so a high count still restarts.
+  assert_eq!(strategy.decide_for_child(&child, 5, FailureKind::MessageHandling), Directive::Restart);
+  assert_eq!(strategy.decide(5, FailureKind::MessageHandling), Directive::Restart);
+}
+
+#[test]
+fn one_for_one_finite_window_reports_its_limit_and_window() {
+  let window = Duration::from_secs(1);
+  let finite = SupervisorStrategy::one_for_one_with_window(RestartLimit::new(2), RestartWindow::Within(window));
+  let finite_permission = finite.restart_permission().expect("a finite window is checked against the history");
+  assert!(finite_permission.0.permits(2));
+  assert!(!finite_permission.0.permits(3));
+  assert_eq!(finite_permission.1, Some(window));
+
+  // An omitted maximum with a finite window resolves to one restart per window.
+  let unspecified =
+    SupervisorStrategy::one_for_one_with_window(RestartLimit::unlimited(), RestartWindow::Within(window));
+  let unspecified_permission =
+    unspecified.restart_permission().expect("a finite window is checked against the history");
+  assert!(unspecified_permission.0.permits(1));
+  assert!(!unspecified_permission.0.permits(2), "the omitted maximum defaults to one inside the window");
+  assert_eq!(unspecified_permission.1, Some(window));
 }

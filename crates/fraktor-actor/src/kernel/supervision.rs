@@ -14,7 +14,7 @@ pub use failure_catcher::FailureCatcher;
 pub use failure_kind::FailureKind;
 
 pub(crate) use restart_history::RestartHistory;
-pub(crate) use restart_limit::RestartLimit;
+pub use restart_limit::RestartLimit;
 
 pub use restart_window::RestartWindow;
 pub use run_outcome::RunOutcome;

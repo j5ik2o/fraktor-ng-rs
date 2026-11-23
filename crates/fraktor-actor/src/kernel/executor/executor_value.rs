@@ -26,6 +26,8 @@ use crate::kernel::message::Message;
 use crate::kernel::supervision::Directive;
 use crate::kernel::supervision::FailureCatcher;
 use crate::kernel::supervision::FailureKind;
+use crate::kernel::supervision::RestartHistory;
+use crate::kernel::supervision::RestartLimit;
 use crate::kernel::supervision::RunOutcome;
 use crate::kernel::supervision::SupervisorStrategy;
 use crate::kernel::Clock;
@@ -598,7 +600,7 @@ impl Executor {
   /// Stopping those children can run child-terminated hooks that stop other
   /// actors and remove their cells, so the index taken at the top of the loop
   /// may no longer address this actor after the stops. The cell is found again
-  /// before the retry is recorded, as Pekko's `Children` keeps the same child
+  /// before creation is retried, as Pekko's `Children` keeps the same child
   /// across attempts; a cell that is gone leaves nothing to retry.
   fn create_initial(&mut self, mut index: usize) {
     let self_ref = self.cells[index].self_ref();
@@ -658,13 +660,17 @@ impl Executor {
           let decision = self.decide_catching(strategy, &self_ref, count, FailureKind::Initialization);
           match decision {
             | Ok(Directive::Restart) => {
+              if !self.grant_restart_at(index) {
+                self.stop(&self_ref);
+                self.finish_boundary();
+                return;
+              }
               self.stop_children_of(&self_ref);
               let Some(found) = self.cells.iter().position(|cell| cell.accepts(&self_ref)) else {
                 self.finish_boundary();
                 return;
               };
               index = found;
-              self.cells[index].record_restart_request();
             },
             | Ok(Directive::Stop) => {
               self.stop(&self_ref);
@@ -1189,8 +1195,12 @@ impl Executor {
     let decision = self.decide_catching(strategy, target, count, FailureKind::MessageHandling);
     match decision {
       | Ok(Directive::Restart) => {
-        cell.record_restart_request();
-        self.restart_cell(target, cell, FailureKind::MessageHandling, cause_name, message, original_sender);
+        if self.grant_restart(&mut cell) {
+          self.restart_cell(target, cell, FailureKind::MessageHandling, cause_name, message, original_sender);
+        } else {
+          self.cells.push(cell);
+          self.stop_with_sender(target, original_sender);
+        }
       },
       | Ok(Directive::Stop) => {
         self.cells.push(cell);
@@ -1201,6 +1211,70 @@ impl Executor {
         self.fail_supervisor(supervisor, target, &message);
       },
     }
+  }
+
+  /// Records a restart request on `cell` after the strategy chose `Restart`,
+  /// and answers whether that restart is permitted.
+  ///
+  /// Mirrors `OneForOneStrategy.processFailure`, which restarts only when
+  /// `stats.requestRestartPermission(retriesWindow)` grants it and stops the
+  /// child otherwise. A strategy with a finite window answers through the
+  /// child's [`RestartHistory`](crate::kernel::supervision) at `now`, which
+  /// both counts the request and opens or reopens the window in one step; the
+  /// plain cumulative record must not be added on top or the request would
+  /// count twice. A strategy without a finite window keeps the existing
+  /// contract: the directive already applied any cumulative limit. An
+  /// unlimited one-for-one strategy does not record the request.
+  fn grant_restart(&mut self, cell: &mut ActorCell) -> bool {
+    let strategy = self.effective_strategy(cell);
+    match strategy.restart_permission() {
+      | Some((limit, window)) => self.apply_permission(cell, limit, window),
+      | None => {
+        if strategy.records_plain_restart() {
+          cell.record_restart_request();
+        }
+        true
+      },
+    }
+  }
+
+  /// Records a restart request on the cell at `index` and answers whether the
+  /// restart is permitted, as [`Executor::grant_restart`] does for a taken cell.
+  fn grant_restart_at(&mut self, index: usize) -> bool {
+    let strategy = self.effective_strategy(&self.cells[index]);
+    match strategy.restart_permission() {
+      | Some((limit, window)) => {
+        let mut history = self.cells[index].restart_history();
+        let allowed = self.apply_permission_to(&mut history, limit, window);
+        self.cells[index].set_restart_history(history);
+        allowed
+      },
+      | None => {
+        if strategy.records_plain_restart() {
+          self.cells[index].record_restart_request();
+        }
+        true
+      },
+    }
+  }
+
+  /// Answers whether a restart is permitted for `cell` under `limit` and
+  /// `window`, updating its history, without the plain cumulative record.
+  fn apply_permission(&mut self, cell: &mut ActorCell, limit: RestartLimit, window: Option<Duration>) -> bool {
+    let mut history = cell.restart_history();
+    let allowed = self.apply_permission_to(&mut history, limit, window);
+    cell.set_restart_history(history);
+    allowed
+  }
+
+  /// Reads the monotonic clock only when `limit` and `window` need it, then asks
+  /// `history` to permit the restart, as `AllForOneStrategy.processFailure` does.
+  ///
+  /// A forbidding limit denies without reading the clock, so a finite window over
+  /// a zero limit keeps the custom-boundary contract that supplies no clock.
+  fn apply_permission_to(&self, history: &mut RestartHistory, limit: RestartLimit, window: Option<Duration>) -> bool {
+    let now = if window.is_some() && !limit.forbids_restart() { self.now() } else { Duration::ZERO };
+    history.request_permission(limit, window, now)
   }
 
   /// Applies an all-for-one decision: restart every direct sibling when all of
@@ -1484,8 +1558,12 @@ impl Executor {
     let decision = self.decide_catching(strategy, recipient, count, FailureKind::Killed);
     match decision {
       | Ok(Directive::Restart) => {
-        cell.record_restart_request();
-        self.restart_cell(recipient, cell, FailureKind::Killed, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE, None);
+        if self.grant_restart(&mut cell) {
+          self.restart_cell(recipient, cell, FailureKind::Killed, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE, None);
+        } else {
+          self.cells.push(cell);
+          self.stop(recipient);
+        }
       },
       | Ok(Directive::Stop) => {
         self.cells.push(cell);
