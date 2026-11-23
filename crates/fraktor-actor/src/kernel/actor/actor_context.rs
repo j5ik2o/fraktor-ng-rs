@@ -153,9 +153,8 @@ impl<'a> ActorContext<'a> {
   ///
   /// Mirrors `ActorContext.unwatch(ref)`, which returns `ref`. Removing a watch
   /// that was never registered changes nothing, as Pekko's `unwatch` is
-  /// idempotent. An actor uses this in `pre_restart` to drop its watch on a
-  /// child it is about to stop, so the child's own stop does not reach it as a
-  /// `Terminated`.
+  /// idempotent. Cancels a DeathWatch notice that is still queued for delivery
+  /// to this actor.
   pub fn unwatch(&mut self, target: &ActorRef) -> ActorRef {
     let watcher = self.self_ref();
     self.executor.unwatch(&watcher, target);

@@ -76,6 +76,60 @@ impl Actor for Guardian {
   fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
 }
 
+fn death_watch_executor() -> Executor {
+  let address = crate::kernel::address::Address::new("pekko", "DeathWatch");
+  let root = crate::kernel::actor_path::RootActorPath::new(address);
+  Executor::new(ActorPath::from_root(root), Arc::new(ChannelBoundary::new()))
+}
+
+#[test]
+fn a_detached_watch_survives_an_old_reference_termination_with_the_same_uid() {
+  let mut executor = death_watch_executor();
+  let old = executor.spawn_user(Props::new(|| Guardian));
+  let watcher = executor.spawn_user(Props::new(|| Guardian));
+  executor.stop(&old);
+  let detached = executor.stopped_noop_ref(&old);
+  assert_eq!(detached, old);
+  executor.watch(&watcher, &detached);
+
+  assert_eq!(executor.watchers.len(), 1);
+  executor.notify_watchers(&old, true, false);
+  assert!(executor.pending_terminations.is_empty());
+  assert_eq!(executor.watchers.len(), 1);
+  assert!(executor.watchers[0].1.is_detached());
+
+  executor.unwatch(&watcher, &detached);
+  assert!(executor.watchers.is_empty());
+}
+
+struct TerminationRecorder(Arc<Mutex<Vec<ActorRef>>>);
+
+impl Actor for TerminationRecorder {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
+    if let Some(notice) = message.downcast_ref::<Terminated>() {
+      self.0.lock().unwrap().push(notice.target().clone());
+    }
+  }
+}
+
+#[test]
+fn unwatch_cancels_the_queued_notice_without_cancelling_a_new_watch() {
+  let mut executor = death_watch_executor();
+  let target = executor.spawn_user(Props::new(|| Guardian));
+  let received = Arc::new(Mutex::new(Vec::new()));
+  let inbox = received.clone();
+  let watcher = executor.spawn_user(Props::new(move || TerminationRecorder(inbox.clone())));
+  executor.stop(&target);
+  // Force notices through the boundary queue as well as the local executor.
+  watcher.tell("queued first", watcher.clone());
+  executor.watch(&watcher, &target);
+  executor.unwatch(&watcher, &target);
+  executor.watch(&watcher, &target);
+  executor.run_until_idle();
+
+  assert_eq!(*received.lock().unwrap(), alloc::vec![target]);
+}
+
 struct RecoveringParent {
   observations: Arc<Mutex<RecoveryObservations>>,
   failures: usize,
