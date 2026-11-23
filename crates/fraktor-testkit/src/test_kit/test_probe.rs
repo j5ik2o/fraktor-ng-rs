@@ -46,7 +46,19 @@ impl TestProbe {
   /// can share a name.
   pub fn with_name(system: &mut ActorSystem, name: &str) -> Self {
     let settings = TestKitSettings::from_system(system);
-    let base = TestKitBase::new(system.downgrade(), settings, Some(name));
+    Self::with_settings_and_name(system, settings, Some(name))
+  }
+
+  /// Creates a probe in `system` using `settings` for its waits.
+  ///
+  /// A test that built its `FraktorSpec` with a time factor passes the spec's
+  /// settings here so the probe's waits use the same factor.
+  pub fn with_settings(system: &mut ActorSystem, settings: TestKitSettings) -> Self {
+    Self::with_settings_and_name(system, settings, None)
+  }
+
+  fn with_settings_and_name(system: &mut ActorSystem, settings: TestKitSettings, name: Option<&str>) -> Self {
+    let base = TestKitBase::new(system.downgrade(), settings, name);
     Self { base }
   }
 
@@ -170,6 +182,17 @@ impl TestProbe {
   /// settings.expect_no_message_default_timeout())`.
   pub fn expect_no_message(&mut self, max: Duration) {
     self.base.expect_no_message(max);
+  }
+
+  /// Waits until `condition` holds or the dilated `max` has passed.
+  ///
+  /// Mirrors `TestKitBase.awaitCond`: the timeout is scaled by the time factor,
+  /// the condition is evaluated before the first wait, and the actor system
+  /// keeps running between evaluations. A condition that never holds fails with
+  /// a `timeout` assertion.
+  pub fn await_cond(&mut self, condition: impl Fn() -> bool, max: Duration) {
+    let max = self.base.settings().dilated(max);
+    self.base.await_cond(condition, max);
   }
 
   /// Waits until `predicate` accepts a message, dropping the ones before it.

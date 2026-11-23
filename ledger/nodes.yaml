@@ -33091,7 +33091,7 @@ nodes:
     module: testkit
     class: TestTimeSpec
     test_cases_approx: 2
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -33102,11 +33102,11 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 3
+    ported: 3
+    passing: 3
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-testkit
+    test_file: crates/fraktor-testkit/tests/test_time_spec.rs
+  goal: G0issue121

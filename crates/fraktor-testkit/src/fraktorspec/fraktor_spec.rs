@@ -49,12 +49,32 @@ impl FraktorSpec {
   /// Creates the actor system with the given name, its test kit, and the test
   /// actor, then runs `at_startup`.
   pub fn with_hooks(system_name: &str, hooks: Box<dyn FraktorSpecHooks>) -> Self {
+    Self::with_hooks_and_settings(system_name, hooks, None)
+  }
+
+  /// Creates the spec with `factor` as the test time factor and no hooks.
+  ///
+  /// Mirrors `PekkoSpec(Map("pekko.test.timefactor" -> factor))`: every dilated
+  /// duration the spec and the probes built from it use is scaled by `factor`.
+  ///
+  /// # Panics
+  ///
+  /// Panics when `factor` is zero, negative, or not finite.
+  pub fn with_time_factor(system_name: &str, factor: f64) -> Self {
+    Self::with_hooks_and_settings(system_name, Box::new(NoHooks), Some(factor))
+  }
+
+  fn with_hooks_and_settings(system_name: &str, hooks: Box<dyn FraktorSpecHooks>, factor: Option<f64>) -> Self {
     let system =
       ActorSystem::with_failure_catcher(system_name, Arc::new(ChannelBoundary::new()), Arc::new(UnwindCatcher));
     let registry = Arc::new(EventSinkRegistry::new());
     system.set_event_sink(registry);
     fraktor_actor::adaptor::attach_wait_driver(&system);
-    let mut spec = Self { test_kit: TestKit::new(system), hooks, terminated: false };
+    let settings = match factor {
+      | Some(factor) => TestKitSettings::with_time_factor(&system, factor),
+      | None => TestKitSettings::from_system(&system),
+    };
+    let mut spec = Self { test_kit: TestKit::with_settings(system, settings), hooks, terminated: false };
     spec.hooks.at_startup(&mut spec.test_kit);
     spec
   }
@@ -178,10 +198,32 @@ impl FraktorSpec {
   /// call and by `receiveOne`, which are the only two places that set it back
   /// to `false`.
   pub fn within<T>(&mut self, max: Duration, body: impl FnOnce(&mut Self) -> T) -> T {
+    self.within_range(Duration::ZERO, max, body)
+  }
+
+  /// Runs `body` with its waits clamped to the `max` that is left, and checks
+  /// that it ran for at least `min` and at most the scope.
+  ///
+  /// Mirrors `TestKitBase.within(min, max)`: `max` is dilated but `min` is not.
+  /// When the surrounding scope has less than `min` left, the call fails before
+  /// running `body`; otherwise the waits clamp to the scope's deadline. Once
+  /// `body` returns, the call fails when it ran for less than `min`, and -- when
+  /// the last wait was not a no-message check -- for longer than the scope. The
+  /// deadline is restored even when `body` fails.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the surrounding scope cannot satisfy `min`, when `body` ran for
+  /// less than `min`, or when it exceeded the scope.
+  pub fn within_range<T>(&mut self, min: Duration, max: Duration, body: impl FnOnce(&mut Self) -> T) -> T {
     let scope = self.test_kit.scope();
     let previous = *scope.borrow();
     let started = Instant::now();
-    let requested = started + self.test_kit.test_kit_settings().dilated(max);
+    let dilated_max = self.test_kit.test_kit_settings().dilated(max);
+    let remaining =
+      previous.map_or(f64::INFINITY, |previous| previous.saturating_duration_since(started).as_secs_f64());
+    assert!(remaining >= min.as_secs_f64(), "required min time {min:?} not possible, only {remaining}s left");
+    let requested = started + dilated_max;
     let deadline = previous.map_or(requested, |previous| requested.min(previous));
     let max_diff = deadline.saturating_duration_since(started);
     *scope.borrow_mut() = Some(deadline);
@@ -189,10 +231,23 @@ impl FraktorSpec {
     let _reset = ScopeReset { scope, previous };
     let value = body(self);
     let elapsed = started.elapsed();
+    assert!(min <= elapsed, "block took {elapsed:?}, should at least have been {min:?}");
     if !self.test_kit.last_was_no_msg() {
       assert!(elapsed <= max_diff, "block took {elapsed:?}, exceeding {max_diff:?}");
     }
     value
+  }
+
+  /// Returns the time left in the innermost `within` scope.
+  ///
+  /// Mirrors `TestKitBase.remaining`: the time left saturates to zero once the
+  /// deadline has passed.
+  ///
+  /// # Panics
+  ///
+  /// Panics when called outside of a `within` block.
+  pub fn remaining(&self) -> Duration {
+    self.test_kit.remaining()
   }
 
   /// Stops the actor system, corresponding to Pekko's `afterAll`.

@@ -36,8 +36,26 @@ pub struct TestKitSettings {
 impl TestKitSettings {
   /// Returns the settings for the given actor system.
   pub fn from_system(_system: &ActorSystem) -> Self {
+    Self::build(TEST_TIME_FACTOR)
+  }
+
+  /// Returns the settings with `factor` as `fraktor.test.timefactor`.
+  ///
+  /// Mirrors `TestKitExtension.Settings`, which requires the factor to be a
+  /// finite positive number; any other value is rejected rather than silently
+  /// scaling waits by an unusable factor.
+  ///
+  /// # Panics
+  ///
+  /// Panics when `factor` is zero, negative, or not finite.
+  pub fn with_time_factor(_system: &ActorSystem, factor: f64) -> Self {
+    assert!(factor.is_finite() && factor > 0.0, "the time factor must be a finite positive number, was {factor}");
+    Self::build(factor)
+  }
+
+  fn build(test_time_factor: f64) -> Self {
     Self {
-      test_time_factor: TEST_TIME_FACTOR,
+      test_time_factor,
       single_expect_default_timeout: SINGLE_EXPECT_DEFAULT_TIMEOUT,
       expect_no_message_default_timeout: EXPECT_NO_MESSAGE_DEFAULT_TIMEOUT,
       test_event_filter_leeway: TEST_EVENT_FILTER_LEEWAY,
