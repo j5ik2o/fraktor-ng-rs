@@ -2,10 +2,13 @@
 
 use alloc::sync::Arc;
 
+use core::time::Duration;
+
 use crate::kernel::actor::ActorContext;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::supervision::Directive;
 use crate::kernel::supervision::FailureKind;
+use crate::kernel::supervision::RestartLimit;
 
 #[cfg(test)]
 #[path = "supervisor_strategy_test.rs"]
@@ -25,6 +28,16 @@ pub type Decider = dyn Fn(&ActorRef, FailureKind) -> Directive + Send + Sync;
 /// children)`. The port lends the owner's context so the hook can start a
 /// replacement child, as the Pekko hook does.
 pub type ChildTerminated = dyn Fn(&mut ActorContext<'_>, &ActorRef, &[ActorRef]) + Send + Sync;
+
+/// Restarts the exception kinds represented by this port.
+///
+/// Mirrors `SupervisorStrategy.makeDecider(List(classOf[Exception]))`:
+/// initialization and killed exceptions also inherit from `Exception`, so
+/// they request a restart just like message-handling exceptions. The
+/// all-for-one policy then checks every sibling's restart permission.
+fn restart_on_exception(_child: &ActorRef, _failure: FailureKind) -> Directive {
+  Directive::Restart
+}
 
 /// How a parent handles a child that fails.
 ///
@@ -81,9 +94,23 @@ enum Policy {
   /// prevents.
   OneForOne {
     /// The number of restart requests that are allowed.
-    max_retries: u32,
+    max_retries: RestartLimit,
     /// Whether a failure during startup is restarted instead of stopped.
     restart_initialization_failures: bool,
+  },
+  /// Restart all the direct children of a parent, or stop them all.
+  ///
+  /// Mirrors `AllForOneStrategy`: the failed child's failure is treated as one
+  /// unit, and every direct sibling restarts when all of them may still
+  /// restart within the retry count and the time window, or every one stops
+  /// when any of them may not. `max_retries` is the number of restart requests
+  /// each child may make, and `window` is the optional time range they are
+  /// counted in.
+  AllForOne {
+    /// The number of restart requests that are allowed per child.
+    max_retries: RestartLimit,
+    /// The time range the restart requests are counted in, if any.
+    window: Option<Duration>,
   },
 }
 
@@ -110,7 +137,7 @@ impl SupervisorStrategy {
   /// is stopped, as the default decider does for `ActorInitializationException`.
   pub fn one_for_one(max_retries: u32) -> Self {
     Self {
-      policy: Policy::OneForOne { max_retries, restart_initialization_failures: false },
+      policy: Policy::OneForOne { max_retries: RestartLimit::new(max_retries), restart_initialization_failures: false },
       decider: None,
       child_terminated: None,
     }
@@ -124,9 +151,47 @@ impl SupervisorStrategy {
   /// uses to count the startup attempts of a child that never starts.
   pub fn one_for_one_restarting_initialization_failures(max_retries: u32) -> Self {
     Self {
-      policy: Policy::OneForOne { max_retries, restart_initialization_failures: true },
+      policy: Policy::OneForOne { max_retries: RestartLimit::new(max_retries), restart_initialization_failures: true },
       decider: None,
       child_terminated: None,
+    }
+  }
+
+  /// Returns the all-for-one strategy that restarts or stops every direct
+  /// sibling together.
+  ///
+  /// Mirrors `AllForOneStrategy(maxNrOfRetries, withinTimeRange)(List(classOf[Exception]))`:
+  /// the installed decider requests a restart for message-handling,
+  /// initialization, and killed exceptions. Every sibling must grant restart
+  /// permission before any sibling restarts; otherwise all siblings stop.
+  /// [`SupervisorStrategy::with_decider`] replaces that decision when needed.
+  /// `within` is the time range the restart count is measured in;
+  /// [`Duration::MAX`] means no range, as `Duration.Inf` does in Pekko.
+  /// Install a monotonic clock on the actor system before starting actors
+  /// supervised with a finite range.
+  pub fn all_for_one(max_retries: u32, within: Duration) -> Self {
+    let window = if within == Duration::MAX { None } else { Some(within) };
+    Self {
+      policy: Policy::AllForOne { max_retries: RestartLimit::new(max_retries), window },
+      decider: Some(Arc::new(restart_on_exception)),
+      child_terminated: None,
+    }
+  }
+
+  /// Returns whether this strategy applies a restart or stop to all siblings.
+  pub(crate) fn is_all_for_one(&self) -> bool {
+    matches!(self.policy, Policy::AllForOne { .. })
+  }
+
+  /// Returns the per-child restart limit and time window of an all-for-one
+  /// strategy.
+  ///
+  /// Returns `None` for a strategy that is not all-for-one. The pair is what a
+  /// [`RestartHistory`](crate::kernel::supervision) is asked to permit against.
+  pub(crate) fn restart_permission(&self) -> Option<(RestartLimit, Option<Duration>)> {
+    match self.policy {
+      | Policy::AllForOne { max_retries, window } => Some((max_retries, window)),
+      | Policy::RestartAlways | Policy::StopAlways | Policy::OneForOne { .. } => None,
     }
   }
 
@@ -173,12 +238,13 @@ impl SupervisorStrategy {
         | FailureKind::Initialization | FailureKind::Killed => Directive::Stop,
       },
       | Policy::StopAlways => Directive::Stop,
+      | Policy::AllForOne { .. } => Directive::Restart,
       | Policy::OneForOne { max_retries, restart_initialization_failures } => {
         if failure == FailureKind::Initialization && !restart_initialization_failures {
           return Directive::Stop;
         }
         let count = restart_count.saturating_add(1);
-        if count <= max_retries {
+        if max_retries.permits(count) {
           Directive::Restart
         } else {
           Directive::Stop
@@ -206,13 +272,13 @@ impl SupervisorStrategy {
     let directive = decider(child, failure);
     match self.policy {
       | Policy::OneForOne { max_retries, .. } => {
-        if directive == Directive::Restart && restart_count.saturating_add(1) > max_retries {
+        if directive == Directive::Restart && !max_retries.permits(restart_count.saturating_add(1)) {
           Directive::Stop
         } else {
           directive
         }
       },
-      | Policy::RestartAlways | Policy::StopAlways => directive,
+      | Policy::AllForOne { .. } | Policy::RestartAlways | Policy::StopAlways => directive,
     }
   }
 
@@ -243,6 +309,11 @@ impl core::fmt::Debug for SupervisorStrategy {
         .debug_struct("SupervisorStrategy::OneForOne")
         .field("max_retries", &max_retries)
         .field("restart_initialization_failures", &restart_initialization_failures)
+        .finish(),
+      | Policy::AllForOne { max_retries, window } => formatter
+        .debug_struct("SupervisorStrategy::AllForOne")
+        .field("max_retries", &max_retries)
+        .field("window", &window)
         .finish(),
     }
   }

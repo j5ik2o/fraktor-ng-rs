@@ -36,6 +36,21 @@ pub trait Actor {
   /// default.
   fn post_stop(&mut self) {}
 
+  /// Runs after the actor has stopped, with the actor's context lent out.
+  ///
+  /// Mirrors `org.apache.pekko.actor.Actor.postStop` as the stop path calls it,
+  /// but carries the context so a behaviour can reach `sender()`, which the
+  /// original's `postStop` reads. The port's [`Actor::post_stop`] has no
+  /// context, so this hook is the one the stop path runs; it defaults to
+  /// [`Actor::post_stop`], and a behaviour that only overrides `post_stop`
+  /// keeps working. During a failure stop, the context carries the sender of
+  /// the failing message. During an ordinary stop, it carries dead letters.
+  /// When the default `pre_restart` calls this hook, it passes its own context.
+  fn post_stop_with_context(&mut self, context: &mut ActorContext<'_>) {
+    let _ = context;
+    self.post_stop();
+  }
+
   /// Runs on the old instance before it is replaced by a restart.
   ///
   /// Mirrors `org.apache.pekko.actor.Actor.preRestart`. Pekko's default stops
@@ -45,7 +60,7 @@ pub trait Actor {
   fn pre_restart(&mut self, context: &mut ActorContext<'_>, reason: &(dyn Any + Send)) {
     let _ = reason;
     context.stop_children();
-    self.post_stop();
+    self.post_stop_with_context(context);
   }
 
   /// Runs on the new instance after a restart re-created the actor.

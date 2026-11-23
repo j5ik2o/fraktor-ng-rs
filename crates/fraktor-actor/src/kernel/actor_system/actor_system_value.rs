@@ -78,6 +78,16 @@ impl ActorSystem {
     self.executor.borrow_mut().set_event_sink(sink);
   }
 
+  /// Installs the monotonic clock a time-windowed supervisor strategy reads.
+  ///
+  /// Mirrors the `System.nanoTime` clock a Pekko `withinTimeRange` reads. The
+  /// caller supplies the platform clock from the adaptor, so the kernel stays
+  /// free of the system clock. Install it before starting actors supervised
+  /// with a finite window. A strategy with no window never reads it.
+  pub fn set_clock(&self, clock: Arc<dyn crate::kernel::Clock>) {
+    self.executor.borrow_mut().set_clock(clock);
+  }
+
   fn root_path(name: &str) -> ActorPath {
     let root = RootActorPath::new(Address::new(LOCAL_PROTOCOL, name));
     ActorPath::from_root(root)
@@ -107,7 +117,9 @@ impl ActorSystem {
   /// Mirrors `org.apache.pekko.actor.ActorSystem.stop`, which asks the
   /// guardian to stop the actor.
   pub fn stop(&mut self, target: &ActorRef) {
-    self.executor.borrow_mut().stop(target);
+    let mut executor = self.executor.borrow_mut();
+    executor.stop(target);
+    executor.finish_boundary();
   }
 
   /// Registers `watcher` to receive the `Terminated` notice of `target`.

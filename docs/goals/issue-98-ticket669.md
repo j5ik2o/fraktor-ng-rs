@@ -1,6 +1,6 @@
 # ゴール G0issue98：Ticket669Spec
 
-状態: 定義済み・未発行（2026-11-22 の準備時点）。この文書は、GitHub issue #98（https://github.com/j5ik2o/fraktor-ng-rs/issues/98）の単一ノードのゴール定義である。`goal_complete_gate.py` の完了関門が先頭行から ID を取るため、ゴール ID は専用の `G0issue98` とする。
+GitHub issue #98（https://github.com/j5ik2o/fraktor-ng-rs/issues/98）の単一ノードの移植記録。`goal_complete_gate.py` が先頭行から専用のゴール ID `G0issue98` を読む。
 
 この準備タスク自体は、ゴール文書の作成と台帳への `goal: G0issue98` のタグ付けだけを行い、そこで止まる（Rust テスト作成、本番編集、`status` の `green` 化、CI・workflow 変更、後続タスクの登録・開始、PR 公開、merge はしない）。一方、この文書が定義するゴールそのものの完了は、後続の `fraktor-porting-ng` run が `status` を `unported` から green へ遷移させ、単一の merge-ready な PR として提出するところまでを指す。以下の完了条件と必須ゲートは、そのゴール完了（単一の merge-ready PR）に対する要求である。
 
@@ -15,9 +15,9 @@ requires: なし（前提とするテスト基盤は、G0a〜G0f が main に入
 
 ## 原典の実ケースと契約
 
-原典は `PekkoSpec` を継承し `BeforeAndAfterAll`・`ImplicitSender`・`DefaultTimeout` を混ぜる（`:25`）。外側に `"A supervised actor with lifecycle PERMANENT" should { ... }` という名前付きブロックがあり（`:36`）、その下にケースが 2 件ある。補助オブジェクト `Ticket669Spec` に `Supervised` アクターを定義する（`:59–76`）。
+原典は `PekkoSpec` を継承し `BeforeAndAfterAll`・`ImplicitSender`・`DefaultTimeout` を混ぜる（`:28`）。外側の `"A supervised actor with lifecycle PERMANENT" should { ... }` ブロック（`:36`）にケースが 2 件ある。補助オブジェクト `Ticket669Spec` に `Supervised` アクターを定義する（`:64–76`）。
 
-`Supervised`（`:59–76`）は受け取ったメッセージに対して常に `throw new Exception("test")` する（`:61–63`）。`preRestart(reason, msg)` を上書きし、`sender() ! "failure1"` を送る（`:69–71`）。`postStop()` を上書きし、`sender() ! "failure2"` を送る（`:73–75`）。
+`Supervised` は受け取ったメッセージに対して常に `throw new Exception("test")` する（`:65–67`）。`preRestart(reason, msg)` を上書きし、`sender() ! "failure1"` を送る（`:69–71`）。`postStop()` を上書きし、`sender() ! "failure2"` を送る（`:73–75`）。
 
 実ケース名は次の 2 件である。
 
@@ -186,3 +186,18 @@ uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.y
 1. 対象ノードの `goal: null` を `goal: G0issue98` に書き換える（台帳の差分は 1 行だけ。`ledger/nodes.yaml:4906`）。
 2. `status: unported` は変更しない（`:4888`）。`cases`・`rust`・`needs`・`depends_on_impl` など他の欄は変更しない。
 3. タグ付け後、`check_needs.py --goal G0issue98` は exit 0、`rollup.py --goal G0issue98` は「1 件・unported 1」で exit 1（未完了なので期待どおり）、`rollup.py --goal G0a`〜`G0f` はすべて exit 0 になることを、コミット前後の実際のコマンドで確定させる。
+
+## 移植結果
+
+| Pekko v1.7.1 のケース | Rust のテスト | 結果 |
+|:---|:---|:---|
+| `be able to reply on failure during preRestart` | `be_able_to_reply_on_failure_during_pre_restart` | 元の送信者へ `failure1` |
+| `be able to reply on failure during postStop` | `be_able_to_reply_on_failure_during_post_stop` | 元の送信者へ `failure2` |
+
+両ケースは、監督役への `Props` の ask、テストアクターからの送信、監督役の停止を通る。ログは受信時の panic に対応する `RuntimeException` 型とメッセージ `test` で絞り、各ケースで 1 件を確認した。台帳は原典 2 件、移植 2 件、成功 2 件、除外 0 件。
+
+実装前のゴール先端 `1265984086f192b3169e95e48a7773348726c9b9` に先行テストだけを載せた `cargo test -p fraktor-actor --test ticket669_spec` は exit 101 だった。`Actor::post_stop_with_context` が未定義で E0407 が 1 件、`SupervisorStrategy::all_for_one` が未定義で E0599 が 2 件出た。TAKT の自動ステップは前段応答の入力行を取得できず `unclassifiable` となった。同じ保存済み応答を渡して独立に実行した `verify_red.py` は `expected_compile_error`、`red_recorded=true`、`original_cases=null`、`excluded=0` を返した。
+
+再開実行は対象テストを通過した。TAKT が前段の `plan.md` を読み戻せず等価性レビューに入れなかったため、保存した差分を回収して原典との照合と検証を行った。時間窓内の許可は兄弟ごとに記録し、全員が許可される場合に再起動する。受信失敗時の送信者は失敗した子にだけ渡し、通常の停止フックには dead letters を渡す。既存の `post_stop` は追加フックの既定実装から呼ばれる。
+
+`cargo test -p fraktor-actor -p fraktor-testkit` は356件成功した。対象 needs、対象と G0a〜G0f の rollup、ゴール文書の検証26件、`verify_green.py`、clippy、fmt、aislop、syn-check も成功した。
