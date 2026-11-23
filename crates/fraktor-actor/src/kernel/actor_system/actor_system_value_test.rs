@@ -2402,6 +2402,50 @@ fn a_child_follows_the_strategy_of_its_restarted_parent() {
   assert!(system.is_actor_terminated(&kid_handle), "the child was not stopped by the new parent strategy");
 }
 
+#[test]
+fn unlimited_one_for_one_restarts_do_not_spend_a_later_limit() {
+  use crate::kernel::supervision::{RestartLimit, RestartWindow, SupervisorStrategy};
+
+  let creations = Arc::new(AtomicUsize::new(0));
+  let kid = Arc::new(Mutex::new(None));
+  let kid_post_restarts = Arc::new(AtomicUsize::new(0));
+  let mut system = with_catcher("RestartLimitTransition");
+  let parent = system.actor_of(Props::new({
+    let creations = Arc::clone(&creations);
+    let kid = Arc::clone(&kid);
+    let kid_post_restarts = Arc::clone(&kid_post_restarts);
+    move || {
+      let creation = creations.fetch_add(1, Ordering::SeqCst);
+      let strategy = if creation == 0 {
+        SupervisorStrategy::one_for_one_with_window(RestartLimit::unlimited(), RestartWindow::Unbounded)
+      } else {
+        SupervisorStrategy::one_for_one(1)
+      };
+      ChangesStrategyOnRestart { strategy, kid: Arc::clone(&kid), kid_post_restarts: Arc::clone(&kid_post_restarts) }
+    }
+  }));
+
+  let child = kid.lock().unwrap().clone().expect("the parent created its child");
+  child.tell("boom", parent.clone());
+  system.run_until_idle();
+  assert_eq!(kid_post_restarts.load(Ordering::SeqCst), 1);
+
+  parent.tell("panic", parent.clone());
+  system.run_until_idle();
+  assert_eq!(creations.load(Ordering::SeqCst), 2);
+  assert!(!system.is_actor_terminated(&child));
+
+  child.tell("boom", parent.clone());
+  system.run_until_idle();
+  assert_eq!(kid_post_restarts.load(Ordering::SeqCst), 2);
+  assert!(!system.is_actor_terminated(&child));
+
+  child.tell("boom", parent);
+  system.run_until_idle();
+  assert_eq!(kid_post_restarts.load(Ordering::SeqCst), 2);
+  assert!(system.is_actor_terminated(&child));
+}
+
 /// Starts a child on every start attempt and fails the first attempt after the
 /// child is in place, so the retry has to stop that child first.
 struct StartsVictimStopperThenFailsOnce {

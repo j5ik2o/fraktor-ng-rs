@@ -17,7 +17,7 @@ use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::actor_system::ActorSystem;
 use fraktor_actor::kernel::executor::ShardBoundary;
 use fraktor_actor::kernel::message::{Envelope, Message};
-use fraktor_actor::kernel::supervision::{Directive, FailureKind, RestartWindow, SupervisorStrategy};
+use fraktor_actor::kernel::supervision::{Directive, FailureKind, RestartLimit, RestartWindow, SupervisorStrategy};
 
 const SPEC_SYSTEM_NAME: &str = "RestartLimitZeroNoClock";
 const EMPLOYEE_NAME: &str = "employee";
@@ -106,8 +106,9 @@ fn a_zero_limit_finite_window_stops_without_reading_the_clock() {
   let mut system = ActorSystem::with_failure_catcher(SPEC_SYSTEM_NAME, boundary, Arc::new(UnwindCatcher));
   fraktor_actor::adaptor::attach_wait_driver(&system);
 
-  let strategy = SupervisorStrategy::one_for_one_with_window(Some(0), RestartWindow::Within(Duration::from_secs(1)))
-    .with_decider(restart_on_throwable);
+  let strategy =
+    SupervisorStrategy::one_for_one_with_window(RestartLimit::new(0), RestartWindow::Within(Duration::from_secs(1)))
+      .with_decider(restart_on_throwable);
   let boss = system.actor_of(Props::new(move || Supervisor { strategy: strategy.clone() }));
   let employee = employee_under(&boss, || CrashingEmployee);
 

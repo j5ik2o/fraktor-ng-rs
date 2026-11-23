@@ -1223,14 +1223,16 @@ impl Executor {
   /// both counts the request and opens or reopens the window in one step; the
   /// plain cumulative record must not be added on top or the request would
   /// count twice. A strategy without a finite window keeps the existing
-  /// contract: the directive already applied the cumulative limit, so recording
-  /// the request is enough and the restart stands.
+  /// contract: the directive already applied any cumulative limit. An
+  /// unlimited one-for-one strategy does not record the request.
   fn grant_restart(&mut self, cell: &mut ActorCell) -> bool {
     let strategy = self.effective_strategy(cell);
     match strategy.restart_permission() {
       | Some((limit, window)) => self.apply_permission(cell, limit, window),
       | None => {
-        cell.record_restart_request();
+        if strategy.records_plain_restart() {
+          cell.record_restart_request();
+        }
         true
       },
     }
@@ -1248,7 +1250,9 @@ impl Executor {
         allowed
       },
       | None => {
-        self.cells[index].record_restart_request();
+        if strategy.records_plain_restart() {
+          self.cells[index].record_restart_request();
+        }
         true
       },
     }

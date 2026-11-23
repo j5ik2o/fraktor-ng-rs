@@ -26,7 +26,7 @@ Pekko v1.7.1 commit `9a54d1294c3ac7821bbed3c940769c3d5027d1ff` の `RestartStrat
 
 ## 実際に使った TestKit needs と前提
 
-Rust 版は `FraktorSpec`（`extends-pekko-spec`、`pekko-spec`）、`spec.test_actor()` を sender に使う（`test-actor`）、`ask(props).await_result(default_timeout())`（`default-timeout`）を使う。時間窓は `ActorSystem::set_clock` に `Clock` を実装した手動カウンタ（`ControlledClock`）を渡して進め、実時間の待機や `Thread.sleep` を使わない。
+Rust 版は `FraktorSpec`（`extends-pekko-spec`、`pekko-spec`）、`spec.test_actor()` を sender に使う（`test-actor`）、`ask_with_timeout` と `await_result` に渡す `DefaultTimeout::timeout(spec.system())`（`default-timeout`）を使う。時間窓は `ActorSystem::set_clock` に `Clock` を実装した手動カウンタ（`ControlledClock`）を渡して進め、実時間の待機や `Thread.sleep` を使わない。
 
 原典由来の needs（`event-filter`、`test-latch`）と前提 `thread-sleep` は、Rust 版で使っていないため台帳から外した。`test-latch` は G0b〜G0f でも未提供（`provided_by: null`）であり、原典の待機は本移植では手動時計と有限待ちで代替している。この置換は件数やケースの意味を変えない。
 
@@ -38,14 +38,14 @@ Pekko `Actor.scala` の既定 `preRestart` は古いインスタンスの `postS
 
 ## 検証結果と再現コマンド
 
-実装は既存の `OneForOne`、`RestartHistory`、`RestartLimit`、`RestartWindow`、`Clock` を再利用し、`SupervisorStrategy::one_for_one_with_window(Option<u32>, RestartWindow)` を追加した。上限省略は `RestartLimit::unlimited()`、有限窓の `RestartHistory` 判定は `RestartLimit::for_window()` で上限省略時を実効1に解決する。executor の受信失敗・初期化失敗・Kill の3入口は、`Restart` 決定後に履歴で許可を判定する共通処理を通し、有限窓では履歴の計数を二重に行わない。
+実装は既存の `OneForOne`、`RestartHistory`、`RestartLimit`、`RestartWindow`、`Clock` を再利用し、`SupervisorStrategy::one_for_one_with_window(RestartLimit, RestartWindow)` を追加した。`RestartLimit::unlimited()` と無期限の組合せは再起動を履歴に数えない。有限の上限には `RestartLimit::new` を使う。有限窓の `RestartHistory` 判定は `RestartLimit::for_window()` で上限省略時を実効1に解決する。executor の受信失敗・初期化失敗・Kill の3入口は、`Restart` 決定後に履歴で許可を判定する共通処理を通し、有限窓では履歴の計数を二重に行わない。
 
 | コマンド | 実測 |
 |:---|:---|
 | `cargo test -p fraktor-actor --test restart_strategy_spec -- --test-threads=1` | 5 passed、0 failed、0 ignored |
 | `cargo test -p fraktor-actor --test restart_limit_zero_no_clock` | 1 passed、0 failed（上限0＋有限窓が時計未読で停止） |
 | `cargo test -p fraktor-actor --lib` | 141 passed、0 failed（初期化の窓境界回帰2件を含む） |
-| `cargo test --workspace` | 46 バイナリ＋doc-test 結果2件、389 passed、0 failed（doc-test は計0件） |
+| `cargo test --workspace` | 46 バイナリ＋doc-test 結果2件、390 passed、0 failed（doc-test は計0件） |
 | `cargo fmt --check` | 差分なし |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 警告なし |
 | `uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0issue117` | 対象1ノード、needs 閉性 OK |

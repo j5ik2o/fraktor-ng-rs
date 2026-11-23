@@ -139,15 +139,7 @@ impl SupervisorStrategy {
   /// whose default case restarts. A child that fails while it is being started
   /// is stopped, as the default decider does for `ActorInitializationException`.
   pub fn one_for_one(max_retries: u32) -> Self {
-    Self {
-      policy: Policy::OneForOne {
-        max_retries: RestartLimit::new(max_retries),
-        window: RestartWindow::Unbounded,
-        restart_initialization_failures: false,
-      },
-      decider: None,
-      child_terminated: None,
-    }
+    Self::one_for_one_with_window(RestartLimit::new(max_retries), RestartWindow::Unbounded)
   }
 
   /// Returns the one-for-one strategy that also restarts a child that fails
@@ -171,12 +163,14 @@ impl SupervisorStrategy {
   /// Returns the one-for-one strategy with an optional retry maximum and a
   /// time window, mirroring `OneForOneStrategy(maxNrOfRetries, withinTimeRange)`.
   ///
-  /// `max_retries` is the number of restarts allowed per child; `None` omits
-  /// the maximum. `window` is the time range the requests are counted in, as
+  /// `max_retries` is the number of restarts allowed per child. Use
+  /// [`RestartLimit::unlimited`] to omit the maximum. `window` is the time range
+  /// the requests are counted in, as
   /// Pekko's `withinTimeRange`. The two parameters resolve as
   /// `ChildRestartStats.requestRestartPermission` does:
   ///
-  /// - an omitted maximum with no window restarts every failure;
+  /// - an omitted maximum with no window grants every restart request without
+  ///   counting it;
   /// - an omitted maximum with a finite window allows one restart per window,
   ///   because a missing maximum defaults to one inside the window algorithm;
   /// - a finite maximum with no window counts the restarts over the child's
@@ -187,11 +181,7 @@ impl SupervisorStrategy {
   /// A finite window reads monotonic time from the system boundary or an
   /// installed clock, as the all-for-one strategy does. A child that fails
   /// while it is being started is stopped, as `one_for_one` does.
-  pub fn one_for_one_with_window(max_retries: Option<u32>, window: RestartWindow) -> Self {
-    let max_retries = match max_retries {
-      | Some(maximum) => RestartLimit::new(maximum),
-      | None => RestartLimit::unlimited(),
-    };
+  pub fn one_for_one_with_window(max_retries: RestartLimit, window: RestartWindow) -> Self {
     Self {
       policy: Policy::OneForOne { max_retries, window, restart_initialization_failures: false },
       decider: None,
@@ -240,6 +230,14 @@ impl SupervisorStrategy {
       },
       | Policy::RestartAlways | Policy::StopAlways => None,
     }
+  }
+
+  /// Returns whether an unwindowed restart needs a cumulative record.
+  ///
+  /// An unlimited one-for-one policy grants requests without consuming a
+  /// restart allowance. A later strategy can apply a limit to the same child.
+  pub(crate) fn records_plain_restart(&self) -> bool {
+    !matches!(self.policy, Policy::OneForOne { max_retries, .. } if max_retries.is_unlimited())
   }
 
   /// Returns this strategy with a decider that chooses per failing child.

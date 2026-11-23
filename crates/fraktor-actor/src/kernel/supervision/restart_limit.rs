@@ -6,19 +6,23 @@
 /// Mirrors Pekko's `maxNrOfRetriesOption`: a negative `maxNrOfRetries` is
 /// omitted and every request is allowed, otherwise the value caps the requests.
 #[derive(Clone, Copy)]
-pub(crate) struct RestartLimit(Option<u32>);
+pub struct RestartLimit(Option<u32>);
 
 impl RestartLimit {
   /// Creates a finite allowance. Every unsigned value is valid; zero denies
   /// the first request and positive values allow that many requests.
-  pub(crate) fn new(maximum: u32) -> Self {
+  pub fn new(maximum: u32) -> Self {
     Self(Some(maximum))
   }
 
-  /// Creates an omitted allowance that admits every restart request, as an
-  /// absent `maxNrOfRetries` does.
-  pub(crate) fn unlimited() -> Self {
+  /// Omits the maximum. A strategy with no time window allows every restart.
+  pub fn unlimited() -> Self {
     Self(None)
+  }
+
+  /// Returns whether this allowance omits a maximum.
+  pub(crate) fn is_unlimited(self) -> bool {
+    self.0.is_none()
   }
 
   /// Returns whether the limit forbids every restart.
@@ -48,6 +52,9 @@ impl RestartLimit {
 
 impl core::fmt::Debug for RestartLimit {
   fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    core::fmt::Debug::fmt(&self.0, formatter)
+    match self.0 {
+      | Some(maximum) => core::fmt::Debug::fmt(&maximum, formatter),
+      | None => formatter.write_str("unlimited"),
+    }
   }
 }

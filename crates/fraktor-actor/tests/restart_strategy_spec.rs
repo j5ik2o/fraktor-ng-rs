@@ -22,8 +22,9 @@ use std::sync::Arc;
 use fraktor_actor::kernel::actor::{Actor, ActorContext, Props, Terminated};
 use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::message::Message;
-use fraktor_actor::kernel::supervision::{Directive, FailureKind, RestartWindow, SupervisorStrategy};
+use fraktor_actor::kernel::supervision::{Directive, FailureKind, RestartLimit, RestartWindow, SupervisorStrategy};
 use fraktor_actor::kernel::Clock;
+use fraktor_testkit::default_timeout::DefaultTimeout;
 use fraktor_testkit::fraktorspec::FraktorSpec;
 
 const SPEC_SYSTEM_NAME: &str = "RestartStrategySpec";
@@ -90,13 +91,19 @@ fn supervisor(spec: &mut FraktorSpec, strategy: SupervisorStrategy) -> ActorRef 
 }
 
 // Asks the parent for the employee built from `make`, mirroring `boss ? employeeProps`.
-fn employee_under<A: Actor + 'static>(boss: &ActorRef, make: impl Fn() -> A + Send + Sync + 'static) -> ActorRef {
+fn employee_under<A: Actor + 'static>(
+  spec: &FraktorSpec,
+  boss: &ActorRef,
+  make: impl Fn() -> A + Send + Sync + 'static,
+) -> ActorRef {
   let props = Props::new(make);
-  boss.ask(props).await_result(default_timeout()).downcast_ref::<ActorRef>().cloned().expect("the employee handle")
-}
-
-fn default_timeout() -> Duration {
-  Duration::from_secs(3)
+  let timeout = DefaultTimeout::timeout(spec.system());
+  boss
+    .ask_with_timeout(props, timeout)
+    .await_result(timeout.duration())
+    .downcast_ref::<ActorRef>()
+    .cloned()
+    .expect("the employee handle")
 }
 
 // Shared by cases 1, 3, and 4. The original's stop latch also opens when the
@@ -156,13 +163,14 @@ fn stops_after_max_restarts_within_time_range() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let clock = Arc::new(ControlledClock(AtomicUsize::new(0)));
   spec.system().set_clock(clock.clone());
-  let strategy = SupervisorStrategy::one_for_one_with_window(Some(2), RestartWindow::Within(Duration::from_secs(1)))
-    .with_decider(restart_on_throwable);
+  let strategy =
+    SupervisorStrategy::one_for_one_with_window(RestartLimit::new(2), RestartWindow::Within(Duration::from_secs(1)))
+      .with_decider(restart_on_throwable);
   let boss = supervisor(&mut spec, strategy);
   let pings = Arc::new(AtomicUsize::new(0));
   let restarts = Arc::new(AtomicUsize::new(0));
   let stops = Arc::new(AtomicUsize::new(0));
-  let employee = employee_under(&boss, {
+  let employee = employee_under(&spec, &boss, {
     let pings = Arc::clone(&pings);
     let restarts = Arc::clone(&restarts);
     let stops = Arc::clone(&stops);
@@ -202,11 +210,11 @@ fn stops_after_max_restarts_within_time_range() {
 #[test]
 fn restarts_one_hundred_times_without_limits() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
-  let strategy =
-    SupervisorStrategy::one_for_one_with_window(None, RestartWindow::Unbounded).with_decider(restart_on_throwable);
+  let strategy = SupervisorStrategy::one_for_one_with_window(RestartLimit::unlimited(), RestartWindow::Unbounded)
+    .with_decider(restart_on_throwable);
   let boss = supervisor(&mut spec, strategy);
   let restarts = Arc::new(AtomicUsize::new(0));
-  let employee = employee_under(&boss, {
+  let employee = employee_under(&spec, &boss, {
     let restarts = Arc::clone(&restarts);
     move || ImmortalEmployee { restarts: Arc::clone(&restarts) }
   });
@@ -230,14 +238,16 @@ fn restarts_after_time_range_expires() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let clock = Arc::new(ControlledClock(AtomicUsize::new(0)));
   spec.system().set_clock(clock.clone());
-  let strategy =
-    SupervisorStrategy::one_for_one_with_window(Some(2), RestartWindow::Within(Duration::from_millis(500)))
-      .with_decider(restart_on_throwable);
+  let strategy = SupervisorStrategy::one_for_one_with_window(
+    RestartLimit::new(2),
+    RestartWindow::Within(Duration::from_millis(500)),
+  )
+  .with_decider(restart_on_throwable);
   let boss = supervisor(&mut spec, strategy);
   let pings = Arc::new(AtomicUsize::new(0));
   let restarts = Arc::new(AtomicUsize::new(0));
   let stops = Arc::new(AtomicUsize::new(0));
-  let employee = employee_under(&boss, {
+  let employee = employee_under(&spec, &boss, {
     let pings = Arc::clone(&pings);
     let restarts = Arc::clone(&restarts);
     let stops = Arc::clone(&stops);
@@ -282,7 +292,7 @@ fn stops_after_max_retries_without_time_range() {
   let pings = Arc::new(AtomicUsize::new(0));
   let restarts = Arc::new(AtomicUsize::new(0));
   let stops = Arc::new(AtomicUsize::new(0));
-  let employee = employee_under(&boss, {
+  let employee = employee_under(&spec, &boss, {
     let pings = Arc::clone(&pings);
     let restarts = Arc::clone(&restarts);
     let stops = Arc::clone(&stops);
@@ -357,8 +367,11 @@ fn stops_and_notifies_parent_with_only_time_range() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let clock = Arc::new(ControlledClock(AtomicUsize::new(0)));
   spec.system().set_clock(clock.clone());
-  let strategy = SupervisorStrategy::one_for_one_with_window(None, RestartWindow::Within(Duration::from_secs(1)))
-    .with_decider(restart_on_throwable);
+  let strategy = SupervisorStrategy::one_for_one_with_window(
+    RestartLimit::unlimited(),
+    RestartWindow::Within(Duration::from_secs(1)),
+  )
+  .with_decider(restart_on_throwable);
   let terminated = Arc::new(AtomicUsize::new(0));
   let terminated_target = Arc::new(std::sync::Mutex::new(None));
   let boss = spec.system_mut().actor_of(Props::new({
@@ -374,7 +387,7 @@ fn stops_and_notifies_parent_with_only_time_range() {
   let restarts = Arc::new(AtomicUsize::new(0));
   let stops = Arc::new(AtomicUsize::new(0));
   let crashes = Arc::new(AtomicUsize::new(0));
-  let employee = employee_under(&boss, {
+  let employee = employee_under(&spec, &boss, {
     let pings = Arc::clone(&pings);
     let restarts = Arc::clone(&restarts);
     let stops = Arc::clone(&stops);

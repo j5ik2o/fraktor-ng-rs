@@ -74,7 +74,7 @@ struct Guardian;
 
 mod initialization_restart_window {
   use super::*;
-  use crate::kernel::supervision::RestartWindow;
+  use crate::kernel::supervision::{RestartLimit, RestartWindow};
 
   struct ControlledClock(Mutex<Duration>);
 
@@ -162,10 +162,12 @@ mod initialization_restart_window {
       }
     });
     let notices = observed.clone();
-    let strategy =
-      SupervisorStrategy::one_for_one_with_window(Some(1), RestartWindow::Within(Duration::from_millis(10)))
-        .with_decider(|_, _| Directive::Restart)
-        .with_child_terminated(move |_, child, _| notices.lock().unwrap().terminated.push(child.clone()));
+    let strategy = SupervisorStrategy::one_for_one_with_window(
+      RestartLimit::new(1),
+      RestartWindow::Within(Duration::from_millis(10)),
+    )
+    .with_decider(|_, _| Directive::Restart)
+    .with_child_terminated(move |_, child, _| notices.lock().unwrap().terminated.push(child.clone()));
     let child = Arc::new(Mutex::new(None));
     let mut system = ActorSystem::with_failure_catcher(
       "InitializationWindow",
