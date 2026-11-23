@@ -11,6 +11,10 @@ use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
 
+#[cfg(test)]
+#[path = "actor_ref_value_test.rs"]
+mod tests;
+
 /// A handle that lets a caller address one actor.
 ///
 /// Mirrors `org.apache.pekko.actor.ActorRef`. It carries an identifier, a
@@ -25,11 +29,12 @@ pub struct ActorRef {
   generation: u32,
   path: Arc<ActorPath>,
   boundary: Arc<dyn ShardBoundary>,
+  detached: bool,
 }
 
 impl ActorRef {
   pub(crate) fn new(id: u64, generation: u32, path: Arc<ActorPath>, boundary: Arc<dyn ShardBoundary>) -> Self {
-    Self { id, generation, path, boundary }
+    Self { id, generation, path, boundary, detached: false }
   }
 
   /// Returns the path of the actor.
@@ -54,6 +59,30 @@ impl ActorRef {
     &self.boundary
   }
 
+  pub(crate) fn is_detached(&self) -> bool {
+    self.detached
+  }
+
+  /// Returns a handle with this actor's identity that posts into a delivery
+  /// entity that swallows everything.
+  ///
+  /// The port cannot build Pekko's `EvilCollidingActorRef` on its own from a
+  /// test, because the fields are private and equality already ignores the
+  /// path and the boundary. This is the limited operation that produces one: it
+  /// keeps the identifier, generation, and path of the actor it is called on and
+  /// swaps in a no-op shard, so the handle collides with that actor while being
+  /// a distinct reference. It is only meaningful on an actor that has stopped,
+  /// which [`crate::kernel::actor::ActorContext::stopped_noop_ref`] checks for.
+  pub(crate) fn detached_noop(&self) -> Self {
+    Self {
+      id: self.id,
+      generation: self.generation,
+      path: Arc::clone(&self.path),
+      boundary: alloc::sync::Arc::new(crate::kernel::executor::NoOpBoundary),
+      detached: true,
+    }
+  }
+
   /// Returns the identity of the shard this handle posts to, for a wait that
   /// drives that shard.
   pub(crate) fn boundary_key(&self) -> usize {
@@ -72,6 +101,7 @@ impl Clone for ActorRef {
       generation: self.generation,
       path: Arc::clone(&self.path),
       boundary: Arc::clone(&self.boundary),
+      detached: self.detached,
     }
   }
 }

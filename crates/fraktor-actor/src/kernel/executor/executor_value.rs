@@ -533,6 +533,34 @@ impl Executor {
     }
   }
 
+  /// Carries out the pending stops aimed at the children of `parent` now.
+  ///
+  /// Mirrors the part of Pekko's `faultRecreate` that finishes recreating a
+  /// parent only after the children it stopped in `preRestart` are gone: the
+  /// replacement's `postRestart` runs after they have stopped. Only stops whose
+  /// target is a live child of `parent` are taken here; any other pending stop
+  /// belongs to a frame around this one and stays for `finish_boundary`, so a
+  /// sibling's or an outer actor's stop is not consumed early. A child that is
+  /// still running a frame of its own is left in place rather than stopped
+  /// underneath it.
+  fn complete_child_stops_of(&mut self, parent: &ActorRef) {
+    let mut deferred = Vec::new();
+    let mut ready = Vec::new();
+    for target in core::mem::take(&mut self.pending_stops) {
+      let is_child = self.cells.iter().any(|cell| cell.accepts(&target) && cell.is_child_of(parent));
+      let is_running = self.running.iter().any(|running| running == &target);
+      if is_child && !is_running {
+        ready.push(target);
+      } else {
+        deferred.push(target);
+      }
+    }
+    self.pending_stops = deferred;
+    for target in ready {
+      self.stop(&target);
+    }
+  }
+
   /// Runs a child-terminated notice whose parent is no longer executing.
   fn flush_ready_child_terminated(&mut self) {
     loop {
@@ -896,6 +924,9 @@ impl Executor {
   /// target that keeps running out of scope is therefore indistinguishable from
   /// a stopped one, which is the documented limit of this port.
   pub(crate) fn watch(&mut self, watcher: &ActorRef, target: &ActorRef) {
+    if target.is_detached() {
+      return;
+    }
     if self.is_live(target) {
       if !self.watchers.iter().any(|(existing, watched)| existing == watcher && watched == target) {
         self.watchers.push((watcher.clone(), target.clone()));
@@ -991,6 +1022,15 @@ impl Executor {
   /// in this shard and reports true, the same limit `watch` documents.
   pub(crate) fn is_actor_terminated(&self, target: &ActorRef) -> bool {
     !self.is_live(target)
+  }
+
+  pub(crate) fn stopped_noop_ref(&self, old: &ActorRef) -> ActorRef {
+    assert!(
+      old.shares_boundary_with(self.queue.boundary()) && self.is_actor_terminated(old),
+      "expected a stopped actor on this shard: {}",
+      old.path()
+    );
+    old.detached_noop()
   }
 
   /// Returns the identity of the shard boundary this executor posts to.
@@ -1317,10 +1357,17 @@ impl Executor {
         },
       }
     };
-    self.exit_frame();
     if let RunOutcome::Failed { message } = pre_restart_failed {
       self.publish_child_failure(target, RUNTIME_CAUSE, &message);
     }
+    // Pekko's `faultRecreate` stops the actor's children and runs the new
+    // instance's `postRestart` only after they have finished stopping. The
+    // port records `context.stop` from `pre_restart` as a pending stop; carry
+    // out the ones aimed at this actor's own children now, before the
+    // replacement is created, so `post_restart` already sees them stopped.
+    // Stops asked for by frames around this one are left to `finish_boundary`.
+    self.complete_child_stops_of(target);
+    self.exit_frame();
     // Pekko's finishRecreate snapshots surviving children before the new
     // instance can spawn its own. Apply that propagation to a supervised Kill.
     let survivors = if failure == FailureKind::Killed {
