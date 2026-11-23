@@ -26,7 +26,7 @@ Pekko v1.7.1 commit `9a54d1294c3ac7821bbed3c940769c3d5027d1ff` の `TestTimeSpec
 | 原典 | Rust の入口 | 直接観測する契約 |
 |:---|:---|:---|
 | L24–34 `correctly dilate times` | `FraktorSpec::with_time_factor` → `test_kit_settings().dilated` / `TestProbe::with_settings` → `await_cond` | 倍率 2.0 の設定が probe へ届き、常に false な条件が `[2s, 3s)` で timeout する |
-| L36–43 `awaitAssert must throw correctly` | `FraktorSpec::await_assert` / `within_range` | 成功値の返却と最終 assertion（foo/bar）の再送出、within 予算超過での置換をしないこと |
+| L36–43 `awaitAssert must throw correctly` | `FraktorSpec::await_assert` / `within_range` | 成功する等値アサーションの実行と、指定の待機条件で失敗するアサーション（foo/bar）の再送出 |
 | L45–49 ``throw if `remaining` is called outside of `within` `` | `FraktorSpec::remaining` | within 外で `remaining` と `within` を含む契約違反 |
 
 第1工程で確定した公開APIは `FraktorSpec::with_time_factor`、`TestProbe::with_settings`、`TestProbe::await_cond`、`FraktorSpec::within_range`、`FraktorSpec::remaining`。従来の `within(max, body)` も同じ実装を使う。倍率は原典 `TestKitExtension.Settings` と同様に有限の正値だけを受理する。0・負・無限・NaN は `TestTimeFactor::new` が拒否する。
@@ -121,6 +121,8 @@ Pekko v1.7.1 commit `9a54d1294c3ac7821bbed3c940769c3d5027d1ff` の `TestTimeSpec
 原典3ケースの変更は `TestTimeFactor` のインポートと倍率2.0を渡す設定処理に限る。パニックの判定、待機の上限・間隔、経過時間の許容幅は第1工程で検証したとおり。修正後のテストファイルの blob は `cea60fa2ad497920257bfcaa53aa2970efbe6549`。
 
 修正コミットで原典3件、補助13件、ワークスペース434件、対象と G0a〜G0f の台帳検査14件が成功した。整形、Clippy、`fraktor-testkit` の構文検査も成功した。
+
+Cursor の指摘を受け、`await_assert` の成功時の返り値は補助テストで検証するようにした。原典相当の3件では、原典と同じく成功する等値アサーションを実行する。台帳には原典相当の3件を数える。
 
 ## 再現手順
 

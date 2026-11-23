@@ -122,12 +122,8 @@ fn await_assert_must_throw_correctly() {
   // value); `await_assert` itself applies the time factor, so it is not dilated
   // here.
   let max = spec_case.fraktor_spec.test_kit_settings().single_expect_default_timeout();
-  let value = spec_case.fraktor_spec.await_assert(max, Duration::from_millis(100), || {
-    let actual = "foo";
-    assert_eq!(actual, "foo");
-    actual
-  });
-  assert_eq!(value, "foo", "a passing awaitAssert returns the assertion value");
+  let actual = "foo";
+  spec_case.fraktor_spec.await_assert(max, Duration::from_millis(100), || assert_eq!(actual, "foo"));
 
   // within(300.millis, 2.seconds) {
   //   intercept[TestFailedException] {

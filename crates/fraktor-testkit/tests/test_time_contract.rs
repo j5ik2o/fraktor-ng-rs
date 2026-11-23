@@ -108,6 +108,14 @@ fn invalid_time_factors_are_rejected() {
   }
 }
 
+#[test]
+fn await_assert_returns_the_successful_value() {
+  let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
+  let value = spec.await_assert(one_second(), Duration::from_millis(100), || "foo");
+  assert_eq!(value, "foo");
+  spec.terminate();
+}
+
 // C03: `await_cond` evaluates its condition before the first wait, so an
 // immediately true condition returns without using the timeout.
 #[test]
