@@ -1175,7 +1175,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: AddressSpec
 - id: actor-tests/src/test/scala/org/apache/pekko/event/AddressTerminatedTopicBenchSpec.scala
   name: actor-tests:AddressTerminatedTopicBenchSpec
   kind: test
