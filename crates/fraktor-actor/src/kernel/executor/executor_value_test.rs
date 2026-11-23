@@ -464,8 +464,6 @@ mod uid_clash_restart {
   use crate::kernel::actor_system::ActorSystem;
   use crate::kernel::executor::ShardBoundary;
   use crate::kernel::message::Message;
-  use crate::kernel::supervision::Directive;
-  use crate::kernel::supervision::FailureKind;
   use crate::kernel::supervision::SupervisorStrategy;
 
   /// A system whose actors run under the real panic catcher and a boundary that
