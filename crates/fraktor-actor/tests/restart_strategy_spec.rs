@@ -202,7 +202,8 @@ fn stops_after_max_restarts_within_time_range() {
 #[test]
 fn restarts_one_hundred_times_without_limits() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
-  let strategy = SupervisorStrategy::one_for_one_with_window(None, RestartWindow::Unbounded).with_decider(restart_on_throwable);
+  let strategy =
+    SupervisorStrategy::one_for_one_with_window(None, RestartWindow::Unbounded).with_decider(restart_on_throwable);
   let boss = supervisor(&mut spec, strategy);
   let restarts = Arc::new(AtomicUsize::new(0));
   let employee = employee_under(&boss, {

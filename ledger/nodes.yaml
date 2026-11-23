@@ -4130,25 +4130,25 @@ nodes:
     module: actor-tests
     class: RestartStrategySpec
     test_cases_approx: 5
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
   needs:
-    testkit: ['extends-pekko-spec', 'pekko-spec', 'default-timeout', 'event-filter', 'test-latch']
-    premise_flags: ['thread-sleep']
+    testkit: ['extends-pekko-spec', 'pekko-spec', 'test-actor', 'default-timeout']
+    premise_flags: []
   depends_on_impl:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 5
+    ported: 5
+    passing: 5
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/restart_strategy_spec.rs
+  goal: G0issue117
 - id: actor-tests/src/test/scala/org/apache/pekko/pattern/RetrySpec.scala
   name: actor-tests:RetrySpec
   kind: test
