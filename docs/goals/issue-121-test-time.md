@@ -17,7 +17,7 @@
 - 対象の統合テストと、それを通すために必要な時間倍率・条件待機・within 下限／残り時間の API。
 - 対象ノードの台帳欄、`await-cond` の capability、このゴール文書。
 
-Rust 本番・テストは `crates/fraktor-testkit` の指定5ファイル（`test_kit_settings.rs` / `test_kit_value.rs` / `test_kit_base.rs` / `test_probe.rs` / `fraktor_spec.rs`）と、補助の統合テスト `tests/test_time_contract.rs` に限る。既存の原典相当テスト `tests/test_time_spec.rs` は編集していない。
+第2工程では `crates/fraktor-testkit` の製品5ファイル（`test_kit_settings.rs` / `test_kit_value.rs` / `test_kit_base.rs` / `test_probe.rs` / `fraktor_spec.rs`）を更新し、補助の統合テスト `tests/test_time_contract.rs` を追加した。PRレビューでは時間倍率の専用型を追加し、原典相当テスト `tests/test_time_spec.rs` の設定方法を合わせた。
 
 ## 原典と実行経路の独立照合
 
@@ -29,7 +29,7 @@ Pekko v1.7.1 commit `9a54d1294c3ac7821bbed3c940769c3d5027d1ff` の `TestTimeSpec
 | L36–43 `awaitAssert must throw correctly` | `FraktorSpec::await_assert` / `within_range` | 成功値の返却と最終 assertion（foo/bar）の再送出、within 予算超過での置換をしないこと |
 | L45–49 ``throw if `remaining` is called outside of `within` `` | `FraktorSpec::remaining` | within 外で `remaining` と `within` を含む契約違反 |
 
-実装の入口は第1工程で確定した5つ。`FraktorSpec::with_time_factor`、`TestProbe::with_settings`（spec の設定を明示して同じ値を受け取る）、`TestProbe::await_cond`、`FraktorSpec::within_range`（既存 `within(max, body)` を維持して共有実装へ委譲）、`FraktorSpec::remaining`。倍率は原典 `TestKitExtension.Settings` と同様に有限の正値だけを受理し、0・負・無限・NaN は `TestKitSettings::with_time_factor` の境界で panic して拒否する。
+第1工程で確定した公開APIは `FraktorSpec::with_time_factor`、`TestProbe::with_settings`、`TestProbe::await_cond`、`FraktorSpec::within_range`、`FraktorSpec::remaining`。従来の `within(max, body)` も同じ実装を使う。倍率は原典 `TestKitExtension.Settings` と同様に有限の正値だけを受理する。0・負・無限・NaN は `TestTimeFactor::new` が拒否する。
 
 経路：倍率は `FraktorSpec::with_time_factor` → `TestKitSettings::with_time_factor` → `TestKit::with_settings` → `TestKitBase::new` で保持し、`TestKit::test_kit_settings` は保持済み設定を返す（システムから作り直さない）。`TestProbe::with_settings` は受け取った設定をそのまま base へ渡す。`await_cond` は probe 側で `max` を1回だけ膨張し、base が条件を即時評価してから、false の間は `drive_for` で actor を運転しながら単調時計の期限で再評価する。`within_range` は min を膨張せず、外側残り時間で min を満たせない場合は本文の前に拒否し、終了時に未膨張の min と（no-message 以外で）上限を検査し、`ScopeReset` で外側期限を復元する。`remaining` は同じ scope を読み、期限経過後は 0 に飽和し、scope 外では `remaining` と `within` を含む契約違反を返す。
 
@@ -113,6 +113,14 @@ Pekko v1.7.1 commit `9a54d1294c3ac7821bbed3c940769c3d5027d1ff` の `TestTimeSpec
 統合後は、条件の評価間隔を原典の100msに合わせた。メッセージ配送には既存の待機処理を使う。入れ子の `within` は、下限と残り時間を `Duration` のまま比較する。設定を指定した probe にも既定の `testProbe` 名を使う。
 
 これらの修正と最新の main を取り込んだ `f2ffd8476ea65ef433f327c8a9e05f60b0fba28c` で、原典3件、ワークスペース434件、対象と G0a〜G0f の台帳検査14件がすべて成功した。整形、Clippy、両クレートの構文検査も成功した。個別実行のテストハーネス表示は、TimingTest が2.00秒、成功と失敗を検証する `await_assert` ケースが0.96秒だった。
+
+## PRレビュー後の実測
+
+修正コミット `6d137a667c9334ad14e5ed09fd29c25b69fca51d` で時間倍率を `TestTimeFactor` にまとめた。また、内側の `within` で発生したパニックを捕捉した直後に、外側の残り時間を確認するよう補助テストを直した。
+
+原典3ケースの変更は `TestTimeFactor` のインポートと倍率2.0を渡す設定処理に限る。パニックの判定、待機の上限・間隔、経過時間の許容幅は第1工程で検証したとおり。修正後のテストファイルの blob は `cea60fa2ad497920257bfcaa53aa2970efbe6549`。
+
+修正コミットで原典3件、補助13件、ワークスペース434件、対象と G0a〜G0f の台帳検査14件が成功した。整形、Clippy、`fraktor-testkit` の構文検査も成功した。
 
 ## 再現手順
 
