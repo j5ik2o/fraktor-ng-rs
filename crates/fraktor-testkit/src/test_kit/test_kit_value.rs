@@ -43,6 +43,11 @@ impl TestKit {
   /// Creates the test kit on top of `system` and creates the test actor in it.
   pub fn new(system: ActorSystem) -> Self {
     let settings = TestKitSettings::from_system(&system);
+    Self::with_settings(system, settings)
+  }
+
+  /// Creates the test kit on top of `system` using `settings` for its waits.
+  pub(crate) fn with_settings(system: ActorSystem, settings: TestKitSettings) -> Self {
     let base = TestKitBase::new(system.downgrade(), settings, None);
     Self { system, base }
   }
@@ -59,7 +64,7 @@ impl TestKit {
 
   /// Returns the settings of the test.
   pub fn test_kit_settings(&self) -> TestKitSettings {
-    TestKitSettings::from_system(&self.system)
+    self.base.settings()
   }
 
   /// Returns the handle of the test actor, corresponding to Pekko's
@@ -91,6 +96,11 @@ impl TestKit {
   /// Returns whether the last wait was a no-message check.
   pub(crate) fn last_was_no_msg(&self) -> bool {
     self.base.last_was_no_msg()
+  }
+
+  /// Returns the time left in the innermost `within` scope.
+  pub(crate) fn remaining(&self) -> Duration {
+    self.base.remaining()
   }
 
   /// Returns the last message the test actor handed to a waiting method.
