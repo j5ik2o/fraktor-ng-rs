@@ -1,10 +1,17 @@
 //! Immutable value describing where an actor system listens.
 
-use core::fmt;
+use core::{cmp::Ordering, fmt};
 
 use crate::kernel::address::uri_parts::UriParts;
 
+#[cfg(test)]
+#[path = "address_value_test.rs"]
+mod tests;
+
 /// The protocol, system name, and optional host and port of an actor system.
+///
+/// Ordering compares those fields in that order. Strings use Pekko's UTF-16
+/// ordering, and absent hosts and ports sort before present values.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Address {
   protocol: String,
@@ -71,6 +78,27 @@ impl Address {
       },
       | (Some(_), None) => None,
     }
+  }
+}
+
+impl PartialOrd for Address {
+  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    Some(self.cmp(other))
+  }
+}
+
+impl Ord for Address {
+  fn cmp(&self, other: &Self) -> Ordering {
+    self
+      .protocol
+      .encode_utf16()
+      .cmp(other.protocol.encode_utf16())
+      .then_with(|| self.system.encode_utf16().cmp(other.system.encode_utf16()))
+      .then_with(|| match (&self.host, &other.host) {
+        | (Some(host), Some(other_host)) => host.encode_utf16().cmp(other_host.encode_utf16()),
+        | _ => self.host.is_some().cmp(&other.host.is_some()),
+      })
+      .then_with(|| self.port.cmp(&other.port))
   }
 }
 
