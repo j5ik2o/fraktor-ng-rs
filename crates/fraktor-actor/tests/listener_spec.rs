@@ -12,25 +12,28 @@
 // shared counter so that the count stays 2.
 //
 // The original mixes the listener management (`Listeners`, `Listen`,
-// `Deafen`, `WithListeners`) into the broadcaster actor. The port calls the
-// matching production API from the broadcaster; the management set and the
-// gossip fan-out itself stay in production code and are not re-implemented in
-// the test. Until `fraktor_actor::kernel::routing` exists the file does not
-// compile: that compile error is the intended red for this node.
+// `Deafen`, `WithListeners`) into the broadcaster actor. The port renames that
+// vocabulary to `Subscribers`, `Subscribe`, `Unsubscribe`, and `WithSubscribers`
+// and calls the matching production API from the broadcaster; the management set
+// and the gossip fan-out itself stay in production code and are not
+// re-implemented in the test.
 //
 // Two delivery paths are kept apart:
-//   1. `WithListeners(_ ! "foo")` -> listener management callback -> each live
-//      listener receives `foo`.
+//   1. `WithSubscribers(_ ! "foo")` -> subscriber management callback -> each live
+//      subscriber receives `foo`.
 //   2. a plain `"foo"` to the broadcaster -> production `gossip("bar")` -> each
-//      live listener receives `bar`.
+//      live subscriber receives `bar`.
+//
+// The original does not assert the order of the listener set or the sender of
+// the delivered messages, so neither is observed here.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 
 use fraktor_actor::kernel::actor::{Actor, ActorContext, Props};
 use fraktor_actor::kernel::actor_ref::ActorRef;
+use fraktor_actor::kernel::broadcast::{Subscribe, Subscribers, Unsubscribe, WithSubscribers};
 use fraktor_actor::kernel::message::Message;
-use fraktor_actor::kernel::routing::{Deafen, Listen, Listeners, WithListeners};
 use fraktor_testkit::fraktorspec::FraktorSpec;
 use fraktor_testkit::test_kit::TestProbe;
 
@@ -44,6 +47,27 @@ fn no_delivery_timeout() -> Duration {
   Duration::from_millis(100)
 }
 
+// The two delivery paths run on separate queues: `WithSubscribers` hands `foo`
+// to each subscriber from inside the broadcaster's `receive`, while `"foo"`
+// makes the broadcaster `gossip("bar")` through `ActorContext::tell`. The
+// boundary queue and the local queue are drained by `Executor::run_one` in an
+// order the original case does not fix, and the original asserts no order. So
+// each probe is checked for exactly one `foo` and one `bar` in any order, then
+// no further delivery, rather than a fixed `foo`-then-`bar` sequence.
+fn next_message(probe: &mut TestProbe) -> Message {
+  probe.fish_for_message(expect_timeout(), |_| true)
+}
+
+fn expect_foo_and_bar_in_any_order(probe: &mut TestProbe) {
+  let first = next_message(probe);
+  let second = next_message(probe);
+  let is_foo = |message: &Message| message == "foo";
+  let is_bar = |message: &Message| message == "bar";
+  let ordered = is_foo(&first) && is_bar(&second);
+  let reversed = is_bar(&first) && is_foo(&second);
+  assert!(ordered || reversed, "expected exactly one `foo` and one `bar`, got {first:?} then {second:?}");
+}
+
 // Original: `Props(new Actor with Listeners { def receive = listenerManagement.orElse {
 // case "foo" => gossip("bar") } })`
 //
@@ -53,16 +77,16 @@ fn no_delivery_timeout() -> Duration {
 // messages and, for a plain `"foo"`, asks the production gossip to deliver
 // `"bar"` to the current listeners.
 struct Broadcaster {
-  listeners: Listeners,
+  subscribers: Subscribers,
 }
 
 impl Actor for Broadcaster {
   fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
-    if self.listeners.listener_management(&message, context) {
+    if self.subscribers.handle_management(&message) {
       return;
     }
     if message == "foo" {
-      self.listeners.gossip("bar", context);
+      self.subscribers.gossip("bar", context);
     }
   }
 }
@@ -98,7 +122,7 @@ fn listen() {
   let mut a2_probe = TestProbe::new(spec.system_mut());
   let mut a3_probe = TestProbe::new(spec.system_mut());
 
-  let broadcast = spec.system_mut().actor_of(Props::new(|| Broadcaster { listeners: Listeners::new() }));
+  let broadcast = spec.system_mut().actor_of(Props::new(|| Broadcaster { subscribers: Subscribers::new() }));
 
   let new_listener = |spec: &mut FraktorSpec, probe: ActorRef| {
     let bar_count = bar_count.clone();
@@ -110,29 +134,24 @@ fn listen() {
   let a3 = new_listener(&mut spec, a3_probe.ref_handle());
 
   let sender = spec.test_actor();
-  broadcast.tell(Listen::new(a1.clone()), sender.clone());
-  broadcast.tell(Listen::new(a2.clone()), sender.clone());
-  broadcast.tell(Listen::new(a3.clone()), sender.clone());
+  broadcast.tell(Subscribe::new(a1.clone()), sender.clone());
+  broadcast.tell(Subscribe::new(a2.clone()), sender.clone());
+  broadcast.tell(Subscribe::new(a3.clone()), sender.clone());
 
-  broadcast.tell(Deafen::new(a3.clone()), sender.clone());
+  broadcast.tell(Unsubscribe::new(a3.clone()), sender.clone());
 
-  // The callback is stored in the mailbox's `WithListeners` message, so it must
-  // be `'static` and own its sender instead of borrowing `sender`.
+  // The callback is stored in the mailbox's `WithSubscribers` message, so it
+  // must be `'static` and own its sender instead of borrowing `sender`.
   let foo_sender = sender.clone();
-  broadcast.tell(
-    WithListeners::new(move |listener: &ActorRef| listener.tell("foo", foo_sender.clone())),
-    sender.clone(),
-  );
+  broadcast
+    .tell(WithSubscribers::new(move |listener: &ActorRef| listener.tell("foo", foo_sender.clone())), sender.clone());
   broadcast.tell("foo", sender);
 
-  // Path 1: the listeners that stay registered each receive `foo`.
-  a1_probe.expect_msg_within(expect_timeout(), &"foo");
-  a2_probe.expect_msg_within(expect_timeout(), &"foo");
-
-  // Path 2: the broadcaster's own `"foo"` makes it gossip `"bar"` to the same
-  // listeners.
-  a1_probe.expect_msg_within(expect_timeout(), &"bar");
-  a2_probe.expect_msg_within(expect_timeout(), &"bar");
+  // Path 1 and path 2 each deliver one message to the listeners that stay
+  // registered. The two paths run on different queues, so the order of `foo`
+  // and `bar` at each probe is not fixed; the original asserts no order.
+  expect_foo_and_bar_in_any_order(&mut a1_probe);
+  expect_foo_and_bar_in_any_order(&mut a2_probe);
 
   // The deafened listener stays alive (deafened, not stopped) and receives
   // nothing from either path.
@@ -147,6 +166,50 @@ fn listen() {
   assert_eq!(bar_count.load(Ordering::SeqCst), 2, "expected bar delivered to exactly the two live listeners");
 
   for actor in [&broadcast, &a1, &a2, &a3] {
+    spec.system_mut().stop(actor);
+  }
+  spec.terminate();
+}
+
+// Auxiliary case, kept separate from the original `listen` case and counted
+// apart in the ledger: the original subscribes each listener once. Registering
+// the same listener twice must leave one entry in the set, so the two delivery
+// paths reach it once each. A set that kept the duplicate would deliver an
+// extra `foo` and an extra `bar`, which the trailing `expect_no_message` on the
+// probe rejects.
+#[test]
+fn subscribe_same_listener_twice_delivers_once_per_path() {
+  let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
+  let bar_count = std::sync::Arc::new(AtomicUsize::new(0));
+
+  let mut a1_probe = TestProbe::new(spec.system_mut());
+
+  let broadcast = spec.system_mut().actor_of(Props::new(|| Broadcaster { subscribers: Subscribers::new() }));
+
+  let bar_count_for_listener = bar_count.clone();
+  let a1_probe_ref = a1_probe.ref_handle();
+  let a1 = spec
+    .system_mut()
+    .actor_of(Props::new(move || Listener { probe: a1_probe_ref.clone(), bar_count: bar_count_for_listener.clone() }));
+
+  let sender = spec.test_actor();
+  broadcast.tell(Subscribe::new(a1.clone()), sender.clone());
+  broadcast.tell(Subscribe::new(a1.clone()), sender.clone());
+
+  let foo_sender = sender.clone();
+  broadcast
+    .tell(WithSubscribers::new(move |listener: &ActorRef| listener.tell("foo", foo_sender.clone())), sender.clone());
+  broadcast.tell("foo", sender);
+
+  // Path 1 and path 2 each reach the listener once; the order is not fixed.
+  expect_foo_and_bar_in_any_order(&mut a1_probe);
+  assert_eq!(bar_count.load(Ordering::SeqCst), 1, "a duplicate registration must not deliver `bar` twice");
+
+  // No delivery beyond the expected ones: a duplicate entry would leave an
+  // extra `foo` and an extra `bar` in the queue, which this check rejects.
+  a1_probe.expect_no_message(no_delivery_timeout());
+
+  for actor in [&broadcast, &a1] {
     spec.system_mut().stop(actor);
   }
   spec.terminate();
