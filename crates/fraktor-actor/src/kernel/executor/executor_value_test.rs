@@ -130,6 +130,43 @@ fn unwatch_cancels_the_queued_notice_without_cancelling_a_new_watch() {
   assert_eq!(*received.lock().unwrap(), alloc::vec![target]);
 }
 
+struct UnwatchBeforeDelivery {
+  target: ActorRef,
+  observed: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl Actor for UnwatchBeforeDelivery {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    if message == "stop target" {
+      context.watch(&self.target);
+      context.tell(&context.self_ref(), "unwatch target");
+      context.stop(&self.target);
+    } else if message == "unwatch target" {
+      context.unwatch(&self.target);
+      self.observed.lock().unwrap().push("unwatched");
+    } else if message.is::<Terminated>() {
+      self.observed.lock().unwrap().push("terminated");
+    }
+  }
+}
+
+#[test]
+fn an_actor_can_unwatch_after_the_target_stops_and_before_its_notice_is_delivered() {
+  let mut executor = death_watch_executor();
+  let target = executor.spawn_user(Props::new(|| Guardian));
+  let observed = Arc::new(Mutex::new(Vec::new()));
+  let trace = observed.clone();
+  let target_ref = target.clone();
+  let watcher = executor
+    .spawn_user(Props::new(move || UnwatchBeforeDelivery { target: target_ref.clone(), observed: trace.clone() }));
+
+  watcher.tell("stop target", watcher.clone());
+  executor.run_until_idle();
+
+  assert!(executor.is_actor_terminated(&target));
+  assert_eq!(*observed.lock().unwrap(), alloc::vec!["unwatched"]);
+}
+
 struct RecoveringParent {
   observations: Arc<Mutex<RecoveryObservations>>,
   failures: usize,
@@ -630,6 +667,7 @@ mod uid_clash_restart {
     system.run_until_idle();
 
     let observed = observations.lock().unwrap();
+    assert_eq!(observed.steps, alloc::vec!["grandchild started", "pre_restart", "post_restart"]);
     assert_eq!(observed.grandchild_stopped_before_post_restart, Some(true));
     assert_eq!(observed.sibling_alive_in_post_restart, Some(true));
     assert!(system.is_actor_terminated(&sibling));
