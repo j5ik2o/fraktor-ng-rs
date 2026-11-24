@@ -17,6 +17,7 @@
                               （git の URL 書き換えでテスト用 repo へ向ける）
   6. 環境変数                 PEKKO_SOURCE_LOCAL_REPO の上書きに従う（既定のパスを使わない）
   7. 置き場所                 スクリプトのディレクトリではなく、cwd の pekko/ に置く
+  8. 基準                     タグと既定の期待 commit を pekko-baseline.env から読む
 
 すべてのケースで、環境から HOME を除いて実行し、stdout には何も出さないことを確かめる。
 stdout は TAKT が KEY=VALUE として読むため（dist/core/runtime/runtime-environment.js の
@@ -31,9 +32,23 @@ import traceback
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent / "prepare_pekko_source.sh"
+BASELINE_FILE = Path(__file__).resolve().parent / "pekko-baseline.env"
 
-# テスト用の小さな repo では tag v1.7.1 がこの commit を指す。期待 commit は
-# PEKKO_SOURCE_EXPECTED_COMMIT で差し替える（既定は Pekko v1.7.1 の 9a54d129…）。
+
+def read_baseline(path: Path = BASELINE_FILE) -> dict[str, str]:
+    """pekko-baseline.env の KEY=VALUE を読む（コメントと空行は飛ばす）。"""
+    values = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            key, _, value = line.partition("=")
+            values[key] = value
+    return values
+
+
+# スクリプトが clone する基準タグ。テスト用の小さな repo ではこのタグがテスト用の commit を
+# 指し、期待 commit は PEKKO_SOURCE_EXPECTED_COMMIT で差し替える（既定は基準の commit）。
+TAG = read_baseline()["PEKKO_BASELINE_TAG"]
 GIT_IDENTITY = ["-c", "user.name=takt-test", "-c", "user.email=takt-test@example.invalid"]
 
 # 存在しないローカル原典・上流。ネットワークへ出ないための既定値。
@@ -73,9 +88,9 @@ def make_repo(path: str | Path) -> str:
     os.makedirs(path, exist_ok=True)
     git("init", "-q", cwd=path)
     marker = Path(path) / "marker.txt"
-    marker.write_text("v1.7.1\n", encoding="utf-8")
+    marker.write_text(f"{TAG}\n", encoding="utf-8")
     git("add", "marker.txt", cwd=path)
-    git("commit", "-q", "-m", "v1.7.1", cwd=path)
+    git("commit", "-q", "-m", TAG, cwd=path)
     return git("rev-parse", "HEAD", cwd=path)
 
 
@@ -95,16 +110,16 @@ def make_distinct_repo(path: str | Path, label: str) -> str:
 
 
 def make_source(path: str | Path) -> str:
-    """tag v1.7.1 が指す commit を返す。"""
+    """基準タグが指す commit を返す。"""
     head = make_repo(path)
-    git("tag", "v1.7.1", cwd=path)
+    git("tag", TAG, cwd=path)
     return head
 
 
 def make_source_with_older_tag(path: str | Path) -> str:
-    """tag v1.7.1 が最新でない commit を指す原典を作る。"""
+    """基準タグが最新でない commit を指す原典を作る。"""
     make_repo(path)
-    git("tag", "v1.7.1", cwd=path)
+    git("tag", TAG, cwd=path)
     marker = Path(path) / "marker.txt"
     marker.write_text("newer\n", encoding="utf-8")
     git("commit", "-q", "-am", "newer", cwd=path)
@@ -412,9 +427,9 @@ def test_absent_clones_from_local_source() -> None:
         assert result.returncode == 0, f"absent: expected 0, got {result.returncode}; stderr={result.stderr!r}"
         assert_silent_stdout(result, "absent")
         assert_pekko_at(worktree, expected, "absent")
-        # tag を指定せず clone すると、HEAD が v1.7.1 でなくても通ってしまう。
-        assert git("rev-parse", "v1.7.1", cwd=Path(worktree) / "pekko") == expected, (
-            "absent: cloned pekko must carry the v1.7.1 tag"
+        # tag を指定せず clone すると、HEAD が基準タグでなくても通ってしまう。
+        assert git("rev-parse", TAG, cwd=Path(worktree) / "pekko") == expected, (
+            f"absent: cloned pekko must carry the {TAG} tag"
         )
 
 
@@ -449,7 +464,7 @@ def test_existing_pekko_with_other_head_is_not_removed() -> None:
         git("commit", "-q", "--allow-empty", "-m", "outer", cwd=worktree)
         wrong = git("rev-parse", "HEAD", cwd=worktree)
 
-        git("clone", "-q", "--branch", "v1.7.1", str(source), str(Path(worktree) / "pekko"), cwd=root)
+        git("clone", "-q", "--branch", TAG, str(source), str(Path(worktree) / "pekko"), cwd=root)
         git("checkout", "-q", expected, cwd=Path(worktree) / "pekko")
         (Path(worktree) / "pekko" / "keep-me.txt").write_text("kept\n", encoding="utf-8")
 
@@ -486,7 +501,7 @@ def test_source_tag_pointing_elsewhere_fails_after_prepare() -> None:
         )
 
         # 原典を直して再実行すると、自動準備で成功する。
-        git("tag", "-f", "v1.7.1", cwd=source)
+        git("tag", "-f", TAG, cwd=source)
         result2 = run_script(
             worktree,
             base_env(PEKKO_SOURCE_LOCAL_REPO=str(source), PEKKO_SOURCE_EXPECTED_COMMIT=expected),
@@ -614,12 +629,12 @@ def test_missing_local_source_uses_shallow_upstream_clone() -> None:
     with tempfile.TemporaryDirectory() as root:
         upstream = Path(root) / "upstream"
         expected = make_source(upstream)
-        # tag v1.7.1 を 2 つ目の commit に移す。--branch だけの clone でも履歴は 2 件に
+        # 基準タグを 2 つ目の commit に移す。--branch だけの clone でも履歴は 2 件に
         # なるので、履歴を 1 件に切るかどうかで --depth 1 の有無を観測できる。
         (upstream / "marker.txt").write_text("next\n", encoding="utf-8")
         git("commit", "-q", "-am", "next", cwd=upstream)
-        git("tag", "-f", "v1.7.1", cwd=upstream)
-        expected = git("rev-parse", "v1.7.1", cwd=upstream)
+        git("tag", "-f", TAG, cwd=upstream)
+        expected = git("rev-parse", TAG, cwd=upstream)
         worktree = make_worktree(root)
 
         result = run_script(
@@ -642,8 +657,8 @@ def test_local_source_override_is_honoured() -> None:
         # 原典ごとに異なる内容を含め、上書き先を commit で区別できるようにする。
         (used / "marker.txt").write_text("used-source\n", encoding="utf-8")
         git("commit", "-q", "-am", "used only", cwd=used)
-        git("tag", "-f", "v1.7.1", cwd=used)
-        expected = git("rev-parse", "v1.7.1", cwd=used)
+        git("tag", "-f", TAG, cwd=used)
+        expected = git("rev-parse", TAG, cwd=used)
         worktree = make_worktree(root)
 
         result = run_script(
@@ -665,6 +680,8 @@ def test_pekko_is_not_placed_in_the_callers_directory() -> None:
         stacked = Path(root) / "stacked"
         os.makedirs(stacked)
         shutil.copy(SCRIPT, stacked / SCRIPT.name)
+        # 基準はスクリプトと同じディレクトリから読むので、一緒に置く。
+        shutil.copy(BASELINE_FILE, stacked / BASELINE_FILE.name)
         script = stacked / SCRIPT.name
 
         # bash を呼ぶプロセスの cwd を作業ツリーにし、スクリプトを相対パスで渡す。
@@ -684,13 +701,32 @@ def test_pekko_is_not_placed_in_the_callers_directory() -> None:
         assert sorted(x.name for x in Path(root).iterdir()) == ["source", "stacked", "worktree"], (
             "cwd: pekko/ must only be created inside the worktree"
         )
-        assert sorted(x.name for x in stacked.iterdir()) == [SCRIPT.name], (
+        assert sorted(x.name for x in stacked.iterdir()) == sorted([BASELINE_FILE.name, SCRIPT.name]), (
             "cwd: pekko/ must not be created beside the worktree"
         )
 
 
+def test_default_expected_commit_is_the_baseline_commit() -> None:
+    """PEKKO_SOURCE_EXPECTED_COMMIT が無ければ、pekko-baseline.env の commit と照合する。"""
+    baseline_commit = read_baseline()["PEKKO_BASELINE_COMMIT"]
+    with tempfile.TemporaryDirectory() as root:
+        source = Path(root) / "source"
+        actual = make_source(source)
+        worktree = make_worktree(root)
+        env = base_env(PEKKO_SOURCE_LOCAL_REPO=str(source))
+        env.pop("PEKKO_SOURCE_EXPECTED_COMMIT", None)
+        result = run_script(worktree, env)
+        assert result.returncode != 0, "baseline: a source whose tag is not the baseline commit must fail"
+        assert_silent_stdout(result, "baseline")
+        assert baseline_commit in result.stderr and actual in result.stderr, (
+            f"baseline: stderr must name the baseline commit and the actual HEAD, got {result.stderr!r}"
+        )
+        assert not (Path(worktree) / "pekko").exists(), "baseline: the mismatching clone must be removed"
+
+
 def main() -> int:
     tests = [
+        test_default_expected_commit_is_the_baseline_commit,
         test_absent_clones_from_local_source,
         test_present_and_correct_is_noop,
         test_existing_pekko_with_other_head_is_not_removed,

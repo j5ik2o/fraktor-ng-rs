@@ -273,11 +273,13 @@ provider に依存せず成立する。`../pekko` は後方互換として triag
 ワークフロー `fraktor-porting-ng` の `workflow_config.runtime.prepare` に登録した。
 新しい作業ツリーで run が始まるとき、原典が無ければ用意される。
 
-- スクリプトの動作: 作業ツリー直下の `pekko/` の HEAD が 9a54d129…（v1.7.1）なら
+- スクリプトの動作: 基準タグと commit は `tools/pekko-source/pekko-baseline.env` から読む
+  （2026-11-25 から v2.0.0、`9fbd2283…`。それまでは v1.7.1、`9a54d129…`。経緯は
+  `docs/baseline/README.md`）。作業ツリー直下の `pekko/` の HEAD が基準 commit なら
   何もしない。無ければローカルの原典（環境変数 `PEKKO_SOURCE_LOCAL_REPO`、既定は
   `/Users/j5ik2o/Sources/github.com/j5ik2o/pekko`。HOME に依存しない）から
-  `git clone --branch v1.7.1` で用意し、無ければ
-  `https://github.com/apache/pekko` から `--depth 1 --branch v1.7.1` で用意する。
+  `git clone --branch <基準タグ>` で用意し、無ければ
+  `https://github.com/apache/pekko` から `--depth 1 --branch <基準タグ>` で用意する。
   用意後に HEAD を照合し、違えば 0 以外で終わる。途中まで作られて壊れた `pekko/` は
   作り直す。何度実行しても同じ結果になる（冪等）。
 - 置き場所: `tools/` の下は merge-gate など「作業を助ける道具とテスト」の場所で、
@@ -647,7 +649,8 @@ G0a の発行コマンドで参照した旧 fraktor-rs の
 ### 2.2 port-test（編集可、テストファイルのみ）
 
 - Rust テストを書く。置き場所は案Cの規則（検証対象クレートの `tests/`、
-  ノード1件＝ファイル1件）。ファイル冒頭に出典（Pekko v1.7.1 のパス）を残す
+  ノード1件＝ファイル1件）。ファイル冒頭に出典（基準タグと Pekko のパス。
+  2026-11-25 までの移植は v1.7.1、以後は v2.0.0）を残す
 - 分岐：移植できないケースが見つかり、未承認の除外提案がある → needs_human で
   終了（triage と同じ扱い。PR #2 のレビュー指摘で追加）。移植完了 → verify-red へ
 - provider: 量産期は DGX（DeepSeek V4.1 Flash）。基盤期（G0a〜G0c）はクラウド

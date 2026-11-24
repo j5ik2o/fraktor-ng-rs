@@ -4,11 +4,13 @@
 verify_red は already_green のとき台帳を書き換えず、判定結果（node / original_cases /
 passed / excluded / reason）を `.takt/already-green-result.json` へ書く。本スクリプトは
 その JSON を読み、classification が already_green のときだけ、対象ノードに
-status: green・cases の実数・triage.reason（already_green: ...）を書く。それ以外の
+status: green・cases の実数・triage.reason（already_green: ...）と、照合に使った原典の基準タグ
+（verified_against。pekko/ の HEAD が現行の基準 commit のときだけ）を書く。それ以外の
 classification では台帳を変えずに success を返す（次は ledger-update へ進む）。
 
 台帳の書き換えは verify_red の mark_green をそのまま使う。status 行・cases の
-total/ported/passing・既存の triage.reason だけを書き換え、新しいキーを増やさない。
+total/ported/passing・既存の triage.reason・最上位の verified_against だけを書き換える
+（verified_against 行が無ければノードの末尾に足す。それ以外の新しいキーは増やさない）。
 人間が書いた既存の triage.reason は上書きしない。
 
 placement: equivalence-review を通過した後、ledger-update の前。already_green は
@@ -28,6 +30,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import pekko_baseline  # noqa: E402  (照合済みタグは用意された原典の HEAD から決める)
 import verify_red  # noqa: E402  (台帳の書き換え規則を 1 箇所に保つ)
 
 
@@ -62,7 +65,19 @@ def main() -> int:
                          ensure_ascii=False))
         return 0
 
-    ok = verify_red.mark_green(node, total, passed, reason)
+    # 照合に使った原典が現行の基準でなければ green にしない（旧原典の照合に現行タグを付けない）。
+    try:
+        tag = pekko_baseline.source_tag(
+            pekko_baseline.load(),
+            os.environ.get("PEKKO_ORIGINAL_ROOT", verify_red.DEFAULT_ORIGINAL_ROOT),
+        )
+    except pekko_baseline.BaselineError as error:
+        print(json.dumps({"recorded": False, "already_green": True, "node": node,
+                          "detail": f"the Pekko source is not the current baseline: {error}"},
+                         ensure_ascii=False))
+        return 0
+
+    ok = verify_red.mark_green(node, total, passed, reason, tag)
     if not ok:
         print(json.dumps({"recorded": False, "already_green": True, "node": node,
                           "detail": "mark_green could not rewrite the ledger node"},

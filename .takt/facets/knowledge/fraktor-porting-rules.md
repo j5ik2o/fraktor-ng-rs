@@ -1,6 +1,7 @@
 # Pekko 移植の規約（fraktor-ng-rs）
 
-Apache Pekko v1.7.1 のテストスイートを正として Rust へ移植する際の、
+基準タグの Apache Pekko（現行は v2.0.0。正は `tools/pekko-source/pekko-baseline.env`、
+決定の経緯は `docs/baseline/README.md`）のテストスイートを正として Rust へ移植する際の、
 全ステップ共通の規約。設計の正は `docs/decisions/` 配下の決定文書であり、
 本ファセットはその実行用要約である。矛盾したら決定文書が優先する。
 
@@ -30,7 +31,8 @@ Apache Pekko v1.7.1 のテストスイートを正として Rust へ移植する
   （`crates/fraktor-actor`、`crates/fraktor-actor-typed`、
   `crates/fraktor-testkit`、`crates/fraktor-stream` 等）
 - 移植テストは検証対象クレートの `tests/` 配下に、ノード1件＝ファイル1件で置く。
-  ファイル冒頭に出典（Pekko v1.7.1 のファイルパス）をコメントで残す
+  ファイル冒頭に出典（基準タグと Pekko のファイルパス）をコメントで残す。
+  過去の基準で移植した既存ファイルの出典は、照合の記録なので書き換えない
 - 各クレート内部は kernel（プラットフォーム非依存）と adaptor（std 実装）に
   分ける。kernel は時刻・スケジューリング・IO に直接触れず、Clock や
   Scheduler の port（トレイト）越しに使う。具体実装は adaptor が持つ

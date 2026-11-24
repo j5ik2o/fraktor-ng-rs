@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 作業ツリー直下に Pekko v1.7.1 の原典 pekko/ を用意する。
+# 作業ツリー直下に、基準タグの Pekko 原典 pekko/ を用意する。基準タグと commit の正は
+# 同じディレクトリの pekko-baseline.env（PEKKO_BASELINE_TAG と PEKKO_BASELINE_COMMIT）。
 # TAKT の workflow_config.runtime.prepare から、作業ツリーを cwd にして実行される
 # （init と各ステップの前）。stdout は TAKT が KEY=VALUE として読むため、何も出さない。
 set -euo pipefail
@@ -38,11 +39,20 @@ for oc_name in opencode.json opencode.jsonc; do
   fi
 done
 
+# 基準の読み込み。cwd ではなくスクリプトの置き場所から引く（TAKT は作業ツリーを cwd にする）。
+baseline_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/pekko-baseline.env"
+# shellcheck source=pekko-baseline.env
+. "$baseline_file"
+if [ -z "${PEKKO_BASELINE_TAG:-}" ] || [ -z "${PEKKO_BASELINE_COMMIT:-}" ]; then
+  echo "$baseline_file: PEKKO_BASELINE_TAG and PEKKO_BASELINE_COMMIT are required" >&2
+  exit 1
+fi
+
 target="$PWD/pekko"
 local_repo="${PEKKO_SOURCE_LOCAL_REPO:-/Users/j5ik2o/Sources/github.com/j5ik2o/pekko}"
 upstream_url="${PEKKO_SOURCE_UPSTREAM_URL:-https://github.com/apache/pekko}"
-expected="${PEKKO_SOURCE_EXPECTED_COMMIT:-9a54d1294c3ac7821bbed3c940769c3d5027d1ff}"
-tag="v1.7.1"
+expected="${PEKKO_SOURCE_EXPECTED_COMMIT:-$PEKKO_BASELINE_COMMIT}"
+tag="$PEKKO_BASELINE_TAG"
 
 # verify_green の aislop ゲートは node_modules の aislop を使う。run の各ステップの前に
 # node_modules を用意するため、aislop の実行物が無いか、package-lock.json / package.json

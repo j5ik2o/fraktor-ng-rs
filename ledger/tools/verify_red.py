@@ -92,8 +92,11 @@ def mark_red(node_id: str) -> bool:
     return _rewrite_node(node_id, lambda i, line: _replace_status(line, "red"))
 
 
-def mark_green(node_id: str, total: int, passed: int, reason: str) -> bool:
-    """台帳の対象ノードを green にし、cases の実数と triage.reason を書く。成功したら True。
+def mark_green(node_id: str, total: int, passed: int, reason: str, verified_against: str) -> bool:
+    """台帳の対象ノードを green にし、cases の実数・triage.reason・verified_against を書く。成功したら True。
+
+    verified_against には照合に使った原典の基準タグを渡す（呼び出し側が
+    pekko_baseline.source_tag で、用意された pekko/ の HEAD から決める）。空なら何も書かない。
 
     verify_green と equivalence-review を通過した後、record-already-green（record_already_green.py）
     から呼ぶ。verify_red の already_green 分類では呼ばない（等価性レビュー中断時に未承認の
@@ -101,7 +104,8 @@ def mark_green(node_id: str, total: int, passed: int, reason: str) -> bool:
 
     total には原典のケース数、ported と passing には Rust の成功件数 passed を書く
     （承認済みの除外がある場合、total = passed + len(excluded) になる）。
-    新キーは増やさない。status・cases の total/ported/passing・既存の triage.reason だけを書き換える。
+    status・cases の total/ported/passing・既存の triage.reason・最上位の verified_against だけを
+    書き換える。verified_against 行が無ければノードの末尾に足し、それ以外の新キーは増やさない。
     triage.reason が null または空のときだけ `already_green: ` 理由を書き、人間が書いた既存の
     理由は上書きしない。triage.reason キーが無い台帳でも green と cases は書き、理由は載せない。
     """
@@ -152,11 +156,12 @@ def mark_green(node_id: str, total: int, passed: int, reason: str) -> bool:
                 lines[i] = f"{reason_indent}reason: {_yaml_scalar(reason)}\n"
             else:
                 reason_preserved = True
-    if not (status_written and cases_written):
+    if not verified_against or not (status_written and cases_written):
         return False
     if not reason_written:
         reason_line = f"{reason_indent}reason: {_yaml_scalar(reason)}\n"
         lines = _insert_after_key(lines, node_id, "triage:", reason_line)
+    lines = _set_top_level_key(lines, node_id, "verified_against", verified_against)
     open(LEDGER, "w", encoding="utf-8").write("".join(lines))
     return not reason_preserved
 
@@ -185,6 +190,28 @@ def _insert_after_key(lines: list[str], node_id: str, key: str, new_line: str) -
         if in_block and re.match(rf"\s+{re.escape(key)}\s*$", line):
             return lines[: i + 1] + [new_line] + lines[i + 1 :]
     return lines
+
+
+def _set_top_level_key(lines: list[str], node_id: str, key: str, value: str) -> list[str]:
+    """対象ノードの最上位の key 行を value に置き換える。無ければノードの末尾に足す。"""
+    start = end = None
+    for i, line in enumerate(lines):
+        if line.startswith("- id: "):
+            if start is not None:
+                end = i
+                break
+            if line.split(":", 1)[1].strip() == node_id:
+                start = i
+    if start is None:
+        return lines
+    end = len(lines) if end is None else end
+    new_line = f"  {key}: {_yaml_scalar(value)}\n"
+    for i in range(start + 1, end):
+        if re.match(rf"  {re.escape(key)}:", lines[i]):
+            return lines[:i] + [new_line] + lines[i + 1:]
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    return lines[:end] + [new_line] + lines[end:]
 
 
 def _rewrite_node(node_id: str, transform) -> bool:

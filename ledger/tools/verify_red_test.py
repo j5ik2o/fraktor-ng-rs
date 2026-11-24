@@ -615,6 +615,40 @@ def test_existing_non_null_reason_is_preserved():
         print("13. existing non-null reason preserved:", node["triage"]["reason"])
 
 
+# 合成の基準タグ。record-already-green は、PEKKO_BASELINE_FILE が指す基準ファイルと
+# pekko/ の HEAD を突き合わせて、台帳の verified_against に書くタグを決める。
+BASELINE_TAG = "vTEST-current"
+OLD_BASELINE_TAG = "vTEST-old"
+
+
+def _git(*args: str, cwd: Path) -> str:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return subprocess.run(
+        ["git", "-c", "user.name=takt-test", "-c", "user.email=takt-test@example.invalid", *args],
+        cwd=str(cwd), env=env, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def prepare_baseline_source(root: Path, *, current: bool = True) -> Path:
+    """root/pekko を git repo にし、root/baseline.env に基準を書いてそのパスを返す。
+
+    current=True なら pekko/ の HEAD を現行の基準 commit にする。False なら HEAD を
+    過去の基準の commit にし、現行の基準には別の commit を書く。
+    """
+    pekko = root / "pekko"
+    pekko.mkdir(parents=True, exist_ok=True)
+    _git("init", "-q", cwd=pekko)
+    _git("add", "-A", cwd=pekko)
+    _git("commit", "-q", "--allow-empty", "-m", "source", cwd=pekko)
+    head = _git("rev-parse", "HEAD", cwd=pekko)
+    other = "0" * 40
+    current_commit, old_commit = (head, other) if current else (other, head)
+    baseline = root / "baseline.env"
+    write(baseline, f"PEKKO_BASELINE_TAG={BASELINE_TAG}\nPEKKO_BASELINE_COMMIT={current_commit}\n"
+                    f"PEKKO_HISTORICAL_BASELINES={OLD_BASELINE_TAG}:{old_commit}\n")
+    return baseline
+
+
 def _run_mark_green(root: Path, node_id: str, total: int, passed: int, reason: str) -> bool:
     """一時台帳を作り、verify_red の mark_green をサブプロセスで呼ぶ（LEDGER は cwd 相対）。"""
     import importlib
@@ -626,7 +660,7 @@ def _run_mark_green(root: Path, node_id: str, total: int, passed: int, reason: s
     cwd = os.getcwd()
     try:
         os.chdir(root)
-        return module.mark_green(node_id, total, passed, reason)
+        return module.mark_green(node_id, total, passed, reason, BASELINE_TAG)
     finally:
         os.chdir(cwd)
 
@@ -644,6 +678,9 @@ def test_mark_green_persists_green_and_reason():
             and node["cases"]["passing"] == 2, node["cases"]
         assert node["triage"]["reason"] == reason, node["triage"]
         assert set(node["triage"].keys()) == {"kind", "reason"}, node["triage"]
+        assert node["verified_against"] == BASELINE_TAG, node
+        text = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        assert text.endswith(f"  goal: G0d\n  verified_against: {BASELINE_TAG}\n"), text
         print("13a. mark_green persists green + cases + reason:", node["status"])
 
 
@@ -663,11 +700,16 @@ def test_mark_green_preserves_human_reason():
         print("13a-2. mark_green preserves human reason:", node["triage"]["reason"])
 
 
-def _run_record_already_green(root: Path) -> dict:
-    """record_already_green.py を cwd=root で実行し、stdout の JSON を返す。"""
+def _run_record_already_green(root: Path, *, current_source: bool = True) -> dict:
+    """record_already_green.py を cwd=root で実行し、stdout の JSON を返す。
+
+    root/pekko を基準の原典として用意する（current_source=False なら過去の基準の原典）。
+    """
+    env = {k: v for k, v in os.environ.items() if k != "PEKKO_ORIGINAL_ROOT"}
+    env["PEKKO_BASELINE_FILE"] = str(prepare_baseline_source(root, current=current_source))
     proc = subprocess.run(
         [sys.executable, str(RECORD_ALREADY_GREEN)],
-        cwd=str(root), capture_output=True, text=True, check=False,
+        cwd=str(root), env=env, capture_output=True, text=True, check=False,
     )
     assert proc.returncode == 0, (
         f"record_already_green must always exit 0; got {proc.returncode}\n"
@@ -693,7 +735,26 @@ def test_record_already_green_writes_green_and_reason():
         assert node["cases"]["total"] == 2 and node["cases"]["ported"] == 2 \
             and node["cases"]["passing"] == 2, node["cases"]
         assert node["triage"]["reason"].startswith("already_green: "), node["triage"]
+        assert node["verified_against"] == BASELINE_TAG, node
         print("13d. record-already-green writes green + cases + reason:", node["status"])
+
+
+def test_record_already_green_refuses_a_source_that_is_not_the_current_baseline():
+    """pekko/ が過去の基準の原典なら green を書かない（旧原典の照合に現行タグを付けない）。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write(root / "ledger" / "nodes.yaml", ledger_yaml([case_block(NODE_ID, None, None, None)]))
+        write(root / ".takt" / "already-green-result.json", json.dumps({
+            "classification": "already_green", "node": NODE_ID,
+            "original_cases": 2, "passed": 2, "excluded": 0,
+            "reason": "already_green: 原典 Pekko のケース数 2 と通過ケース数 2 が一致",
+        }, ensure_ascii=False))
+        before = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        result = _run_record_already_green(root, current_source=False)
+        assert result["recorded"] is False and result["already_green"] is True, result
+        assert OLD_BASELINE_TAG in result["detail"], result
+        assert (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8") == before
+        print("13d-2. record-already-green refuses a historical baseline source")
 
 
 def test_record_already_green_preserves_human_reason():
@@ -1614,6 +1675,7 @@ def main() -> int:
         test_mark_green_persists_green_and_reason,
         test_mark_green_preserves_human_reason,
         test_record_already_green_writes_green_and_reason,
+        test_record_already_green_refuses_a_source_that_is_not_the_current_baseline,
         test_record_already_green_preserves_human_reason,
         test_record_already_green_skips_when_not_already_green,
         test_record_already_green_without_result_file,
