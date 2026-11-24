@@ -38,7 +38,13 @@ rollup.py --goal を走らせる。ここでは takt も cargo も node も起�
  30. not_built の承認記録が不正（実在しない暦日、時刻つき、文字列でない・空白だけの承認者）なら完了にしない
  31. not_built のケース名が重複していれば、件数が合っていても完了にしない
  32. not_built のケース名が空白だけなら完了にしない
- 33. TAKT の triage が処理済みとする status が rollup.DONE_STATUSES と一致する
+ 33. TAKT の triage が処理済みとする status が rollup.DONE_STATUSES と一致し、記録不足の
+     needs_human は対象ゴールのノードに限る
+ 34. not_built の passing が整数の 0 でない（1、null、false、欠落）なら完了にしない
+ 35. cases.not_built が配列でなくても集計は止まらず、そのノードの記録不足として出る。
+     ほかのゴールのその誤記で、対象ゴールの完了判定は止まらない
+ 36. ほかのゴールの not_built の記録不足は、対象ゴールの未完了一覧に入らない。対象ゴール
+     自身の記録不足は、未完了一覧に not_built と不足の内容つきで出る
 """
 import json
 import os
@@ -318,6 +324,58 @@ def test_not_built_with_a_blank_case_name_is_not_complete():
     assert_not_built_incomplete("32. not_built with a blank case name", APPROVAL, cases)
 
 
+def test_not_built_with_a_nonzero_or_missing_passing_is_not_complete():
+    """全件が作らない区分のノードは、ported と passing がどちらも整数の 0 である。"""
+    for label, line in (("34a. passing 1", "    passing: 1\n"),
+                        ("34b. passing null", "    passing: null\n"),
+                        ("34c. passing false", "    passing: false\n"),
+                        ("34d. passing missing", "")):
+        cases = NOT_BUILT_CASE.replace("    passing: 0\n", line)
+        assert_not_built_incomplete(f"{label}: not_built", APPROVAL, cases)
+
+
+def test_non_list_not_built_record_is_diagnosed_without_crashing():
+    """cases.not_built の配列でない誤記で集計が止まらず、そのノードの記録不足として出る。"""
+    cases = ("    total: 1\n    ported: 0\n    passing: 0\n    excluded: []\n"
+             "    not_built: 1\n")
+    assert_not_built_incomplete("35a. not_built record that is not a list", "", cases)
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.java"]
+        ledger = (ledger_yaml([(ids[0], "green", "G0t")])
+                  + not_built_node("b/B.java", "G0s", "", cases))
+        response = make_run(root, order_with(["docs/goals/g0t-stub.md"]), ledger,
+                            one_goal_doc("G0t", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] == 0, result
+        print("35b. another goal's non-list not_built record: exit_code =", result["exit_code"])
+
+
+def test_another_goals_not_built_shortfall_stays_out_of_the_goal_pending_list():
+    """ほかのゴールの記録不足は、対象ゴールの未完了一覧に入らない（triage はその一覧で判定する）。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.java"]
+        ledger = (ledger_yaml([(ids[0], "unported", "G0r")])
+                  + not_built_node("b/B.java", "G0q", ""))
+        response = make_run(root, order_with(["docs/goals/g0r-stub.md"]), ledger,
+                            one_goal_doc("G0r", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] != 0, result
+        pending = result["output"].split("未完了", 1)[1]
+        assert "a/A.java (unported)" in pending, result
+        assert "b/B.java" not in pending, result
+        own = (ledger_yaml([(ids[0], "unported", "G0r")])
+               + not_built_node("b/B.java", "G0r", ""))
+        response = make_run(root, order_with(["docs/goals/g0r-stub.md"]), own,
+                            one_goal_doc("G0r", ids + ["b/B.java"]))
+        result = run_gate(root, response)
+        pending = result["output"].split("未完了", 1)[1]
+        assert "b/B.java (not_built、作らない区分の記録が不足" in pending, result
+        print("36. another goal's shortfall stays out, the goal's own is listed: exit_code =",
+              result["exit_code"])
+
+
 def test_takt_triage_treats_the_same_statuses_as_done():
     """TAKT の triage が処理済みとする status は、rollup の DONE_STATUSES と同じである。
 
@@ -339,7 +397,8 @@ def test_takt_triage_treats_the_same_statuses_as_done():
         assert f"`{status}`" in triage, (status, "fraktor-triage.md")
         assert status in complete[0], (status, complete[0])
     assert "rollup.py" in triage, "fraktor-triage.md"
-    assert any("not_built" in condition for condition in human), human
+    assert any("not_built" in condition and "対象ゴール" in condition for condition in human), human
+    assert "対象ゴールに属する" in triage, "fraktor-triage.md"
     print("33. TAKT triage statuses match rollup.DONE_STATUSES:", rollup.DONE_STATUSES)
 
 
@@ -731,6 +790,9 @@ def main() -> int:
         test_not_built_with_duplicated_case_names_is_not_complete,
         test_not_built_with_a_blank_case_name_is_not_complete,
         test_takt_triage_treats_the_same_statuses_as_done,
+        test_not_built_with_a_nonzero_or_missing_passing_is_not_complete,
+        test_non_list_not_built_record_is_diagnosed_without_crashing,
+        test_another_goals_not_built_shortfall_stays_out_of_the_goal_pending_list,
         test_order_without_goal_path_fails,
         test_order_with_multiple_goal_paths_fails,
         test_missing_goal_document_fails,

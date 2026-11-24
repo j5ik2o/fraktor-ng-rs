@@ -16,7 +16,7 @@
 
 作らない区分（not_built）の記録の検査:
   status=not_built のノードは、triage.kind が not_built で triage.reason があり、
-  cases.ported が 0 で、cases.not_built の件数が cases.total に等しく、各要素の
+  cases.ported と cases.passing が整数の 0 で、cases.not_built の件数が cases.total に等しく、各要素の
   name・reason・alternative が空白以外の文字列で、承認記録（approved_by、approved_at）が
   除外と同じ is_approved_by_human を満たし、ケース名がノード内で重複しないこと。
   満たさないノードは一覧に出し、ゴールの完了に数えない。台帳は除外の検査と同じ
@@ -58,6 +58,11 @@ def is_text(value) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def is_zero(value) -> bool:
+    """整数の 0 か（bool の False と、欠落・null は 0 と見なさない）。"""
+    return type(value) is int and value == 0
+
+
 def is_valid_not_built_case(record) -> bool:
     """作らないケースの1要素が、3つの文字列欄と人による承認記録を持つかを返す。"""
     return (isinstance(record, dict)
@@ -79,8 +84,9 @@ def not_built_problems(node: dict) -> list[str]:
     records = cases.get("not_built")
     if not isinstance(records, list) or not records:
         return problems + ["cases.not_built が空"]
-    if cases.get("ported") != 0:
-        problems.append("cases.ported が 0 でない")
+    for key in ("ported", "passing"):
+        if not is_zero(cases.get(key)):
+            problems.append(f"cases.{key} が整数の 0 でない")
     if len(records) != cases.get("total"):
         problems.append("cases.not_built の件数が cases.total と違う")
     for index, record in enumerate(records):
@@ -107,15 +113,20 @@ def case_counts(test_nodes: list[dict]) -> dict:
               "not_built": 0, "not_built_recorded": 0}
     for n in test_nodes:
         cases = n.get("cases") or {}
-        counts["ported"] += cases.get("ported") or 0
-        excluded = cases.get("excluded") or []
-        counts["excluded_recorded"] += len(excluded)
-        counts["excluded"] += sum(1 for e in excluded
-                                  if isinstance(e, dict) and is_approved_by_human(e))
-        not_built = cases.get("not_built") or []
-        counts["not_built_recorded"] += len(not_built)
-        if n.get("status") == "not_built" and not not_built_problems(n):
-            counts["not_built"] += len(not_built)
+        ported = cases.get("ported")
+        if type(ported) is int:
+            counts["ported"] += ported
+        # 配列でない記録は数えない。not_built の不正な記録は not_built_problems が診断に出す。
+        excluded = cases.get("excluded")
+        if isinstance(excluded, list):
+            counts["excluded_recorded"] += len(excluded)
+            counts["excluded"] += sum(1 for e in excluded
+                                      if isinstance(e, dict) and is_approved_by_human(e))
+        not_built = cases.get("not_built")
+        if isinstance(not_built, list):
+            counts["not_built_recorded"] += len(not_built)
+            if n.get("status") == "not_built" and not not_built_problems(n):
+                counts["not_built"] += len(not_built)
     return counts
 
 
@@ -200,7 +211,9 @@ def main() -> int:
         if pending:
             print(f"  未完了 {len(pending)} 件:")
             for n in pending:
-                print(f"    - {n['id']} ({n.get('status')})")
+                problems = not_built_problems(n)
+                detail = f"、作らない区分の記録が不足: {'; '.join(problems)}" if problems else ""
+                print(f"    - {n['id']} ({n.get('status')}{detail})")
             return 1
         print(f"  完了: 全ノードが green か do_not_port か not_built")
         return 0

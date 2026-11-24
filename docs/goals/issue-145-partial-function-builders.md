@@ -106,7 +106,7 @@ fn generic_class_with_predicate_alternative() {
 - `check_needs.py` の「完了したゴール」は、`rollup.py` の同じ判定（`is_done`）と同じ読み込み（`load_nodes`）を使う。
 - TAKT の triage の指示（`fraktor-triage.md`）と子ワークフロー（`fraktor-port-node.yaml`）の triage の規則を、記録の揃った not_built を処理済みにし、記録の不足した not_built を needs_human にする形に揃えた。移植の規約（`fraktor-porting-rules.md`）にも、not_built は人間だけが決めることを書いた。ワークフローは実際には走らせていない。
 - 承認済みのグラフモデル提案書（`fable-graph-model-proposal.md`）に「追加の決定：作らない区分」を足し、論点 9（完了条件）と論点 16（合格率）の読み替えと、3章・5章の該当箇所への注記を書いた。
-- `goal_complete_gate_test.py` に8件を足した。green と記録の揃った not_built の混在は完了。承認の欄の欠落、実在しない暦日（引用あり・なし）、時刻つきの日付、文字列でない・空白だけの承認者、重複したケース名、空白だけのケース名は、どれも未完了。TAKT の triage の指示と規則が `rollup.DONE_STATUSES` の全 status と、記録の不足した not_built の needs_human を持つこと。レビュー前の HEAD `97b765d` の `rollup.py` と TAKT の2ファイルでは、このうち3件と実物のゴール文書の検査が失敗することを確かめた（`28 passed, 4 failed`）。
+- `goal_complete_gate_test.py` に11件を足した。green と記録の揃った not_built の混在は完了。承認の欄の欠落、実在しない暦日（引用あり・なし）、時刻つきの日付、文字列でない・空白だけの承認者、重複したケース名、空白だけのケース名、整数の 0 でない `passing`、配列でない `cases.not_built` は、どれも未完了（配列でない記録でも集計は止まらない）。ほかのゴールの記録不足は、対象ゴールの未完了一覧に入らない。TAKT の triage の指示と規則が `rollup.DONE_STATUSES` の全 status と、記録の不足した not_built の needs_human を持つこと。レビュー前の HEAD `97b765d` の `rollup.py` と TAKT の2ファイルでは、このうち3件と実物のゴール文書の検査が失敗することを確かめた（`28 passed, 4 failed`）。再レビュー後の追加分は、`1b88d94` の `rollup.py` と TAKT の2ファイルで4件が失敗することを確かめた（`31 passed, 4 failed`）。
 - `verify_red.py`・`verify_green.py` の勘定には手を入れていない。混在のノードはまだない。
 
 集計の変化（`rollup.py --ledger ledger/nodes.yaml` の全体の行）：
@@ -127,7 +127,7 @@ fn generic_class_with_predicate_alternative() {
 | `rollup.py --goal G0issue145` | 0 | 2件、`{'not_built': 2}`、完了 |
 | `check_needs.py --goal G0issue145` | 0 | needs 閉性 OK |
 | `check_needs.py` と `rollup.py` を `G0a`〜`G0f` の各々で | 0 | 12コマンドすべて終了値0 |
-| `goal_complete_gate_test.py` | 0 | 32 passed, 0 failed |
+| `goal_complete_gate_test.py` | 0 | 35 passed, 0 failed |
 | `verify_red_test.py` | 0 | 48 passed, 0 failed |
 | `verify_green_test.py`、`verify_green_test_aislop.py`、`verify_green_test_crate.py` | 0 | 成功 |
 | `npm ci` → `npm run check:aislop` | 0 | warn 以上の指摘は受理済み一覧と一致 |
@@ -143,7 +143,9 @@ fn generic_class_with_predicate_alternative() {
 | Devin（r4687893971）、Codex（r4687894519）：不正な承認記録でも完了になる | 直す | 承認の2欄を `is_approved_by_human` で検査し、台帳を除外と同じ専用ローダで読むようにした（引用なしの正しい日付は引き続き受理する）。テスト（30a〜30e）を足した |
 | Devin（r4687894084）：ケース名の重複で欠けたケースが隠れる | 直す | ケース名が空白以外の文字列で、ノード内で重複しないことを検査した。テスト（31、32）を足した |
 | Devin（r4687894370）：ケースの集計が未承認の記録も数える | 直す | 承認記録の有効な件数と、台帳に書かれた件数を分けて出すようにした |
-| CodeRabbit | 対象なし | 利用上限のため、レビューは行われなかった |
+| CodeRabbit（r4688075677）：ほかのゴールの記録不足で、対象ゴールの triage が needs_human で止まる | 直す | triage の指示と子ワークフローの規則で、記録不足の判定を対象ゴールのノードに限り、`rollup.py --goal` のそのゴールの未完了一覧で判定するようにした。未完了一覧は not_built の不足の内容も出す。テスト（33、36）を足した |
+| CodeRabbit（r4688075690）：`passing` が欠落・null・1 でも完了になる | 直す | `ported` と `passing` がどちらも整数の 0 であることを求めた。テスト（34a〜34d）を足した |
+| CodeRabbit（r4688075696）：`cases.not_built` が配列でないと集計が `TypeError` で止まる | 直す | 集計は配列の記録だけを数え、配列でない記録は `not_built_problems` の診断に回す。テスト（35a、35b）を足した |
 
 ## 独立レビュー（別系統のモデル）
 
