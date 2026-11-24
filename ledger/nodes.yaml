@@ -629,7 +629,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue162
 - id: actor-tests/src/test/java/org/apache/pekko/actor/AbstractFSMWithStashActorTest.java
   name: actor-tests:AbstractFSMWithStashActorTest
   kind: test
@@ -655,7 +655,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue162
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorConfigurationVerificationSpec.scala
   name: actor-tests:ActorConfigurationVerificationSpec
   kind: test
