@@ -124,9 +124,55 @@ fn an_ipv6_address_that_is_not_ipv4_mapped_stays_ipv6() {
   assert_eq!(DnsSettings::parse_nameserver_address("[::1]"), Ok(SocketAddr::new("::1".parse::<IpAddr>().unwrap(), 53)));
 }
 
+// Java's `InetAddress` reads each part of a four-part IPv4 literal as a decimal
+// number, so the original accepts leading zeros: `008.008.008.008:53` is
+// `8.8.8.8:53`. `Ipv4Addr::from_str` rejects leading zeros.
+#[test]
+fn a_zero_padded_ipv4_address_is_read_as_decimal() {
+  assert_eq!(
+    DnsSettings::parse_nameserver_address("008.008.008.008:53"),
+    Ok(SocketAddr::new("8.8.8.8".parse::<IpAddr>().unwrap(), 53))
+  );
+  assert_eq!(
+    DnsSettings::parse_nameserver_address("010.000.000.001"),
+    Ok(SocketAddr::new("10.0.0.1".parse::<IpAddr>().unwrap(), 53))
+  );
+  assert_eq!(
+    DnsSettings::parse_nameserver_address("0255.0.0.0"),
+    Ok(SocketAddr::new("255.0.0.0".parse::<IpAddr>().unwrap(), 53))
+  );
+}
+
+// Leading zeros do not lift the 255 limit of a part, and the literal still
+// needs exactly four non-empty parts.
+#[test]
+fn a_zero_padded_ipv4_address_keeps_the_part_rules() {
+  for text in ["0256.0.0.0", "008.008.008", "008.008.008.008.008", "008..008.008", "008.008.008.008."] {
+    assert_eq!(DnsSettings::parse_nameserver_address(text), Err(NameserverAddressError::UnsupportedHost), "{text}");
+  }
+}
+
+// The `.` of the original's regular expression does not match a line
+// terminator, so text with one does not match at all and the original throws
+// `IllegalArgumentException("Unparseable address string")`. Reading the port
+// first would report `8.8.8.8\n:65536` as an invalid port instead.
+#[test]
+fn text_with_a_line_terminator_is_unparseable() {
+  for text in ["8.8.8.8\n:65536", "8.8.8.8\n", "8.8.8.8\r:53", "8.8.8.8\u{0085}", "8.8.8.8\u{2028}", "8.8.8.8\u{2029}"]
+  {
+    assert_eq!(DnsSettings::parse_nameserver_address(text), Err(NameserverAddressError::Unparseable), "{text:?}");
+  }
+}
+
 #[test]
 fn the_display_text_names_the_failure() {
-  assert!(!NameserverAddressError::InvalidPort.to_string().is_empty());
-  assert!(!NameserverAddressError::UnsupportedHost.to_string().is_empty());
-  assert_ne!(NameserverAddressError::InvalidPort.to_string(), NameserverAddressError::UnsupportedHost.to_string());
+  let texts = [
+    NameserverAddressError::InvalidPort.to_string(),
+    NameserverAddressError::UnsupportedHost.to_string(),
+    NameserverAddressError::Unparseable.to_string(),
+  ];
+  for (index, text) in texts.iter().enumerate() {
+    assert!(!text.is_empty());
+    assert!(texts[index + 1..].iter().all(|other| other != text));
+  }
 }

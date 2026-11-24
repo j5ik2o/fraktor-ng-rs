@@ -9,9 +9,12 @@
 //
 // The original's helper is `parse(str: String) = ResolvConfParser.parseLines(
 // str.linesIterator)`, returning a `ResolvConf`. The port's `parse` takes a
-// `&str` and calls `ResolvConfParser::parse_lines(text.lines())`, whose `Item` is
-// `&str` (the port's `str.lines()` is the original's `linesIterator`), and
-// unwraps the `Result` with `expect`. The original's `ResolvConf.search`
+// `&str`, splits it at every `\n` and `\r`, and passes the pieces to
+// `ResolvConfParser::parse_lines`, unwrapping the `Result` with `expect`.
+// Scala 2.13's `linesIterator` ends a line at LF, CR LF or a lone CR. Splitting
+// at both characters gives the same lines, plus one empty line between the CR
+// and the LF of a CR LF, which `parse_lines` skips as blank. Rust's
+// `str::lines` would not split at a lone CR. The original's `ResolvConf.search`
 // (`List[String]`) is the port's `&[String]` from `search()`, compared against the
 // expected elements in a slice literal (`["example.com"]`); the original's
 // `ResolvConf.ndots` (`Int`) is the port's `ndots()` returning `i32`.
@@ -29,7 +32,7 @@
 use fraktor_actor::kernel::io::dns::{ResolvConf, ResolvConfParser};
 
 fn parse(text: &str) -> ResolvConf {
-  ResolvConfParser::parse_lines(text.lines()).expect("the resolv.conf must parse")
+  ResolvConfParser::parse_lines(text.split(['\n', '\r'])).expect("the resolv.conf must parse")
 }
 
 // "parse an actual Kubernetes resolv.conf file"

@@ -46,7 +46,7 @@
 | `DnsFallbackPort = 53` | 非公開の定数 `FALLBACK_PORT: u16 = 53` |
 | `ResolvConfParser.parseLines(lines: Iterator[String]): ResolvConf` | `ResolvConfParser::parse_lines<'a, I: IntoIterator<Item = &'a str>>(I) -> Result<ResolvConf, ResolvConfParseError>` |
 | `ResolvConf(search: List[String], ndots: Int)` | `ResolvConf`（`search() -> &[String]`、`ndots() -> i32`、`new(Vec<String>, i32)`） |
-| `str.linesIterator` | `str.lines()` |
+| `str.linesIterator`（LF、CR LF、単独の CR で行を分ける） | `text.split(['\n', '\r'])`（CR LF の間にできる空行は `parse_lines` が空行として飛ばす） |
 | `shouldEqual` / `should be` | `assert_eq!` |
 
 原典の2つは `@InternalApi private[pekko]` と `private[dns]` である。移植では統合テストから呼ぶために公開した。追加だけで、既存の公開 API は変えていない（`kernel.rs` に `pub mod io;` を1行足した）。`DnsSettings` と `ResolvConfParser` は、原典の `object` に合わせた、フィールドのない型である。
@@ -99,8 +99,8 @@ kernel の `io::dns` モジュールに足した。どれも `core` と `alloc` 
 
 原典との差異は次のとおりで、原典テストが観測する値は変わらない。
 
-- 原典の `InetSocketAddress(host, port)` は、host が数値 IP でなければ名前解決を試みる。移植は数値 IP だけを受け付け、それ以外は `UnsupportedHost` を返す。名前解決は issue の対象外である。Java の `InetAddress` が受け付ける省略形の IPv4（`8.8` など）と、スコープ付き IPv6（`%eth0`）も、`core::net` が読まないため受け付けない。
-- 原典は失敗を例外で伝える（`parseNameserverAddress` の到達しない `IllegalArgumentException`、`parseLines` の `NumberFormatException`）。移植は `Result` で返す。
+- 原典の `InetSocketAddress(host, port)` は、host が数値 IP でなければ名前解決を試みる。移植は数値 IP だけを受け付け、それ以外は `UnsupportedHost` を返す。名前解決は issue の対象外である。Java の `InetAddress` が受け付ける省略形の IPv4（`8.8` など）と、スコープ付き IPv6（`%eth0`）も受け付けない。4つ組の IPv4 は、Java と同じく各部を10進数として読み、先頭のゼロを許す（`008.008.008.008` は `8.8.8.8`。独立レビューの指摘で追加）。数字は ASCII だけを読む。
+- 原典は失敗を例外で伝える（`parseNameserverAddress` の `IllegalArgumentException`、`parseLines` の `NumberFormatException`）。移植は `Result` で返す。原典の正規表現の `.` は行終端文字（`\n`、`\r`、`U+0085`、`U+2028`、`U+2029`）に一致しないため、それを含む文字列は全体が一致せず `IllegalArgumentException` になる。移植は、それを `Unparseable` として最初に返す（独立レビューの指摘で追加）。
 - `parseFile`（ファイルの読み込みと `Try`）は移植していない。OS の設定の取得は対象外である。
 - 原典の `ResolvConf.ndots` は `Int` で、移植は `i32`。`Integer.parseInt` と `i32::from_str` は、どちらも `+5`・`-1` を読み、範囲外を失敗にする。
 - `Integer.parseInt` は ASCII 以外の Unicode の10進数字（全角の `５` など）も読む。移植の `i32::from_str` は ASCII の数字だけを読むため、`options ndots:５` は `InvalidNdots` になる。no_std の kernel に Unicode の数字の表を持ち込まないための差で、rustdoc にも書いた。原典テストはこの入力を使わない。
@@ -108,7 +108,16 @@ kernel の `io::dns` モジュールに足した。どれも `core` と `alloc` 
 
 ### 独立レビュー（別系統のモデル）
 
-`docs/decisions/takt-workflow-design.md` §2.6 に従い、調整担当が手配する。結果はこの節と PR に記録する。
+- 実施者: 実装者とは別系統の、読み取り専用のレビュー担当。モデルは Codex（OpenAI GPT-6.2 Sol、`gpt-6.2-sol`、medium）で、調整担当が手配した。実装の2工程は DGX（`dgx/deepseek-v4.1-flash`）、自己レビューとレビュー対応は Claude Opus 5.5 なので、`docs/decisions/takt-workflow-design.md` §2.6 に従って別系統のレビューを足した。
+- 対象: PR #138 の固定 HEAD `7d7f0399c0f3c919199c04e17ae1f7c731370549`。比較元は `28273d04425ae44c288d7fc2674785acff99e075`。原典は Pekko 固定 SHA `9a54d1294c3ac7821bbed3c940769c3d5027d1ff`。記録は [PR のコメント](https://github.com/j5ik2o/fraktor-ng-rs/pull/138#issuecomment-7135422069)にある。
+- 判定: REJECT。原典13件の入力・期待値・件数と台帳は等価で、テストの弱体化はない。既出のボット指摘4件の対応は妥当とされた。新しい指摘は4件（中1、低3）。
+
+| 指摘 | 分類 | 対応 |
+|:---|:---|:---|
+| 中: 先頭ゼロ付きの4つ組 IPv4（`008.008.008.008:53`）を拒否する。OpenJDK では `8.8.8.8:53` | 直す | 4つ組の各部を10進数で読む非公開関数を足した（各部は1文字以上の ASCII 数字で 255 以下、ちょうど4部）。単体テスト `a_zero_padded_ipv4_address_is_read_as_decimal` と `a_zero_padded_ipv4_address_keeps_the_part_rules` を足した。修正前の実装では前者が失敗する |
+| 低: 改行を含む値（`8.8.8.8\n:65536`）は、原典では正規表現に一致しない例外の経路に入る。移植は `InvalidPort` を返す | 直す | 行終端文字を含む文字列は、分割の前に `NameserverAddressError::Unparseable`（新しい列挙子）を返す。単体テスト `text_with_a_line_terminator_is_unparseable` を足した。修正前の実装では失敗する |
+| 低: 統合テストの補助の `str::lines()` は、Scala の `linesIterator` と違って単独の CR で分けない | 直す | 補助を `text.split(['\n', '\r'])` にし、ヘッダーコメントを直した。原典9ケースの入力・アサーション・件数は変えていない。テストの blob は `a412de3f` から `2755ad0d` になった。製品差分のない `c2a7f53` に新しいテストを置いて red を再実測し、exit 101、`E0433 cannot find io in kernel` を確かめた |
+| 低: product-surface-naming（移植元の名前を製品表面に使わない）に、`DnsSettings`・`ResolvConf`・`ResolvConfParser` が当たる | 採らない | この規則の「移植元の名前」は移植元のプロジェクト名（pekko）である。規則は [G0c の改名](g0c-testprobe-and-rename.md)（L13、L68–75）で、`pekko-porting-ng` を `fraktor-porting-ng` にするなど、製品表面とハーネスにあった `pekko` を `fraktor` に改めたときに足された（`1a18a2d`）。原典のクラス名に合わせた型名は、既存の `ByteString`、`ByteStringBuilder`、`FrequencyList`、`RecencyList` と同じ扱いで、規則の対象ではない。製品表面に `pekko` の名前は入れていない |
 
 ## 製品編集前の実測
 
@@ -120,7 +129,7 @@ kernel の `io::dns` モジュールに足した。どれも `core` と `alloc` 
 | `cargo test -p fraktor-actor --test resolv_conf_parser_spec -- --test-threads=1` | 101 | compile-red。`E0433 cannot find io in kernel`（L29）。宣言9件、実行0件、除外0件 |
 | `verify_red.py`（ノードごと。原典を `PEKKO_ORIGINAL_ROOT` に置いて実行） | 0 | 2ノードとも `expected_compile_error`、`excluded: 0`。台帳はすでに red で、書き換えなし |
 
-already_green ではない。製品に `kernel::io` モジュールがなく、2本ともコンパイルに失敗した。第2工程では統合テストを変えていない（`git diff f5086f6 405eb30 -- crates/fraktor-actor/tests` は空、blob は上と同じ）。
+already_green ではない。製品に `kernel::io` モジュールがなく、2本ともコンパイルに失敗した。第2工程では統合テストを変えていない（`git diff f5086f6 405eb30 -- crates/fraktor-actor/tests` は空、blob は上と同じ）。独立レビューの指摘で `resolv_conf_parser_spec.rs` の補助を変えた後（blob `2755ad0d`）も、`c2a7f53` の作業ツリーにそのファイルを置いて再実測し、exit 101、`E0433 cannot find io in kernel` で compile-red になることを確かめた。
 
 ## 実装後の実測
 
@@ -130,15 +139,15 @@ already_green ではない。製品に `kernel::io` モジュールがなく、2
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test nameserver_address_parser_spec -- --test-threads=1` | 0 | 4 passed / 0 failed / 0 ignored |
 | `cargo test -p fraktor-actor --test resolv_conf_parser_spec -- --test-threads=1` | 0 | 9 passed / 0 failed / 0 ignored |
-| `cargo test -p fraktor-actor --lib io::dns` | 0 | 31 passed（レビュー対応後は 34 passed） |
-| `cargo test --workspace` | 0 | 62 スイート、538 passed / 0 failed / 0 ignored（レビュー対応後は 541 passed） |
+| `cargo test -p fraktor-actor --lib io::dns` | 0 | 31 passed（ボット指摘の対応後は 34、独立レビューの対応後は 37 passed） |
+| `cargo test --workspace` | 0 | 62 スイート、538 passed / 0 failed / 0 ignored（ボット指摘の対応後は 541、独立レビューの対応後は 544 passed） |
 | `cargo fmt --check` | 0 | 差分なし |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
 | syn-check（`crates/fraktor-actor`、`crates/fraktor-testkit`） | 0 | 両方 `clean: true`。fraktor-actor は 178 files、違反0、抑制0 |
 | `npm ci` → `npm run check:aislop` | 0 | warn 以上の指摘は受理済み一覧と一致 |
 | `verify_green.py --crate fraktor-actor` | 0 | `all_pass: true` |
 
-PR #138 のレビュー対応（後述）の後の HEAD でも、同じコマンドを再実行して同じ結果を確かめた（`--lib io::dns` は 34 passed）。
+PR #138 のボット指摘と独立レビューの対応（後述）の後の HEAD でも、同じコマンドを再実行して同じ結果を確かめた（`--lib io::dns` は 37 passed）。
 
 台帳は `G0issue136` と `G0a`〜`G0f` の各々で `check_needs.py` と `rollup.py` を実行し、14コマンドすべて終了値0だった（needs の閉性は OK で、対象ノードはすべて green。`G0issue136` は2件で `{'green': 2}`）。
 
