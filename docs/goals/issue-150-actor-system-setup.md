@@ -71,7 +71,8 @@ TAKT を使わず、担当（Claude Opus 5.5）が直接実装した。TAKT に�
 
 原典6ケースの観測は変わらない。
 
-- **settings 層がない**：原典は `system.settings.setup` で読むが、移植は `system.setup()` で直接読む。移植には `Settings` に当たる型がなく、本ゴールでも作らない（調整担当の決定 A）。設定はシステムの起動や動作を変えず、生成後に読めるように保持するだけである。原典でも `ActorSystemSetup` の値を読むのは各拡張で、本スイートは保持と取得だけを確かめる。
+- **settings 層がない**：原典は `system.settings.setup` で読むが、移植は `system.setup()` で直接読む。移植には `Settings` に当たる型がなく、本ゴールでも作らない（調整担当の決定 A）。移植の設定はシステムの起動や動作を変えず、生成後に読めるように保持するだけである。
+- **起動時の `BootstrapSetup` の読み取りは移植しない**：Pekko では `ActorSystem` 本体が起動時に `ActorSystemSetup` から `BootstrapSetup` を読み取る。`ActorSystem.apply(name, setup)`（[ActorSystem.scala L278–285](https://github.com/apache/pekko/blob/9a54d1294c3ac7821bbed3c940769c3d5027d1ff/actor/src/main/scala/org/apache/pekko/actor/ActorSystem.scala#L278-L285)）は、そこからクラスローダー、設定（`Config`）、既定の実行コンテキストを取り出し、`Settings` は ref プロバイダーの選択（L410–414、`pekko.actor.provider` より優先）を取り出す。移植には `BootstrapSetup` も、これらを受け取る起動の経路もない。`with_setup` は渡された `ActorSystemSetup` を中身を見ずに保持し、`setup()` で返すだけである。本スイートの6ケースが確かめるのは、利用者が定義した独自の設定（`DummySetup` など）の保持と取得だけで、`BootstrapSetup` を使うケースはない。`BootstrapSetup` による起動時の上書きは、それを確かめる原典のスイートを移植するゴールで扱う。
 - **`get` の戻り値**：原典は値（参照）を `Option[T]` で返す。移植は設定の中の値への参照 `Option<&T>` を返す。Scala のテストは `Option[Setup]` に広げてから `===` で比べるが、比べる値は具体型の値なので、移植は具体型のまま比べる。
 - **Java の同一性の比較**：原典の `JavaSetup`（Java L25–31）は `equals` を上書きしないので、`assertEquals(javaSetting, result.get())`（L40）は `Object.equals`、つまり同一のインスタンスかを比べる。移植では設定の値が `ActorSystemSetup` へムーブされるので、ムーブ元の変数とは比べられない。そこで、ムーブの前に設定が持つヒープ上のデータ（`name` のバイト列）のアドレスを取り、`get` が返す値が同じアドレスのデータを持つことを `std::ptr::eq` で確かめる。ムーブではヒープ上のデータは動かないが、複製や、同じ名前で作り直した別の `JavaSetup` は別のバイト列を持つ。同じ名前の別インスタンスを登録するとこの確認だけが失敗することを、一時的にテストを書き換えて実測した（名前の確認は通り、同一性の確認で panic）。名前の確認も残した。`Arc` を手元に残せる `from_setups` の経路では、単体テスト `get_returns_the_registered_instance` が、返る参照と保持した `Arc` の指す先が同じであることを確かめる。
 - **不変性**：原典の `withSetup` は新しい値を返し、元の値は変わらない。移植の `with_setup` と `and` は `self` を受け取って返す。元の値を残したいときは `clone` してから足す（値は `Arc` で共有するので、`clone` は設定の値をコピーしない）。単体テストで、`clone` した元が変わらないことを固定した。
@@ -129,7 +130,7 @@ already_green ではない。`kernel::setup` がなく、コンパイルに失�
 | `cargo test -p fraktor-actor --test actor_system_setup_spec -- --test-threads=1` | 0 | 5 passed / 0 failed / 0 ignored |
 | `cargo test -p fraktor-actor --test actor_system_setup_test -- --test-threads=1` | 0 | 1 passed / 0 failed / 0 ignored |
 | `cargo test -p fraktor-actor --lib kernel::setup` | 0 | 5 passed（`ActorSystemSetup` の単体テスト） |
-| `cargo test -p fraktor-actor --lib actor_system` | 0 | 63 passed（既存61、新規2） |
+| `cargo test -p fraktor-actor --lib actor_system` | 0 | 64 passed。内訳は `ActorSystem` の既存57（先行 red の `b59b20f` と同じ）、`ActorSystem` の新規2、名前に `actor_system` を含む `kernel::setup::actor_system_setup` の単体テスト5。`7fc1398` での63は、単体テストが4件だったため |
 | `cargo test --workspace` | 0 | 69 スイート、696 passed / 0 failed / 0 ignored |
 | `cargo fmt --check` | 0 | 差分なし |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
