@@ -3688,7 +3688,7 @@ nodes:
     module: actor-tests
     class: PekkoVersionSpec
     test_cases_approx: 13
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -3704,8 +3704,8 @@ nodes:
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/fraktor_version_spec.rs
   goal: G0issue139
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/dispatch/PinnedActorSpec.scala
   name: actor-tests:PinnedActorSpec
@@ -5119,7 +5119,7 @@ nodes:
     module: actor-tests
     class: VersionSpec
     test_cases_approx: 8
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -5135,8 +5135,8 @@ nodes:
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/version_spec.rs
   goal: G0issue139
 - id: actor-tests/src/test/scala-jdk21-only/org/apache/pekko/dispatch/VirtualThreadPoolDispatcherSpec.scala
   name: actor-tests:VirtualThreadPoolDispatcherSpec
