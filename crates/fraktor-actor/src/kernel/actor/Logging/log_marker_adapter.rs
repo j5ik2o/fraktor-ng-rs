@@ -4,6 +4,7 @@ use alloc::format;
 use alloc::string::String;
 use core::fmt;
 
+use crate::kernel::actor::Logging::log_publisher::format_template;
 use crate::kernel::actor::Logging::{Error, Info, LogClass, LogMarker};
 use crate::kernel::event::EventStream;
 
@@ -29,6 +30,20 @@ impl LogMarkerAdapter {
   pub fn info(&self, marker: LogMarker, message: &str) {
     let event = Info::new(self.log_source.clone(), self.log_class.value(), message).with_marker(marker);
     self.event_stream.publish(event);
+  }
+
+  /// Publishes an informational event that carries `marker` and whose message
+  /// formats `template` with `args`.
+  ///
+  /// Mirrors `MarkerLoggingAdapter.info(marker, template, arg1)` when `arg1` is
+  /// an array: Pekko spreads the array so that each element fills its own `{}`
+  /// placeholder. The port takes the elements as one slice and formats them as
+  /// [`LogPublisher::log`](crate::kernel::actor::Logging::LogPublisher::log)
+  /// does: left to right, one element per placeholder, an unmatched `{}` left as
+  /// written, and ` WARNING arguments left: <n>` for elements beyond the
+  /// placeholders.
+  pub fn info_with_args<A: fmt::Display>(&self, marker: LogMarker, template: &str, args: &[A]) {
+    self.info(marker, &format_template(template, args));
   }
 
   /// Publishes an error event that carries `marker`, `message`, and the cause.
