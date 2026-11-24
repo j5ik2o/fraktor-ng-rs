@@ -1,5 +1,8 @@
-// Ported from Pekko v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff):
+// Ported from Pekko v2.0.0 (SHA 9fbd2283b1cf701c90a1223bf621942c191db61f):
 //   actor-tests/src/test/java/org/apache/pekko/actor/AbstractFSMActorTest.java
+// First ported from v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff).
+// v2.0.0 changes the file only for JUnit 5 and newer Java syntax (upstream
+// ec27d6dd8c #2724, 96b716b6fb #3191, 4ae53394ac #3295); the case is unchanged.
 //
 // The original's one `@Test` case is kept as one test, named after the case,
 // with the original name as a comment.
