@@ -3471,7 +3471,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue145
 - id: actor-tests/src/test/scala/org/apache/pekko/util/MessageBufferSpec.scala
   name: actor-tests:MessageBufferSpec
   kind: test
@@ -3601,7 +3601,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue145
 - id: actor-tests/src/test/scala/org/apache/pekko/pattern/PatternSpec.scala
   name: actor-tests:PatternSpec
   kind: test
