@@ -210,3 +210,120 @@ cargo clippy --workspace --all-targets -- -D warnings
 uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0issue154
 uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0issue154
 ```
+
+## 後続：#156 ホストの既定値を OS から読む adaptor
+
+[Issue #156](https://github.com/j5ik2o/fraktor-ng-rs/issues/156)（Orca 項目236、[PR #158](https://github.com/j5ik2o/fraktor-ng-rs/pull/158)）は、上の設計判断 D3 で残した adaptor である。kernel の port `HostDnsConfiguration` を std で実装し、実機の OS から値を読む。原典のテストに対応しないので台帳のノードはなく、本ゴールの所属ノードと台帳は変えていない。記録は、D3 の続きとして本書に置く（`docs/goals/` の文書は1行目のゴール ID と台帳の所属を `goal_complete_gate_test.py` で照合するため、台帳のノードがない記録を単独の文書にしない）。
+
+- 原典: [DnsSettings.scala](https://github.com/apache/pekko/blob/9a54d1294c3ac7821bbed3c940769c3d5027d1ff/actor/src/main/scala/org/apache/pekko/io/dns/DnsSettings.scala)（`getDefaultNameServers`、`lazy val resolvConf`）と [ResolvConfParser.scala](https://github.com/apache/pekko/blob/9a54d1294c3ac7821bbed3c940769c3d5027d1ff/actor/src/main/scala/org/apache/pekko/io/dns/internal/ResolvConfParser.scala)（`parseFile`）
+- 原典が呼ぶ JDK の契約: [jdk21u の Unix 版 `sun.net.dns.ResolverConfigurationImpl`](https://github.com/openjdk/jdk21u/blob/master/src/java.base/unix/classes/sun/net/dns/ResolverConfigurationImpl.java)（`resolvconf("nameserver", 1, 5)`）と [`com.sun.jndi.dns.DnsContextFactory`](https://github.com/openjdk/jdk21u/blob/master/src/jdk.naming.dns/share/classes/com/sun/jndi/dns/DnsContextFactory.java)（`dns://` の URL に OS の name server を入れる処理）
+- 範囲は、ホストの設定ファイルの読み取りだけ。名前解決、DNS の送受信、キャッシュ、resolver は対象外。OS の DNS 設定は読むだけで、書き換えない
+- 実行経路: 小さな単独の後続なので、調整担当の指示で TAKT のキューには投入せず、Claude Opus 5.5 が隔離 worktree（ブランチ `j5ik2o/issue-156-host-dns`、起点 `f4f417d`）で直接実装した。着手時に、#156 と重複する issue と PR がないことを確かめた
+
+### 原典の取得の意味
+
+| 値 | 原典の経路 | 取得の意味 |
+|:---|:---|:---|
+| name server | `getDefaultNameServers`：JNDI の `dns://` → 失敗時は反射で `sun.net.dns.ResolverConfiguration` | Unix では、どちらの経路も JDK の `ResolverConfigurationImpl` が `/etc/resolv.conf` の `nameserver` 行を読んだ値になる。JNDI は各値を `dns://<値>` の URL にし、原典は URL の host と port（無ければ 53）から `InetSocketAddress` を作る。作れない値は捨てる |
+| search、ndots | `lazy val resolvConf`：Windows なら `None`。`/etc/resolv.conf` が無ければ `None`。あれば `ResolvConfParser.parseFile`、失敗はエラーをログに出して `None` | 存在するファイルは、中身が空でも `ResolvConf(Nil, 1)` になる |
+
+JDK の `resolvconf("nameserver", 1, 5)` は、`FileReader` と `BufferedReader.readLine` で1行ずつ読み、行頭が `nameserver` で直後が空白かタブの行だけを、最大5行まで数える。5行目を数えたら、それ以降は読まない。1行から読む値は最初の1つだけで、`#` か `;` で始まる値は捨てる。`.` を含まず `:` を含む値は、角括弧で囲んで IPv6 にする。`IOException` は読み取りのループの外で握りつぶすので、途中で読めなくなっても、それまでに読んだ値は返る（最初から開けなければ空のリスト）。JDK の `ResolverConfiguration.open()` はプロセスで1つのインスタンスで、読んだ name server を最後に読んでから5分間（`TIMEOUT = 300000` ミリ秒）キャッシュする。name server が1つもないと、JNDI は既定の `dns://` をそのまま返し、原典はその URL を捨てる。結果は空のリストになり、`"default"` の name server は `IllegalStateException`（"Unable to obtain default nameservers"）で失敗する。
+
+原典の `asInetSocketAddress` は `new URI("dns://" + 値)` を作る。URI として不正な値は例外になり、原典はその値を捨てる。URL の authority は最初の `/`、`?`、`#` で終わり、その後ろは path、query、fragment として、`java.net.URI` が許す文字だけを持てる。そのため `nameserver 192.0.2.1#local` は、JDK が1つの値として残し、原典は URL の host `192.0.2.1` と port 53 を読む。一方、`192.0.2.1#a#b`（fragment に `#`）や `192.0.2.2#a|b`（許されない文字）は URI として不正なので捨てられる。authority の `@` より前は user information で、host には入らない。角括弧の IPv6 の後ろの `%` は scope ID で、`java.net.URI` は英数字と `_`、`.` を受け付け、`InetAddress` が数値か、インターフェース名として読む。角括弧なしの IPv6 に `#` が付くと、JDK が `#` ごと角括弧で囲むので、URL として読めずに捨てられる。
+
+### 実装
+
+adaptor に `SystemHostDnsConfiguration`（`crates/fraktor-actor/src/adaptor/system_host_dns_configuration.rs`）とエラー型 `UnsupportedHostDnsPlatformError` を足した。公開するのは、`/etc/resolv.conf` を読む `new() -> Result<Self, UnsupportedHostDnsPlatformError>` だけである。対象は `/etc/resolv.conf` に resolver の設定を置く OS（Linux、macOS、BSD など）に限る。Windows では `new()` が `UnsupportedHostDnsPlatformError` を返し、既定の name server を自動では取得しない（#160 で追跡）。Windows では、`nameservers` を `NameserversSetting::Single`・`List` で明示するか、独自の `HostDnsConfiguration` を `DnsSettingsValues::new` に渡す。この使い方は、公開 API の説明（型とエラー型の doc コメント）にも書いた。既存の `RandomIdGenerator::new` が未対応のポリシーを `UnsupportedIdGeneratorPolicyError` で返すのと同じ形で、既存の公開 API と port の契約は変えていない。テストで別のパスを読む `reading(path)` と、Windows かどうかを引数で受ける `for_platform(windows)` は `pub(crate)` にした。kernel の変更は、`HostDnsConfiguration` の doc コメント1行だけで（「実機を読む実装は範囲外」を「kernel の外に置く」に直した）、kernel は std を使わないまま。新しい依存はない。
+
+| メソッド | 振る舞い |
+|:---|:---|
+| `name_servers()` | ファイルを1行ずつ読み、行ごとに UTF-8 として寛容に復号する（JDK の `FileReader` と同じく、不正なバイトは置き換える）。途中で I/O エラーになったら、そこで読むのをやめ、それまでの行を使う。5行目の `nameserver` 行の後は読まない。上の JDK の規則で `nameserver` の値を取り出し、`dns://` の URI として authority の終わりで切る。後ろの path、query、fragment が `java.net.URI` の許す文字でなければ捨てる。authority の user information を外し、host と port に分ける（port が無い、または `:` の後が空なら 53）。角括弧の IPv6 の scope ID は、`u32` に収まる数値なら保持し、インターフェース名や URI として不正なものは捨てる。host と port は #136 の `DnsSettings::parse_nameserver_address` で読み、読めない値は捨てる。ファイルを開けない、または使える値が1つもなければ `None` |
+| `resolv_conf()` | ファイルを読み、UTF-8 として厳密に復号する（`Files.lines` と同じ）。#136 の `ResolvConfParser::parse_lines` で解析する。ファイルが無い、読めない、UTF-8 でない、解析に失敗した、のどれでも `None` |
+
+行の区切りは、`BufferedReader.readLine` と同じく `\n`、`\r`、`\r\n` にした。`\r` と `\n` のそれぞれで区切ると空行が増えるが、どちらの読み手も空行を読み飛ばすので、結果は変わらない。ファイルは呼ぶたびに読み直す。`"default"` の解決と失敗の扱いは、既存の `DnsSettingsValues::new` に任せた（`None` と空のリストは、どちらも `UnableToDetermineDefaultNameservers` になる）。
+
+### 原典・OS との差異
+
+| 差異 | 理由 |
+|:---|:---|
+| Windows では既定の name server を自動で取得せず、`SystemHostDnsConfiguration::new()` が `UnsupportedHostDnsPlatformError` を返す。原典は Windows でも JDK 経由で（レジストリから）既定の name server を取得する。Windows で省くのは `resolvConf` だけである | 調整担当の決定（副元帥の回答 B）で、本 issue は resolv.conf の方式の対象 OS に限った。Windows の自動取得は [#160](https://github.com/j5ik2o/fraktor-ng-rs/issues/160) で追跡する。Windows では `nameservers` を明示するか、独自の `HostDnsConfiguration` を渡す。何も見つからない `None` ではなく、未対応と分かるエラーにした。原典のケースの除外は新設していない |
+| host 名の name server（例 `nameserver dns.example`）と、名前の scope ID つきの IPv6（例 `fe80::1%en0`）を捨てる。原典はどちらも `InetSocketAddress` にする。数値の scope ID（例 `fe80::1%2`）は原典と同じく保持する | #136 の `parse_nameserver_address` は IP リテラルだけを受け付け、名前解決をしない。名前解決は対象外。インターフェース名を番号に変えるには OS のインターフェース表が要る。数値の scope ID は、kernel のパーサーで読んだアドレスに adaptor で付ける（kernel と公開 API は変えない） |
+| resolv.conf の読み取りと解析の失敗をログに出さない。原典は `log.error` に出してから `None` にする | port の `HostDnsConfiguration` は `ExtendedActorSystem` を受け取らず、出し先のアクターシステムがない（上の「原典との差異」のとおり）。値は原典と同じ `None` |
+| 原典の name server は、JDK がプロセスで1つのキャッシュを持ち、最後に読んでから5分間は `/etc/resolv.conf` を読み直さない。そのため、ファイルを書き換えても5分以内に作った `DnsSettings` には古い name server が入る。本 adaptor は `name_servers()` を呼ぶたびに読み直すので、書き換えの後に作った `DnsSettingsValues` には新しい値が入る。search と ndots は、原典も生成ごとに読み直すので差はない | キャッシュはプロセスの状態で、テストで制御した入力の再現性を下げる。読み取り専用で、名前解決やキャッシュ本体は対象外。1回の `DnsSettingsValues::new` の中では name server を1回だけ読むので、生成1回の中の値は原典と変わらない |
+| 途中で読めなくなったときの resolv.conf（search、ndots）は `None`、name server はそれまでに読んだ値 | 原典と同じ。`Files.lines` は途中の I/O エラーを `UncheckedIOException` にして `parseFile` が `Failure` を返し、JDK の `resolvconf` は途中までの値を返す |
+| `options ndots:５` のような、ASCII 以外の十進数字の ndots を解析の失敗にする（search も既定値の空、ndots は 1 になる）。原典の `toInt` は受け付ける | 既存の `ResolvConfParser` の差で、[#159](https://github.com/j5ik2o/fraktor-ng-rs/issues/159) で追跡する。本 issue ではパーサーを変えない |
+| `search corp.example # managed` の `#` と `managed` も search domain になる。FreeBSD と NetBSD のリゾルバーは、行の途中の `#` をコメントとして扱う | 原典の `ResolvConfParser` は行頭の `#` と `;` だけをコメントにし、#136 の `ResolvConfParser` も同じ（原典と一致させた既存のパーサー）。ホストの既定値は原典と同じ値を返すことを優先し、パーサーは変えない。この扱いはテストで固定した |
+
+JDK が捨てる `#` か `;` で始まる値は、URI にする前に捨てる（その行も5行に数える）。当初は「authority の終わりで切れば host が IP リテラルにならない」として分岐を置かなかったが、`;user@192.0.2.1` は `;user` が URI の user information として読めるので誤りだった（PR #158 の CodeRabbit の指摘。後述）。`::ffff:192.0.2.9` のように `.` を含む角括弧なしの IPv6 は、URL の host として読めないので、原典と同じく捨てる。
+
+### テスト
+
+単体テスト40件（`system_host_dns_configuration_test.rs`）は、テストが作った一時ディレクトリのファイルか、テストの中のバイト列だけを読む。実機の `/etc/resolv.conf` は読まず、書き換えもしない。`new()` と `for_platform` のテストは、読むパスが `/etc/resolv.conf` であることと、Windows ではエラーになることを、値の比較で確かめるだけで、ファイルは開かない。一時ディレクトリは、ランダムな名前で排他的に作り（`DirBuilder::create`。既にあるパスは、誰が作ったものでも使わず、消さない）、Unix では所有者だけが入れる 0700 にする。Windows の分岐は `for_platform(true)` で、どの OS でも確かめる（CI は ubuntu のみ）。
+
+| 観点 | テスト |
+|:---|:---|
+| port の既定 | IPv4 と角括弧なし IPv6 は 53。`:` の後が空でも 53。明示の port（IPv4、角括弧の IPv6）は保つ |
+| JDK の行の規則 | ファイルの順序、1行に1値、`#`・`;` の値、最大5行（コメントの値の行も数える）、行頭の空白や `nameservers` の行は読まない、`\r\n` と `\r` の行末 |
+| URL の authority | `192.0.2.1#local`、`192.0.2.2:5353#x`、`[2001:db8::1]#x`、`/` と `?` の後ろを切る。角括弧なし IPv6 の `#` は捨てる。`#local` つきの1行だけでも `"default"` の name server が決まる |
+| 捨てる値 | host 名、名前の scope ID、`.` を含む角括弧なし IPv6、範囲外の port |
+| scope ID | 数値の scope ID（`fe80::1%2`、`[fe80::2%3]:5353`）を保持する。空、URI に許されない文字、`u32` を超える値は捨てる |
+| URI の妥当性 | `#a#b`、`#a\|b`、`?x^y`、`/a<b`、`#%zz` は捨て、`#local`、`/p;x?q=1#f?/`、`#%41`、`#café` は保つ。`user@192.0.2.1` は host を読み、不正な user information は捨てる |
+| 途中の I/O エラー | 2行読んだ後に失敗する読み手で、2つの name server が返る。`\r` で終わった行の直後に失敗しても、その行は返り、終わっていない行は返らない（`\r\n` も同じ）。最初から失敗すると `None` |
+| コメントで始まる値 | `;user@192.0.2.1` 型の値（`;` か `#` で始まる）は name server にならず、その行も5行に数える |
+| 対象 OS | `for_platform(false)` は `/etc/resolv.conf` を読む。`for_platform(true)` は `UnsupportedHostDnsPlatformError`。`new()` は実行中の OS に従う |
+| 空 | name server のない内容と空のファイルは、name server が `None`。空のファイルの resolv.conf は `ResolvConf([], 1)` |
+| 読めない | ファイルが無い、ディレクトリ（存在するが読めない）は、どちらも `None`。不正な UTF-8 は、name server は読み、resolv.conf は `None`。`ndots:` の不正は `None` |
+| search の行末 | `search corp.example # managed` は原典どおり3要素 |
+| port の経由 | 既定値の `DnsSettingsConfig` で `DnsSettingsValues::new` を呼び、ファイルの name server・search・ndots が入ること。ファイルが無いと `UnableToDetermineDefaultNameservers`。解析できない resolv.conf では search が空、ndots が 1 |
+| 読み直し | ファイルを書き換えると、次の呼び出しで新しい値が返る |
+| 一時ディレクトリ | 2つの一時ディレクトリが別のパスで、既にあるパスへの作成は `AlreadyExists` で失敗し、Unix では 0700、片方の後始末がもう片方を消さない |
+
+### 製品編集前の実測（red）
+
+テストを先に書き、型の実装がない状態（コミット `7730264`。adaptor に空のモジュールだけを置き、再エクスポートはしない）で実行した。`cargo test -p fraktor-actor --lib system_host_dns_configuration` は終了値101の compile-red で、`E0432`（`super::SystemHostDnsConfiguration` が未定義、テストの L22）が1件だった。already_green ではない。aislop の指摘でテストの区切りのコメントを消した blob（`0ed04402`）でも、実装を外して同じ `E0432` と終了値101になることを確かめた。
+
+実装後に変異を3つ入れた。最大行数を6にすると1件、既定の port を54にすると3件のテストが失敗した。独立レビューの指摘への対応（後述）では、先にテストを足した。`for_platform`、`read_name_servers`、`UnsupportedHostDnsPlatformError` がない状態では終了値101の compile-red（`E0432` が2件、`E0599` が3件）だった。読み取りの構造と Windows のエラーだけを入れた段階では、URI の妥当性、数値の scope ID、user information の3件が失敗した。そのうえで変異を4つ入れた。I/O エラーで止まらずに失敗させると3件、scope ID を付けないと1件、URI の後ろの検査を外すと1件、user information を外さないと1件のテストが失敗する。当初はコメントの値を捨てる分岐を消してもテストが失敗しなかったので分岐を削除したが、修正試行3で `;user@192.0.2.1` の反例が見つかり、テストを先に足して分岐を戻した（後述）。
+
+### PR #158 のレビュー指摘への対応
+
+| 指摘 | 分類 | 対応 |
+|:---|:---|:---|
+| CI: `goal_complete_gate_test.py` の `test_real_goal_documents_match_current_ledger` が、単独の文書 `docs/goals/issue-156-host-dns.md` の1行目を `# ゴール G0...：` として読めずに失敗した | 直す | 台帳のノードがない記録なので、単独の文書をやめ、D3 の続きとして本書のこの節に移した。テストの条件は変えていない |
+| Devin（[r4686309417](https://github.com/j5ik2o/fraktor-ng-rs/pull/158#discussion_r4686309417)）: テストが、共有の一時領域の予測できるパスを、削除に失敗しても再利用する | 直す | 一時ディレクトリを、ランダムな名前で `DirBuilder::create` により排他的に作り、既にあれば別の名前で作り直す（既存のパスは使わず、消さない）。Unix では 0700 にした。この性質を確かめる単体テストを足した |
+| Devin（[r4686309017](https://github.com/j5ik2o/fraktor-ng-rs/pull/158#discussion_r4686309017)）: `nameserver 192.0.2.1#local` が読み飛ばされる | 直す | JDK はこの値を1つの値として残し、原典は `dns://` の URL の host を読むので `192.0.2.1:53` になる（上の「原典の取得の意味」）。URL の authority の終わり（`/`、`?`、`#`）で切るようにした。先にテスト2件を足し、修正前に2件とも失敗することを確かめた |
+| Devin（[r4686309234](https://github.com/j5ik2o/fraktor-ng-rs/pull/158#discussion_r4686309234)）: search の行末コメントの扱いが、Pekko と FreeBSD で違う | 直す（文書とテスト） | 原典と既存のパーサーは `#` 以降も search domain にする。原典との互換を優先してパーサーは変えず、OS との差を上の差異の表に書き、原典どおりの扱いをテストで固定した |
+
+| 独立レビュー（GPT-6.2 Sol、固定 `b2104e0`、[REJECT の記録](https://github.com/j5ik2o/fraktor-ng-rs/pull/158#issuecomment-7144439886)）: 数値の scope ID つき IPv6 を捨てている | 直す | 原典の `new URI` と `InetAddress` は数値の scope ID を保持する。kernel のパーサーで読んだアドレスに adaptor で scope ID を付けた。名前の scope ID は捨てることを明記した。先に足したテストが修正前に失敗することを確かめた |
+| 独立レビュー: URI として不正な nameserver を除外していない（`#` 以降を切るだけ） | 直す | `java.net.URI` の path、query、fragment、user information の文字の規則で検査し、不正な値は捨て、有効な行末コメントは保つ。先に足したテスト（不正な値の除外、user information）が修正前に失敗することを確かめた |
+| 独立レビュー: 読み取り途中の I/O エラーで、取得済みの nameserver も捨てる | 直す | ファイルを1行ずつ読み、I/O エラーで止めて、それまでの値を使う（JDK の `resolvconf` の `IOException` の扱い）。制御した読み手でテストした。文書の「ファイルを読めないとき」の説明も直した |
+| 独立レビュー: JDK のキャッシュとの差の説明が不正確 | 直す | プロセス内のキャッシュ（5分）と、呼ぶたびの読み直しで、生成をまたいで観測できる差があることに直した（上の差異の表） |
+| 独立レビュー: 既存 `ResolvConfParser` の Unicode 十進数字の差 | 別件 | [#159](https://github.com/j5ik2o/fraktor-ng-rs/issues/159)。差異の表に、失敗時の扱いと一緒に記録した |
+| 独立レビュー: Windows の既定 nameserver の取得が原典と違う | 直す（範囲の決定） | 副元帥の回答 B。本 issue は resolv.conf の方式の対象 OS に限り、Windows は `UnsupportedHostDnsPlatformError` で未対応と分かるようにして、テストで固定した。Windows の自動取得は [#160](https://github.com/j5ik2o/fraktor-ng-rs/issues/160) |
+
+| CodeRabbit（[r4686751363](https://github.com/j5ik2o/fraktor-ng-rs/pull/158#discussion_r4686751363)）: `\r` で終わった行の直後に読み取りエラーになると、その行も捨てる | 直す | JDK の `BufferedReader.readLine` は `\r` を読んだ時点でその行を返し、`resolvconf` は後の `IOException` をループの外で握りつぶすので、原典は `192.0.2.1` を返す。本 adaptor は `\n` まで読みためていたので、行ごと失っていた。読み取りの段階で `\r` と `\n` のどちらでも行を終えるようにした。先に足したテスト（`\r` の後と `\r\n` の後の失敗）が修正前に失敗することを確かめた |
+| CodeRabbit（[r4686751372](https://github.com/j5ik2o/fraktor-ng-rs/pull/158#discussion_r4686751372)）: `nameserver ;user@192.0.2.1` が name server になる | 直す | JDK の `resolvconf` は `#` か `;` で始まる値で行を終え、値を残さないので、原典はこの行から name server を取らない。本 adaptor は `;user` を URI の user information として外していた。URI にする前に `#` と `;` で始まる値を捨てるようにした（行は5行に数える）。先に足したテストが修正前に失敗することを確かめた |
+
+CodeRabbit は当初は利用上限でレビューせず、`7849874` で上の2件を指摘した。Codex は `8671b47` で指摘なしだった。
+
+### 実装後の実測
+
+| コマンド | 終了値 | 結果 |
+|:---|---:|:---|
+| `cargo test -p fraktor-actor --lib system_host_dns_configuration` | 0 | 40 passed |
+| `cargo test -p fraktor-actor --lib io::dns` | 0 | 成功（DNS の既存の単体テスト） |
+| `cargo test -p fraktor-actor --test dns_settings_spec -- --test-threads=1` | 0 | 10 passed |
+| `cargo test -p fraktor-actor --test resolv_conf_parser_spec -- --test-threads=1` | 0 | 成功 |
+| `cargo test --workspace` | 0 | 失敗0（lib の単体テストは 400 → 440） |
+| `cargo fmt --check` | 0 | 差分なし |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
+| syn-check（`crates/fraktor-actor`、`crates/fraktor-testkit`） | 0 | 両方 `clean: true`、違反0、抑制0。`cfg-std-forbid`（kernel の std）と `port-adaptor-boundary` を含む |
+| `npm ci` → `npm run check:aislop` | 0 | warn 以上の指摘は受理済み一覧と一致 |
+| `goal_complete_gate_test.py`、`verify_red_test.py`、`verify_green_test.py`、`verify_green_test_aislop.py`、`verify_green_test_crate.py` | 0 | 成功 |
+
+台帳は `G0issue154` と `G0a`〜`G0f` の各々で `check_needs.py` と `rollup.py` を実行し、14コマンドすべて終了値0だった（needs の閉性 OK、対象ノードはすべて green。`G0issue154` は `{'green': 2}`）。
+
+```text
+cargo test -p fraktor-actor --lib system_host_dns_configuration
+cargo test --workspace
+uv run --with pyyaml python3 ledger/tools/goal_complete_gate_test.py
+```

@@ -9,7 +9,7 @@ use super::ResolvConf;
 ///
 /// Mirrors the host lookups the original `class DnsSettings` performs: the name
 /// servers from JNDI and reflection, and `/etc/resolv.conf`. An implementation
-/// that reads the real host is out of scope here.
+/// that reads the real host lives outside the kernel, which does not use `std`.
 pub trait HostDnsConfiguration {
   /// Returns the host's name servers, or `None` when none could be determined.
   ///
