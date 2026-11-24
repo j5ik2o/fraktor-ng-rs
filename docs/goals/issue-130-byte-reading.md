@@ -72,7 +72,7 @@
 
 kernel に2つのモジュールを足した。どちらも `core` と `alloc` だけを使い、kernel に std は持ち込んでいない（syn-check の `cfg-std-forbid` は違反0）。
 
-- `fraktor_actor::kernel::byte_iterator::ByteIterator`：1つ以上のバイト配列（`Arc<[u8]>`）を順にたどる、消費型のイテレータ。原典の `ByteArrayIterator`（配列1つ）と `MultiByteArrayIterator`（配列が複数）の両方に当たる。`Iterator<Item = u8>` を実装する。`index_of`/`index_of_from` は原典の `indexWhere`（実装 L487–500）を写した。先に `from` 件を読み飛ばし、そのあと最初に一致したバイトの位置を、読み始めからの番号で返す。読み飛ばした分も番号に数える。共通のバイト走査として、クレート内向けの `has_next` と `copy_into`（配列の境界をまたいでバッファへ移す）も持つ。
+- `fraktor_actor::kernel::byte_iterator::ByteIterator`：1つ以上のバイト配列（`Arc<[u8]>`）を順にたどる、消費型のイテレータ。原典の `ByteArrayIterator`（配列1つ）と `MultiByteArrayIterator`（配列が複数）の両方に当たる。`Iterator<Item = u8>` を実装する。`index_of`/`index_of_from` は原典の `indexWhere`（実装 L487–500）を写した。先に `from` 件を読み飛ばし、そのあと最初に一致したバイトの位置を、その検索を呼んだ時点の読み位置からの番号で返す。読み飛ばした分も番号に数える。共通のバイト走査として、クレート内向けの `has_next` と `copy_into`（配列の境界をまたいでバッファへ移す）も持つ。
 - `fraktor_actor::kernel::byte_string::ByteString`：不変のバイト列。原典の3つの表現（配列全体の `ByteString1C`、配列の一部の `ByteString1`、連結の `ByteStrings`）を、共有の配列の列という1つの型で表す。`concat` は両方の配列を共有し、コピーしない（`ByteStrings` と同じ）。空の配列は持たない。`from_array(array, offset, length)` は原典の `CompactByteString.fromArray`（実装 L1234–1243）と同じく、存在するバイトだけをコピーする。`offset` が末尾より後ろなら空になり、`length` が末尾を越えれば末尾で止まる。`iterator()` と `as_input_stream()` は、どちらも先頭から読む。
 - `fraktor_actor::kernel::byte_string::ByteStringInputStream`：`ByteIterator` の上で読む。`read()` は次の1バイトを返し、EOF では `None` を返す。`read_into(buffer)` は、読める分を `buffer` の先頭へ移してその件数を返し、EOF では `None` を返す。
 
@@ -97,8 +97,8 @@ kernel に2つのモジュールを足した。どちらも `core` と `alloc` �
 
 | 原典の振る舞い | 原典の根拠 | 移植で確かめているテスト |
 |:---|:---|:---|
-| `indexOf(elem)` は `indexWhere(_ == elem, 0)`。読み始めから最初に一致した位置を返す | `ByteIterator.scala` L487–502 | 統合テストの `index_of(0x20)`→0、`index_of(0x10)`→2 |
-| `indexOf(elem, from)` は `from` 件を読み飛ばしてから探し、位置は読み始めから数える | L487–500、L503、L506 | 統合テストの `(0x20,1)`→1、`(0x10,1)`→2、`(0x10,3)`→5 を2系統。単体テスト `a_byte_before_the_start_position_is_not_found` |
+| `indexOf(elem)` は `indexWhere(_ == elem, 0)`。検索を呼んだ時点の読み位置から数えて、最初に一致した位置を返す | `ByteIterator.scala` L487–502 | 統合テストの `index_of(0x20)`→0、`index_of(0x10)`→2 |
+| `indexOf(elem, from)` は `from` 件を読み飛ばしてから探し、位置は検索を呼んだ時点の読み位置から数える | L487–500、L503、L506 | 統合テストの `(0x20,1)`→1、`(0x10,1)`→2、`(0x10,3)`→5 を2系統。単体テスト `a_byte_before_the_start_position_is_not_found` |
 | 見つからなければ `-1`（`from` が末尾より後ろでも同じ） | L499 | 単体テスト `a_byte_that_is_absent_is_not_found`、`a_start_position_past_the_end_finds_nothing`（`None`） |
 | 検索はイテレータを一致した位置まで消費する | L487–500、Spec L25–26 | 単体テスト `a_search_consumes_the_bytes_up_to_the_match` |
 | 複数の配列にまたがる位置も通しで数える（`MultiByteArrayIterator` は同じ `indexWhere` を使う） | L206 以降、L487 | 単体テスト `the_index_counts_across_arrays` |
@@ -111,7 +111,7 @@ kernel に2つのモジュールを足した。どちらも `core` と `alloc` �
 原典との差異は次のとおりで、原典テストが観測する値は変わらない。
 
 - EOF は `-1` ではなく `None` で返す。見つからない検索も `-1` ではなく `None` で返す。
-- 長さ0のバッファへの `read_into` は、EOF かどうかに関係なく `Some(0)` を返す。`InputStream` の契約と、原典の単一表現が使う `UnsynchronizedByteArrayInputStream`（L140–142）に合わせた。原典の連結表現が使う JDK の `SequenceInputStream` は、EOF のときに長さ0でも `-1` を返す。原典の中で表現によって結果が異なる場合で、原典テストはどちらも使わない。単体テスト `an_empty_buffer_reads_zero_bytes_before_and_at_the_end` で移植の振る舞いを確かめている。
+- 長さ0のバッファへの `read_into` は、EOF かどうかに関係なく `Some(0)` を返す。`InputStream` の契約と、原典の単一表現が使う `UnsynchronizedByteArrayInputStream`（L140–142）に合わせた。原典の連結表現が使う JDK の `SequenceInputStream` は、最後の部分の EOF を検出して `in == null` になった後は、長さ0でも `-1` を返す。最後の部分を読み切った直後で、まだ EOF を検出していないときは `0` を返しうる。原典の中で表現によって結果が異なる場合で、原典テストはどちらも使わない。単体テスト `an_empty_buffer_reads_zero_bytes_before_and_at_the_end` で移植の振る舞いを確かめている。
 - 連結したバイト列への `read_into` は、部分の境界をまたいでバッファを埋める。原典の連結表現は JDK の `SequenceInputStream` で読み、1回の読み出しは今の部分の末尾で止まる。そのため `a` と `bc` の連結を3バイトのバッファに読むと、原典の1回目は1バイト、移植は3バイトを返す。読み切った内容と順序は同じで、1回に返す件数だけが違う。`InputStream` の契約は、1回に返す件数を実装に任せている。原典テストの `copy` は `-1` まで読み続けるので、この差は観測しない（PR #132 の Devin Review の指摘で追記）。単体テスト `a_buffer_read_returns_what_fits_then_the_rest_then_the_end` で、移植の振る舞いを確かめている。
 - 原典の3つの表現は1つの型にまとめた。`ByteString1.fromString` も `ByteString1C.fromString` も同じ `from_string` である。`ByteString1`（配列の一部を共有する表現）は作っていない。`fromArray` は原典でもコピーしてコンパクトな表現（`ByteString1C`）を返すので、スライスのケースの観測は変わらない。
 - `ByteArrayIterator(array)` は原典では配列を共有するが、移植の `from_array` はコピーする。原典テストは配列を書き換えないので、観測は変わらない。

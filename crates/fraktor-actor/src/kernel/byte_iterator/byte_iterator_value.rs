@@ -43,7 +43,8 @@ impl ByteIterator {
   }
 
   /// Consumes the iterator up to the first byte equal to `elem`, and returns
-  /// that byte's index counted from where the iterator started.
+  /// that byte's index counted from the iterator's position when this search
+  /// is called.
   ///
   /// Corresponds to Pekko's `indexOf(elem)`, which returns `-1` instead of
   /// `None` when no byte matches.
@@ -52,8 +53,8 @@ impl ByteIterator {
   }
 
   /// Skips `from` bytes, then consumes the iterator up to the first byte equal
-  /// to `elem`, and returns that byte's index counted from where the iterator
-  /// started.
+  /// to `elem`, and returns that byte's index counted from the iterator's
+  /// position when this search is called, so the skipped bytes count too.
   ///
   /// Corresponds to both of Pekko's `indexOf(elem, from)` overloads, which
   /// return `-1` instead of `None` when no byte matches.
