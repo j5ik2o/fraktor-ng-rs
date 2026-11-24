@@ -160,3 +160,28 @@ fn a_built_byte_string_supports_marks_by_how_many_arrays_it_holds() {
   several_arrays.append(&ByteString::from_string("a")).append(&ByteString::from_string("bc"));
   assert!(!several_arrays.result().as_input_stream().mark_supported());
 }
+
+#[test]
+fn separately_added_arrays_build_one_array_whose_stream_resets_to_the_mark() {
+  // An intended difference from Pekko v1.7.1 (issue #148): Pekko's builder
+  // keeps `++= Array[Byte](1, 2)` and `++= Array[Byte](3)` as two parts, so
+  // its result is a `ByteStrings` whose stream does not support marks. This
+  // builder gathers them into one array, so the stream marks and resets as a
+  // single array's does.
+  let mut builder = ByteString::new_builder();
+  builder.add_all([1_u8, 2]).add_all([3_u8]);
+  let built = builder.result();
+  assert_eq!(built.arrays().len(), 1);
+
+  let mut input = built.as_input_stream();
+  assert!(input.mark_supported());
+  assert_eq!(input.read(), Some(1));
+  input.mark(2);
+  assert_eq!(input.read(), Some(2));
+  assert_eq!(input.read(), Some(3));
+  assert_eq!(input.read(), None);
+  assert_eq!(input.reset(), Ok(()));
+  assert_eq!(input.read(), Some(2));
+  assert_eq!(input.read(), Some(3));
+  assert_eq!(input.read(), None);
+}

@@ -12,7 +12,7 @@
 |:---|:---|---:|---:|---:|---:|
 | `actor-tests/src/test/scala/org/apache/pekko/io/UnsynchronizedByteArrayInputStreamSpec.scala` | `crates/fraktor-actor/tests/unsynchronized_byte_array_input_stream_spec.rs` | 3 | 3 | 3 | 0 |
 
-原典のケース数は、原典ファイルの `" in {"` の数で数えた（3件）。`ignore` と `pending` はない。`needs` は空で、TestKit の機能は使わない。台帳の件数は原典の3ケースだけを数える。後述の補足の単体テスト12件は台帳に数えない。
+原典のケース数は、原典ファイルの `" in {"` の数で数えた（3件）。`ignore` と `pending` はない。`needs` は空で、TestKit の機能は使わない。台帳の件数は原典の3ケースだけを数える。後述の補足の単体テスト12件と、#148 の補足回帰1件は台帳に数えない。
 
 ## 実行経路
 
@@ -76,7 +76,7 @@ G0issue130 で入れた `ByteStringInputStream` の公開 API は `read` と `re
 
 原典3ケースの観測は変わらない。
 
-- **builder の結果の mark 対応**：Pekko の `ByteStringBuilder` は、配列や大きな列を足すたびに独立した断片を作り、断片が2つ以上なら `ByteStrings` を返す（L1355–1366、L1566–1575）。移植の builder は、`add_all` で足したバイトを1つの配列にまとめる。例：`builder ++= Array(1, 2)` の後に `builder ++= Array(3)` を足すと、原典は2断片の `ByteStrings`（mark 非対応）、移植は1配列（mark 対応）になる。差は「原典が非対応のものを、移植が対応と答える」の一方向だけである。builder には手を入れず、[#148](https://github.com/j5ik2o/fraktor-ng-rs/issues/148) で追跡する。単体テスト `a_built_byte_string_supports_marks_by_how_many_arrays_it_holds` で今の振る舞いを固定した。
+- **builder の結果の mark 対応**：Pekko の `ByteStringBuilder` は、配列や大きな列を足すたびに独立した断片を作り、断片が2つ以上なら `ByteStrings` を返す（L1355–1366、L1566–1575）。移植の builder は、`add_all` で足したバイトを1つの配列にまとめる。例：`builder ++= Array[Byte](1, 2)` の後に `builder ++= Array[Byte](3)` を足すと、原典は2断片の `ByteStrings`（mark 非対応）、移植は1配列（mark 対応）になる。差は「原典が非対応のものを、移植が対応と答える」の一方向だけである。builder には手を入れず、[#148](https://github.com/j5ik2o/fraktor-ng-rs/issues/148) で追跡する。単体テスト `a_built_byte_string_supports_marks_by_how_many_arrays_it_holds` で今の振る舞いを固定した。#148 では副元帥の決定（項目227）により意図した差として固定した。補足回帰と台帳の据え置きの根拠は、後述の「[#148：builder の mark 対応を意図した差として固定](#148builder-の-mark-対応を意図した差として固定)」にまとめた。
 - **skip の負の入力**：原典の `skip` は負の `n` で `IllegalArgumentException` を投げる。移植の `usize` では負の値を表せない。
 - **skip の JVM 整数の上限**：原典の `skip` は `Math.toIntExact(n)` と `Math.addExact` を使うので、`n` が `Int.MaxValue` を超えるか、位置との和が溢れると `ArithmeticException` を投げる。移植は `usize::MAX` でも残量で頭打ちにして返す。
 - **残量を超える skip の後の位置**：原典は残量で頭打ちにした値を返すが、位置は `n` だけ進める（L172–178）。そのため `"abc"` で `skip(50)` の後は位置50になり、続く `skip(0)` や `skip(1)` は `eod - offset` の負値（-47）を返す。移植は位置を末尾で止め、EOF の後の skip は0を返す。`read` が EOF を返す点と、mark の位置へ reset で戻れる点は同じである。
@@ -164,3 +164,65 @@ cargo clippy --workspace --all-targets -- -D warnings
 uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0issue147
 uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0issue147
 ```
+
+## #148：builder の mark 対応を意図した差として固定
+
+[Issue #148](https://github.com/j5ik2o/fraktor-ng-rs/issues/148)（Orca 項目227）で、前述の「builder の結果の mark 対応」の差を扱った。副元帥の決定（項目227）は、builder を原典に合わせず、意図した差として補足回帰で固定することである。製品コードの断片化と動作は変えていない。新しいゴール ID は作らず、台帳にもタグを付けていない。記録は本書に集約する。
+
+### 原典との差
+
+- 原典の [ByteString.scala](https://github.com/apache/pekko/blob/9a54d1294c3ac7821bbed3c940769c3d5027d1ff/actor/src/main/scala-2.13/org/apache/pekko/util/ByteString.scala)：
+  - `addAll(xs: IterableOnce[Byte])`（L1354–1378）は、`WrappedArray.ofByte` を `putByteArrayUnsafe`（L1380–1385）で、大きな列を `shouldResizeTempFor` の分岐で、それぞれ独立した `ByteString1` の断片にする。
+  - `result()`（L1566–1575）は、断片が2つ以上なら `ByteStrings` を返す。
+  - `ByteStrings.asInputStream`（L637–638）は `SequenceInputStream` なので、`markSupported` は false。
+- 移植の `ByteStringBuilder::add_all` は、足したバイトをすべて1つの pending にまとめ、`result()` で1つの配列にする。`as_input_stream` は配列が1つ以下なら mark に対応する。
+
+| 入力 | 原典の結果 | 原典の mark 対応 | 移植の結果 | 移植の mark 対応 |
+|:---|:---|:---|:---|:---|
+| `++= Array[Byte](1, 2)` の後に `++= Array[Byte](3)` | 2断片の `ByteStrings` | 非対応 | 1配列 | 対応 |
+
+### 補足回帰（台帳の件数に含めない）
+
+`byte_string_input_stream_test.rs` の単体テスト `separately_added_arrays_build_one_array_whose_stream_resets_to_the_mark`。テスト内のコメントに、原典との意図した差であることと #148 を書いた。
+
+1. `add_all([1, 2])` と `add_all([3])` を別々に足すと、`result()` の配列は1つになる。
+2. その入力ストリームの `mark_supported()` は true。
+3. 1バイト読んだ後に `mark` し、EOF まで読み進める（2、3、`None`）。
+4. `reset()` は `Ok` で、同じバイト列を順番どおり読み戻せる（2、3、`None`）。
+
+本書の実装（`mark`、`reset`、`mark_supported`）と `ByteString::arrays`（`pub(super)`）を再利用した。前述の `a_built_byte_string_supports_marks_by_how_many_arrays_it_holds` は mark 対応の真偽だけを見る。新しいテストは、1配列になること、mark 後に読み進めた位置から reset で戻ることまでを固定する。
+
+**already_green の根拠**：製品コードは変えていない（`git diff 0bbb9e6 -- 'crates/*/src/**/*.rs' ':!*_test.rs'` は空）。テストは既存の実装のまま最初から通過した。テストが差を検出できることも確かめた。`add_all` の先頭で pending を確定する一時的な変更（足すたびに別の配列にする、原典と同じ断片化）を入れると、`assert_eq!(built.arrays().len(), 1)` が `left: 2, right: 1` で失敗した。この変更は戻し、コミットしていない。
+
+### 台帳
+
+`ledger/nodes.yaml` は変えていない（調整担当の決定。スキーマに備考欄はなく、`triage.reason` は do_not_port と already_green の用途に限る）。
+
+| 台帳ノード | ゴール | status | 原典 | 移植 | 成功 | 除外 |
+|:---|:---|:---|---:|---:|---:|---:|
+| `actor-tests/src/test/scala/org/apache/pekko/io/UnsynchronizedByteArrayInputStreamSpec.scala` | G0issue147 | green | 3 | 3 | 3 | 0 |
+| `actor-tests/src/test/scala/org/apache/pekko/util/ByteStringBuilderSpec.scala` | G0issue133 | green | 3 | 3 | 3 | 0 |
+
+件数と除外を据え置く根拠：
+
+- 補足回帰は原典にないケースである。台帳の `cases` は原典のケースだけを数えるので、件数に足さない。
+- 原典 `UnsynchronizedByteArrayInputStreamSpec` の3ケースは `"abc"` の1配列の入力ストリームだけを観測し、builder を使わない。原典 `ByteStringBuilderSpec` の3ケースは入力ストリームを使わない。差はどちらの観測にも現れないので、除外は要らない（0件のまま）。
+- 製品コードを変えていないので、両ノードの統合テストの結果は変わらない。
+
+### #148 の実測
+
+| コマンド | 終了値 | 結果 |
+|:---|---:|:---|
+| `cargo test -p fraktor-actor --lib byte_string_input_stream` | 0 | 16 passed（既存15、新規1） |
+| `cargo test -p fraktor-actor --lib byte_` | 0 | 38 passed |
+| `cargo test -p fraktor-actor --test unsynchronized_byte_array_input_stream_spec --test byte_string_builder_spec --test byte_string_builder_scala213_plus_spec --test byte_string_test --test byte_string_input_stream_spec` | 0 | 3、3、3、2、3 passed |
+| `cargo test --workspace` | 0 | 69 スイート、697 passed / 0 failed / 0 ignored |
+| `cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings` | 0 | 差分なし、警告なし |
+| syn-check（`crates/fraktor-actor`、`crates/fraktor-testkit`） | 0 | 両方 `clean: true`、違反0 |
+| `npm run check:aislop` | 0 | warn 以上の指摘は受理済み一覧と一致 |
+| `goal_complete_gate_test.py`、`verify_red_test.py`、`verify_green_test.py`、`verify_green_test_aislop.py`、`verify_green_test_crate.py` | 0 | 成功 |
+| `verify_green.py --crate fraktor-actor` | 0 | `all_pass: true` |
+
+台帳は、`goal:` を持つ29ゴールの各々で `check_needs.py` と `rollup.py` を実行し、58コマンドすべて終了値0だった。G0issue147 は1件で `{'green': 1}`、G0issue133 は3件で `{'green': 3}`。
+
+TAKT は使わず、担当（Claude Opus 5.5）が直接実装した。独立レビュー（`docs/decisions/takt-workflow-design.md` §2.6）は、PR 作成後に既出の指摘へ対応した HEAD を固定して、調整担当が別系統のモデルで1回行う。
