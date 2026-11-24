@@ -2461,7 +2461,7 @@ nodes:
     module: actor-tests
     class: DomainNameSpec
     test_cases_approx: 6
-  status: red
+  status: green
   triage:
     kind: pending
     reason: null
@@ -2472,9 +2472,9 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 6
+    ported: 6
+    passing: 6
     excluded: []
   rust:
     crate: fraktor-actor
@@ -3505,7 +3505,7 @@ nodes:
     module: actor-tests
     class: MessageSpec
     test_cases_approx: 1
-  status: red
+  status: green
   triage:
     kind: pending
     reason: null
@@ -3516,9 +3516,9 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 1
+    ported: 1
+    passing: 1
     excluded: []
   rust:
     crate: fraktor-actor
