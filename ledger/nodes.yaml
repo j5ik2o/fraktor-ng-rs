@@ -2479,7 +2479,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue142
 - id: actor-tests/src/test/scala/org/apache/pekko/util/DoubleLinkedListSpec.scala
   name: actor-tests:DoubleLinkedListSpec
   kind: test
@@ -3523,7 +3523,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue142
 - id: actor-tests/src/test/scala/org/apache/pekko/routing/MetricsBasedResizerSpec.scala
   name: actor-tests:MetricsBasedResizerSpec
   kind: test
