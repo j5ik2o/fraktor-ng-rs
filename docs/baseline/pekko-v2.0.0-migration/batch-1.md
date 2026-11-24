@@ -127,7 +127,9 @@ kernel の追加は `alloc` と `core` だけで、no_std のままである。
 
 ## 台帳への反映（PR #166 の後）
 
-台帳（`ledger/nodes.yaml`）は、このまとまりのコミットでは変えていない。PR #166 が main に入った後、その形式（ノード最上位の `verified_against`）に合わせて次を反映する。
+台帳（`ledger/nodes.yaml`）の更新は、製品とテストのコミットとは別の 1 コミットにした。PR #166 の形式（ノード最上位の `verified_against`）に合わせ、#166 の上に載せている。
+
+反映後の `uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger --ledger ledger/nodes.yaml --pekko pekko --list-unverified` は終了値 0 である。green は v2.0.0 が 8、v1.7.1 が 42、do_not_port は v1.7.1 が 173 になった。
 
 | ノード | `cases`（total/ported/passing） | `verified_against` |
 |:---|:---|:---|
