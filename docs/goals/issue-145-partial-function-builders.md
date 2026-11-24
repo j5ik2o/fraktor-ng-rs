@@ -101,9 +101,12 @@ fn generic_class_with_predicate_alternative() {
 
 - 区分の定義・当てはめる条件・自動では入れないもの・混在の扱いを、[`ledger-schema-draft.md` の「作らない区分」](../decisions/ledger-schema-draft.md)に書いた。`ledger/README.md` にも要約と参照を足した。
 - 2ノードを `status: not_built`、`triage.kind: not_built` にし、`triage.reason` に理由と本書の場所を書いた。`cases` は `total` に原典の件数、`ported` と `passing` に0、`cases.not_built` にケースごとの `name`・`reason`・`alternative`・`approved_by`・`approved_at` を書いた。`approved_by` と `approved_at` は、オーナーの決定（元帥の項目223）を写したもので、担当が承認したものではない。`rust` の欄は null のままである。`goal` は `G0issue145`。
-- `rollup.py` は、`not_built` のノード数、作らない率（B / N）、ケースの 移植・除外・作らない の件数を出す。合格率は G / (N − X − B) にした（作らない区分は「理由を台帳に書いて対象外にする」決定による）。`not_built` のノードの記録を検査し、欠けていればゴールの完了に数えない。
-- `check_needs.py` の「完了したゴール」は、`rollup.py` の同じ判定（`is_done`）を使う。
-- `goal_complete_gate_test.py` に2件を足した。green と記録の揃った not_built の混在は完了、承認の欄が欠けた not_built は未完了。main の `rollup.py` では前者が失敗することを確かめた（`26 passed, 2 failed`。もう1件は本書を足した後の実物のゴール文書の検査）。
+- `rollup.py` は、`not_built` のノード数、作らない率（B / N）、ケースの 移植・除外・作らない の件数を出す。除外と作らないの件数は、承認記録の有効な件数と、台帳に書かれた件数（括弧内）を分けて出す。合格率は G / (N − X − B) にした（作らない区分は「理由を台帳に書いて対象外にする」決定による）。
+- `rollup.py` は `not_built` のノードの記録を検査し、欠けていればゴールの完了に数えない。承認の2欄は除外と同じ `excluded_approvals.is_approved_by_human` で検査し（空白以外の文字列の承認者、時刻を含まない実在の暦日）、ケース名は空白以外の文字列でノード内で重複しないことを求める。台帳は除外の検査と同じ専用ローダで読む。
+- `check_needs.py` の「完了したゴール」は、`rollup.py` の同じ判定（`is_done`）と同じ読み込み（`load_nodes`）を使う。
+- TAKT の triage の指示（`fraktor-triage.md`）と子ワークフロー（`fraktor-port-node.yaml`）の triage の規則を、記録の揃った not_built を処理済みにし、記録の不足した not_built を needs_human にする形に揃えた。移植の規約（`fraktor-porting-rules.md`）にも、not_built は人間だけが決めることを書いた。ワークフローは実際には走らせていない。
+- 承認済みのグラフモデル提案書（`fable-graph-model-proposal.md`）に「追加の決定：作らない区分」を足し、論点 9（完了条件）と論点 16（合格率）の読み替えと、3章・5章の該当箇所への注記を書いた。
+- `goal_complete_gate_test.py` に8件を足した。green と記録の揃った not_built の混在は完了。承認の欄の欠落、実在しない暦日（引用あり・なし）、時刻つきの日付、文字列でない・空白だけの承認者、重複したケース名、空白だけのケース名は、どれも未完了。TAKT の triage の指示と規則が `rollup.DONE_STATUSES` の全 status と、記録の不足した not_built の needs_human を持つこと。レビュー前の HEAD `97b765d` の `rollup.py` と TAKT の2ファイルでは、このうち3件と実物のゴール文書の検査が失敗することを確かめた（`28 passed, 4 failed`）。
 - `verify_red.py`・`verify_green.py` の勘定には手を入れていない。混在のノードはまだない。
 
 集計の変化（`rollup.py --ledger ledger/nodes.yaml` の全体の行）：
@@ -113,7 +116,7 @@ fn generic_class_with_predicate_alternative() {
 | ノード | N=1261、green 49、do_not_port 173、not_built 0 | N=1261、green 49、do_not_port 173、not_built 2 |
 | 合格率 | 49 / 1088 = 4.5% | 49 / 1086 = 4.5% |
 | 作らない率 | 0.0% | 0.2% |
-| ケース | 移植 260、除外 0、作らない 0 | 移植 260、除外 0、作らない 4 |
+| ケース | 移植 260、除外 0、作らない 0 | 移植 260、除外 0（記録 0）、作らない 4（記録 4） |
 
 ## 検証
 
@@ -124,12 +127,23 @@ fn generic_class_with_predicate_alternative() {
 | `rollup.py --goal G0issue145` | 0 | 2件、`{'not_built': 2}`、完了 |
 | `check_needs.py --goal G0issue145` | 0 | needs 閉性 OK |
 | `check_needs.py` と `rollup.py` を `G0a`〜`G0f` の各々で | 0 | 12コマンドすべて終了値0 |
-| `goal_complete_gate_test.py` | 0 | 28 passed, 0 failed |
+| `goal_complete_gate_test.py` | 0 | 32 passed, 0 failed |
 | `verify_red_test.py` | 0 | 48 passed, 0 failed |
 | `verify_green_test.py`、`verify_green_test_aislop.py`、`verify_green_test_crate.py` | 0 | 成功 |
 | `npm ci` → `npm run check:aislop` | 0 | warn 以上の指摘は受理済み一覧と一致 |
 | `cargo test --workspace` | 0 | 75 スイート、848 passed / 0 failed。製品とテストの Rust コードは変えていない。回帰の確認として実行 |
 | `cargo fmt --check` | 0 | 差分なし |
+
+## PR #165 のレビュー指摘への対応
+
+| 指摘 | 分類 | 対応 |
+|:---|:---|:---|
+| Cursor（r4687889476）、Devin（r4687894221）：TAKT の triage が not_built を処理済みにせず、子ワークフローも完了を返さない | 直す | triage の指示と子ワークフローの規則を `rollup.py` の判定に揃え、記録の不足した not_built を needs_human にした。食い違いを検出するテスト（33）を足した |
+| Cursor（r4687889500）：提案書の論点表が not_built 以前の完了条件と合格率のまま | 直す | 提案書に「追加の決定：作らない区分」と論点 9・16 の読み替え、3章・5章の注記を足した |
+| Devin（r4687893971）、Codex（r4687894519）：不正な承認記録でも完了になる | 直す | 承認の2欄を `is_approved_by_human` で検査し、台帳を除外と同じ専用ローダで読むようにした（引用なしの正しい日付は引き続き受理する）。テスト（30a〜30e）を足した |
+| Devin（r4687894084）：ケース名の重複で欠けたケースが隠れる | 直す | ケース名が空白以外の文字列で、ノード内で重複しないことを検査した。テスト（31、32）を足した |
+| Devin（r4687894370）：ケースの集計が未承認の記録も数える | 直す | 承認記録の有効な件数と、台帳に書かれた件数を分けて出すようにした |
+| CodeRabbit | 対象なし | 利用上限のため、レビューは行われなかった |
 
 ## 独立レビュー（別系統のモデル）
 

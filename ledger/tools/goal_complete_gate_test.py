@@ -33,8 +33,12 @@ rollup.py --goal を走らせる。ここでは takt も cargo も node も起�
  19. 台帳 YAML が不正でも終了コード 0 で JSON を出し exit_code 非0 と原因を返す
  20. `## 対象ノード` 節の後に別の表があっても、節外の表を id と解釈しない
  21. `## 対象ノード` 節内で対象ノード表の後に別の表が続いても、最初の表だけを読む
- 22. green と記録の揃った not_built（作らない区分）の混在 exit_code 0
- 23. not_built でも、ケースの記録（承認・代替例）が欠けていれば完了にしない
+ 28. green と記録の揃った not_built（作らない区分）の混在 exit_code 0
+ 29. not_built でも、ケースの記録（承認・代替例）が欠けていれば完了にしない
+ 30. not_built の承認記録が不正（実在しない暦日、時刻つき、文字列でない・空白だけの承認者）なら完了にしない
+ 31. not_built のケース名が重複していれば、件数が合っていても完了にしない
+ 32. not_built のケース名が空白だけなら完了にしない
+ 33. TAKT の triage が処理済みとする status が rollup.DONE_STATUSES と一致する
 """
 import json
 import os
@@ -45,6 +49,9 @@ from pathlib import Path
 
 GATE = Path(__file__).resolve().parent / "goal_complete_gate.py"
 ROLLUP = Path(__file__).resolve().parent / "rollup.py"
+APPROVALS = Path(__file__).resolve().parent / "excluded_approvals.py"
+TRIAGE = Path(__file__).resolve().parents[2] / ".takt" / "facets" / "instructions" / "fraktor-triage.md"
+PORT_NODE = Path(__file__).resolve().parents[2] / ".takt" / "workflows" / "fraktor-port-node.yaml"
 REPO = Path(__file__).resolve().parents[2]
 GOALS = REPO / "docs" / "goals"
 REAL_LEDGER = REPO / "ledger" / "nodes.yaml"
@@ -56,6 +63,12 @@ UUID = "11111111-2222-3333-4444-555555555555"
 def write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def copy_rollup(root: Path) -> None:
+    """rollup.py と、それが読む excluded_approvals.py を一時ディレクトリへ写す。"""
+    write(root / "ledger" / "tools" / "rollup.py", ROLLUP.read_text(encoding="utf-8"))
+    write(root / "ledger" / "tools" / "excluded_approvals.py", APPROVALS.read_text(encoding="utf-8"))
 
 
 def node(node_id: str, status: str, goal: str | None) -> str:
@@ -107,7 +120,7 @@ def make_run(root: Path, order_text: str, ledger: str,
     write(response, "dummy\n")
     write(run / "context" / "task" / "order.md", order_text)
     write(root / "ledger" / "nodes.yaml", ledger)
-    write(root / "ledger" / "tools" / "rollup.py", ROLLUP.read_text(encoding="utf-8"))
+    copy_rollup(root)
     for name, text in (goal_docs or {}).items():
         write(root / "docs" / "goals" / name, text)
     return response
@@ -127,7 +140,7 @@ def make_run_without_order(root: Path, task_text: str, ledger: str,
     write(response, "dummy\n")
     write(run / "meta.json", json.dumps({"task": task_text}, ensure_ascii=False))
     write(root / "ledger" / "nodes.yaml", ledger)
-    write(root / "ledger" / "tools" / "rollup.py", ROLLUP.read_text(encoding="utf-8"))
+    copy_rollup(root)
     for name, text in (goal_docs or {}).items():
         write(root / "docs" / "goals" / name, text)
     return response
@@ -207,7 +220,7 @@ NOT_BUILT_CASE = (
 )
 
 
-def not_built_node(node_id: str, goal: str, approval: str) -> str:
+def not_built_node(node_id: str, goal: str, approval: str, cases: str = NOT_BUILT_CASE) -> str:
     """作らない区分のノード。approval はケースの要素に足す承認の行。"""
     return (
         f"- id: {node_id}\n"
@@ -219,7 +232,7 @@ def not_built_node(node_id: str, goal: str, approval: str) -> str:
         f"    kind: not_built\n"
         f"    reason: served by the language\n"
         f"  cases:\n"
-        f"{NOT_BUILT_CASE}{approval}"
+        f"{cases}{approval}"
         f"  goal: {goal}\n"
     )
 
@@ -236,7 +249,7 @@ def test_green_and_not_built_is_complete():
                             one_goal_doc("G0w", ids))
         result = run_gate(root, response)
         assert result["exit_code"] == 0, result
-        print("22. green + not_built: exit_code =", result["exit_code"])
+        print("28. green + not_built: exit_code =", result["exit_code"])
 
 
 def test_not_built_without_approval_is_not_complete():
@@ -249,7 +262,85 @@ def test_not_built_without_approval_is_not_complete():
         result = run_gate(root, response)
         assert result["exit_code"] != 0, result
         assert "a/A.java" in result.get("output", ""), result
-        print("23. not_built without approval: exit_code =", result["exit_code"])
+        print("29. not_built without approval: exit_code =", result["exit_code"])
+
+
+def assert_not_built_incomplete(label: str, approval: str, cases: str = NOT_BUILT_CASE,
+                                names_node: bool = True) -> None:
+    """関門が完了にしないことを確かめる。names_node なら未完了の一覧に id が出ることも確かめる。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.java"]
+        ledger = "nodes:\n" + not_built_node(ids[0], "G0u", approval, cases)
+        response = make_run(root, order_with(["docs/goals/g0u-stub.md"]), ledger,
+                            one_goal_doc("G0u", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] != 0, (label, result)
+        if names_node:
+            assert "a/A.java" in result.get("output", ""), (label, result)
+        print(f"{label}: exit_code =", result["exit_code"])
+
+
+def test_not_built_with_malformed_approval_is_not_complete():
+    """承認記録は除外と同じ is_approved_by_human で検査する（空でないだけでは通さない）。"""
+    assert_not_built_incomplete(
+        "30a. not_built with a nonexistent quoted date",
+        "      approved_by: someone\n      approved_at: '2026-02-30'\n")
+    assert_not_built_incomplete(
+        "30b. not_built with an unquoted nonexistent date",
+        "      approved_by: someone\n      approved_at: 2026-02-30\n",
+        # 関門自身の台帳の読み込み（PyYAML の既定）がこの日付で失敗し、判定不能で止まる。
+        names_node=False)
+    assert_not_built_incomplete(
+        "30c. not_built with a timestamp instead of a date",
+        "      approved_by: someone\n      approved_at: 2026-01-01T00:00:00Z\n")
+    assert_not_built_incomplete(
+        "30d. not_built with a list as the approver",
+        "      approved_by: [someone]\n      approved_at: 2026-01-01\n")
+    assert_not_built_incomplete(
+        "30e. not_built with a blank approver",
+        "      approved_by: '  '\n      approved_at: 2026-01-01\n")
+
+
+def test_not_built_with_duplicated_case_names_is_not_complete():
+    """件数が total と合っていても、同じケース名の重複で欠けたケースを埋めさせない。"""
+    record = ("    - name: someCase\n"
+              "      reason: the original checks a Java helper\n"
+              "      alternative: a Rust match\n"
+              "      approved_by: someone\n      approved_at: 2026-01-01\n")
+    cases = ("    total: 2\n    ported: 0\n    passing: 0\n    excluded: []\n"
+             "    not_built:\n" + record + record)
+    assert_not_built_incomplete("31. not_built with duplicated case names", "", cases)
+
+
+def test_not_built_with_a_blank_case_name_is_not_complete():
+    cases = NOT_BUILT_CASE.replace("name: someCase", "name: '  '")
+    assert_not_built_incomplete("32. not_built with a blank case name", APPROVAL, cases)
+
+
+def test_takt_triage_treats_the_same_statuses_as_done():
+    """TAKT の triage が処理済みとする status は、rollup の DONE_STATUSES と同じである。
+
+    rollup が完了に数える status を triage が対象に選ぶと、作らない区分のノードを
+    移植し直す。triage の指示文と、子ワークフローの goal_complete の条件の両方に、
+    DONE_STATUSES の全 status と、記録の不足した not_built を needs_human にする規則がある。
+    """
+    import yaml
+
+    import rollup
+
+    triage = TRIAGE.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(PORT_NODE.read_text(encoding="utf-8"))
+    step = next(s for s in workflow["steps"] if s["name"] == "triage")
+    complete = [r["condition"] for r in step["rules"] if r.get("return") == "goal_complete"]
+    human = [r["condition"] for r in step["rules"] if r.get("return") == "needs_human"]
+    assert len(complete) == 1, complete
+    for status in rollup.DONE_STATUSES:
+        assert f"`{status}`" in triage, (status, "fraktor-triage.md")
+        assert status in complete[0], (status, complete[0])
+    assert "rollup.py" in triage, "fraktor-triage.md"
+    assert any("not_built" in condition for condition in human), human
+    print("33. TAKT triage statuses match rollup.DONE_STATUSES:", rollup.DONE_STATUSES)
 
 
 def test_goal_without_members_is_not_complete():
@@ -412,11 +503,10 @@ def test_real_goal_documents_match_current_ledger():
     完了状態と終了値が一致することだけを確かめる（完了を前提にしない）。
     """
     import re
-    import yaml
 
     import rollup
 
-    ledger_nodes = (yaml.safe_load(REAL_LEDGER.read_text(encoding="utf-8")) or {}).get("nodes", [])
+    ledger_nodes = rollup.load_nodes(str(REAL_LEDGER))
     docs = sorted(GOALS.glob("*.md"))
     assert docs, f"no goal documents under {GOALS}"
     for doc_path in docs:
@@ -429,9 +519,7 @@ def test_real_goal_documents_match_current_ledger():
             (root / "ledger").mkdir(parents=True)
             (root / "ledger" / "nodes.yaml").write_text(
                 REAL_LEDGER.read_text(encoding="utf-8"), encoding="utf-8")
-            (root / "ledger" / "tools").mkdir(parents=True)
-            (root / "ledger" / "tools" / "rollup.py").write_text(
-                ROLLUP.read_text(encoding="utf-8"), encoding="utf-8")
+            copy_rollup(root)
             (root / "context" / "task").mkdir(parents=True)
             (root / "context" / "task" / "order.md").write_text(
                 order_with([f"docs/goals/{doc_path.name}"]), encoding="utf-8")
@@ -480,7 +568,7 @@ def test_without_order_md_and_without_meta_fails():
         response = run / "context" / "system-commands" / UUID / "response.txt"
         write(response, "dummy\n")
         write(root / "ledger" / "nodes.yaml", ledger)
-        write(root / "ledger" / "tools" / "rollup.py", ROLLUP.read_text(encoding="utf-8"))
+        copy_rollup(root)
         result = run_gate(root, response)
         assert result["exit_code"] != 0, result
         print("18. neither order.md nor meta.json: exit_code =", result["exit_code"])
@@ -639,6 +727,10 @@ def main() -> int:
         test_goal_without_members_is_not_complete,
         test_green_and_not_built_is_complete,
         test_not_built_without_approval_is_not_complete,
+        test_not_built_with_malformed_approval_is_not_complete,
+        test_not_built_with_duplicated_case_names_is_not_complete,
+        test_not_built_with_a_blank_case_name_is_not_complete,
+        test_takt_triage_treats_the_same_statuses_as_done,
         test_order_without_goal_path_fails,
         test_order_with_multiple_goal_paths_fails,
         test_missing_goal_document_fails,

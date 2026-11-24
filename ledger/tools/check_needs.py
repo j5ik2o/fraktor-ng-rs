@@ -16,7 +16,7 @@ import sys
 
 import yaml
 
-from rollup import is_done
+from rollup import is_done, load_nodes
 
 
 def load_capabilities(path: str) -> dict[str, dict]:
@@ -42,8 +42,7 @@ def main() -> int:
     ap.add_argument("--goal", required=True)
     args = ap.parse_args()
 
-    with open(args.ledger, encoding="utf-8") as f:
-        nodes = (yaml.safe_load(f) or {}).get("nodes", [])
+    nodes = load_nodes(args.ledger)
     capabilities = load_capabilities(args.capabilities)
     done = green_goals(nodes) | {args.goal}
 
