@@ -11,6 +11,7 @@ mod status_ask_future;
 mod status_reply;
 mod status_reply_ack;
 mod system_clock;
+mod system_host_dns_configuration;
 mod unsupported_id_generator_policy_error;
 mod unwind_catcher;
 
