@@ -34,6 +34,24 @@
 
 `fraktor_actor::kernel::recency_list::RecencyList` を追加した。時計には既存の `kernel::Clock` をそのまま使い、新しい時計の型は作っていない。カーネルにはハッシュマップがないため、原典の双方向リストとハッシュマップの組を、更新の通し番号をキーにした順序マップと、値から番号を引く順序マップの組に置き換えた。そのため値には `Ord` と `Clone` が必要で、各操作は対数時間になる。原典の `leastRecent` / `mostRecent`、`NanoClock` を使う `empty` は、このノードの契約に含まれないため移植していない。
 
+## 等価性レビュー
+
+実施者は本 issue の担当（Claude Opus 5.5、Orca 項目114 の担当席）で、PR #125 のレビュー指摘への対応として行った。根拠は、Pekko 固定 SHA の原典テストと原典実装、修正後のテストの3つを突き合わせた結果である。判定は「等価」。製品表面の差異は、上の「原典との照合」に挙げた3点だけである。
+
+| 原典の観測 | 原典の根拠 | 移植で確かめているテスト |
+|:---|:---|:---|
+| 空の状態で件数0、両方向の列挙が空 | Spec L47 | `recency_list_spec.rs` の最初の `check` |
+| 新規の更新は新しい側の端に加わる。同じ時刻内では更新した順に並ぶ | Spec L49–56・L61–63・L105–107、実装 L65–76 | 時刻1・2・4・15の `check` |
+| 登録済みの値を更新すると、新しい側の端へ移る。保持していた値そのものは残り、時刻と位置だけが変わる | Spec L57–60・L65–68・L73–76・L81–84・L97–100、実装 L66–69（既存ノードの `timestamp` と `moveToBack` だけを更新） | 時刻3・5・7・9・13の `check`。値の保持は単体テスト `updating_a_held_value_keeps_the_value_first_added` |
+| 個別削除。保持していない値の削除は何もしない | Spec L69–72、実装 L79–84 | 時刻6の `check`。保持していない値は単体テスト `removing_a_value_the_list_does_not_hold_changes_nothing` |
+| 件数指定の削除は、端から順に返す。件数が残数を超えれば全部を返す | Spec L77–80・L85–88・L117–120・L125–128、実装 L102–104・L114–116 | 時刻8・10・18・20の戻り値と `check` |
+| skip つきの削除は、端から skip 件を飛ばして返す | Spec L109–116、実装 L106–107・L118–119 | 時刻16・17の戻り値と `check` |
+| `removeLeastRecentOutside` は `timestamp < now - d` の値を古い側から消す。境界の時刻の値は残る | Spec L93–96、実装 L126–129 | 時刻12で `h`、`j` を返し、時刻9の `k` が残る |
+| `removeMostRecentWithin` は `timestamp > now - d` の値を新しい側から消す。境界の時刻の値は残る | Spec L101–104、実装 L131–134 | 時刻14で `r`、`k`、`q`、`p` を返し、時刻11の `n`、`o` が残る |
+| 窓が時計の起点より前まで届くとき、古い側の削除は何も消さず、新しい側の削除はすべて消す（負の時刻の比較） | 実装 L127・L132 | 単体テスト `a_window_reaching_before_the_epoch_*` の2件 |
+
+PR #125 のレビューで、同じキーと比較される別の値で更新すると、保持していた値が置き換わる差異が見つかった。修正前に単体テストをコミット `6704618faad2deac3ac28f7ed8bead5fb6d5a364` へ入れて再現した（`cargo test -p fraktor-actor --lib recency_list -- --test-threads=1` が終了値101、`left: ["other", "new"]`、`right: ["other", "old"]`）。修正後は、保持している値を残して時刻と位置だけを更新する。原典相当テストは文字列だけを使うため、この差異を観測できなかった。テストファイルは変えていない。
+
 ## 製品編集前の実測
 
 テストだけのコミット `ecbb11499621a0e1c35feac400d105cdc3ce697b`（起点 `d5d518abb1b3bd0b9f3b9e2c7488e254f3c64a43` からテスト1ファイルを追加したのみ、製品・台帳の差分0、テストの blob `6beaa7a764e55e882ac794285b74aec3d952e8ec`）で次を実行した。
@@ -49,8 +67,8 @@
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test recency_list_spec -- --test-threads=1` | 0 | 1 passed / 0 failed / 0 ignored |
-| `cargo test -p fraktor-actor --lib recency_list` | 0 | 単体テスト3件成功 |
-| `cargo test --workspace` | 0 | 53 スイート、439 passed / 0 failed / 0 ignored |
+| `cargo test -p fraktor-actor --lib recency_list -- --test-threads=1` | 0 | 単体テスト4件成功（レビュー修正後） |
+| `cargo test --workspace` | 0 | 53 スイート、レビュー修正後 440 passed / 0 failed / 0 ignored（修正前 439） |
 | `cargo fmt --check` | 0 | 差分なし |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
 | `cargo run --quiet --release --locked --manifest-path tools/syn-check/Cargo.toml -- --format json crates/fraktor-actor` | 0 | `clean: true`、143 files、違反0 |

@@ -62,13 +62,17 @@ impl<A: Ord + Clone> RecencyList<A> {
 
   /// Stamps the value with the current time and makes it the most recent,
   /// adding it if the list does not hold it yet.
+  ///
+  /// When the list already holds an equal value, it keeps the value it holds
+  /// and only moves it, as Pekko keeps the existing node.
   pub fn update(&mut self, value: A) -> &mut Self {
     let timestamp = self.clock.monotonic();
     let sequence = self.next_sequence;
     self.next_sequence += 1;
-    if let Some(previous) = self.sequence_of.insert(value.clone(), sequence) {
-      self.by_recency.remove(&previous);
-    }
+    let value = match self.sequence_of.insert(value.clone(), sequence) {
+      | Some(previous) => self.by_recency.remove(&previous).map_or(value, |held| held.value),
+      | None => value,
+    };
     self.by_recency.insert(sequence, Entry { value, timestamp });
     self
   }
