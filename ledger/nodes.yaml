@@ -4364,7 +4364,7 @@ nodes:
     module: actor-tests
     class: SegmentedRecencyListSpec
     test_cases_approx: 4
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -4375,14 +4375,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 4
+    ported: 4
+    passing: 4
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/segmented_recency_list_spec.rs
+  goal: G0issue126
 - id: actor-tests/src/test/scala/org/apache/pekko/serialization/SerializationSetupSpec.scala
   name: actor-tests:SerializationSetupSpec
   kind: test
