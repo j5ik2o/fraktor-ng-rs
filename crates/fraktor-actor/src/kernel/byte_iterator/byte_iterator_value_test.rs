@@ -54,3 +54,13 @@ fn copying_fills_the_buffer_across_arrays() {
   assert!(!iterator.has_next());
   assert_eq!(iterator.copy_into(&mut buffer), 0);
 }
+
+#[test]
+fn skipping_moves_across_arrays_and_stops_at_the_end() {
+  let mut iterator = over(&[b"ab", b"", b"cde"]);
+  assert_eq!(iterator.skip_bytes(3), 3);
+  assert_eq!(iterator.next(), Some(b'd'));
+  assert_eq!(iterator.skip_bytes(5), 1);
+  assert!(!iterator.has_next());
+  assert_eq!(iterator.skip_bytes(1), 0);
+}

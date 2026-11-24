@@ -1,6 +1,6 @@
 //! Unit tests for [`ByteStringInputStream`](super::ByteStringInputStream).
 
-use super::super::ByteString;
+use super::super::{ByteString, MarkNotSupportedError};
 
 #[test]
 fn single_byte_reads_cross_concatenated_arrays_in_order() {
@@ -39,4 +39,124 @@ fn single_byte_and_buffer_reads_share_one_position() {
   let mut buffer = [0_u8; 8];
   assert_eq!(input.read_into(&mut buffer), Some(2));
   assert_eq!(&buffer[..2], b"yz");
+}
+
+#[test]
+fn reset_without_a_mark_goes_back_to_the_start() {
+  let mut input = ByteString::from_string("ab").as_input_stream();
+  assert_eq!(input.read(), Some(b'a'));
+  assert_eq!(input.read(), Some(b'b'));
+  assert_eq!(input.reset(), Ok(()));
+  assert_eq!(input.read(), Some(b'a'));
+}
+
+#[test]
+fn a_mark_survives_reading_past_the_read_ahead_limit_and_the_end() {
+  let mut input = ByteString::from_string("abc").as_input_stream();
+  assert_eq!(input.read(), Some(b'a'));
+  input.mark(0);
+  let mut buffer = [0_u8; 8];
+  assert_eq!(input.read_into(&mut buffer), Some(2));
+  assert_eq!(input.read(), None);
+  assert_eq!(input.reset(), Ok(()));
+  assert_eq!(input.read(), Some(b'b'));
+  assert_eq!(input.reset(), Ok(()));
+  assert_eq!(input.read_into(&mut buffer), Some(2));
+  assert_eq!(&buffer[..2], b"bc");
+}
+
+#[test]
+fn a_later_mark_replaces_the_earlier_one() {
+  let mut input = ByteString::from_string("abc").as_input_stream();
+  input.mark(1);
+  assert_eq!(input.read(), Some(b'a'));
+  input.mark(1);
+  assert_eq!(input.read(), Some(b'b'));
+  assert_eq!(input.reset(), Ok(()));
+  assert_eq!(input.read(), Some(b'b'));
+}
+
+#[test]
+fn reset_goes_back_to_the_mark_after_skipping_past_the_end() {
+  let mut input = ByteString::from_string("abc").as_input_stream();
+  assert_eq!(input.skip(1), 1);
+  input.mark(1);
+  assert_eq!(input.skip(50), 2);
+  assert_eq!(input.reset(), Ok(()));
+  assert_eq!(input.read(), Some(b'b'));
+}
+
+#[test]
+fn a_sliced_byte_string_supports_marks_from_its_own_start() {
+  let mut input = ByteString::from_array(b"abcdef", 1, 3).as_input_stream();
+  assert!(input.mark_supported());
+  assert_eq!(input.skip(2), 2);
+  assert_eq!(input.reset(), Ok(()));
+  assert_eq!(input.read(), Some(b'b'));
+}
+
+#[test]
+fn an_empty_stream_skips_nothing_and_supports_marks() {
+  let mut input = ByteString::empty().as_input_stream();
+  assert!(input.mark_supported());
+  assert_eq!(input.skip(1), 0);
+  input.mark(1);
+  assert_eq!(input.reset(), Ok(()));
+  assert_eq!(input.read(), None);
+}
+
+#[test]
+fn skip_returns_what_is_left_then_zero_after_the_end() {
+  let mut input = ByteString::from_string("abc").as_input_stream();
+  assert_eq!(input.skip(0), 0);
+  assert_eq!(input.skip(usize::MAX), 3);
+  assert_eq!(input.skip(0), 0);
+  assert_eq!(input.skip(1), 0);
+  assert_eq!(input.read(), None);
+  assert_eq!(input.read_into(&mut [0]), None);
+  assert_eq!(input.read_into(&mut []), Some(0));
+}
+
+#[test]
+fn concatenating_with_an_empty_byte_string_keeps_mark_support() {
+  let abc = ByteString::from_string("abc");
+  assert!(abc.concat(&ByteString::empty()).as_input_stream().mark_supported());
+  assert!(ByteString::empty().concat(&abc).as_input_stream().mark_supported());
+  assert!(ByteString::empty().concat(&ByteString::empty()).as_input_stream().mark_supported());
+}
+
+#[test]
+fn a_concatenation_does_not_support_marks() {
+  let mut input = ByteString::from_string("a").concat(&ByteString::from_string("bc")).as_input_stream();
+  assert!(!input.mark_supported());
+  assert_eq!(input.read(), Some(b'a'));
+  input.mark(1);
+  assert_eq!(input.read(), Some(b'b'));
+  assert_eq!(input.reset(), Err(MarkNotSupportedError));
+  assert_eq!(input.read(), Some(b'c'));
+  assert_eq!(input.read(), None);
+}
+
+#[test]
+fn a_concatenation_skips_across_its_parts_and_stops_at_the_end() {
+  let mut input = ByteString::from_string("ab").concat(&ByteString::from_string("cde")).as_input_stream();
+  assert_eq!(input.skip(3), 3);
+  assert_eq!(input.read(), Some(b'd'));
+  assert_eq!(input.skip(usize::MAX), 1);
+  assert_eq!(input.skip(1), 0);
+  assert_eq!(input.read(), None);
+}
+
+#[test]
+fn a_built_byte_string_supports_marks_by_how_many_arrays_it_holds() {
+  // Pekko's builder keeps each added array as its own part; this builder
+  // gathers added bytes into one array, so the result supports marks here and
+  // not in Pekko (issue #148).
+  let mut one_array = ByteString::new_builder();
+  one_array.add_all([1_u8, 2]).add_all([3_u8]);
+  assert!(one_array.result().as_input_stream().mark_supported());
+
+  let mut several_arrays = ByteString::new_builder();
+  several_arrays.append(&ByteString::from_string("a")).append(&ByteString::from_string("bc"));
+  assert!(!several_arrays.result().as_input_stream().mark_supported());
 }

@@ -5093,7 +5093,7 @@ nodes:
     module: actor-tests
     class: UnsynchronizedByteArrayInputStreamSpec
     test_cases_approx: 3
-  status: red
+  status: green
   triage:
     kind: pending
     reason: null
@@ -5104,9 +5104,9 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 3
+    ported: 3
+    passing: 3
     excluded: []
   rust:
     crate: fraktor-actor
