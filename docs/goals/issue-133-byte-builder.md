@@ -12,8 +12,10 @@
 | id | Rust の統合テスト | 原典 | 移植 | 成功 | 除外 |
 |:---|:---|---:|---:|---:|---:|
 | `actor-tests/src/test/scala/org/apache/pekko/util/ByteStringBuilderSpec.scala` | `crates/fraktor-actor/tests/byte_string_builder_spec.rs` | 3 | 3 | 3 | 0 |
-| `actor-tests/src/test/scala-2.13+/org/apache/pekko/util/ByteStringBuilderScala213PlusSpec.scala` | `crates/fraktor-actor/tests/byte_string_builder_scala213_plus_spec.rs` | 3 | 3 | 3 | 0 |
+| `actor-tests/src/test/scala/org/apache/pekko/util/ByteStringBuilderScala213PlusSpec.scala` | `crates/fraktor-actor/tests/byte_string_builder_scala213_plus_spec.rs` | 3 | 3 | 3 | 0 |
 | `actor-tests/src/test/java/org/apache/pekko/util/ByteStringTest.java` | `crates/fraktor-actor/tests/byte_string_test.rs` | 2 | 2 | 2 | 0 |
+
+2026-11-25 追記：Pekko v2.0.0 で `ByteStringBuilderScala213PlusSpec` が `actor-tests/src/test/scala-2.13+/` から `actor-tests/src/test/scala/` に移った（上流 `f2b677dfa0` #1986）。そのため、台帳の id を v2.0.0 のパスに付け替え、上の表の id も合わせた。旧 id は `actor-tests/src/test/scala-2.13+/org/apache/pekko/util/ByteStringBuilderScala213PlusSpec.scala` である。v2.0.0 ではケースが 3 件から 5 件に増えた（上流 `fef71efd85` #3539）。上の表の件数は、このゴールを閉じた時点（v1.7.1）の記録である。照合の記録は `docs/baseline/pekko-v2.0.0-migration/batch-1.md` にある。
 
 合計は原典8件・移植8件・成功8件・除外0件。`needs` はどれも空で、TestKit の機能は使わない。Scala の2ファイルの原典件数は `" in {"` の数で数えた（`verify_red.py` の `count_original_cases` は WordSpec の `"..." should {` を数えきれず `None` を返す）。Java は `@Test` の2件で、`verify_red.py` も2件と数えた。`ignore` と `pending` はない。
 

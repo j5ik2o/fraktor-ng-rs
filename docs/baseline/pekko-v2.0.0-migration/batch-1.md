@@ -100,7 +100,12 @@
 - `f2b677dfa0` #1986 で Scala 2.12 の対応がなくなり、ファイルが `actor-tests/src/test/scala-2.13+/` から `actor-tests/src/test/scala/` に移った（`git diff -M` の類似度 64%）。`fef71efd85` #3539 は、`ByteStringBuilder.addAll` が `ArraySeq.ofByte` を受けたときに配列を複製するようにした。そして「元の配列を書き換えても結果が変わらない」ケースを、不変と可変の `ArraySeq` で 1 件ずつ足した。
 - Rust の `add_all` はバイトをコピーするので、最初から緑だった（5 passed、`f68e338`）。`ArraySeq.unsafeWrapArray`（不変の見え方）は `array.iter().copied()` で、`mutable.ArraySeq.make` は `array.iter_mut().map(|b| *b)` で表した。
 - 負の対照：作っていない。安全な Rust では、builder が呼び出し元の配列を別名で持つことができない。借用は、配列を書き換える前に終わる。テストでは、配列が書き換わったこと（`zbc`）と、結果が `abc` であることを確かめる。
-- 台帳のノード id は v1.7.1 のパス（`scala-2.13+/`）のままである。移動したノードの扱い（id の付け替え、または旧 id のまま移動先を記録するか）は、基準 PR #166 の台帳の形式に合わせて決める。それまでは `verified_against` を変えない。
+- 台帳のノード id は、原典のパスなので v2.0.0 の実在するパスに付け替えた（起動元の決定、2026-11-25）。
+  - 旧 id：`actor-tests/src/test/scala-2.13+/org/apache/pekko/util/ByteStringBuilderScala213PlusSpec.scala`
+  - 新 id：`actor-tests/src/test/scala/org/apache/pekko/util/ByteStringBuilderScala213PlusSpec.scala`
+  - 根拠：`f2b677dfa0` #1986（移動）、`fef71efd85` #3539（2 ケースの追加）。ケースは 3 件から 5 件になった。
+  - 旧 id を参照していた現役の箇所は、ゴール文書 `docs/goals/issue-133-byte-builder.md` の対象ノード表だけだった（`goal_complete_gate_test.py` が表の id と台帳の所属を突き合わせる）。表の id を新しいパスに直し、追記で旧 id を残した。`needs` と `depends_on_impl` に旧 id への参照はない。
+  - 凍結スナップショット `docs/baseline/pekko-v1.7.1/ledger.yaml` の旧パスは、そのまま残した。
 
 ## 追加した公開面のまとめ
 
@@ -129,7 +134,7 @@ kernel の追加は `alloc` と `core` だけで、no_std のままである。
 
 台帳（`ledger/nodes.yaml`）の更新は、製品とテストのコミットとは別の 1 コミットにした。PR #166 の形式（ノード最上位の `verified_against`）に合わせ、#166 の上に載せている。
 
-反映後の `uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger --ledger ledger/nodes.yaml --pekko pekko --list-unverified` は終了値 0 である。green は v2.0.0 が 8、v1.7.1 が 42、do_not_port は v1.7.1 が 173 になった。
+反映後の `uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger --ledger ledger/nodes.yaml --pekko pekko --list-unverified` は終了値 0 である。green は v2.0.0 が 9、v1.7.1 が 41、do_not_port は v1.7.1 が 173 になった。
 
 | ノード | `cases`（total/ported/passing） | `verified_against` |
 |:---|:---|:---|
@@ -141,4 +146,4 @@ kernel の追加は `alloc` と `core` だけで、no_std のままである。
 | ByteIteratorSpec | 2/2/2 | v2.0.0 |
 | ActorPathSpec | 18/18/18 | v2.0.0 |
 | StatusReplySpec | 20/20/20 | v2.0.0 |
-| ByteStringBuilderScala213PlusSpec | 5/5/5 | 移動の扱いが決まるまで v1.7.1 |
+| ByteStringBuilderScala213PlusSpec（id を付け替え） | 5/5/5 | v2.0.0 |
