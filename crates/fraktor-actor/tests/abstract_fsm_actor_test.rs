@@ -45,10 +45,8 @@ fn my_fsm(probe: ActorRef) -> Fsm<String, String> {
   });
   fsm.start_with(String::from("start"), String::from("data"));
   fsm.when(String::from("start"), |_context: &mut ActorContext<'_>, event: &Message, _data: &String| {
-    match event.downcast_ref::<&'static str>() {
-      | Some(new_state) if *new_state == "next" => Some(FsmState::goto(String::from(*new_state))),
-      | _ => None,
-    }
+    let new_state = event.downcast_ref::<&'static str>().filter(|event| **event == "next")?;
+    Some(FsmState::goto(String::from(*new_state)))
   });
   fsm.when(String::from("next"), |_context: &mut ActorContext<'_>, _event: &Message, _data: &String| None);
   fsm.initialize();
