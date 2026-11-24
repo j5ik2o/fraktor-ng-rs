@@ -12,6 +12,7 @@ mod status_reply;
 mod status_reply_ack;
 mod system_clock;
 mod system_host_dns_configuration;
+mod unsupported_host_dns_platform_error;
 mod unsupported_id_generator_policy_error;
 mod unwind_catcher;
 
@@ -27,5 +28,6 @@ pub use status_reply::StatusReply;
 pub use status_reply_ack::StatusReplyAck;
 pub use system_clock::SystemClock;
 pub use system_host_dns_configuration::SystemHostDnsConfiguration;
+pub use unsupported_host_dns_platform_error::UnsupportedHostDnsPlatformError;
 pub use unsupported_id_generator_policy_error::UnsupportedIdGeneratorPolicyError;
 pub use unwind_catcher::UnwindCatcher;

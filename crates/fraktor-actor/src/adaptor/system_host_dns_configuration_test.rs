@@ -11,17 +11,18 @@ use alloc::{
 };
 use core::{
   hash::{BuildHasher, Hasher},
-  net::SocketAddr,
+  net::{Ipv6Addr, SocketAddr, SocketAddrV6},
   time::Duration,
 };
 use std::{
   collections::hash_map::RandomState,
   fs::{self, DirBuilder},
-  io::ErrorKind,
+  io::{self, BufReader, ErrorKind, Read},
   path::{Path, PathBuf},
 };
 
-use super::SystemHostDnsConfiguration;
+use super::{read_name_servers, SystemHostDnsConfiguration};
+use crate::adaptor::UnsupportedHostDnsPlatformError;
 use crate::kernel::io::dns::{
   DnsSettingsConfig, DnsSettingsError, DnsSettingsValues, HostDnsConfiguration, NameserversSetting, NdotsSetting,
   ResolvConf, SearchDomainsSetting, TtlSetting,
@@ -122,12 +123,30 @@ fn default_config() -> DnsSettingsConfig {
   )
 }
 
-// The production constructor reads the host's `/etc/resolv.conf`, the file the
-// original's `resolvConf` and the JDK's `ResolverConfigurationImpl` both open.
+// Outside Windows the production constructor reads the host's
+// `/etc/resolv.conf`, the file the original's `resolvConf` and the JDK's
+// `ResolverConfigurationImpl` both open.
 #[test]
-fn new_reads_the_etc_resolv_conf() {
-  assert_eq!(SystemHostDnsConfiguration::new(), SystemHostDnsConfiguration::reading("/etc/resolv.conf"));
-  assert_eq!(SystemHostDnsConfiguration::default(), SystemHostDnsConfiguration::new());
+fn a_resolv_conf_host_reads_the_etc_resolv_conf() {
+  assert_eq!(
+    SystemHostDnsConfiguration::for_platform(false),
+    Ok(SystemHostDnsConfiguration::reading("/etc/resolv.conf"))
+  );
+}
+
+// Windows keeps its name servers outside `resolv.conf`; reading them is not
+// ported (#160), so creating the configuration there fails with an error that
+// says so instead of quietly finding no name server.
+#[test]
+fn windows_is_reported_as_unsupported() {
+  let error: UnsupportedHostDnsPlatformError =
+    SystemHostDnsConfiguration::for_platform(true).expect_err("Windows is not supported");
+  assert!(error.to_string().contains("not supported"));
+}
+
+#[test]
+fn new_follows_the_platform_it_runs_on() {
+  assert_eq!(SystemHostDnsConfiguration::new(), SystemHostDnsConfiguration::for_platform(cfg!(windows)));
 }
 
 // A `nameserver` line without a port gets the original's fallback port 53.
@@ -193,7 +212,7 @@ fn lines_that_do_not_start_with_the_keyword_are_skipped() {
 
 // The original drops each address it cannot turn into a socket address. This
 // port also drops the ones the kernel parser does not accept: host names and
-// IPv6 zone indexes. An unbracketed IPv6 literal with dots is not a valid URI
+// IPv6 zones named by interface. An unbracketed IPv6 literal with dots is not a valid URI
 // authority, so the original drops it too.
 #[test]
 fn unusable_name_servers_are_dropped() {
@@ -377,4 +396,87 @@ fn default_name_servers_read_an_address_with_a_trailing_comment() {
 fn a_trailing_comment_on_a_search_line_is_kept_as_the_original_does() {
   let (_dir, host) = host_with("search corp.example # managed\n");
   assert_eq!(host.resolv_conf(), Some(ResolvConf::new(strings(&["corp.example", "#", "managed"]), 1)));
+}
+
+// A numeric zone index is a valid `dns://` URI host, and the original's
+// `InetSocketAddress` keeps it as the scope ID.
+#[test]
+fn a_numeric_ipv6_scope_id_is_kept() {
+  let (_dir, host) = host_with(
+    "nameserver fe80::1%2
+nameserver [fe80::2%3]:5353
+",
+  );
+  let link_local = |segment: u16, port: u16, scope_id: u32| {
+    SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, segment), port, 0, scope_id))
+  };
+  assert_eq!(host.name_servers(), Some(vec![link_local(1, 53, 2), link_local(2, 5353, 3)]));
+}
+
+// A zone that is not a valid URI scope ID, or does not fit a `u32`, is dropped.
+#[test]
+fn an_invalid_ipv6_scope_id_is_dropped() {
+  let (_dir, host) =
+    host_with("nameserver fe80::1%\nnameserver fe80::1%2-3\nnameserver fe80::1%99999999999\nnameserver 192.0.2.1\n");
+  assert_eq!(host.name_servers(), Some(vec![addr("192.0.2.1:53")]));
+}
+
+// `new URI("dns://" + server)` throws for characters a URI may not hold, and
+// the original then drops the server. A valid path, query or fragment after
+// the authority keeps it; this is how a trailing `#comment` is told apart from
+// a broken URI.
+#[test]
+fn a_name_server_that_is_not_a_valid_uri_is_dropped() {
+  let (_dir, host) = host_with(
+    "nameserver 192.0.2.1#a#b\nnameserver 192.0.2.2#a|b\nnameserver 192.0.2.3?x^y\nnameserver 192.0.2.4/a<b\nnameserver \
+     192.0.2.5#%zz\n",
+  );
+  assert_eq!(host.name_servers(), None);
+}
+
+#[test]
+fn a_name_server_with_a_valid_uri_tail_is_kept() {
+  let (_dir, host) = host_with(
+    "nameserver 192.0.2.1#local\nnameserver 192.0.2.2/p;x?q=1#f?/\nnameserver 192.0.2.3#%41\nnameserver \
+     192.0.2.4#caf\u{e9}\n",
+  );
+  assert_eq!(
+    host.name_servers(),
+    Some(vec![addr("192.0.2.1:53"), addr("192.0.2.2:53"), addr("192.0.2.3:53"), addr("192.0.2.4:53")])
+  );
+}
+
+// The URI's user information is not part of the host.
+#[test]
+fn user_information_before_the_host_is_skipped() {
+  let (_dir, host) = host_with("nameserver user@192.0.2.1\nnameserver us[er@192.0.2.2\n");
+  assert_eq!(host.name_servers(), Some(vec![addr("192.0.2.1:53")]));
+}
+
+// Hands out its bytes, then fails, as a read that breaks part way.
+struct FailingAfter(&'static [u8]);
+
+impl Read for FailingAfter {
+  fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+    if self.0.is_empty() {
+      return Err(io::Error::other("the device went away"));
+    }
+    let count = buffer.len().min(self.0.len());
+    buffer[..count].copy_from_slice(&self.0[..count]);
+    self.0 = &self.0[count..];
+    Ok(count)
+  }
+}
+
+// The JDK's `resolvconf` catches the `IOException` after its read loop, so the
+// name servers read before the failure are kept.
+#[test]
+fn name_servers_read_before_an_io_error_are_kept() {
+  let reader = BufReader::with_capacity(8, FailingAfter(b"nameserver 192.0.2.1\nnameserver 192.0.2.2\nnameserver 19"));
+  assert_eq!(read_name_servers(reader), Some(vec![addr("192.0.2.1:53"), addr("192.0.2.2:53")]));
+}
+
+#[test]
+fn an_io_error_before_any_name_server_is_none() {
+  assert_eq!(read_name_servers(BufReader::new(FailingAfter(b""))), None);
 }
