@@ -808,3 +808,36 @@ mod uid_clash_restart {
     assert_eq!(*received.lock().unwrap(), alloc::vec![sibling]);
   }
 }
+
+struct StashEverything;
+
+impl Actor for StashEverything {
+  fn receive(&mut self, context: &mut ActorContext<'_>, _message: Message) {
+    context.stash();
+  }
+}
+
+#[test]
+fn a_stopped_actor_sends_its_stash_to_dead_letters_with_the_original_senders_in_order() {
+  let mut executor = death_watch_executor();
+  let delivered = Arc::new(Mutex::new(Vec::new()));
+  let inbox = delivered.clone();
+  // Stand in for the system's dead letters with a handle that records what
+  // reaches it, so the routing of the stash is observable.
+  executor.dead_letters = executor.function_ref("recordedDeadLetters", move |sender: &ActorRef, message: Message| {
+    inbox.lock().unwrap().push((sender.clone(), *message.downcast_ref::<&'static str>().unwrap()));
+  });
+  let stasher = executor.spawn_user(Props::new(|| StashEverything));
+  let first_sender = executor.spawn_user(Props::new(|| Guardian));
+  let second_sender = executor.spawn_user(Props::new(|| Guardian));
+  stasher.tell("a", first_sender.clone());
+  stasher.tell("b", second_sender.clone());
+  executor.run_until_idle();
+  assert!(delivered.lock().unwrap().is_empty());
+
+  executor.stop(&stasher);
+  executor.run_until_idle();
+
+  assert_eq!(*delivered.lock().unwrap(), alloc::vec![(first_sender, "a"), (second_sender, "b")]);
+  assert!(executor.stashes.is_empty());
+}

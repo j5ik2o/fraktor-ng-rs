@@ -116,6 +116,14 @@ impl<'a> ActorContext<'a> {
   /// of `AbstractFSMWithStash` provide. The stash belongs to the actor, not to
   /// the behaviour, so it survives `change_behavior` and a state change.
   ///
+  /// A restart returns the stash to the front of the mailbox before the old
+  /// instance's `pre_restart`, so the new instance handles it, as
+  /// `UnrestrictedStash.preRestart` does. A stop sends the stash to dead
+  /// letters with each message's original sender, as Pekko's mailbox clean-up
+  /// does after `UnrestrictedStash.postStop`; the port's dead letters do not
+  /// publish a `DeadLetter` event yet. The stash has no capacity limit: Pekko's
+  /// `stash-capacity` setting and `StashOverflowException` are not ported.
+  ///
   /// # Panics
   ///
   /// Panics outside the handling of a message, and when the same message is

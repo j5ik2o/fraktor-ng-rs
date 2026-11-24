@@ -768,7 +768,7 @@ impl Executor {
       }
     }
     self.forget_child(target);
-    self.stashes.retain(|(owner, _)| owner != target);
+    self.stash_to_dead_letters(target);
     self.watchers.retain(|(watcher, _)| watcher != target);
     self.pending_terminations.retain(|pending| &pending.watcher != target);
     self.notify_watchers(target, true, false);
@@ -909,6 +909,25 @@ impl Executor {
     match self.stashes.iter_mut().find(|(held, _)| held == &owner) {
       | Some((_, stash)) => stash.push(envelope),
       | None => self.stashes.push((owner, alloc::vec![envelope])),
+    }
+  }
+
+  /// Sends `owner`'s stash to dead letters, each message with its original
+  /// sender and in the order it was stashed.
+  ///
+  /// Mirrors what Pekko does with the stash of a stopped actor:
+  /// `UnrestrictedStash.postStop` returns it to the mailbox, and the mailbox
+  /// clean-up hands every message left there to `deadLetters`. The port's dead
+  /// letters do not yet publish a `DeadLetter` event, so the messages are not
+  /// observable there.
+  fn stash_to_dead_letters(&mut self, owner: &ActorRef) {
+    if let Some(index) = self.stashes.iter().position(|(held, _)| held == owner) {
+      let (_, stash) = self.stashes.swap_remove(index);
+      let dead_letters = self.dead_letters();
+      for envelope in stash {
+        let (_, message, sender) = envelope.into_parts();
+        self.send(sender, &dead_letters, message);
+      }
     }
   }
 
