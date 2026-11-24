@@ -3557,7 +3557,7 @@ nodes:
     module: actor-tests
     class: NameserverAddressParserSpec
     test_cases_approx: 4
-  status: red
+  status: green
   triage:
     kind: pending
     reason: null
@@ -3568,9 +3568,9 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 4
+    ported: 4
+    passing: 4
     excluded: []
   rust:
     crate: fraktor-actor
@@ -4104,7 +4104,7 @@ nodes:
     module: actor-tests
     class: ResolvConfParserSpec
     test_cases_approx: 9
-  status: red
+  status: green
   triage:
     kind: pending
     reason: null
@@ -4115,9 +4115,9 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 9
+    ported: 9
+    passing: 9
     excluded: []
   rust:
     crate: fraktor-actor
