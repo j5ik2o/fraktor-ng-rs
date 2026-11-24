@@ -1,7 +1,14 @@
-//! Port of the nine cases in Pekko v1.7.1's classic StatusReplySpec.
+//! Port of Pekko v2.0.0's classic StatusReplySpec (SHA 9fbd2283b1cf701c90a1223bf621942c191db61f).
 //!
 //! Upstream: `actor-tests/src/test/scala/org/apache/pekko/pattern/StatusReplySpec.scala`
-//! (<https://raw.githubusercontent.com/apache/pekko/v1.7.1/actor-tests/src/test/scala/org/apache/pekko/pattern/StatusReplySpec.scala>).
+//! (<https://raw.githubusercontent.com/apache/pekko/v2.0.0/actor-tests/src/test/scala/org/apache/pekko/pattern/StatusReplySpec.scala>).
+//!
+//! First ported from v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff), which
+//! had nine cases. v2.0.0 has twenty. This file ports the nine and
+//! "include exception type in toString for non text-error" (upstream 6287b9de07,
+//! #3271). The ten factory cases, "create from Try ..." (upstream f1a36ba76b,
+//! #2796) and "create from Callable ..." (upstream 037b88ad29, #2812), are not
+//! ported yet: they need a product factory whose shape is still to be decided.
 
 use core::error::Error;
 use core::fmt;
@@ -81,6 +88,19 @@ fn typed_error_reply_carries_the_original_exception() {
   assert!(!reply.is_success());
   let error = StatusReply::match_reply(Some(&reply)).expect("present reply").expect_err("failed reply");
   assert_eq!(error.downcast_ref::<TestException>().expect("original error").to_string(), "boho!");
+}
+
+// include exception type in toString for non text-error
+//
+// Added in v2.0.0 (upstream 6287b9de07, #3271). Pekko's `toString` renders a
+// non-text error as `Error(<exception>)`, whose text starts with the exception
+// class. The port's reply has no `Display`, because a success carries a
+// type-erased `Message` that has no text; its `Debug` is the reply's rendering,
+// and it names the error's type.
+#[test]
+fn include_exception_type_in_to_string_for_non_text_error() {
+  let rendered = format!("{:?}", StatusReply::error(TestException("boho!")));
+  assert!(rendered.contains("TestException"), "rendered [{rendered}]");
 }
 
 // flatten a Future[StatusReply]
