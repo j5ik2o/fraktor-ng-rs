@@ -15,6 +15,7 @@ use crate::kernel::address::Address;
 use crate::kernel::event::EventStream;
 use crate::kernel::executor::Executor;
 use crate::kernel::executor::ShardBoundary;
+use crate::kernel::setup::ActorSystemSetup;
 use crate::kernel::supervision::FailureCatcher;
 
 #[cfg(test)]
@@ -44,17 +45,29 @@ pub struct ActorSystem {
   name: String,
   executor: Rc<RefCell<Executor>>,
   event_stream: EventStream,
+  setup: ActorSystemSetup,
 }
 
 impl ActorSystem {
   /// Creates a running actor system with the given name, whose actors share
   /// `boundary` as the edge of their shard.
+  ///
+  /// The system holds an empty [`ActorSystemSetup`].
   pub fn new(name: &str, boundary: Arc<dyn ShardBoundary>) -> Self {
+    Self::with_setup(name, boundary, ActorSystemSetup::empty())
+  }
+
+  /// Creates a running actor system as [`new`](Self::new) does, holding
+  /// `setup` for [`setup`](Self::setup) to return.
+  ///
+  /// Mirrors `ActorSystem(name, setup)`. The setup changes nothing about how
+  /// the system starts or runs; it only keeps the values for later reads.
+  pub fn with_setup(name: &str, boundary: Arc<dyn ShardBoundary>, setup: ActorSystemSetup) -> Self {
     let executor = Rc::new(RefCell::new(Executor::new(Self::root_path(name), boundary)));
     let system = WeakActorSystem::new(name.to_string(), Rc::downgrade(&executor));
     let event_stream = EventStream::new(system, false);
     executor.borrow_mut().set_event_stream(event_stream.clone());
-    Self { name: name.to_string(), executor, event_stream }
+    Self { name: name.to_string(), executor, event_stream, setup }
   }
 
   /// Creates a running actor system that reports a failing actor to `catcher`.
@@ -96,6 +109,15 @@ impl ActorSystem {
   /// Returns the name the system was created with.
   pub fn name(&self) -> &str {
     &self.name
+  }
+
+  /// Returns the setup the system was created with.
+  ///
+  /// Mirrors `system.settings.setup`. The port has no settings layer, so the
+  /// system returns its setup directly. A system created with
+  /// [`new`](Self::new) returns an empty setup.
+  pub fn setup(&self) -> &ActorSystemSetup {
+    &self.setup
   }
 
   /// Starts the actor a recipe describes and returns a handle to it.

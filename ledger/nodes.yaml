@@ -975,7 +975,7 @@ nodes:
     module: actor-tests
     class: ActorSystemSetupSpec
     test_cases_approx: 5
-  status: red
+  status: green
   triage:
     kind: pending
     reason: null
@@ -986,9 +986,9 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 5
+    ported: 5
+    passing: 5
     excluded: []
   rust:
     crate: fraktor-actor
@@ -1001,7 +1001,7 @@ nodes:
     module: actor-tests
     class: ActorSystemSetupTest
     test_cases_approx: 1
-  status: red
+  status: green
   triage:
     kind: pending
     reason: null
@@ -1012,9 +1012,9 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 1
+    ported: 1
+    passing: 1
     excluded: []
   rust:
     crate: fraktor-actor

@@ -17,6 +17,8 @@ use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
+use crate::kernel::setup::ActorSystemSetup;
+use crate::kernel::setup::Setup;
 
 use super::ActorSystem;
 use crate::adaptor::ChannelBoundary;
@@ -151,6 +153,39 @@ fn starts_running_with_the_given_name() {
 
   assert_eq!(system.name(), "PekkoCustomSpec");
   assert!(!system.is_terminated());
+}
+
+#[derive(Debug, PartialEq)]
+struct NamedSetup(&'static str);
+
+impl Setup for NamedSetup {}
+
+#[test]
+fn a_system_created_without_a_setup_holds_an_empty_one() {
+  let system = system("PekkoCustomSpec");
+
+  assert_eq!(system.setup().get::<NamedSetup>(), None);
+}
+
+#[test]
+fn a_system_created_with_a_setup_returns_it_and_runs_as_one_created_without() {
+  let received = Arc::new(Mutex::new(Vec::new()));
+  let observer = Arc::clone(&received);
+  let setup = ActorSystemSetup::empty().with_setup(NamedSetup("first")).with_setup(NamedSetup("second"));
+  let mut system = ActorSystem::with_setup("PekkoCustomSpec", Arc::new(QueueBoundary::new()), setup);
+
+  assert_eq!(system.setup().get::<NamedSetup>(), Some(&NamedSetup("second")));
+  assert_eq!(system.name(), "PekkoCustomSpec");
+  assert!(!system.is_terminated());
+
+  let sink = system.actor_of(Props::new(move || Sink { received: Arc::clone(&observer) }));
+  sink.tell("hello", sink.clone());
+  system.run_until_idle();
+  assert_eq!(*received.lock().unwrap(), alloc::vec!["hello"]);
+
+  system.terminate();
+  assert!(system.is_terminated());
+  assert_eq!(system.setup().get::<NamedSetup>(), Some(&NamedSetup("second")));
 }
 
 #[test]
