@@ -1,6 +1,7 @@
 //! Version comparison and compatibility checking.
 
 mod fraktor_version;
+mod pre_release_kind;
 mod release_version;
 mod unsupported_fraktor_version;
 mod version_parse_error;

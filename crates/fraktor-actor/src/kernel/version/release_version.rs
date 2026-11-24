@@ -1,5 +1,7 @@
 //! The parts of a release version that a compatibility check reads.
 
+use super::pre_release_kind::PreReleaseKind;
+
 #[cfg(test)]
 #[path = "release_version_test.rs"]
 mod tests;
@@ -12,7 +14,7 @@ pub(crate) struct ReleaseVersion<'a> {
   major: &'a str,
   minor: &'a str,
   patch: &'a str,
-  milestone: Option<(&'a str, &'a str)>,
+  milestone: Option<(PreReleaseKind, &'a str)>,
 }
 
 impl<'a> ReleaseVersion<'a> {
@@ -54,15 +56,17 @@ impl<'a> ReleaseVersion<'a> {
       return current.milestone.is_none();
     };
     match (required_kind, current_kind) {
-      | ("M", "M") => !digits_less(current_number, required_number),
-      | ("M", _) => true,
-      | (_, "M") => false,
-      | _ => !digits_less(current_number, required_number),
+      | (PreReleaseKind::Milestone, PreReleaseKind::Milestone)
+      | (PreReleaseKind::ReleaseCandidate, PreReleaseKind::ReleaseCandidate) => {
+        !digits_less(current_number, required_number)
+      },
+      | (PreReleaseKind::Milestone, PreReleaseKind::ReleaseCandidate) => true,
+      | (PreReleaseKind::ReleaseCandidate, PreReleaseKind::Milestone) => false,
     }
   }
 }
 
-fn read_patch_and_milestone(rest: &str) -> Option<(&str, Option<(&str, &str)>)> {
+fn read_patch_and_milestone(rest: &str) -> Option<(&str, Option<(PreReleaseKind, &str)>)> {
   let Some(dash) = rest.find('-') else {
     return is_digits(rest).then_some((rest, None));
   };
@@ -71,10 +75,7 @@ fn read_patch_and_milestone(rest: &str) -> Option<(&str, Option<(&str, &str)>)> 
   if !is_digits(patch) {
     return None;
   }
-  let (kind, number) = match qualifier.strip_prefix("RC") {
-    | Some(number) => ("RC", number),
-    | None => ("M", qualifier.strip_prefix('M')?),
-  };
+  let (kind, number) = PreReleaseKind::split(qualifier)?;
   if !is_digits(number) {
     return None;
   }

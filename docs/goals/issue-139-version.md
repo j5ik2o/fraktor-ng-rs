@@ -35,7 +35,8 @@
 | テストと台帳 red（第1工程） | `632513c` | 移植テスト2本、2ノードの status `red` と rust の欄。製品差分0 |
 | 実装と台帳 green（第2工程） | `4caacbd` | kernel の `version`（4つの公開型と非公開の `ReleaseVersion`）、単体テスト33件、2ノードの green。統合テストは不変 |
 | 自己レビューの修正 | `3e13d5c` | 空や ASCII 以外の修飾子で panic していた解析を直し、単体テスト2件を足した |
-| ゴール文書 | 本書のコミット | 本書 |
+| ゴール文書 | `5be8022` | 本書 |
+| PR #141 の指摘対応 | 本書を更新したコミット | M・RC の種別を `PreReleaseKind` 列挙型にした（後述）。単体テスト2件 |
 
 ## 原典との照合
 
@@ -86,7 +87,7 @@ kernel の `version` モジュールに足した。どれも `core` と `alloc` 
 
 - `Version::parse`：原典の `parse` と同じ順に読む。`.` で分け、Java の `String.split` と同じく末尾の空の成分を捨てる（`"1.2."` は `"1.2"` と等しく、`"."` は成分0個で `UnsupportedSegmentCount`）。成分1つなら、先頭が数字で `i32` として読めれば1つ目の数、そうでなければ全体を修飾子にする。成分2つと3つは、最後の成分を最初の `-` か `+` で数と残りに分け、残りの先頭が `数字列-` なら dynver の数として読む（読めなければ残りを修飾子に残し、エラーにしない）。数は `[i32; 4]`、修飾子は文字列で持つ。
 - `Version` の比較：数を先頭から比べ、等しければ修飾子を比べる。修飾子のない正式版は、同じ数の修飾子付きより大きい。両方に修飾子があれば文字列の順序で比べる。`PartialEq` と `Hash` は数と修飾子だけを見る（元の文字列は見ない。原典の `hashCode` と同じ成分）。`a == b` と `a.cmp(&b) == Equal` は同値で、等しい値のハッシュは等しい。
-- `FraktorVersion::require`：原典の3引数 `require` と同じ判定をする。`Version` は使わない。2つの文字列が等しければ受理する。それぞれを `(\d+)\.(\d+)\.(\d+)(?:-(M|RC)(\d+))?` の全体一致で読む非公開の `ReleaseVersion` に渡し（正規表現のクレートは足さず手書き）、どちらかが一致しなければ受理する。major は文字列として比べる。minor の文字列が違えば minor の数値だけを比べ、patch は見ない。minor が同じで patch の文字列が違えば patch の数値だけを比べる。3つとも同じなら M・RC を比べる（RC は M より新しい。要求が正式版で実が M・RC なら不適合。要求が M・RC で実が正式版なら受理）。判定のロジックは `ReleaseVersion::satisfies` に置いた（rich-domain-model）。
+- `FraktorVersion::require`：原典の3引数 `require` と同じ判定をする。`Version` は使わない。2つの文字列が等しければ受理する。それぞれを `(\d+)\.(\d+)\.(\d+)(?:-(M|RC)(\d+))?` の全体一致で読む非公開の `ReleaseVersion` に渡し（正規表現のクレートは足さず手書き）、どちらかが一致しなければ受理する。major は文字列として比べる。minor の文字列が違えば minor の数値だけを比べ、patch は見ない。minor が同じで patch の文字列が違えば patch の数値だけを比べる。3つとも同じなら M・RC を比べる（RC は M より新しい。要求が正式版で実が M・RC なら不適合。要求が M・RC で実が正式版なら受理）。判定のロジックは `ReleaseVersion::satisfies` に置いた（rich-domain-model）。M・RC の種別は非公開の列挙型 `PreReleaseKind`（`Milestone`・`ReleaseCandidate`）で持ち、比較は4つの組を網羅する `match` にした（PR #141 のレビュー指摘で追加）。
 
 ## 等価性レビュー
 
@@ -123,6 +124,14 @@ kernel の `version` モジュールに足した。どれも `core` と `alloc` 
 
 `docs/decisions/takt-workflow-design.md` §2.6 に従い、既出の指摘に対応した後の固定 HEAD で、調整担当が別系統の読み取り専用レビューを手配する。結果と処理はこの節と PR に記録する。
 
+## PR #141 のレビュー指摘への対応
+
+| 指摘 | 分類 | 対応 |
+|:---|:---|:---|
+| Devin: M・RC の種別を `&str` で持つと、パーサーの制約が型に残らない。列挙型にすれば比較の分岐漏れをコンパイラが検出できる（domain-primitive） | 直す | 非公開の `PreReleaseKind` を `pre_release_kind.rs` に足し、`ReleaseVersion` の種別をこの型にした。`satisfies_milestone` は4つの組を網羅する `match` になり、ワイルドカードはない。修飾子から種別を切り出す処理も `PreReleaseKind::split` に移した。単体テスト2件を足し、統合テストと判定の結果は変えていない |
+| Codex: 指摘なし（`5be8022` のレビュー完了） | — | 対応不要 |
+| CodeRabbit: 実行できる指摘なし。リスクは Minimal | — | 対応不要 |
+
 ## 製品編集前の実測
 
 第1工程の成果 `632513c4454861e7f6b038f6fe12bf0a1d5eaa39`（`c17c22f` からの製品差分0。`git diff --stat c17c22f 632513c -- 'crates/*/src'` は空）で、担当が別の作業ツリーで次を再実行した。
@@ -137,17 +146,17 @@ already_green ではない。製品に `kernel::version` モジュールがな�
 
 ## 実装後の実測
 
-自己レビューの修正 `3e13d5c` で、担当が自分の作業ツリーで次を実行した。
+PR #141 の指摘対応の後の HEAD で、担当が自分の作業ツリーで次を実行した。
 
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test version_spec -- --test-threads=1` | 0 | 8 passed / 0 failed / 0 ignored |
 | `cargo test -p fraktor-actor --test fraktor_version_spec -- --test-threads=1` | 0 | 13 passed / 0 failed / 0 ignored |
-| `cargo test -p fraktor-actor --lib version` | 0 | 35 passed（第2工程の33件と修正の2件） |
-| `cargo test --workspace` | 0 | 64 スイート、600 passed / 0 failed / 0 ignored |
+| `cargo test -p fraktor-actor --lib version` | 0 | 37 passed（第2工程の33件、自己レビューの修正の2件、指摘対応の2件） |
+| `cargo test --workspace` | 0 | 64 スイート、602 passed / 0 failed / 0 ignored |
 | `cargo fmt --check` | 0 | 差分なし |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
-| syn-check（`crates/fraktor-actor`、`crates/fraktor-testkit`） | 0 | 両方 `clean: true`。fraktor-actor は 191 files、違反0、抑制0 |
+| syn-check（`crates/fraktor-actor`、`crates/fraktor-testkit`） | 0 | 両方 `clean: true`。違反0、抑制0 |
 | `npm ci` → `npm run check:aislop` | 0 | warn 以上の指摘は受理済み一覧と一致 |
 | `verify_green.py --crate fraktor-actor` | 0 | `all_pass: true` |
 

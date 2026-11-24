@@ -1,6 +1,7 @@
 //! Unit tests for [`ReleaseVersion`](super::ReleaseVersion).
 
 use super::ReleaseVersion;
+use crate::kernel::version::pre_release_kind::PreReleaseKind;
 
 impl ReleaseVersion<'_> {
   fn major(&self) -> &str {
@@ -15,7 +16,7 @@ impl ReleaseVersion<'_> {
     self.patch
   }
 
-  fn milestone(&self) -> Option<(&str, &str)> {
+  fn milestone(&self) -> Option<(PreReleaseKind, &str)> {
     self.milestone
   }
 
@@ -55,7 +56,7 @@ fn keeps_each_number_as_its_original_text() {
   assert_eq!(release.major(), "02");
   assert_eq!(release.minor(), "05");
   assert_eq!(release.patch(), "006");
-  assert_eq!(release.milestone(), Some(("M", "1")));
+  assert_eq!(release.milestone(), Some((PreReleaseKind::Milestone, "1")));
 }
 
 #[test]
