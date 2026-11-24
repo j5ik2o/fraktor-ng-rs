@@ -1,5 +1,8 @@
-// Ported from Pekko v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff):
+// Ported from Pekko v2.0.0 (SHA 9fbd2283b1cf701c90a1223bf621942c191db61f):
 //   actor-tests/src/test/scala/org/apache/pekko/util/VersionSpec.scala
+// First ported from v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff).
+// v2.0.0 adds one assertion to "compare extra", that a release is greater than
+// its pre-release (upstream 640e790be5, #3154).
 //
 // The original's eight cases under `"Version" should` are kept as one test each,
 // named after the case, with the original name as a comment. Every assertion from
@@ -77,6 +80,7 @@ fn compare_extra() {
   assert_ne!(version("1.2.3-M1"), version("1.2.3-M2"));
   assert!(version("1.2-M1") < version("1.2.0"));
   assert!(version("1.2.0-M1") < version("1.2.0"));
+  assert!(version("1.2.0") > version("1.2.0-M1"));
   assert!(version("1.2.3-M2") > version("1.2.3-M1"));
 }
 
