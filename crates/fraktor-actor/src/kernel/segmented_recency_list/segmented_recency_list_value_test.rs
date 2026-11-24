@@ -105,3 +105,12 @@ fn updating_a_held_value_keeps_the_value_first_added() {
     list.remove_overall_least_recent_outside(Duration::from_secs(0)).into_iter().map(|keyed| keyed.label).collect();
   assert_eq!(removed, vec!["old"]);
 }
+
+#[test]
+fn limits_whose_total_exceeds_the_address_space_keep_every_value() {
+  let mut list = SegmentedRecencyList::empty(&[usize::MAX, 1]);
+  list.update("a").update("b");
+
+  assert_eq!(list.remove_least_recent_over_limit(), Vec::<&str>::new());
+  assert_eq!(levels(&list, 2), vec![vec!["a", "b"], vec![]]);
+}

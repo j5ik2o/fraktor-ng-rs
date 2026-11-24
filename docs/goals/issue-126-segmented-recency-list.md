@@ -21,6 +21,13 @@
 
 write_tests の作業フェーズは 07:41:16Z に終わり、テスト1ファイルと製品編集前の実測を残した。続くレポートフェーズは 07:41:17Z に始まったあと、25分間ログ・レポート・作業ツリーに何も書かず、OpenCode への要求も出さなかった。前進がないと判断し、成果と run の記録を保全してから、そのタスクだけを `takt_stop_goal_task` で止めた（08:07:14Z に要求、08:07:17Z に実行プロセスが終了し、タスクは failed、run は aborted）。再投入はしていない。そのあとは同じ担当（Claude Opus 5.5）が直接実装した。TAKT が作ったテストファイルをそのまま使い、テストを先に置いて製品編集前の結果を採るという工程の順序は守った。第2工程は投入していない。
 
+### 手順上の例外（PR #127 のレビューで指摘）
+
+- 台帳の状態遷移の規約（`.takt/facets/knowledge/fraktor-porting-rules.md` L12–13）は `unported → red → green` の順を求める。このノードの台帳は、`2c7be2c` で `unported` から直接 `green` になった。製品編集前の compile-red は `b2f336b` で実測し本書に記録したが、台帳の `status: red` は書いていない。verify-red を通る TAKT の経路を途中で離れたためである。
+- ゴール発行手順（`ledger/README.md` L28–33）は、発行前に対象ノードの `goal:` 行だけを変更してタグ付けすることを求める。`G0issue126` のタグは、`green` と同じ `2c7be2c` で初めて台帳に入った。TAKT ゴール `12612e6c-bba8-411d-b1cf-c4cc863d7126` の発行前に台帳のタグ付けをしていなかった。
+- 既に push した履歴は書き換えず、上の2点を例外としてここに記録する。最終状態（`goal: G0issue126`、`status: green`、原典4・移植4・成功4・除外0）は規約どおりで、`check_needs.py` と `rollup.py` で確かめている。
+- 等価性レビューの手順（`docs/decisions/takt-workflow-design.md` §2.6）は、実装者と別系統のモデルによるレビューを求める。下の「等価性レビュー」は実装者自身のレビューである。別系統のレビューは、修正の push 後に読み取り専用のレビューとして別に行い、その結果をここに追記する。
+
 ## 原典との照合
 
 | 原典 | 移植 |
@@ -38,7 +45,9 @@ write_tests の作業フェーズは 07:41:16Z に終わり、テスト1ファ�
 
 ## 実装
 
-`fraktor_actor::kernel::segmented_recency_list::SegmentedRecencyList` を追加した。時計には既存の `kernel::Clock` を使う。原典の双方向リストとハッシュマップの組は、#124 の `RecencyList` と同じ考え方で置き換えた。段ごとと全段横断の順序は配置の通し番号をキーにした順序マップで持ち、値から位置を引く表も順序マップにした。そのため値には `Ord` と `Clone` が必要で、各操作は対数時間になる。
+`fraktor_actor::kernel::segmented_recency_list::SegmentedRecencyList` を追加した。時計には既存の `kernel::Clock` を使う。原典の双方向リストとハッシュマップの組は、#124 の `RecencyList` と同じ考え方で置き換えた。段ごとと全段横断の順序は配置の通し番号をキーにした順序マップで持ち、値から位置を引く表も順序マップにした。そのため値には `Ord` と `Clone` が必要になる。配置・参照・削除の1回は対数時間で、`k` 件を降格または削除する操作は、原典の `O(k)` に対して `O(k log n)` になる。
+
+段の上限は、生成時と `update_limits` の両方で専用の型 `SegmentLimits` に変換する。この型は、段が1つ以上あることを確かめ、合計を `usize::MAX` で飽和させて持つ。`[usize::MAX, 1]` のような上限でも合計が溢れず、リストはどの値も上限超過として扱わない。公開の引数は `&[usize]` のままにした。原典相当のテストが `empty(&[2, 3])` と `update_limits(&[1, 4])` の形で呼ぶためである。
 
 | 原典 | 移植 |
 |:---|:---|
@@ -65,6 +74,7 @@ write_tests の作業フェーズは 07:41:16Z に終わり、テスト1ファ�
 | 時計があるとき、更新ごとに時刻を刻み、全段横断の順序の新しい側へ移す。`timestamp < now - d` の値を全段から古い順に消す。境界の時刻の値は残る | 実装 L122–126・L141–148・L159–162 | 時刻5で `a`〜`g` を返し、時刻3・4に更新した値が残る |
 | 時計がないときの全段横断の削除は例外 | 実装 L123 | 単体テスト `removing_by_overall_recency_without_a_clock_panics` |
 | 窓が時計の起点より前まで届くとき、何も消さない（負の時刻との比較） | 実装 L124–125 | 単体テスト `a_window_reaching_before_the_epoch_keeps_every_value` |
+| 段の上限の合計は表現できる最大値で飽和する（原典の `Int` の合計に対応する、移植固有の境界） | 実装 L56・L128–131 | 単体テスト `limits_whose_total_exceeds_the_address_space_keep_every_value` |
 | 同じキーと比較される別の値で更新しても、保持しているノードの値が残る | 実装 L84–85（既存ノードを `promote`） | 単体テスト `updating_a_held_value_keeps_the_value_first_added` |
 
 原典との差異は次のとおりで、原典テストが観測する値は変わらない。
@@ -89,8 +99,8 @@ write_tests の作業フェーズは 07:41:16Z に終わり、テスト1ファ�
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test segmented_recency_list_spec -- --test-threads=1` | 0 | 4 passed / 0 failed / 0 ignored |
-| `cargo test -p fraktor-actor --lib recency_list` | 0 | 9 passed（既存の RecencyList 4件と、新しい単体テスト5件） |
-| `cargo test --workspace` | 0 | 54 スイート、449 passed / 0 failed / 0 ignored |
+| `cargo test -p fraktor-actor --lib recency_list` | 0 | 10 passed（既存の RecencyList 4件と、新しい単体テスト6件。レビュー対応後） |
+| `cargo test --workspace` | 0 | 54 スイート、レビュー対応後 450 passed / 0 failed / 0 ignored（対応前 449） |
 | `cargo fmt --check` | 0 | 差分なし |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
 | `cargo run --quiet --release --locked --manifest-path tools/syn-check/Cargo.toml -- --format json crates/fraktor-actor` | 0 | `clean: true`、147 files、違反0 |

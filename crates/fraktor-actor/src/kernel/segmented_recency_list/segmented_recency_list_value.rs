@@ -28,11 +28,11 @@ mod tests;
 /// map, so the port keeps each order in a map keyed by a placement sequence
 /// number and looks values up in an ordered map, as
 /// [`RecencyList`](crate::kernel::recency_list::RecencyList) does. Values
-/// therefore need `Ord` instead of a hash, and the operations take
-/// logarithmic time.
+/// therefore need `Ord` instead of a hash. Each placement, lookup and removal
+/// takes logarithmic time, so an operation that demotes or removes `k` values
+/// takes `O(k log n)` instead of Pekko's `O(k)`.
 pub struct SegmentedRecencyList<A> {
-  limits: Vec<usize>,
-  total_limit: usize,
+  limits: SegmentLimits,
   segments: Vec<BTreeMap<u64, A>>,
   nodes: BTreeMap<A, Node>,
   overall: Option<OverallRecency<A>>,
@@ -44,6 +44,38 @@ struct Node {
   level: usize,
   sequence: u64,
   overall_sequence: u64,
+}
+
+// The limit of each segment, from the probationary level 0 up, with their
+// total. A list always has at least one segment. The total saturates at
+// `usize::MAX`, which no list can exceed.
+struct SegmentLimits {
+  per_level: Vec<usize>,
+  total: usize,
+}
+
+impl SegmentLimits {
+  fn new(limits: &[usize]) -> Self {
+    assert!(!limits.is_empty(), "a segmented recency list needs at least one segment");
+    let total = limits.iter().fold(0usize, |total, limit| total.saturating_add(*limit));
+    Self { per_level: limits.to_vec(), total }
+  }
+
+  fn segment_count(&self) -> usize {
+    self.per_level.len()
+  }
+
+  fn of(&self, level: usize) -> usize {
+    self.per_level[level]
+  }
+
+  fn total(&self) -> usize {
+    self.total
+  }
+
+  fn excess_over_total(&self, len: usize) -> usize {
+    len.saturating_sub(self.total)
+  }
 }
 
 struct OverallRecency<A> {
@@ -73,11 +105,10 @@ impl<A: Ord + Clone> SegmentedRecencyList<A> {
   ///
   /// Panics if `limits` is empty.
   pub fn new(limits: &[usize], clock: Option<Arc<dyn Clock>>) -> Self {
-    assert!(!limits.is_empty(), "a segmented recency list needs at least one segment");
+    let limits = SegmentLimits::new(limits);
     Self {
-      limits: limits.to_vec(),
-      total_limit: limits.iter().sum(),
-      segments: limits.iter().map(|_| BTreeMap::new()).collect(),
+      segments: (0..limits.segment_count()).map(|_| BTreeMap::new()).collect(),
+      limits,
       nodes: BTreeMap::new(),
       overall: clock.map(|clock| OverallRecency { clock, by_recency: BTreeMap::new() }),
       next_sequence: 0,
@@ -138,13 +169,13 @@ impl<A: Ord + Clone> SegmentedRecencyList<A> {
   /// limits, from the highest level down, so the removed values all come from
   /// the probationary segment.
   pub fn remove_least_recent_over_limit(&mut self) -> Vec<A> {
-    if self.len() <= self.total_limit {
+    if self.len() <= self.limits.total() {
       return Vec::new();
     }
     for level in (1..self.segments.len()).rev() {
       self.adjust(level);
     }
-    let excess = self.len() - self.total_limit;
+    let excess = self.limits.excess_over_total(self.len());
     let sequences: Vec<u64> = self.segments[0].keys().take(excess).copied().collect();
     sequences.into_iter().filter_map(|sequence| self.remove_placed(0, sequence)).collect()
   }
@@ -187,9 +218,9 @@ impl<A: Ord + Clone> SegmentedRecencyList<A> {
   ///
   /// Panics if `limits` does not have one limit per segment.
   pub fn update_limits(&mut self, limits: &[usize]) {
-    assert_eq!(limits.len(), self.segments.len(), "the new limits must keep one limit per segment");
-    self.limits = limits.to_vec();
-    self.total_limit = limits.iter().sum();
+    let limits = SegmentLimits::new(limits);
+    assert_eq!(limits.segment_count(), self.segments.len(), "the new limits must keep one limit per segment");
+    self.limits = limits;
   }
 
   fn take_sequence(&mut self) -> u64 {
@@ -240,7 +271,7 @@ impl<A: Ord + Clone> SegmentedRecencyList<A> {
   }
 
   fn adjust(&mut self, level: usize) {
-    let excess = self.segments[level].len().saturating_sub(self.limits[level]);
+    let excess = self.segments[level].len().saturating_sub(self.limits.of(level));
     let sequences: Vec<u64> = self.segments[level].keys().take(excess).copied().collect();
     for sequence in sequences {
       self.demote(level, sequence);
