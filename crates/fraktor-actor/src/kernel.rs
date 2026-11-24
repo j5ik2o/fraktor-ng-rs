@@ -13,6 +13,7 @@ pub use clock::Clock;
 
 pub mod event;
 pub mod executor;
+pub mod frequency_list;
 pub mod message;
 pub mod recency_list;
 pub mod segmented_recency_list;
