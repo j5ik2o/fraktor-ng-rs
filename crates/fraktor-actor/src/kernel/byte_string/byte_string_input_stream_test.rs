@@ -164,10 +164,10 @@ fn a_built_byte_string_supports_marks_by_how_many_arrays_it_holds() {
 #[test]
 fn separately_added_arrays_build_one_array_whose_stream_resets_to_the_mark() {
   // An intended difference from Pekko v1.7.1 (issue #148): Pekko's builder
-  // keeps `++= Array(1, 2)` and `++= Array(3)` as two parts, so its result is
-  // a `ByteStrings` whose stream does not support marks. This builder gathers
-  // them into one array, so the stream marks and resets as a single array's
-  // does.
+  // keeps `++= Array[Byte](1, 2)` and `++= Array[Byte](3)` as two parts, so
+  // its result is a `ByteStrings` whose stream does not support marks. This
+  // builder gathers them into one array, so the stream marks and resets as a
+  // single array's does.
   let mut builder = ByteString::new_builder();
   builder.add_all([1_u8, 2]).add_all([3_u8]);
   let built = builder.result();
