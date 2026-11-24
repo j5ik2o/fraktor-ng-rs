@@ -993,7 +993,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue150
 - id: actor-tests/src/test/java/org/apache/pekko/actor/setup/ActorSystemSetupTest.java
   name: actor-tests:ActorSystemSetupTest
   kind: test
@@ -1019,7 +1019,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue150
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorSystemSpec.scala
   name: actor-tests:ActorSystemSpec
   kind: test
