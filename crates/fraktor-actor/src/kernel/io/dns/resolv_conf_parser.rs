@@ -36,7 +36,9 @@ impl ResolvConfParser {
   ///   `i32` after each `ndots:`, the last one winning.
   ///
   /// Returns [`ResolvConfParseError::InvalidNdots`] when a `ndots:` value is not
-  /// an `i32`.
+  /// an `i32`. The value is read with ASCII digits and an optional `+` or `-`
+  /// sign. The original's `toInt` (`Integer.parseInt`) also accepts other
+  /// Unicode decimal digits, such as the full-width `５`; this port rejects them.
   pub fn parse_lines<'a, I: IntoIterator<Item = &'a str>>(lines: I) -> Result<ResolvConf, ResolvConfParseError> {
     let mut search = Vec::new();
     let mut ndots = DEFAULT_NDOTS;

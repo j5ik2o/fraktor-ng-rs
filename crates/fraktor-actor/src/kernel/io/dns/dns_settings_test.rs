@@ -103,6 +103,27 @@ fn an_ipv4_address_with_an_out_of_range_octet_is_unsupported() {
   assert_eq!(DnsSettings::parse_nameserver_address("8.8.8.256"), Err(NameserverAddressError::UnsupportedHost));
 }
 
+// Java's `InetAddress` turns an IPv4-mapped IPv6 literal into an
+// `Inet4Address`, so the original returns the same address for
+// `[::ffff:192.0.2.53]` as for `192.0.2.53`. Returning the IPv6 form would make
+// the two spellings of one server differ.
+#[test]
+fn an_ipv4_mapped_ipv6_address_is_returned_as_ipv4() {
+  let expected = SocketAddr::new("192.0.2.53".parse::<IpAddr>().unwrap(), 53);
+  assert_eq!(DnsSettings::parse_nameserver_address("[::ffff:192.0.2.53]"), Ok(expected));
+  assert_eq!(DnsSettings::parse_nameserver_address("::ffff:192.0.2.53"), Ok(expected));
+  assert_eq!(
+    DnsSettings::parse_nameserver_address("[::ffff:192.0.2.53]:153"),
+    Ok(SocketAddr::new("192.0.2.53".parse::<IpAddr>().unwrap(), 153))
+  );
+}
+
+// Only the IPv4-mapped form is converted. An ordinary IPv6 address stays IPv6.
+#[test]
+fn an_ipv6_address_that_is_not_ipv4_mapped_stays_ipv6() {
+  assert_eq!(DnsSettings::parse_nameserver_address("[::1]"), Ok(SocketAddr::new("::1".parse::<IpAddr>().unwrap(), 53)));
+}
+
 #[test]
 fn the_display_text_names_the_failure() {
   assert!(!NameserverAddressError::InvalidPort.to_string().is_empty());

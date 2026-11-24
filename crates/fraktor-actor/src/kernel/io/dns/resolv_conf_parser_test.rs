@@ -43,13 +43,22 @@ fn a_domain_line_keeps_its_arguments_as_one_element() {
   assert_eq!(parse("domain a b"), vec![String::from("a b")]);
 }
 
-// A vertical tab (`U+000B`) separates the label from its arguments, because
-// Java's `Character.isWhitespace` is true for it while Rust's
-// `char::is_whitespace` is not. Using `split_whitespace` for the label would
-// leave `a\u{0B}b` unsplit.
+// A vertical tab (`U+000B`) is in the ASCII `\s` class of Java's
+// `split("\\s+")`, so it separates search elements. Rust's
+// `split_ascii_whitespace` does not split on it and would leave `a\u{0B}b`
+// as one element.
 #[test]
 fn a_vertical_tab_separates_labels_and_search_elements() {
   assert_eq!(parse("search a\u{0B}b"), vec![String::from("a"), String::from("b")]);
+}
+
+// `U+001C` is whitespace to Java's `Character.isWhitespace` but not to Rust's
+// `char::is_whitespace`, so it separates the label from its arguments:
+// `search\u{1C}example.com` is a `search` line. A parser that used
+// `char::is_whitespace` for the label would see one unknown label and ignore it.
+#[test]
+fn an_information_separator_separates_the_label() {
+  assert_eq!(parse("search\u{1C}example.com"), vec![String::from("example.com")]);
 }
 
 // A no-break space (`U+00A0`) is not Java whitespace, so it does not separate

@@ -75,7 +75,7 @@ ResolvConfParserSpec の入力は、Scala の `"""...""".stripMargin` を展開�
 
 kernel の `io::dns` モジュールに足した。どれも `core` と `alloc` だけを使う（syn-check の `cfg-std-forbid` は違反0）。
 
-- `DnsSettings::parse_nameserver_address`：原典は `(.*?)(?::(\d+))?` の全体一致で host と port に分ける。最短一致の host の後ろに `:\d+` が文字列の終わりまで続く位置は、最後の `:` だけである（数字は `:` を含まない）。そこで、最後の `:` の後ろが1文字以上の ASCII 数字なら、そこで分ける。そうでなければ全体を host にし、port は 53 にする。port は `u16` として読み、範囲外は `InvalidPort` にする（原典では `toInt` か `InetSocketAddress` の範囲検査の例外）。host は数値 IP だけを受け付ける。角括弧付きなら中身を IPv6 として、そうでなければ IPv4 か IPv6 として読む。どちらでもなければ `UnsupportedHost` にする。
+- `DnsSettings::parse_nameserver_address`：原典は `(.*?)(?::(\d+))?` の全体一致で host と port に分ける。最短一致の host の後ろに `:\d+` が文字列の終わりまで続く位置は、最後の `:` だけである（数字は `:` を含まない）。そこで、最後の `:` の後ろが1文字以上の ASCII 数字なら、そこで分ける。そうでなければ全体を host にし、port は 53 にする。port は `u16` として読み、範囲外は `InvalidPort` にする（原典では `toInt` か `InetSocketAddress` の範囲検査の例外）。host は数値 IP だけを受け付ける。角括弧付きなら中身を IPv6 として、そうでなければ IPv4 か IPv6 として読む。どちらでもなければ `UnsupportedHost` にする。IPv4 射影の IPv6（`::ffff:a.b.c.d`）は IPv4 にして返す（`IpAddr::to_canonical`）。Java の `InetAddress` が IPv4 射影のリテラルを `Inet4Address` にするのと同じである（PR #138 のレビュー指摘で追加）。
 - `ResolvConfParser::parse_lines`：原典の `parseLines` と同じ順に処理する。search の初期値は空、ndots は 1。各行は Java の `String.trim` と同じく両端の `U+0000`〜`U+0020` を取る。空行と `#`・`;` で始まる行は飛ばす。最初の、Java の `Character.isWhitespace` が真になる文字で label と args に分ける。`domain` は trim した args の1要素、`search` は trim した args を `\s+`（ASCII の6文字）で分けた列で、search を置き換える。`options` は trim しない args を同じ規則で分け、`ndots:` で始まる各要素の残りを `i32` で読む（後のものが勝つ。読めなければ `InvalidNdots`）。他の label は無視する。
 
 ## 等価性レビュー
@@ -89,9 +89,10 @@ kernel の `io::dns` モジュールに足した。どれも `core` と `alloc` 
 | `host:port` の port は数字列、無ければ 53 | `DnsSettings.scala` L172–183 | 統合テスト4件、単体テスト `an_ipv4_address_without_a_port_gets_the_fallback_port` ほか |
 | 角括弧付き IPv6 は括弧の外の `:` で分かれる | 正規表現の最短一致 | 統合テストの IPv6 2件、`a_bracketed_ipv6_address_with_a_non_numeric_port_is_unsupported` |
 | 角括弧なしの IPv6 は最後の `:` で分かれる（`::1` は host `:`・port 1） | 正規表現の最短一致 | `a_bare_ipv6_address_is_split_at_its_last_colon` |
+| IPv4 射影の IPv6 は IPv4 のアドレスになる | Java の `InetAddress.getByName` | `an_ipv4_mapped_ipv6_address_is_returned_as_ipv4`、`an_ipv6_address_that_is_not_ipv4_mapped_stays_ipv6` |
 | port の範囲外は失敗 | `toInt`、`InetSocketAddress` の範囲検査 | `a_port_above_the_u16_range_is_rejected`、`the_largest_u16_port_is_accepted` |
 | 行は trim し、空行とコメント行は無視 | `ResolvConfParser.scala` L49–54 | `ignore_hash_comments`、`ignore_semicolon_comments`、`ignore_tabs_and_spaces`、`a_comment_after_leading_whitespace_is_ignored` |
-| 最初の空白で label と args に分ける | L56（`span(!_.isWhitespace)`） | `a_vertical_tab_separates_labels_and_search_elements`、`a_no_break_space_is_not_a_label_separator` |
+| 最初の空白で label と args に分ける | L56（`span(!_.isWhitespace)`） | `an_information_separator_separates_the_label`（`U+001C`）、`a_vertical_tab_separates_labels_and_search_elements`、`a_no_break_space_is_not_a_label_separator` |
 | `domain` は1要素、`search` は分割、どちらも最後のものが勝つ | L57–62 | 統合テストの search・domain の5件、`a_domain_line_after_a_search_line_replaces_it`、`a_search_line_without_arguments_holds_one_empty_element` |
 | `options` の `ndots:` だけを読み、最後のものが勝つ。読めなければ例外 | L63–70 | `ignore_non_ndots_options`、`the_last_ndots_option_wins`、`a_negative_ndots_option_parses`、`a_non_numeric_ndots_option_is_an_error` |
 | ndots の既定値は 1、他の label は無視 | L47、L71 | `default_to_ndots_1`、Kubernetes の例（nameserver 行を無視）、`an_unknown_label_in_a_different_case_is_ignored` |
@@ -102,6 +103,8 @@ kernel の `io::dns` モジュールに足した。どれも `core` と `alloc` 
 - 原典は失敗を例外で伝える（`parseNameserverAddress` の到達しない `IllegalArgumentException`、`parseLines` の `NumberFormatException`）。移植は `Result` で返す。
 - `parseFile`（ファイルの読み込みと `Try`）は移植していない。OS の設定の取得は対象外である。
 - 原典の `ResolvConf.ndots` は `Int` で、移植は `i32`。`Integer.parseInt` と `i32::from_str` は、どちらも `+5`・`-1` を読み、範囲外を失敗にする。
+- `Integer.parseInt` は ASCII 以外の Unicode の10進数字（全角の `５` など）も読む。移植の `i32::from_str` は ASCII の数字だけを読むため、`options ndots:５` は `InvalidNdots` になる。no_std の kernel に Unicode の数字の表を持ち込まないための差で、rustdoc にも書いた。原典テストはこの入力を使わない。
+- ndots は専用型にせず `i32` のままにした。`fraktor-coding-rules.md` の domain-primitive の狭い例外（特別な扱いも範囲・書式の確認も要らず、ほかの属性と関係しない属性）に当たる。原典は整数であること以外に条件を置かず（負の値も残る）、このゴールには ndots を使って計算する処理がない。しきい値を解釈する処理を移植するときに専用型を作る。理由は `resolv_conf.rs` のフィールドにも書いた。
 
 ### 独立レビュー（別系統のモデル）
 
@@ -127,15 +130,26 @@ already_green ではない。製品に `kernel::io` モジュールがなく、2
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test nameserver_address_parser_spec -- --test-threads=1` | 0 | 4 passed / 0 failed / 0 ignored |
 | `cargo test -p fraktor-actor --test resolv_conf_parser_spec -- --test-threads=1` | 0 | 9 passed / 0 failed / 0 ignored |
-| `cargo test -p fraktor-actor --lib io::dns` | 0 | 31 passed |
-| `cargo test --workspace` | 0 | 62 スイート、538 passed / 0 failed / 0 ignored |
+| `cargo test -p fraktor-actor --lib io::dns` | 0 | 31 passed（レビュー対応後は 34 passed） |
+| `cargo test --workspace` | 0 | 62 スイート、538 passed / 0 failed / 0 ignored（レビュー対応後は 541 passed） |
 | `cargo fmt --check` | 0 | 差分なし |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
 | syn-check（`crates/fraktor-actor`、`crates/fraktor-testkit`） | 0 | 両方 `clean: true`。fraktor-actor は 178 files、違反0、抑制0 |
 | `npm ci` → `npm run check:aislop` | 0 | warn 以上の指摘は受理済み一覧と一致 |
 | `verify_green.py --crate fraktor-actor` | 0 | `all_pass: true` |
 
+PR #138 のレビュー対応（後述）の後の HEAD でも、同じコマンドを再実行して同じ結果を確かめた（`--lib io::dns` は 34 passed）。
+
 台帳は `G0issue136` と `G0a`〜`G0f` の各々で `check_needs.py` と `rollup.py` を実行し、14コマンドすべて終了値0だった（needs の閉性は OK で、対象ノードはすべて green。`G0issue136` は2件で `{'green': 2}`）。
+
+## PR #138 のレビュー指摘への対応
+
+| 指摘 | 分類 | 対応 |
+|:---|:---|:---|
+| Devin: `[::ffff:192.0.2.53]` が IPv6 のまま返る | 直す | Java の `InetAddress` は IPv4 射影のリテラルを `Inet4Address` にする。`to_canonical` で IPv4 にし、単体テスト2件を足した。修正を外すとそのテストが失敗することを確かめた |
+| Devin: 全角数字の ndots を Pekko は読むが移植は拒否する | 直す（差異を明記） | 指摘どおり `Integer.parseInt` は Unicode の10進数字を読む。kernel に数字の表を持ち込まず、差異を rustdoc と本書に書いた |
+| Devin: ndots に専用型がない | 直す（例外の理由を明記） | domain-primitive の狭い例外に当たる理由を、`resolv_conf.rs` と本書に書いた |
+| CodeRabbit: Java 固有のラベル区切りを直接検証する | 直す | `search\u{1C}example.com` が search 行になる単体テストを足した。あわせて、`U+000B` のテストのコメントにあった誤り（Rust の `char::is_whitespace` も `U+000B` を空白とする）を直し、実際に区別している `\s` の分割の説明にした |
 
 ## 再現手順
 

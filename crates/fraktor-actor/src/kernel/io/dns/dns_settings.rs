@@ -30,10 +30,14 @@ impl DnsSettings {
   /// the whole text is the host and the port is [`FALLBACK_PORT`]. A port that
   /// is a run of digits but does not fit a `u16` is
   /// [`NameserverAddressError::InvalidPort`].
+  ///
+  /// An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) is returned as the IPv4
+  /// address, as Java's `InetAddress` does for the original's
+  /// `InetSocketAddress`.
   pub fn parse_nameserver_address(text: &str) -> Result<SocketAddr, NameserverAddressError> {
     let (host, port) = split_host_and_port(text)?;
     let ip = parse_host(host)?;
-    Ok(SocketAddr::new(ip, port))
+    Ok(SocketAddr::new(ip.to_canonical(), port))
   }
 }
 

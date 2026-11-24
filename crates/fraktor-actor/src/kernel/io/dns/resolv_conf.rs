@@ -13,6 +13,10 @@ mod tests;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvConf {
   search: Vec<String>,
+  // A plain `i32`, as the original's `Int`: the original puts no range or
+  // format rule on it beyond being an integer (a negative value is kept), and
+  // nothing in this port computes with it yet. A dedicated type belongs with
+  // the first logic that interprets the threshold.
   ndots: i32,
 }
 
