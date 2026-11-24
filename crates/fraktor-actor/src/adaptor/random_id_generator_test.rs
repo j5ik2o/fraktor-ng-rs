@@ -106,3 +106,30 @@ fn every_draw_maps_into_the_short_range() {
 fn the_entropy_error_names_the_failure() {
   assert!(!IdGenerationError::EntropyUnavailable.to_string().is_empty());
 }
+
+// Controlled sources that return fixed, different draws, so a test can tell
+// which source a policy read without depending on random values.
+const CONTROLLED: super::DrawSources = super::DrawSources { thread_local: || 1, secure: || Ok(2) };
+
+const FAILING_SECURE: super::DrawSources =
+  super::DrawSources { thread_local: || 1, secure: || Err(IdGenerationError::EntropyUnavailable) };
+
+#[test]
+fn thread_local_random_reads_the_thread_local_source() {
+  assert_eq!(super::next_id_from(IdGeneratorPolicy::ThreadLocalRandom, &CONTROLLED), Ok(super::to_id(1)));
+}
+
+#[test]
+fn secure_random_reads_the_secure_source() {
+  assert_eq!(super::next_id_from(IdGeneratorPolicy::SecureRandom, &CONTROLLED), Ok(super::to_id(2)));
+}
+
+// A failing secure source is reported as is; the thread-local source is not
+// used in its place.
+#[test]
+fn a_secure_source_failure_is_returned_without_falling_back() {
+  assert_eq!(
+    super::next_id_from(IdGeneratorPolicy::SecureRandom, &FAILING_SECURE),
+    Err(IdGenerationError::EntropyUnavailable)
+  );
+}

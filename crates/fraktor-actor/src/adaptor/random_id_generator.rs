@@ -53,13 +53,28 @@ impl RandomIdGenerator {
 
 impl IdGenerator for RandomIdGenerator {
   fn next_id(&self) -> Result<i16, IdGenerationError> {
-    let draw = match self.policy {
-      | IdGeneratorPolicy::ThreadLocalRandom => Ok(next_thread_local_draw()),
-      | IdGeneratorPolicy::SecureRandom => next_secure_draw(),
-      | IdGeneratorPolicy::EnhancedDoubleHashRandom => unreachable!("`new` rejects EnhancedDoubleHashRandom"),
-    };
-    draw.map(to_id)
+    next_id_from(self.policy, &SYSTEM_SOURCES)
   }
+}
+
+// The sources of 16-bit draws, one per supported policy. Production uses
+// `SYSTEM_SOURCES`; unit tests pass controlled sources to tell which one a
+// policy reads and that a failing source's error comes back unchanged.
+struct DrawSources {
+  thread_local: fn() -> u16,
+  secure: fn() -> Result<u16, IdGenerationError>,
+}
+
+const SYSTEM_SOURCES: DrawSources = DrawSources { thread_local: next_thread_local_draw, secure: next_secure_draw };
+
+// Draws from the source that `policy` selects and maps the draw to an id.
+fn next_id_from(policy: IdGeneratorPolicy, sources: &DrawSources) -> Result<i16, IdGenerationError> {
+  let draw = match policy {
+    | IdGeneratorPolicy::ThreadLocalRandom => Ok((sources.thread_local)()),
+    | IdGeneratorPolicy::SecureRandom => (sources.secure)(),
+    | IdGeneratorPolicy::EnhancedDoubleHashRandom => unreachable!("`new` rejects EnhancedDoubleHashRandom"),
+  };
+  draw.map(to_id)
 }
 
 // The original maps a `nextInt(65536)` draw `x` to `x - Short.MinValue`; with
