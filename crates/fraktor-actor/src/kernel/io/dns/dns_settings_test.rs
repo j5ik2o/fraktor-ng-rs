@@ -176,3 +176,16 @@ fn the_display_text_names_the_failure() {
     assert!(texts[index + 1..].iter().all(|other| other != text));
   }
 }
+
+// The original's `object DnsSettings` has no fields; the port keeps that shape
+// so a value can be built and matched as a unit, and the parser stays
+// unchanged. A struct that gained a field would break the fieldless pattern.
+#[test]
+fn the_fieldless_type_is_a_buildable_value_and_keeps_the_parser() {
+  let settings = DnsSettings;
+  let DnsSettings = settings;
+  assert_eq!(
+    DnsSettings::parse_nameserver_address("8.8.8.8"),
+    Ok(SocketAddr::new("8.8.8.8".parse::<IpAddr>().unwrap(), 53))
+  );
+}
