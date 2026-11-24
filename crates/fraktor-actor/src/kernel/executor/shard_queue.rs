@@ -2,7 +2,9 @@
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
+use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
 
@@ -69,6 +71,32 @@ impl ShardQueue {
       },
       | None => false,
     }
+  }
+
+  /// Puts `envelopes` at the front of the local queue, keeping their order.
+  ///
+  /// Mirrors `DequeBasedMessageQueue.enqueueFirst`, which `unstashAll` uses:
+  /// the envelopes were received before anything still queued.
+  pub(crate) fn prepend_locally(&mut self, envelopes: Vec<Envelope>) {
+    for envelope in envelopes.into_iter().rev() {
+      self.local.push_front(envelope);
+    }
+  }
+
+  /// Removes the locally queued envelopes addressed to `recipient`, keeping
+  /// their order and the order of the rest.
+  pub(crate) fn take_addressed_to(&mut self, recipient: &ActorRef) -> Vec<Envelope> {
+    let mut taken = Vec::new();
+    let mut kept = VecDeque::with_capacity(self.local.len());
+    for envelope in self.local.drain(..) {
+      if envelope.is_addressed_to(recipient) {
+        taken.push(envelope);
+      } else {
+        kept.push_back(envelope);
+      }
+    }
+    self.local = kept;
+    taken
   }
 
   /// Pops the oldest queued envelope.

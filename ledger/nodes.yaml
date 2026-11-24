@@ -611,7 +611,7 @@ nodes:
     module: actor-tests
     class: AbstractFSMActorTest
     test_cases_approx: 1
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -622,14 +622,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 1
+    ported: 1
+    passing: 1
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/abstract_fsm_actor_test.rs
+  goal: G0issue162
 - id: actor-tests/src/test/java/org/apache/pekko/actor/AbstractFSMWithStashActorTest.java
   name: actor-tests:AbstractFSMWithStashActorTest
   kind: test
@@ -637,7 +637,7 @@ nodes:
     module: actor-tests
     class: AbstractFSMWithStashActorTest
     test_cases_approx: 1
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -648,14 +648,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 1
+    ported: 1
+    passing: 1
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/abstract_fsm_with_stash_actor_test.rs
+  goal: G0issue162
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorConfigurationVerificationSpec.scala
   name: actor-tests:ActorConfigurationVerificationSpec
   kind: test

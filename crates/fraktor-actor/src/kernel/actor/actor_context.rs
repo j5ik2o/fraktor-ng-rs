@@ -29,6 +29,7 @@ pub struct ActorContext<'a> {
   sender: ActorRef,
   executor: &'a mut Executor,
   stack: &'a mut BehaviorStack,
+  current_message: Option<(Message, u64)>,
 }
 
 impl<'a> ActorContext<'a> {
@@ -38,7 +39,7 @@ impl<'a> ActorContext<'a> {
     executor: &'a mut Executor,
     stack: &'a mut BehaviorStack,
   ) -> Self {
-    Self { self_ref, sender, executor, stack }
+    Self { self_ref, sender, executor, stack, current_message: None }
   }
 
   /// Returns a handle to the actor that is handling the message.
@@ -98,12 +99,66 @@ impl<'a> ActorContext<'a> {
   /// the same stack through this context, and the stack it leaves behind is the
   /// one Pekko holds after the same calls.
   pub(crate) fn run_behavior(&mut self, initial: &mut dyn Actor, message: Message) {
+    self.current_message = Some((message.clone(), self.executor.next_delivery_id()));
     let mut running = self.stack.take_running();
     match &mut running {
       | Running::Frame { frame, .. } => frame(self, message),
       | Running::Receive => initial.receive(self, message),
     }
     self.stack.finish_running(running);
+    self.current_message = None;
+  }
+
+  /// Puts the message being handled aside, with its sender, until
+  /// `unstash_all`.
+  ///
+  /// Mirrors `UnrestrictedStash.stash()`, which Pekko's `Stash` and the stash
+  /// of `AbstractFSMWithStash` provide. The stash belongs to the actor, not to
+  /// the behaviour, so it survives `change_behavior` and a state change.
+  ///
+  /// A restart returns the stash to the front of the mailbox before the old
+  /// instance's `pre_restart`, so the new instance handles it, as
+  /// `UnrestrictedStash.preRestart` does. A stop sends the stash to dead
+  /// letters with each message's original sender, as Pekko's mailbox clean-up
+  /// does after `UnrestrictedStash.postStop`; so does a stash that the stop
+  /// hook or a restart whose replacement fails returned to the mailbox. The
+  /// port's dead letters do not publish a `DeadLetter` event yet. Terminating the system releases every
+  /// stash with the other queues. The stash has no capacity limit: Pekko's
+  /// `stash-capacity` setting and `StashOverflowException` are not ported.
+  ///
+  /// # Panics
+  ///
+  /// Panics outside the handling of a message. Panics as well when the message
+  /// being handled is still the newest entry of the stash, as Pekko throws
+  /// `IllegalStateException("Can't stash the same message ... more than once")`.
+  /// Pekko compares the delivery with the last stashed one, so a delivery may
+  /// stash again after `unstash_all` has emptied the stash; the port does the
+  /// same.
+  pub fn stash(&mut self) {
+    let (message, delivery) = self.current_message.clone().expect("Can't stash outside of message handling");
+    let self_ref = self.self_ref();
+    let sender = self.sender();
+    self.executor.stash(self_ref, delivery, message, sender);
+  }
+
+  /// Returns every stashed message to the front of this actor's mailbox, in
+  /// the order they were stashed.
+  ///
+  /// Mirrors `UnrestrictedStash.unstashAll()`, which prepends the stash to the
+  /// mailbox: the stashed messages are handled before any message that is
+  /// still queued for this actor, and after the current one returns. The port
+  /// keeps one queue per shard, so they also go ahead of messages queued for
+  /// other actors of the same shard; Pekko's per-actor mailboxes promise no
+  /// order between actors.
+  ///
+  /// A stashed `Terminated` is queued again as a DeathWatch notice, as Pekko's
+  /// `enqueueFirst` does: the actor receives it again, and an `unwatch` of its
+  /// target before it is handled cancels it. Notices for one target share one
+  /// record, as Pekko keys `terminatedQueued` by the target, so the first one
+  /// handled consumes it and the others are dropped.
+  pub fn unstash_all(&mut self) {
+    let self_ref = self.self_ref();
+    self.executor.unstash_all(&self_ref);
   }
 
   /// Starts a child of this actor with `props` and `strategy` and returns its

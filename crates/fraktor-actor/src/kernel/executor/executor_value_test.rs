@@ -808,3 +808,143 @@ mod uid_clash_restart {
     assert_eq!(*received.lock().unwrap(), alloc::vec![sibling]);
   }
 }
+
+struct StashEverything;
+
+impl Actor for StashEverything {
+  fn receive(&mut self, context: &mut ActorContext<'_>, _message: Message) {
+    context.stash();
+  }
+}
+
+type DeadLetterLog = Arc<Mutex<Vec<(ActorRef, &'static str)>>>;
+
+/// Stands in for the system's dead letters with a handle that records what
+/// reaches it, so the routing of a stash is observable.
+fn record_dead_letters(executor: &mut Executor) -> DeadLetterLog {
+  let delivered: DeadLetterLog = Arc::new(Mutex::new(Vec::new()));
+  let inbox = delivered.clone();
+  executor.dead_letters = executor.function_ref("recordedDeadLetters", move |sender: &ActorRef, message: Message| {
+    inbox.lock().unwrap().push((sender.clone(), *message.downcast_ref::<&'static str>().unwrap()));
+  });
+  delivered
+}
+
+#[test]
+fn a_stopped_actor_sends_its_stash_to_dead_letters_with_the_original_senders_in_order() {
+  let mut executor = death_watch_executor();
+  let delivered = record_dead_letters(&mut executor);
+  let stasher = executor.spawn_user(Props::new(|| StashEverything));
+  let first_sender = executor.spawn_user(Props::new(|| Guardian));
+  let second_sender = executor.spawn_user(Props::new(|| Guardian));
+  stasher.tell("a", first_sender.clone());
+  stasher.tell("b", second_sender.clone());
+  executor.run_until_idle();
+  assert!(delivered.lock().unwrap().is_empty());
+
+  executor.stop(&stasher);
+  executor.run_until_idle();
+
+  assert_eq!(*delivered.lock().unwrap(), alloc::vec![(first_sender, "a"), (second_sender, "b")]);
+  assert!(executor.stashes.is_empty());
+}
+
+// Stashes every message and returns the stash to the mailbox in its stop hook,
+// as `UnrestrictedStash.postStop` does.
+struct UnstashOnStop;
+
+impl Actor for UnstashOnStop {
+  fn receive(&mut self, context: &mut ActorContext<'_>, _message: Message) {
+    context.stash();
+  }
+
+  fn post_stop_with_context(&mut self, context: &mut ActorContext<'_>) {
+    context.unstash_all();
+  }
+}
+
+struct TextRecorder(Arc<Mutex<Vec<&'static str>>>);
+
+impl Actor for TextRecorder {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
+    self.0.lock().unwrap().push(*message.downcast_ref::<&'static str>().unwrap());
+  }
+}
+
+#[test]
+fn a_stash_returned_by_the_stop_hook_reaches_dead_letters_and_other_actors_keep_their_queue() {
+  let mut executor = death_watch_executor();
+  let delivered = record_dead_letters(&mut executor);
+  let stasher = executor.spawn_user(Props::new(|| UnstashOnStop));
+  let received = Arc::new(Mutex::new(Vec::new()));
+  let other = executor.spawn_user(Props::new({
+    let received = received.clone();
+    move || TextRecorder(received.clone())
+  }));
+  let sender = executor.spawn_user(Props::new(|| Guardian));
+  stasher.tell("a", sender.clone());
+  stasher.tell("b", sender.clone());
+  executor.run_until_idle();
+  // A message for another actor waits in the shard's local queue during the stop.
+  executor.send(sender.clone(), &other, Message::new("x"));
+
+  executor.stop(&stasher);
+
+  assert_eq!(*delivered.lock().unwrap(), alloc::vec![(sender.clone(), "a"), (sender, "b")]);
+  assert!(received.lock().unwrap().is_empty());
+  executor.run_until_idle();
+  assert_eq!(*received.lock().unwrap(), alloc::vec!["x"]);
+  assert_eq!(delivered.lock().unwrap().len(), 2);
+}
+
+// Stashes every message except `crash`, which fails it. The replacement fails
+// in `post_restart`, so the restart that returned the stash ends in a stop.
+struct FailingRestartStasher;
+
+impl Actor for FailingRestartStasher {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    if message == "crash" {
+      panic!("crash (expected)");
+    }
+    context.stash();
+  }
+
+  fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
+    panic!("the replacement fails (expected)");
+  }
+}
+
+#[test]
+fn a_stash_returned_by_a_restart_whose_replacement_fails_reaches_dead_letters() {
+  let mut executor = death_watch_executor();
+  executor.set_failure_catcher(Arc::new(UnwindCatcher));
+  let delivered = record_dead_letters(&mut executor);
+  let stasher = executor.spawn_user(Props::new(|| FailingRestartStasher));
+  let sender = executor.spawn_user(Props::new(|| Guardian));
+  stasher.tell("a", sender.clone());
+  stasher.tell("b", sender.clone());
+  stasher.tell("crash", sender.clone());
+
+  executor.run_until_idle();
+
+  assert!(executor.is_actor_terminated(&stasher));
+  assert_eq!(*delivered.lock().unwrap(), alloc::vec![(sender.clone(), "a"), (sender, "b")]);
+}
+
+#[test]
+fn stashing_the_newest_stashed_delivery_again_is_refused_and_another_delivery_is_not() {
+  let mut executor = death_watch_executor();
+  let owner = executor.spawn_user(Props::new(|| Guardian));
+  let sender = executor.spawn_user(Props::new(|| Guardian));
+  executor.stash(owner.clone(), 1, Message::new("a"), sender.clone());
+
+  let again = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    executor.stash(owner.clone(), 1, Message::new("a"), sender.clone());
+  }));
+
+  assert!(again.is_err());
+  executor.stash(owner.clone(), 2, Message::new("b"), sender.clone());
+  executor.unstash_all(&owner);
+  executor.stash(owner.clone(), 2, Message::new("b"), sender);
+  assert_eq!(executor.stashes[0].1.len(), 1);
+}
