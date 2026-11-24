@@ -26,5 +26,6 @@ pub use status_ask_future::StatusAskFuture;
 pub use status_reply::StatusReply;
 pub use status_reply_ack::StatusReplyAck;
 pub use system_clock::SystemClock;
+pub use system_host_dns_configuration::SystemHostDnsConfiguration;
 pub use unsupported_id_generator_policy_error::UnsupportedIdGeneratorPolicyError;
 pub use unwind_catcher::UnwindCatcher;
