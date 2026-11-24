@@ -2,7 +2,7 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use super::ByteStringInputStream;
+use super::{ByteStringBuilder, ByteStringInputStream};
 use crate::kernel::byte_iterator::ByteIterator;
 
 #[cfg(test)]
@@ -62,6 +62,44 @@ impl ByteString {
     }
   }
 
+  /// Creates a byte string from the low byte of each value in `ints`, in order.
+  ///
+  /// Corresponds to Pekko's `fromInts(array: Int*)`, which stores each `Int` as
+  /// a `Byte`. A value outside the range of a byte keeps only its low eight
+  /// bits, as Rust's `as u8` does.
+  #[must_use]
+  pub fn from_ints(ints: &[i32]) -> Self {
+    let bytes: Vec<u8> = ints.iter().map(|&value| value as u8).collect();
+    Self::from_bytes(&bytes)
+  }
+
+  // Takes over `arrays` without copying or filtering; the caller passes only
+  // non-empty arrays, so the byte string keeps its invariant.
+  pub(super) fn from_arrays(arrays: Vec<Arc<[u8]>>) -> Self {
+    Self { arrays }
+  }
+
+  // The shared arrays, in order. Never holds an empty array.
+  pub(super) fn arrays(&self) -> &[Arc<[u8]>] {
+    &self.arrays
+  }
+
+  /// Creates an empty builder for assembling a byte string from many bytes.
+  ///
+  /// Corresponds to Pekko's `newBuilder`.
+  #[must_use]
+  pub fn new_builder() -> ByteStringBuilder {
+    ByteStringBuilder::default()
+  }
+
+  /// Creates an empty builder for assembling a byte string from many bytes.
+  ///
+  /// Corresponds to Pekko's Java API `createBuilder`.
+  #[must_use]
+  pub fn create_builder() -> ByteStringBuilder {
+    ByteStringBuilder::default()
+  }
+
   /// Returns a byte string with the bytes of `self` followed by the bytes of
   /// `other`.
   ///
@@ -89,3 +127,11 @@ impl ByteString {
     ByteStringInputStream::new(self.iterator())
   }
 }
+
+impl PartialEq for ByteString {
+  fn eq(&self, other: &Self) -> bool {
+    self.iterator().eq(other.iterator())
+  }
+}
+
+impl Eq for ByteString {}

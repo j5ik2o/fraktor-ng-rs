@@ -3,7 +3,7 @@
 //
 // The original's three `++=` cases are kept as one test each, named after the
 // case, with the original name as a comment. Each test builds the result in one
-// chain and compares it with `assertEquals` (`assert_eq!` in the port).
+// chain and compares it with `shouldEqual` (`assert_eq!` in the port).
 //
 // The original API and its Rust counterpart:
 //
@@ -29,7 +29,7 @@ use fraktor_actor::kernel::byte_string::ByteString;
 // "handle ++= with LinearSeq"
 #[test]
 fn handle_plus_plus_eq_with_linear_seq() {
-  let result: ByteString = ByteString::new_builder().add_all(LinkedList::from([b'a'])).result();
+  let result: ByteString = ByteString::new_builder().add_all(LinkedList::from(*b"a")).result();
   assert_eq!(result, ByteString::from_string("a"));
 }
 

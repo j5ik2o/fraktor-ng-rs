@@ -3,7 +3,7 @@
 //
 // The original's three `addAll` cases are kept as one test each, named after
 // the case, with the original name as a comment. Each test builds the result in
-// one chain and compares it with `assertEquals` (`assert_eq!` in the port).
+// one chain and compares it with `shouldEqual` (`assert_eq!` in the port).
 //
 // In Scala 2.13 `++=` is an alias of `addAll`, so the Scala 2.13+ spec performs
 // the same operation as ByteStringBuilderSpec through `addAll`. In the port both
@@ -33,7 +33,7 @@ use fraktor_actor::kernel::byte_string::ByteString;
 // "handle addAll with LinearSeq"
 #[test]
 fn handle_add_all_with_linear_seq() {
-  let result: ByteString = ByteString::new_builder().add_all(LinkedList::from([b'a'])).result();
+  let result: ByteString = ByteString::new_builder().add_all(LinkedList::from(*b"a")).result();
   assert_eq!(result, ByteString::from_string("a"));
 }
 
