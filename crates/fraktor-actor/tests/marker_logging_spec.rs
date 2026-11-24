@@ -1,8 +1,11 @@
-// Ported from Pekko v1.7.1:
+// Ported from Pekko v2.0.0 (SHA 9fbd2283b1cf701c90a1223bf621942c191db61f):
 //   actor-tests/src/test/scala/org/apache/pekko/event/MarkerLoggingSpec.scala
+// First ported from v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff), which
+// had the first two cases. v2.0.0 adds the two "expand ... Array argument into
+// separate template placeholders (#3257)" cases (upstream c0e9406bfd, #3263).
 //
-// The original holds one suite, "A MarkerLoggerAdapter", with two cases. The
-// port keeps both cases one for one and keeps the original case names as the
+// The original holds one suite, "A MarkerLoggerAdapter", with four cases. The
+// port keeps every case one for one and keeps the original case names as the
 // comments above each test. Each case subscribes a TestProbe to one event
 // class on the actor system's own event stream, publishes the log through the
 // marker logging entry, and reads the delivered event back from that probe.
@@ -161,6 +164,60 @@ fn allow_cause_exceptions_in_error_messages() {
   assert_eq!(error.marker(), Some(LogMarker::Security));
   // The `LogClass` reaches the error event unchanged, as it does for `info`.
   assert_eq!(error.log_class(), i32::MAX);
+
+  spec.terminate();
+}
+
+// The two #3257 cases pass one Scala `Array` as the only argument of
+// `info(marker, template, arg1)`. Pekko's fix spreads the array so that each
+// element fills its own `{}`; before the fix the whole array filled the first
+// placeholder. Rust has no varargs and no `Any` argument whose run-time type is
+// an array, so the port's entry takes the arguments as one slice, the same shape
+// `LogPublisher::log` takes. A slice of text and a slice of `i32` stand in for
+// the original's non-primitive and primitive arrays; both must reach the
+// template element by element.
+
+// "A MarkerLoggerAdapter" should { "expand a non-primitive Array argument into separate template placeholders (#3257)" in { ... } }
+#[test]
+fn expand_a_non_primitive_array_argument_into_separate_template_placeholders() {
+  let mut spec = FraktorSpec::new("MarkerLoggingSpec");
+  let mut probe = TestProbe::new(spec.system_mut());
+  let stream = spec.system().event_stream();
+  assert!(stream.subscribe(Some(probe.ref_handle()), EventClass::of::<Info>()).expect("the probe actor is not null"));
+  let logging = marker_logging(spec.system(), 0);
+
+  // `system.eventStream.publish(TestEvent.Mute(EventFilter.info()))` is
+  // omitted, as in "add markers to logging" above.
+  // `markerLogging.info(LogMarker.Security, "{} {} {}", Array("a", "b", "c"))`
+  logging.info_with_args(LogMarker::Security, "{} {} {}", &["a", "b", "c"]);
+  spec.system_mut().run_until_idle();
+
+  // `expectMsgType[Info3].message should be("a b c")`
+  let info: Info = spec.within(default_timeout(), |_| probe.expect_msg_type());
+  assert_eq!(info.message(), "a b c");
+  // `Info3` is the info event that carries a marker.
+  assert_eq!(info.marker(), Some(LogMarker::Security));
+
+  spec.terminate();
+}
+
+// "A MarkerLoggerAdapter" should { "expand a primitive Array argument into separate template placeholders (#3257)" in { ... } }
+#[test]
+fn expand_a_primitive_array_argument_into_separate_template_placeholders() {
+  let mut spec = FraktorSpec::new("MarkerLoggingSpec");
+  let mut probe = TestProbe::new(spec.system_mut());
+  let stream = spec.system().event_stream();
+  assert!(stream.subscribe(Some(probe.ref_handle()), EventClass::of::<Info>()).expect("the probe actor is not null"));
+  let logging = marker_logging(spec.system(), 0);
+
+  // `markerLogging.info(LogMarker.Security, "{} {} {}", Array(1, 2, 3))`
+  logging.info_with_args(LogMarker::Security, "{} {} {}", &[1_i32, 2, 3]);
+  spec.system_mut().run_until_idle();
+
+  // `expectMsgType[Info3].message should be("1 2 3")`
+  let info: Info = spec.within(default_timeout(), |_| probe.expect_msg_type());
+  assert_eq!(info.message(), "1 2 3");
+  assert_eq!(info.marker(), Some(LogMarker::Security));
 
   spec.terminate();
 }
