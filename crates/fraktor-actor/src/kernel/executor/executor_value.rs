@@ -153,6 +153,7 @@ pub(crate) struct Executor {
   hook_child_creation_refused: bool,
   terminated: bool,
   clock: Option<Arc<dyn Clock>>,
+  stashes: Vec<(ActorRef, Vec<Envelope>)>,
 }
 
 impl Executor {
@@ -180,6 +181,7 @@ impl Executor {
       hook_child_creation_refused: false,
       terminated: false,
       clock: None,
+      stashes: Vec::new(),
     };
     executor.function_refs.push(executor.dead_letters.clone());
     executor
@@ -766,6 +768,7 @@ impl Executor {
       }
     }
     self.forget_child(target);
+    self.stashes.retain(|(owner, _)| owner != target);
     self.watchers.retain(|(watcher, _)| watcher != target);
     self.pending_terminations.retain(|pending| &pending.watcher != target);
     self.notify_watchers(target, true, false);
@@ -900,6 +903,23 @@ impl Executor {
   }
 
   /// Registers a reply to `reply_to` after `target` stops.
+  /// Puts `message` from `sender` aside in `owner`'s stash.
+  pub(crate) fn stash(&mut self, owner: ActorRef, message: Message, sender: ActorRef) {
+    let envelope = Envelope::new(owner.clone(), message, sender);
+    match self.stashes.iter_mut().find(|(held, _)| held == &owner) {
+      | Some((_, stash)) => stash.push(envelope),
+      | None => self.stashes.push((owner, alloc::vec![envelope])),
+    }
+  }
+
+  /// Returns `owner`'s stash to the front of the local queue.
+  pub(crate) fn unstash_all(&mut self, owner: &ActorRef) {
+    if let Some(index) = self.stashes.iter().position(|(held, _)| held == owner) {
+      let (_, stash) = self.stashes.swap_remove(index);
+      self.queue.prepend_locally(stash);
+    }
+  }
+
   pub(crate) fn stop_and_reply(&mut self, target: &ActorRef, reply_to: ActorRef, message: Message) {
     self.deferred_replies.push((target.clone(), DeferredReply { reply_to, message }));
   }
@@ -1444,6 +1464,9 @@ impl Executor {
     message: &str,
     original_sender: Option<ActorRef>,
   ) {
+    // Pekko's `UnrestrictedStash.preRestart` returns the stash to the mailbox
+    // before the old instance's `preRestart`, so the new instance handles it.
+    self.unstash_all(target);
     let reason = self.failure_reason(target, cause_name, message);
     let reason_box: Box<dyn core::any::Any + Send> = Box::new(reason);
     let catcher = self.catcher.clone();
