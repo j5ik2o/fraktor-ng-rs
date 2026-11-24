@@ -186,7 +186,7 @@ uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml -
 - Pekko の CI の JDK は 8、11、17、21 である（`.github/workflows/nightly-builds.yml` L118 の `javaVersion: [8, 11, 17, 21]`）
 - `Integer.parseInt` を、全コード点（サロゲートを除く `U+0000`〜`U+10FFFF`）の1文字ずつに対して、Temurin 21.0.13、25.0.5、26.0.2.1 で実測した。3版とも結果は同じで、受理は370文字だった。BMP の一般カテゴリ Nd の37の連続10文字（`0`〜`9` の値）だけを受理し、BMP 外の Nd（`U+1D7D3`、`U+104A5` など）は拒否した。`parseInt` は UTF-16 の単位で読み、サロゲートは数字にならないためである
 - JDK 8、11、17 は手元にないため実測していない。Unicode の [DerivedAge.txt（16.0.0）](https://www.unicode.org/Public/16.0.0/ucd/DerivedAge.txt) で37の範囲の追加版を調べると、`U+0DE6`（シンハラ文字の Lith 数字）と `U+A9F0`（Tai Laing 数字）だけが Unicode 7.0 で、ほかは 6.0 以前だった。JDK 11 は Unicode 10.0、JDK 17 は 13.0 なので37範囲すべてを持ち、JDK 8（Unicode 6.2）だけがこの2範囲を拒否する
-- 符号は先頭の ASCII の `+` か `-` だけ。全角の `＋`・`－`、符号だけ、二重の符号は拒否する。`-2147483648`〜`2147483647` の外は、全角の数字でも拒否する。先頭のゼロは読む。テストの全入力（46件）を Temurin 21.0.13 で `Integer.parseInt` に通し、期待値と一致することを確かめた
+- 符号は先頭の ASCII の `+` か `-` だけ。全角の `＋`・`－`、符号だけ、二重の符号は拒否する。`-2147483648`〜`2147483647` の外は、全角の数字でも拒否する。先頭のゼロは読む。テストに文字列で書いた入力（46件）を Temurin 21.0.13 で `Integer.parseInt` に通し、期待値と一致することを確かめた。範囲ごとのテストは上の全コード点の実測による
 
 ### 実装
 
