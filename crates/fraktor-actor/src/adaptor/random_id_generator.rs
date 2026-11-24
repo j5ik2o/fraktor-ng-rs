@@ -12,8 +12,8 @@ use super::UnsupportedIdGeneratorPolicyError;
 #[path = "random_id_generator_test.rs"]
 mod tests;
 
-// The multiplier added to the per-thread state on each draw, from the original's
-// SplitMix-style `ThreadLocalRandom`.
+// The increment added to the per-thread state on each draw, as in the
+// SplitMix-style state of Java's `ThreadLocalRandom`.
 const THREAD_LOCAL_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
 
 thread_local! {
@@ -56,7 +56,7 @@ impl IdGenerator for RandomIdGenerator {
     let draw = match self.policy {
       | IdGeneratorPolicy::ThreadLocalRandom => Ok(next_thread_local_draw()),
       | IdGeneratorPolicy::SecureRandom => next_secure_draw(),
-      | IdGeneratorPolicy::EnhancedDoubleHashRandom => Err(IdGenerationError::EntropyUnavailable),
+      | IdGeneratorPolicy::EnhancedDoubleHashRandom => unreachable!("`new` rejects EnhancedDoubleHashRandom"),
     };
     draw.map(to_id)
   }

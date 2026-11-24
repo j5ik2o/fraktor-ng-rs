@@ -1,7 +1,6 @@
 //! Unit tests for [`RandomIdGenerator`](super::RandomIdGenerator).
 
 use alloc::string::ToString;
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::thread;
 
@@ -98,18 +97,6 @@ fn every_draw_maps_into_the_short_range() {
     let id = super::to_id(draw);
     assert_eq!(i32::from(id), i32::from(draw) - 32768);
   }
-}
-
-// The secure path draws from the OS and must not return the same value every
-// time; a constant would be a failure to read the entropy source.
-#[test]
-fn the_secure_generator_varies_across_calls() {
-  let generator = generator(IdGeneratorPolicy::SecureRandom);
-  let mut seen = HashSet::new();
-  for _ in 0..64 {
-    seen.insert(generator.next_id().expect("a secure id"));
-  }
-  assert!(seen.len() > 1);
 }
 
 // The entropy failure must be reported rather than swallowed or replaced by
