@@ -263,3 +263,14 @@ fn values_past_the_i32_range_are_errors() {
     assert_eq!(ndots_result(value), Err(ResolvConfParseError::InvalidNdots), "{value}");
   }
 }
+
+// Over every scalar value, exactly the 370 code points the JDK measurement
+// accepted (37 runs of ten) parse as one-digit values.
+#[test]
+fn exactly_the_jdk_digit_count_parses_over_all_code_points() {
+  let accepted = (0..=0x10_FFFF_u32)
+    .filter_map(char::from_u32)
+    .filter(|character| super::parse_java_int(character.encode_utf8(&mut [0; 4])).is_some())
+    .count();
+  assert_eq!(accepted, 370);
+}
