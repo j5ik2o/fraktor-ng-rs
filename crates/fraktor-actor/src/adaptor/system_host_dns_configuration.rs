@@ -1,10 +1,10 @@
 //! The host DNS configuration read from the operating system.
 
 use alloc::{string::String, vec::Vec};
-use core::net::SocketAddr;
+use core::{iter, net::SocketAddr};
 use std::{
   fs::{self, File},
-  io::{BufRead, BufReader},
+  io::{BufRead, BufReader, ErrorKind},
   path::{Path, PathBuf},
 };
 
@@ -118,27 +118,62 @@ fn read_name_servers(reader: impl BufRead) -> Option<Vec<SocketAddr>> {
 }
 
 // The lines `BufferedReader.readLine` returns from a `FileReader`, decoded
-// leniently, until the first I/O error. The JDK's `resolvconf` catches the
-// `IOException` after its loop, so the lines read before it are kept. The
-// lines are read lazily, so nothing after the last line used is read.
-fn lossy_lines(reader: impl BufRead) -> impl Iterator<Item = String> {
-  reader.split(b'\n').map_while(Result::ok).flat_map(|bytes| {
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    java_lines(&text).map(String::from).collect::<Vec<_>>()
+// leniently, until the first I/O error. A line ends at `\n` or `\r` and is
+// returned as soon as its end is read, so a failure after a `\r` keeps that
+// line; `\r\n` adds an empty line, which `nameserver_values` skips. The JDK's
+// `resolvconf` catches the `IOException` after its loop, so the lines read
+// before it are kept and the unfinished line is not. The lines are read
+// lazily, so nothing after the last line used is read.
+fn lossy_lines(mut reader: impl BufRead) -> impl Iterator<Item = String> {
+  let mut finished = false;
+  iter::from_fn(move || {
+    let mut line = Vec::new();
+    while !finished {
+      let available = match reader.fill_buf() {
+        | Ok(available) => available,
+        | Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+        | Err(_) => {
+          finished = true;
+          return None;
+        },
+      };
+      if available.is_empty() {
+        finished = true;
+        return (!line.is_empty()).then(|| String::from_utf8_lossy(&line).into_owned());
+      }
+      match available.iter().position(|byte| matches!(byte, b'\n' | b'\r')) {
+        | Some(end) => {
+          line.extend_from_slice(&available[..end]);
+          reader.consume(end + 1);
+          return Some(String::from_utf8_lossy(&line).into_owned());
+        },
+        | None => {
+          let length = available.len();
+          line.extend_from_slice(available);
+          reader.consume(length);
+        },
+      }
+    }
+    None
   })
 }
 
 // `ResolverConfigurationImpl.resolvconf("nameserver", 1, 5)`: a line counts when
 // it starts with the keyword followed by a space or a tab, up to five such
 // lines, and its first value is kept, an unbracketed IPv6 literal bracketed.
-// The JDK also drops a value that starts with `#` or `;`; such a value has no
-// IP literal before the end of the URI authority, so `server_address` drops it
-// here.
+// A value that starts with `#` or `;` ends the line before it becomes a URI,
+// so `;user@192.0.2.1` is not read as user information; the line still counts.
 fn nameserver_values(lines: impl Iterator<Item = String>) -> impl Iterator<Item = String> {
   lines
     .filter_map(|line| {
       let rest = line.strip_prefix(NAMESERVER_KEYWORD)?;
-      rest.starts_with([' ', '\t']).then(|| rest.split([' ', '\t']).find(|value| !value.is_empty()).map(bracket_ipv6))
+      rest.starts_with([' ', '\t']).then(|| {
+        rest
+          .split([' ', '\t'])
+          .find(|value| !value.is_empty())
+          .filter(|value| !value.starts_with(['#', ';']))
+          .map(bracket_ipv6)
+      })
     })
     .take(MAX_NAMESERVER_LINES)
     .flatten()

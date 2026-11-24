@@ -480,3 +480,26 @@ fn name_servers_read_before_an_io_error_are_kept() {
 fn an_io_error_before_any_name_server_is_none() {
   assert_eq!(read_name_servers(BufReader::new(FailingAfter(b""))), None);
 }
+
+// `BufferedReader.readLine` returns a line as soon as it reads its `\r`, so a
+// line ended by `\r` is kept even when the next read fails; the unfinished
+// line after it is not.
+#[test]
+fn a_line_ended_by_a_carriage_return_is_kept_before_an_io_error() {
+  let reader = BufReader::with_capacity(8, FailingAfter(b"nameserver 192.0.2.1\rnameserver 19"));
+  assert_eq!(read_name_servers(reader), Some(vec![addr("192.0.2.1:53")]));
+  let reader = BufReader::with_capacity(8, FailingAfter(b"nameserver 192.0.2.1\r\nnameserver 192.0.2.2"));
+  assert_eq!(read_name_servers(reader), Some(vec![addr("192.0.2.1:53")]));
+}
+
+// The JDK stops a line at a value that starts with `#` or `;`, before the
+// value becomes a URI, so `;user@192.0.2.1` is a comment, not user
+// information. The line still counts toward the five `nameserver` lines.
+#[test]
+fn a_value_starting_a_comment_is_not_a_name_server() {
+  let (_dir, host) = host_with(
+    "nameserver ;user@192.0.2.1\nnameserver #192.0.2.2\nnameserver user@192.0.2.3\nnameserver 192.0.2.4\nnameserver \
+     192.0.2.5\nnameserver 192.0.2.6\n",
+  );
+  assert_eq!(host.name_servers(), Some(vec![addr("192.0.2.3:53"), addr("192.0.2.4:53"), addr("192.0.2.5:53")]));
+}

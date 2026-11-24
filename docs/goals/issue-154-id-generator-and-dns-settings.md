@@ -254,11 +254,11 @@ adaptor に `SystemHostDnsConfiguration`（`crates/fraktor-actor/src/adaptor/sys
 | `options ndots:５` のような、ASCII 以外の十進数字の ndots を解析の失敗にする（search も既定値の空、ndots は 1 になる）。原典の `toInt` は受け付ける | 既存の `ResolvConfParser` の差で、[#159](https://github.com/j5ik2o/fraktor-ng-rs/issues/159) で追跡する。本 issue ではパーサーを変えない |
 | `search corp.example # managed` の `#` と `managed` も search domain になる。FreeBSD と NetBSD のリゾルバーは、行の途中の `#` をコメントとして扱う | 原典の `ResolvConfParser` は行頭の `#` と `;` だけをコメントにし、#136 の `ResolvConfParser` も同じ（原典と一致させた既存のパーサー）。ホストの既定値は原典と同じ値を返すことを優先し、パーサーは変えない。この扱いはテストで固定した |
 
-JDK が捨てる `#` か `;` で始まる値は、authority の終わりで切ると host が空か IP リテラルでなくなるので、`parse_nameserver_address` が捨てる。そのための分岐は置いていない（分岐を消しても、全テストの結果が変わらないことを確かめた）。`::ffff:192.0.2.9` のように `.` を含む角括弧なしの IPv6 は、URL の host として読めないので、原典と同じく捨てる。
+JDK が捨てる `#` か `;` で始まる値は、URI にする前に捨てる（その行も5行に数える）。当初は「authority の終わりで切れば host が IP リテラルにならない」として分岐を置かなかったが、`;user@192.0.2.1` は `;user` が URI の user information として読めるので誤りだった（PR #158 の CodeRabbit の指摘。後述）。`::ffff:192.0.2.9` のように `.` を含む角括弧なしの IPv6 は、URL の host として読めないので、原典と同じく捨てる。
 
 ### テスト
 
-単体テスト38件（`system_host_dns_configuration_test.rs`）は、テストが作った一時ディレクトリのファイルか、テストの中のバイト列だけを読む。実機の `/etc/resolv.conf` は読まず、書き換えもしない。`new()` と `for_platform` のテストは、読むパスが `/etc/resolv.conf` であることと、Windows ではエラーになることを、値の比較で確かめるだけで、ファイルは開かない。一時ディレクトリは、ランダムな名前で排他的に作り（`DirBuilder::create`。既にあるパスは、誰が作ったものでも使わず、消さない）、Unix では所有者だけが入れる 0700 にする。Windows の分岐は `for_platform(true)` で、どの OS でも確かめる（CI は ubuntu のみ）。
+単体テスト40件（`system_host_dns_configuration_test.rs`）は、テストが作った一時ディレクトリのファイルか、テストの中のバイト列だけを読む。実機の `/etc/resolv.conf` は読まず、書き換えもしない。`new()` と `for_platform` のテストは、読むパスが `/etc/resolv.conf` であることと、Windows ではエラーになることを、値の比較で確かめるだけで、ファイルは開かない。一時ディレクトリは、ランダムな名前で排他的に作り（`DirBuilder::create`。既にあるパスは、誰が作ったものでも使わず、消さない）、Unix では所有者だけが入れる 0700 にする。Windows の分岐は `for_platform(true)` で、どの OS でも確かめる（CI は ubuntu のみ）。
 
 | 観点 | テスト |
 |:---|:---|
@@ -268,7 +268,8 @@ JDK が捨てる `#` か `;` で始まる値は、authority の終わりで切�
 | 捨てる値 | host 名、名前の scope ID、`.` を含む角括弧なし IPv6、範囲外の port |
 | scope ID | 数値の scope ID（`fe80::1%2`、`[fe80::2%3]:5353`）を保持する。空、URI に許されない文字、`u32` を超える値は捨てる |
 | URI の妥当性 | `#a#b`、`#a\|b`、`?x^y`、`/a<b`、`#%zz` は捨て、`#local`、`/p;x?q=1#f?/`、`#%41`、`#café` は保つ。`user@192.0.2.1` は host を読み、不正な user information は捨てる |
-| 途中の I/O エラー | 2行読んだ後に失敗する読み手で、2つの name server が返る。最初から失敗すると `None` |
+| 途中の I/O エラー | 2行読んだ後に失敗する読み手で、2つの name server が返る。`\r` で終わった行の直後に失敗しても、その行は返り、終わっていない行は返らない（`\r\n` も同じ）。最初から失敗すると `None` |
+| コメントで始まる値 | `;user@192.0.2.1` 型の値（`;` か `#` で始まる）は name server にならず、その行も5行に数える |
 | 対象 OS | `for_platform(false)` は `/etc/resolv.conf` を読む。`for_platform(true)` は `UnsupportedHostDnsPlatformError`。`new()` は実行中の OS に従う |
 | 空 | name server のない内容と空のファイルは、name server が `None`。空のファイルの resolv.conf は `ResolvConf([], 1)` |
 | 読めない | ファイルが無い、ディレクトリ（存在するが読めない）は、どちらも `None`。不正な UTF-8 は、name server は読み、resolv.conf は `None`。`ndots:` の不正は `None` |
@@ -281,7 +282,7 @@ JDK が捨てる `#` か `;` で始まる値は、authority の終わりで切�
 
 テストを先に書き、型の実装がない状態（コミット `7730264`。adaptor に空のモジュールだけを置き、再エクスポートはしない）で実行した。`cargo test -p fraktor-actor --lib system_host_dns_configuration` は終了値101の compile-red で、`E0432`（`super::SystemHostDnsConfiguration` が未定義、テストの L22）が1件だった。already_green ではない。aislop の指摘でテストの区切りのコメントを消した blob（`0ed04402`）でも、実装を外して同じ `E0432` と終了値101になることを確かめた。
 
-実装後に変異を3つ入れた。最大行数を6にすると1件、既定の port を54にすると3件のテストが失敗した。独立レビューの指摘への対応（後述）では、先にテストを足した。`for_platform`、`read_name_servers`、`UnsupportedHostDnsPlatformError` がない状態では終了値101の compile-red（`E0432` が2件、`E0599` が3件）だった。読み取りの構造と Windows のエラーだけを入れた段階では、URI の妥当性、数値の scope ID、user information の3件が失敗した。そのうえで変異を4つ入れた。I/O エラーで止まらずに失敗させると3件、scope ID を付けないと1件、URI の後ろの検査を外すと1件、user information を外さないと1件のテストが失敗する。コメントの値を捨てる分岐を消してもテストは失敗しなかったので、上に書いたとおり分岐ごと削除した。
+実装後に変異を3つ入れた。最大行数を6にすると1件、既定の port を54にすると3件のテストが失敗した。独立レビューの指摘への対応（後述）では、先にテストを足した。`for_platform`、`read_name_servers`、`UnsupportedHostDnsPlatformError` がない状態では終了値101の compile-red（`E0432` が2件、`E0599` が3件）だった。読み取りの構造と Windows のエラーだけを入れた段階では、URI の妥当性、数値の scope ID、user information の3件が失敗した。そのうえで変異を4つ入れた。I/O エラーで止まらずに失敗させると3件、scope ID を付けないと1件、URI の後ろの検査を外すと1件、user information を外さないと1件のテストが失敗する。当初はコメントの値を捨てる分岐を消してもテストが失敗しなかったので分岐を削除したが、修正試行3で `;user@192.0.2.1` の反例が見つかり、テストを先に足して分岐を戻した（後述）。
 
 ### PR #158 のレビュー指摘への対応
 
@@ -299,17 +300,20 @@ JDK が捨てる `#` か `;` で始まる値は、authority の終わりで切�
 | 独立レビュー: 既存 `ResolvConfParser` の Unicode 十進数字の差 | 別件 | [#159](https://github.com/j5ik2o/fraktor-ng-rs/issues/159)。差異の表に、失敗時の扱いと一緒に記録した |
 | 独立レビュー: Windows の既定 nameserver の取得が原典と違う | 直す（範囲の決定） | 副元帥の回答 B。本 issue は resolv.conf の方式の対象 OS に限り、Windows は `UnsupportedHostDnsPlatformError` で未対応と分かるようにして、テストで固定した。Windows の自動取得は [#160](https://github.com/j5ik2o/fraktor-ng-rs/issues/160) |
 
-CodeRabbit は利用上限で、レビューしなかった。Codex は `8671b47` で指摘なしだった。
+| CodeRabbit（[r4686751363](https://github.com/j5ik2o/fraktor-ng-rs/pull/158#discussion_r4686751363)）: `\r` で終わった行の直後に読み取りエラーになると、その行も捨てる | 直す | JDK の `BufferedReader.readLine` は `\r` を読んだ時点でその行を返し、`resolvconf` は後の `IOException` をループの外で握りつぶすので、原典は `192.0.2.1` を返す。本 adaptor は `\n` まで読みためていたので、行ごと失っていた。読み取りの段階で `\r` と `\n` のどちらでも行を終えるようにした。先に足したテスト（`\r` の後と `\r\n` の後の失敗）が修正前に失敗することを確かめた |
+| CodeRabbit（[r4686751372](https://github.com/j5ik2o/fraktor-ng-rs/pull/158#discussion_r4686751372)）: `nameserver ;user@192.0.2.1` が name server になる | 直す | JDK の `resolvconf` は `#` か `;` で始まる値で行を終え、値を残さないので、原典はこの行から name server を取らない。本 adaptor は `;user` を URI の user information として外していた。URI にする前に `#` と `;` で始まる値を捨てるようにした（行は5行に数える）。先に足したテストが修正前に失敗することを確かめた |
+
+CodeRabbit は当初は利用上限でレビューせず、`7849874` で上の2件を指摘した。Codex は `8671b47` で指摘なしだった。
 
 ### 実装後の実測
 
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
-| `cargo test -p fraktor-actor --lib system_host_dns_configuration` | 0 | 38 passed |
+| `cargo test -p fraktor-actor --lib system_host_dns_configuration` | 0 | 40 passed |
 | `cargo test -p fraktor-actor --lib io::dns` | 0 | 成功（DNS の既存の単体テスト） |
 | `cargo test -p fraktor-actor --test dns_settings_spec -- --test-threads=1` | 0 | 10 passed |
 | `cargo test -p fraktor-actor --test resolv_conf_parser_spec -- --test-threads=1` | 0 | 成功 |
-| `cargo test --workspace` | 0 | 失敗0（lib の単体テストは 400 → 438） |
+| `cargo test --workspace` | 0 | 失敗0（lib の単体テストは 400 → 440） |
 | `cargo fmt --check` | 0 | 差分なし |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
 | syn-check（`crates/fraktor-actor`、`crates/fraktor-testkit`） | 0 | 両方 `clean: true`、違反0、抑制0。`cfg-std-forbid`（kernel の std）と `port-adaptor-boundary` を含む |
