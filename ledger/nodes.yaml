@@ -1600,7 +1600,7 @@ nodes:
     module: actor-tests
     class: ByteStringBuilderScala213PlusSpec
     test_cases_approx: 3
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -1616,8 +1616,8 @@ nodes:
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/byte_string_builder_scala213_plus_spec.rs
   goal: G0issue133
 - id: actor-tests/src/test/scala/org/apache/pekko/util/ByteStringBuilderSpec.scala
   name: actor-tests:ByteStringBuilderSpec
@@ -1626,7 +1626,7 @@ nodes:
     module: actor-tests
     class: ByteStringBuilderSpec
     test_cases_approx: 3
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -1642,8 +1642,8 @@ nodes:
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/byte_string_builder_spec.rs
   goal: G0issue133
 - id: actor-tests/src/test/scala/org/apache/pekko/util/ByteStringInitializationSpec.scala
   name: actor-tests:ByteStringInitializationSpec
@@ -1730,7 +1730,7 @@ nodes:
     module: actor-tests
     class: ByteStringTest
     test_cases_approx: 2
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -1746,8 +1746,8 @@ nodes:
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/byte_string_test.rs
   goal: G0issue133
 - id: actor-tests/src/test/scala/org/apache/pekko/testkit/CallingThreadDispatcherModelSpec.scala
   name: actor-tests:CallingThreadDispatcherModelSpec
