@@ -1,5 +1,10 @@
-// Ported from Pekko v1.7.1:
+// Ported from Pekko v2.0.0 (SHA 9fbd2283b1cf701c90a1223bf621942c191db61f):
 //   actor-tests/src/test/scala/org/apache/pekko/actor/ActorPathSpec.scala
+// First ported from v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff).
+// v2.0.0 adds three cases after "validate path elements": "accept valid path
+// elements", "reject invalid path elements and report the position" and
+// "classify every char like the reference predicate" (upstream e336453c66,
+// #3542).
 //
 // Original test names are kept as comments next to each ported case.
 
@@ -103,6 +108,103 @@ fn validate_path_elements() {
   let err = ActorPath::validate_path_element("");
   assert!(err.is_err());
   assert!(err.unwrap_err().contains("must not be empty"));
+}
+
+// "An ActorPath" must { "accept valid path elements" in { ... } }
+//
+// The original's `forAll(Table(...))` is a loop over the same names.
+// `validatePathElement` returns normally for a valid name; the port's returns
+// `Ok(())`.
+#[test]
+fn accept_valid_path_elements() {
+  let long = "x".repeat(10000);
+  let valid = [
+    "a",
+    "actor-1",
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+    "-_.*$+:@&=,!~';",
+    "a$b",
+    "%20",
+    "%ff%FF%0a",
+    "a%20b",
+    long.as_str(),
+  ];
+  for name in valid {
+    assert!(ActorPath::is_valid_path_element(name), "name [{name}]");
+    assert_eq!(ActorPath::validate_path_element(name), Ok(()), "name [{name}]");
+  }
+}
+
+// "An ActorPath" must { "reject invalid path elements and report the position" in { ... } }
+//
+// The original reads the position from the `InvalidActorNameException`
+// message; the port reads it from the `Err` message, which has the same
+// "at position: <n>" text. Java counts positions in UTF-16 units and the port
+// in chars. They agree here because every character before the reported one is
+// ASCII: the first character that is not ASCII is already invalid.
+#[test]
+fn reject_invalid_path_elements_and_report_the_position() {
+  fn position_of(name: &str) -> usize {
+    let message = ActorPath::validate_path_element(name).expect_err("the name is invalid");
+    match message.split("at position: ").nth(1) {
+      | Some(rest) => rest.chars().take_while(char::is_ascii_digit).collect::<String>().parse().unwrap(),
+      | None => panic!("unexpected message [{message}]"),
+    }
+  }
+
+  let long = format!("{}\u{00e9}", "x".repeat(100));
+  let invalid = [
+    ("$a", 0), // `$` is reserved for system names at the start
+    ("a b", 1),
+    ("a/b", 1),
+    ("a#b", 1),
+    ("a?b", 1),
+    ("a%", 1), // `%` is only valid as `%XX`
+    ("a%2", 1),
+    ("a%2g", 1),
+    ("a%g2", 1),
+    ("caf\u{00e9}", 3), // Latin-1 but not ASCII
+    ("na\u{00ef}ve-actor", 2),
+    ("\u{4e2d}\u{6587}", 0), // outside Latin-1
+    ("actor-\u{4e2d}", 6),
+    ("actor-\u{1f600}", 6), // surrogate pair in UTF-16
+    ("a\u{0000}b", 1),
+    ("a\u{007f}b", 1),
+    (long.as_str(), 100),
+  ];
+  for (name, position) in invalid {
+    assert!(!ActorPath::is_valid_path_element(name), "name [{name}]");
+    assert_eq!(position_of(name), position, "name [{name}]");
+  }
+}
+
+// "An ActorPath" must { "classify every char like the reference predicate" in { ... } }
+//
+// The original walks all 65,536 UTF-16 code units, including the surrogates
+// U+D800 to U+DFFF. A Rust `str` cannot hold a lone surrogate, so the port
+// walks the other 63,488 and leaves the surrogates out. A surrogate pair is
+// covered by "reject invalid path elements and report the position" above.
+#[test]
+fn classify_every_char_like_the_reference_predicate() {
+  // Independent, exhaustive definition of the accepted alphabet, so the
+  // validator is locked to it for every char.
+  fn is_valid_char(c: char) -> bool {
+    c.is_ascii_lowercase() || c.is_ascii_uppercase() || c.is_ascii_digit() || "-_.*$+:@&=,!~';".contains(c)
+  }
+  fn is_hex_char(c: char) -> bool {
+    ('a'..='f').contains(&c) || ('A'..='F').contains(&c) || c.is_ascii_digit()
+  }
+
+  for code in 0_u32..=0xFFFF {
+    let Some(ch) = char::from_u32(code) else {
+      continue;
+    };
+    let clue = format!("char U+{code:04X}: ");
+    assert_eq!(ActorPath::is_valid_path_element(&ch.to_string()), is_valid_char(ch) && ch != '$', "{clue}");
+    assert_eq!(ActorPath::is_valid_path_element(&format!("a{ch}")), is_valid_char(ch), "{clue}");
+    assert_eq!(ActorPath::is_valid_path_element(&format!("%{ch}0")), is_hex_char(ch), "{clue}");
+    assert_eq!(ActorPath::is_valid_path_element(&format!("%0{ch}")), is_hex_char(ch), "{clue}");
+  }
 }
 
 // "An ActorPath" must { "create correct toStringWithAddress" in { ... } }
