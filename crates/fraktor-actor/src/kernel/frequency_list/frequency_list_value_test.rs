@@ -146,3 +146,26 @@ fn updating_a_held_value_keeps_the_value_first_added() {
   assert_eq!(labels(list.least_to_most_frequent()), vec!["other"]);
   assert_eq!(labels(list.overall_least_to_most_recent()), vec!["other"]);
 }
+
+// Under dynamic aging, skipping `a` (priority 1) removes `b` (priority 3) and
+// raises the age to 3, so `c` and `d` enter at priority 4. Removing `a` then
+// lowers the age to 1, and updating `c` gives it priority 2 + 1 = 3. Pekko's
+// `findNextOrElseInsert` only walks forward from `c`'s bucket, so it places the
+// new bucket right after priority 4 (FrequencyList.scala:222-231), and the next
+// least frequent removal takes `d` before the lower priority `c`.
+#[test]
+fn an_age_lowered_after_a_skipping_removal_keeps_pekkos_bucket_order() {
+  let mut list = FrequencyList::<&'static str>::empty(true);
+  list.update("a");
+  list.update("b").update("b").update("b");
+  assert_eq!(list.remove_least_frequent_skipping(1, &"a"), vec!["b"]);
+  list.update("c").update("d");
+  assert_eq!(list.least_to_most_frequent().copied().collect::<Vec<_>>(), vec!["a", "c", "d"]);
+  assert_eq!(list.remove_least_frequent(1), vec!["a"]);
+
+  list.update("c");
+
+  assert_eq!(list.least_to_most_frequent().copied().collect::<Vec<_>>(), vec!["d", "c"]);
+  assert_eq!(list.remove_least_frequent(1), vec!["d"]);
+  assert_eq!(list.least_to_most_frequent().copied().collect::<Vec<_>>(), vec!["c"]);
+}

@@ -45,6 +45,8 @@ step_start の provider / model の実測は、plan・review・review-adjudicati
 
 バケットの挿入は、整列の規則にせず、原典の手順（実装 L195–241）と `DoubleLinkedList`（L69–93、L129–137）をそのまま写した。`getFirstOrElsePrepend`・`getNextOrElseInsert`・`findNextOrElseInsert` を、それぞれ `first_or_else_prepend`・`next_or_else_insert`・`find_next_or_else_insert` に対応させた。`increaseAdjustedFrequency` は今のバケットを起点に進め、新しい priority が今のバケット以下でも今のバケットの直後に入る。
 
+更新回数・age・バケットの priority は、どれも原典では `Long` だが、移植ではそれぞれ専用の型 `Accesses`・`Age`・`Priority` にした（規約 domain-primitive、`.takt/workflows/rules/fraktor-coding-rules.md` L46–60。PR #129 のレビュー指摘）。priority は `Priority::of(accesses, aging)` だけで作り、dynamic aging がないときは更新回数そのもの、あるときは更新回数 + age になる。age は最小頻度の削除で `Age::of_removed(priority)` からだけ変わる。dynamic aging の有無は `Option<Age>` で持ち、無効のリストには age が存在しない。
+
 age を更新するのは `remove_least_frequent` と `remove_least_frequent_skipping` だけにした。値ごとに、そのバケットの priority を削除の直前に age に設定する。`remove`・`remove_most_*`・`remove_overall_*` は age を変えない。
 
 | 原典 | 移植 |
@@ -88,6 +90,8 @@ age を更新するのは `remove_least_frequent` と `remove_least_frequent_ski
 
 **境界の扱い（第1工程から持ち越した確認事項）。** 原典の `removeOverallLeastRecentOutside` は `timestamp < now - d`（L183）、`removeOverallMostRecentWithin` は `timestamp > now - d`（L189）で、どちらも strict である。原典のテストデータには境界ちょうどの時刻に更新した値がないため、原典3ケースでは strict と non-strict を区別できない。移植では同じ向き（`<` と `>`, `recency_list_value.rs:134`／`:149` と同じ形）にし、境界ちょうどの値が両方向とも残ることを単体テスト `frequency_list_value_test.rs::a_value_updated_exactly_at_the_boundary_stays_for_both_windows` で直接確かめている。
 
+**dynamic aging と skip の組み合わせ（PR #129 のレビュー指摘）。** 原典のバケットの並びは、dynamic aging のもとで常に priority の昇順になるとは限らない。skip 付きの削除で priority の高い値を先に消すと age が上がり、そのあと skip した値を消すと age が下がる。age が下がったあとに更新した値は、今のバケットより低い priority になることがある。原典の `findNextOrElseInsert`（実装 L222–231）は今のバケットから前へだけたどるので、その値は今のバケットの直後に入る。このため、次の最小頻度の削除は、priority がより高い前方の値から消す。移植は原典と同じ並びを保つ。型の rustdoc と `remove_least_frequent_skipping` の rustdoc にこの例外を書き、単体テスト `an_age_lowered_after_a_skipping_removal_keeps_pekkos_bucket_order` で確かめている。
+
 原典との差異は次のとおりで、原典テストが観測する値は変わらない。
 
 - 原典の時計は `earlierTime` を自分の単位で計算する。移植ではリストが `Clock::monotonic()` の `Duration` から窓を引く。秒単位の時計では、境界は原典と同じ時刻になる。
@@ -114,8 +118,8 @@ age を更新するのは `remove_least_frequent` と `remove_least_frequent_ski
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test frequency_list_spec -- --test-threads=1` | 0 | 3 passed / 0 failed / 0 ignored |
-| `cargo test -p fraktor-actor --lib frequency_list` | 0 | 6 passed（境界1件、保持値1件、時計なしの panic 4件） |
-| `cargo test --workspace` | 0 | 55 スイート、459 passed / 0 failed / 0 ignored |
+| `cargo test -p fraktor-actor --lib frequency_list` | 0 | 6 passed（境界1件、保持値1件、時計なしの panic 4件）。PR #129 のレビュー対応後は 7 passed（aging と skip の並び1件を追加） |
+| `cargo test --workspace` | 0 | 55 スイート、459 passed / 0 failed / 0 ignored。レビュー対応後は 460 passed |
 | `cargo fmt --check` | 0 | 差分なし |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
 | `cargo run --quiet --release --locked --manifest-path tools/syn-check/Cargo.toml -- --format json crates/fraktor-actor` | 0 | `clean: true`、151 files、違反0 |

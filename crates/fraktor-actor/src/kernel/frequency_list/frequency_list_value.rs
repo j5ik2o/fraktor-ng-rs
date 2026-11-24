@@ -24,6 +24,13 @@ mod tests;
 /// whole insertion by the age recorded on each least-frequent removal, so that
 /// entries that survived earlier evictions age together with the list.
 ///
+/// Under dynamic aging the buckets stay in Pekko's order, which is not always
+/// sorted by priority. An updated value moves forward from its current bucket,
+/// and a removal that skips a value can lower the age. A value updated after
+/// that can get a priority below the bucket it leaves, and Pekko then places
+/// it right after that bucket, so a less frequent removal takes the values in
+/// front of it first. The port keeps that order.
+///
 /// Pekko pairs a doubly linked list of frequency buckets with a doubly linked
 /// list of values in each bucket and a hash map of values. The kernel has no
 /// hash map, so the port keeps the buckets in a double-linked list keyed by
@@ -40,8 +47,7 @@ pub struct FrequencyList<A> {
   buckets: FrequencyBuckets<A>,
   nodes: BTreeMap<A, Node>,
   overall: Option<OverallRecency<A>>,
-  dynamic_aging: bool,
-  age: u64,
+  aging: Option<Age>,
   next_sequence: u64,
 }
 
@@ -50,7 +56,7 @@ pub struct FrequencyList<A> {
 // buckets from the least to the most frequent, the way Pekko's
 // `DoubleLinkedList[FrequencyNode]` links them.
 struct Bucket<A> {
-  priority: u64,
+  priority: Priority,
   less: Option<u64>,
   more: Option<u64>,
   values: BTreeMap<u64, A>,
@@ -61,10 +67,46 @@ struct Bucket<A> {
 // sits in the overall recency order.
 #[derive(Clone, Copy)]
 struct Node {
-  accesses: u64,
+  accesses: Accesses,
   bucket: u64,
   bucket_sequence: u64,
   overall_sequence: Option<u64>,
+}
+
+// How many times the list has seen a value updated, counting the update that
+// added it.
+#[derive(Clone, Copy)]
+struct Accesses(u64);
+
+impl Accesses {
+  const FIRST: Self = Self(1);
+
+  fn next(self) -> Self {
+    Self(self.0 + 1)
+  }
+}
+
+// The age that dynamic aging adds to every priority it assigns: the priority of
+// the value last removed as the least frequent, and zero before that.
+#[derive(Clone, Copy, Default)]
+struct Age(u64);
+
+impl Age {
+  // Pekko's `age = node.frequency.priority` on a least frequent removal.
+  fn of_removed(priority: Priority) -> Self {
+    Self(priority.0)
+  }
+}
+
+// The key of a frequency bucket: the accesses of its values, plus the age when
+// dynamic aging is on.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Priority(u64);
+
+impl Priority {
+  fn of(accesses: Accesses, aging: Option<Age>) -> Self {
+    Self(accesses.0 + aging.map_or(0, |age| age.0))
+  }
 }
 
 struct OverallRecency<A> {
@@ -105,7 +147,7 @@ impl<A> FrequencyBuckets<A> {
     self.last
   }
 
-  fn priority_of(&self, bucket: u64) -> u64 {
+  fn priority_of(&self, bucket: u64) -> Priority {
     self.buckets[&bucket].priority
   }
 
@@ -125,7 +167,7 @@ impl<A> FrequencyBuckets<A> {
     &mut self.buckets.get_mut(&bucket).expect("the bucket exists").values
   }
 
-  fn allocate(&mut self, priority: u64) -> u64 {
+  fn allocate(&mut self, priority: Priority) -> u64 {
     let bucket = self.next_bucket_id;
     self.next_bucket_id += 1;
     self.buckets.insert(bucket, Bucket { priority, less: None, more: None, values: BTreeMap::new() });
@@ -175,7 +217,7 @@ impl<A> FrequencyBuckets<A> {
 
   // Pekko's `getFirstOrElsePrepend`: use the first bucket if it passes the
   // check, otherwise prepend a new one.
-  fn first_or_else_prepend(&mut self, priority: u64) -> u64 {
+  fn first_or_else_prepend(&mut self, priority: Priority) -> u64 {
     match self.first {
       | Some(first) if self.priority_of(first) == priority => first,
       | _ => {
@@ -188,7 +230,7 @@ impl<A> FrequencyBuckets<A> {
 
   // Pekko's `getNextOrElseInsert`: use the next bucket if it passes the check,
   // otherwise insert a new one right after `bucket`.
-  fn next_or_else_insert(&mut self, bucket: u64, priority: u64) -> u64 {
+  fn next_or_else_insert(&mut self, bucket: u64, priority: Priority) -> u64 {
     match self.more_of(bucket) {
       | Some(next) if self.priority_of(next) == priority => next,
       | _ => {
@@ -202,7 +244,7 @@ impl<A> FrequencyBuckets<A> {
   // Pekko's `findNextOrElseInsert`: walk forward while the next bucket is
   // `priority < target`, then use the next bucket if it equals the target,
   // otherwise insert a new one right after the last walked bucket.
-  fn find_next_or_else_insert(&mut self, bucket: u64, priority: u64) -> u64 {
+  fn find_next_or_else_insert(&mut self, bucket: u64, priority: Priority) -> u64 {
     let mut current = bucket;
     while let Some(next) = self.more_of(current) {
       if self.priority_of(next) < priority {
@@ -228,8 +270,7 @@ impl<A: Ord + Clone> FrequencyList<A> {
       buckets: FrequencyBuckets::new(),
       nodes: BTreeMap::new(),
       overall: clock.map(|clock| OverallRecency { clock, by_recency: BTreeMap::new() }),
-      dynamic_aging,
-      age: 0,
+      aging: dynamic_aging.then(Age::default),
       next_sequence: 0,
     }
   }
@@ -286,7 +327,9 @@ impl<A: Ord + Clone> FrequencyList<A> {
       },
       | None => {
         let (bucket, bucket_sequence) = self.add_initial_frequency(value.clone());
-        self.nodes.insert(value.clone(), Node { accesses: 1, bucket, bucket_sequence, overall_sequence: None });
+        self
+          .nodes
+          .insert(value.clone(), Node { accesses: Accesses::FIRST, bucket, bucket_sequence, overall_sequence: None });
         self.stamp(&value);
       },
     }
@@ -311,6 +354,11 @@ impl<A: Ord + Clone> FrequencyList<A> {
 
   /// Skips the values equal to `skip`, then removes up to `n` of the next least
   /// frequent values and returns them from the least frequent on.
+  ///
+  /// Under dynamic aging, removing a value with a higher priority than the one
+  /// skipped raises the age, and removing the skipped value later lowers it.
+  /// Values updated after that can sit behind values with a higher priority,
+  /// as in Pekko (see the type's documentation).
   pub fn remove_least_frequent_skipping(&mut self, n: usize, skip: &A) -> Vec<A> {
     let victims = self.forward_values(n, Some(skip));
     victims.into_iter().map(|value| self.remove_least_frequent_node(value)).collect()
@@ -405,8 +453,8 @@ impl<A: Ord + Clone> FrequencyList<A> {
   // Places a new value in its initial bucket and returns the bucket id and the
   // value's placement sequence within it.
   fn add_initial_frequency(&mut self, value: A) -> (u64, u64) {
-    let priority = if self.dynamic_aging { 1 + self.age } else { 1 };
-    let bucket = if self.dynamic_aging {
+    let priority = Priority::of(Accesses::FIRST, self.aging);
+    let bucket = if self.aging.is_some() {
       match self.buckets.first() {
         | Some(first) if self.buckets.priority_of(first) < priority => {
           self.buckets.find_next_or_else_insert(first, priority)
@@ -423,9 +471,9 @@ impl<A: Ord + Clone> FrequencyList<A> {
   // Moves the held value, not `value`, to the next bucket, so that an equal
   // value passed to `update` only serves as the key.
   fn increase_frequency(&mut self, value: &A, node: Node) {
-    let accesses = node.accesses + 1;
-    let priority = if self.dynamic_aging { accesses + self.age } else { accesses };
-    let bucket = if self.dynamic_aging {
+    let accesses = node.accesses.next();
+    let priority = Priority::of(accesses, self.aging);
+    let bucket = if self.aging.is_some() {
       self.buckets.find_next_or_else_insert(node.bucket, priority)
     } else {
       self.buckets.next_or_else_insert(node.bucket, priority)
@@ -492,12 +540,10 @@ impl<A: Ord + Clone> FrequencyList<A> {
   }
 
   fn remove_least_frequent_node(&mut self, value: A) -> A {
-    if self.dynamic_aging {
-      if let Some(node) = self.nodes.get(&value) {
-        self.age = self.buckets.priority_of(node.bucket);
-      }
-    }
     if let Some(node) = self.nodes.get(&value).copied() {
+      if let Some(age) = &mut self.aging {
+        *age = Age::of_removed(self.buckets.priority_of(node.bucket));
+      }
       self.remove_node(&value, node);
     }
     value
