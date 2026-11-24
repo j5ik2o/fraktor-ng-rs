@@ -109,8 +109,8 @@ fn java_lines(text: &str) -> impl Iterator<Item = &str> {
 // `ResolverConfigurationImpl.resolvconf("nameserver", 1, 5)`: a line counts when
 // it starts with the keyword followed by a space or a tab, and its first value
 // is kept, an unbracketed IPv6 literal bracketed. The JDK also drops a value
-// that starts with `#` or `;`; such a value is never an IP literal, so
-// `server_address` drops it here.
+// that starts with `#` or `;`; such a value has no IP literal before the end
+// of the URI authority, so `server_address` drops it here.
 fn nameserver_values(text: &str) -> impl Iterator<Item = String> + '_ {
   java_lines(text)
     .filter_map(|line| line.strip_prefix(NAMESERVER_KEYWORD))
@@ -130,16 +130,19 @@ fn bracket_ipv6(value: &str) -> String {
 }
 
 // The original's `asInetSocketAddress(s"dns://$server")`: the URI's host and
-// its port, or 53 when the port is missing. The host must be a bracketed IPv6
-// literal or contain no `:`, as a URI server authority requires; the host and
-// port are then read by the kernel's name server address parser.
-fn server_address(server: String) -> Option<SocketAddr> {
+// its port, or 53 when the port is missing. The authority ends at the first
+// `/`, `?` or `#`, so `192.0.2.1#local` is `192.0.2.1`. The host must be a
+// bracketed IPv6 literal or contain no `:`, as a URI server authority
+// requires; the host and port are then read by the kernel's name server
+// address parser.
+fn server_address(value: String) -> Option<SocketAddr> {
+  let server = value.split(['/', '?', '#']).next().unwrap_or_default();
   let (host, port) = match server.strip_prefix('[') {
     | Some(_) => {
       let end = server.find(']')? + 1;
       (&server[..end], &server[end..])
     },
-    | None => server.find(':').map_or((server.as_str(), ""), |index| server.split_at(index)),
+    | None => server.find(':').map_or((server, ""), |index| server.split_at(index)),
   };
   let port = match port.strip_prefix(':') {
     | None if port.is_empty() => FALLBACK_PORT,

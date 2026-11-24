@@ -10,12 +10,14 @@ use alloc::{
   vec::Vec,
 };
 use core::{
+  hash::{BuildHasher, Hasher},
   net::SocketAddr,
-  sync::atomic::{AtomicUsize, Ordering},
   time::Duration,
 };
 use std::{
-  fs,
+  collections::hash_map::RandomState,
+  fs::{self, DirBuilder},
+  io::ErrorKind,
   path::{Path, PathBuf},
 };
 
@@ -25,18 +27,26 @@ use crate::kernel::io::dns::{
   ResolvConf, SearchDomainsSetting, TtlSetting,
 };
 
-static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
-
-// A temporary directory removed when the test ends.
+// A temporary directory this test created, removed when the test ends.
+//
+// The directory is created exclusively under a fresh random name, so a path
+// that already exists, whoever made it, is never reused or removed; on Unix
+// only the owner can enter it.
 struct TempDir(PathBuf);
 
 impl TempDir {
   fn new() -> Self {
-    let index = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!("fraktor-host-dns-{}-{index}", std::process::id()));
-    let _ = fs::remove_dir_all(&path);
-    fs::create_dir_all(&path).expect("create a temporary directory");
-    Self(path)
+    let base = std::env::temp_dir();
+    for _ in 0..16 {
+      let name = format!("fraktor-host-dns-{:016x}", RandomState::new().build_hasher().finish());
+      let path = base.join(name);
+      match private_directory_builder().create(&path) {
+        | Ok(()) => return Self(path),
+        | Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+        | Err(error) => panic!("create a temporary directory: {error}"),
+      }
+    }
+    panic!("no unused temporary directory name");
   }
 
   fn path(&self) -> &Path {
@@ -54,6 +64,36 @@ impl Drop for TempDir {
   fn drop(&mut self) {
     let _ = fs::remove_dir_all(&self.0);
   }
+}
+
+// `create` (not `create_all`) fails when the path already exists.
+fn private_directory_builder() -> DirBuilder {
+  let mut builder = DirBuilder::new();
+  #[cfg(unix)]
+  std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+  builder
+}
+
+// The helper never takes over a path that already exists: creating it again
+// fails, and each helper directory is new, owner-only, and left alone by
+// another helper's cleanup.
+#[test]
+fn temporary_directories_are_created_exclusively() {
+  let first = TempDir::new();
+  let second = TempDir::new();
+  assert_ne!(first.path(), second.path());
+  let error = private_directory_builder().create(first.path()).expect_err("the directory already exists");
+  assert_eq!(error.kind(), ErrorKind::AlreadyExists);
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(first.path()).expect("the directory exists").permissions().mode();
+    assert_eq!(mode & 0o777, 0o700);
+  }
+  let first_path = first.path().to_path_buf();
+  drop(first);
+  assert!(!first_path.exists());
+  assert!(second.path().is_dir());
 }
 
 fn host_with(contents: &str) -> (TempDir, SystemHostDnsConfiguration) {
@@ -297,4 +337,44 @@ fn an_unparseable_resolv_conf_falls_back_to_the_original_defaults() {
   let values = DnsSettingsValues::new(&default_config(), &host).expect("the host has name servers");
   assert!(values.search_domains().is_empty());
   assert_eq!(values.ndots(), 1);
+}
+
+// The JDK keeps `192.0.2.1#local` as one value, and the `dns://` URI ends its
+// authority at `#`, `?` or `/`, so the original reads the address before it.
+// An unbracketed IPv6 literal gets its brackets around the `#` too, which the
+// URI cannot read, so it is dropped.
+#[test]
+fn a_name_server_ends_where_the_uri_authority_ends() {
+  let (_dir, host) = host_with(
+    "nameserver 192.0.2.1#local\nnameserver 192.0.2.2:5353#x\nnameserver [2001:db8::1]#x\nnameserver \
+     192.0.2.3/x\nnameserver 192.0.2.4?x\nnameserver 2001:db8::2#x\n",
+  );
+  assert_eq!(
+    host.name_servers(),
+    Some(vec![
+      addr("192.0.2.1:53"),
+      addr("192.0.2.2:5353"),
+      addr("[2001:db8::1]:53"),
+      addr("192.0.2.3:53"),
+      addr("192.0.2.4:53")
+    ])
+  );
+}
+
+// A trailing comment on the only name server still gives the default settings
+// a name server.
+#[test]
+fn default_name_servers_read_an_address_with_a_trailing_comment() {
+  let (_dir, host) = host_with("nameserver 192.0.2.1#local\n");
+  let values = DnsSettingsValues::new(&default_config(), &host).expect("the host has a name server");
+  assert_eq!(values.name_servers(), &[addr("192.0.2.1:53")]);
+}
+
+// The original's `ResolvConfParser` has no trailing comments: on a `search`
+// line, `#` and the words after it are search domains too. Some resolvers,
+// such as FreeBSD's, end the line at `#`; this port keeps the original.
+#[test]
+fn a_trailing_comment_on_a_search_line_is_kept_as_the_original_does() {
+  let (_dir, host) = host_with("search corp.example # managed\n");
+  assert_eq!(host.resolv_conf(), Some(ResolvConf::new(strings(&["corp.example", "#", "managed"]), 1)));
 }
