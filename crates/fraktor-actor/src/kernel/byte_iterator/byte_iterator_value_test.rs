@@ -3,6 +3,7 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 
 use super::ByteIterator;
+use crate::kernel::byte_iterator::ByteOrder;
 
 fn over(arrays: &[&[u8]]) -> ByteIterator {
   ByteIterator::over_arrays(arrays.iter().map(|array| Arc::from(*array)).collect())
@@ -63,4 +64,32 @@ fn skipping_moves_across_arrays_and_stops_at_the_end() {
   assert_eq!(iterator.skip_bytes(5), 1);
   assert!(!iterator.has_next());
   assert_eq!(iterator.skip_bytes(1), 0);
+}
+
+#[test]
+fn numbers_are_read_in_the_given_byte_order_across_arrays() {
+  let bytes = [0x81, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+  let split = || over(&[&bytes[..3], &bytes[3..]]);
+  assert_eq!(split().get_short(ByteOrder::BigEndian), Some(i16::from_be_bytes([0x81, 0x02])));
+  assert_eq!(split().get_short(ByteOrder::LittleEndian), Some(i16::from_le_bytes([0x81, 0x02])));
+  assert_eq!(split().get_int(ByteOrder::BigEndian), Some(i32::from_be_bytes([0x81, 0x02, 0x03, 0x04])));
+  assert_eq!(split().get_int(ByteOrder::LittleEndian), Some(i32::from_le_bytes([0x81, 0x02, 0x03, 0x04])));
+  assert_eq!(split().get_long(ByteOrder::BigEndian), Some(i64::from_be_bytes(bytes)));
+  assert_eq!(split().get_long(ByteOrder::LittleEndian), Some(i64::from_le_bytes(bytes)));
+}
+
+#[test]
+fn a_read_consumes_the_number_and_the_next_read_continues_after_it() {
+  let mut iterator = over(&[&[0x00, 0x01, 0x00], &[0x02, 0x09]]);
+  assert_eq!(iterator.get_short(ByteOrder::BigEndian), Some(1));
+  assert_eq!(iterator.get_short(ByteOrder::BigEndian), Some(2));
+  assert_eq!(iterator.next(), Some(0x09));
+}
+
+#[test]
+fn a_read_with_too_few_bytes_left_returns_none_and_consumes_nothing() {
+  let mut iterator = over(&[&[0x01, 0x02], &[0x03]]);
+  assert_eq!(iterator.get_int(ByteOrder::BigEndian), None);
+  assert_eq!(iterator.get_long(ByteOrder::LittleEndian), None);
+  assert_eq!(iterator.collect::<Vec<u8>>(), vec![0x01, 0x02, 0x03]);
 }
