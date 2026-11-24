@@ -3452,7 +3452,7 @@ nodes:
     module: actor-tests
     class: MatchBuilderTest
     test_cases_approx: 3
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -3469,8 +3469,8 @@ nodes:
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/match_builder_test.rs
   goal: G0issue145
 - id: actor-tests/src/test/scala/org/apache/pekko/util/MessageBufferSpec.scala
   name: actor-tests:MessageBufferSpec
@@ -3583,7 +3583,7 @@ nodes:
     module: actor-tests
     class: PFBuilderTest
     test_cases_approx: 1
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -3599,8 +3599,8 @@ nodes:
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/pf_builder_test.rs
   goal: G0issue145
 - id: actor-tests/src/test/scala/org/apache/pekko/pattern/PatternSpec.scala
   name: actor-tests:PatternSpec
