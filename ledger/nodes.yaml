@@ -2895,7 +2895,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue128
 - id: actor-tests/src/test/scala/org/apache/pekko/util/FrequencySketchSpec.scala
   name: actor-tests:FrequencySketchSpec
   kind: test
