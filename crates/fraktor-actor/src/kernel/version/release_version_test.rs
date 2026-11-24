@@ -91,3 +91,14 @@ fn treats_leading_zeros_as_equal() {
   assert!(!padded.is_numeric_less_than_patch(&plain));
   assert!(!plain.is_numeric_less_than_patch(&padded));
 }
+
+// A dash with no qualifier, or a qualifier that starts with a multi-byte
+// character, does not match `-(M|RC)(\d+)`, so the version is unreadable
+// instead of panicking on a byte split.
+#[test]
+fn a_dash_without_a_milestone_does_not_match() {
+  assert_eq!(ReleaseVersion::parse("2.5.6-"), None);
+  assert_eq!(ReleaseVersion::parse("2.5.6-é1"), None);
+  assert_eq!(ReleaseVersion::parse("2.5.6-Mé"), None);
+  assert_eq!(ReleaseVersion::parse("2.5.6-R"), None);
+}

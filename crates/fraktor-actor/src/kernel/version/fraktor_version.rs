@@ -1,9 +1,6 @@
 //! The check that a library's required Fraktor version is satisfied.
 
-use super::{
-  release_version::{mismatch, ReleaseVersion},
-  unsupported_fraktor_version::UnsupportedFraktorVersion,
-};
+use super::{release_version::ReleaseVersion, unsupported_fraktor_version::UnsupportedFraktorVersion};
 
 #[cfg(test)]
 #[path = "fraktor_version_test.rs"]
@@ -40,7 +37,7 @@ impl FraktorVersion {
     if required.satisfies(&current) {
       Ok(())
     } else {
-      Err(mismatch(library_name, required_version, current_version))
+      Err(UnsupportedFraktorVersion::new(library_name, required_version, current_version))
     }
   }
 }

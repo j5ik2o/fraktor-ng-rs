@@ -1,7 +1,5 @@
 //! The parts of a release version that a compatibility check reads.
 
-use crate::kernel::version::unsupported_fraktor_version::UnsupportedFraktorVersion;
-
 #[cfg(test)]
 #[path = "release_version_test.rs"]
 mod tests;
@@ -64,11 +62,6 @@ impl<'a> ReleaseVersion<'a> {
   }
 }
 
-/// Builds the error for a required version that `current` does not satisfy.
-pub(crate) fn mismatch(library_name: &str, required: &str, current: &str) -> UnsupportedFraktorVersion {
-  UnsupportedFraktorVersion::new(library_name, required, current)
-}
-
 fn read_patch_and_milestone(rest: &str) -> Option<(&str, Option<(&str, &str)>)> {
   let Some(dash) = rest.find('-') else {
     return is_digits(rest).then_some((rest, None));
@@ -78,9 +71,11 @@ fn read_patch_and_milestone(rest: &str) -> Option<(&str, Option<(&str, &str)>)> 
   if !is_digits(patch) {
     return None;
   }
-  let (kind, number) =
-    qualifier.split_at_checked(2).filter(|(kind, _)| *kind == "RC").unwrap_or_else(|| qualifier.split_at(1));
-  if !matches!(kind, "M" | "RC") || !is_digits(number) {
+  let (kind, number) = match qualifier.strip_prefix("RC") {
+    | Some(number) => ("RC", number),
+    | None => ("M", qualifier.strip_prefix('M')?),
+  };
+  if !is_digits(number) {
     return None;
   }
   Some((patch, Some((kind, number))))

@@ -88,3 +88,11 @@ fn carries_the_arguments_and_the_original_message_on_failure() {
     "Current version of Fraktor is [2.5.6-RC1], but PekkoVersionSpec requires version [2.5.6]"
   );
 }
+
+// Neither side matches the release pattern, so the check accepts them as the
+// original does for unknown versions.
+#[test]
+fn an_empty_or_non_ascii_qualifier_is_accepted_as_unknown() {
+  assert_eq!(FraktorVersion::require("x", "2.5.6", "2.5.6-"), Ok(()));
+  assert_eq!(FraktorVersion::require("x", "2.5.6-é", "2.5.6"), Ok(()));
+}
