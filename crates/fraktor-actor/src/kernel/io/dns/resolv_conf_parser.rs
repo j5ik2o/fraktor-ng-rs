@@ -42,6 +42,12 @@ impl ResolvConfParser {
   /// such as the full-width `５` or the Arabic-Indic `٣`. Digits outside the
   /// BMP, other numbers such as `²`, and values past the `i32` range are
   /// errors.
+  ///
+  /// The accepted digits are those of JDK 11 and later (Unicode 10.0 and
+  /// later): 37 runs of ten, 370 characters, measured to be the same on JDK 21,
+  /// 25 and 26. JDK 8 (Unicode 6.2) lacks two of these runs, the Sinhala Lith
+  /// digits `U+0DE6`..=`U+0DEF` and the Myanmar Tai Laing digits
+  /// `U+A9F0`..=`U+A9F9`, and rejects them; this parser accepts them.
   pub fn parse_lines<'a, I: IntoIterator<Item = &'a str>>(lines: I) -> Result<ResolvConf, ResolvConfParseError> {
     let mut search = Vec::new();
     let mut ndots = DEFAULT_NDOTS;

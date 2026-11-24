@@ -190,7 +190,7 @@ uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml -
 
 ### 実装
 
-- `ResolvConfParser::parse_lines` の ndots の読み取りを、`str::parse::<i32>` から非公開関数 `parse_java_int` に替えた。37範囲の `0` のコード点を定数表に持ち、各文字の値を引く。値は Java と同じく負の側で積み、`i32::MIN` で桁あふれしない。採用した表は JDK 11 以降の37範囲で、JDK 8 との差はソースのコメントに書いた
+- `ResolvConfParser::parse_lines` の ndots の読み取りを、`str::parse::<i32>` から非公開関数 `parse_java_int` に替えた。37範囲の `0` のコード点を定数表に持ち、各文字の値を引く。値は Java と同じく負の側で積み、`i32::MIN` で桁あふれしない。採用した表は JDK 11 以降の37範囲である。この基準と JDK 8 との差（2範囲）は、公開 rustdoc（`parse_lines`）と表のコメントに書いた（PR #161 の Devin の指摘で rustdoc に追加）
 - kernel の no_std を保つ。`core` と `alloc` だけを使い、syn-check の `cfg-std-forbid` と `port-adaptor-boundary` は違反0である
 - 公開 API は変えていない。`ResolvConfParseError::InvalidNdots` と `ResolvConf` の型・関数はそのままで、rustdoc の説明だけを原典に合わせて直した。以前は失敗にしていた入力の一部が成功するだけで、成功していた入力の結果は変わらない。保存済みのデータはない
 
