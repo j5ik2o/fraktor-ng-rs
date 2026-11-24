@@ -1,7 +1,12 @@
-// Ported from Pekko v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff):
-//   actor-tests/src/test/scala-2.13+/org/apache/pekko/util/ByteStringBuilderScala213PlusSpec.scala
+// Ported from Pekko v2.0.0 (SHA 9fbd2283b1cf701c90a1223bf621942c191db61f):
+//   actor-tests/src/test/scala/org/apache/pekko/util/ByteStringBuilderScala213PlusSpec.scala
+// First ported from v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff), where
+// the file was `actor-tests/src/test/scala-2.13+/...` and had the first three
+// cases. v2.0.0 moves it to `scala/` when it drops Scala 2.12 (upstream
+// f2b677dfa0, #1986) and adds the two "handle addAll with ...ArraySeq.ofByte
+// without aliasing the backing array" cases (upstream fef71efd85, #3539).
 //
-// The original's three `addAll` cases are kept as one test each, named after
+// The original's five `addAll` cases are kept as one test each, named after
 // the case, with the original name as a comment. Each test builds the result in
 // one chain and compares it with `shouldEqual` (`assert_eq!` in the port).
 //
@@ -49,4 +54,41 @@ fn handle_add_all_with_indexed_seq() {
 fn handle_add_all_with_byte_string() {
   let result: ByteString = ByteString::new_builder().append(&ByteString::from_string("a")).result();
   assert_eq!(result, ByteString::from_string("a"));
+}
+
+// The two ArraySeq cases wrap a byte array without copying it, add it, then
+// overwrite the array's first byte, and expect the built byte string to keep
+// the bytes as they were when they were added. `ArraySeq.unsafeWrapArray(array)`
+// (an immutable view) is a shared borrow of the array, `array.iter().copied()`;
+// `mutable.ArraySeq.make(array)` (a mutable view) is a mutable borrow,
+// `array.iter_mut().map(|byte| *byte)`. Rust's borrow rules end either borrow
+// before the array is written again, so the builder cannot alias the array
+// through safe code; the cases still check that the result has the bytes as
+// added. `Array.emptyByteArray` is an empty array, and `ByteString.empty` is
+// `ByteString::empty()`.
+
+// "handle addAll with immutable.ArraySeq.ofByte without aliasing the backing array"
+#[test]
+fn handle_add_all_with_immutable_array_seq_of_byte_without_aliasing_the_backing_array() {
+  let mut array = *b"abc";
+  let mut builder = ByteString::new_builder();
+  builder.add_all(array.iter().copied());
+  array[0] = b'z';
+  assert_eq!(array, *b"zbc");
+  assert_eq!(builder.result(), ByteString::from_string("abc"));
+  let empty: [u8; 0] = [];
+  assert_eq!(ByteString::new_builder().add_all(empty.iter().copied()).result(), ByteString::empty());
+}
+
+// "handle addAll with mutable.ArraySeq.ofByte without aliasing the backing array"
+#[test]
+fn handle_add_all_with_mutable_array_seq_of_byte_without_aliasing_the_backing_array() {
+  let mut array = *b"abc";
+  let mut builder = ByteString::new_builder();
+  builder.add_all(array.iter_mut().map(|byte| *byte));
+  array[0] = b'z';
+  assert_eq!(array, *b"zbc");
+  assert_eq!(builder.result(), ByteString::from_string("abc"));
+  let mut empty: [u8; 0] = [];
+  assert_eq!(ByteString::new_builder().add_all(empty.iter_mut().map(|byte| *byte)).result(), ByteString::empty());
 }
