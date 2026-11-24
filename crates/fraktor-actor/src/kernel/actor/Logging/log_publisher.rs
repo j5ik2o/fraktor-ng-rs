@@ -137,7 +137,7 @@ impl LogPublisher {
 /// further placeholders. A missing argument leaves its `{}` unchanged. Any
 /// argument beyond the placeholders is reported as
 /// ` WARNING arguments left: <n>`, where `<n>` is how many were not consumed.
-fn format_template<A: fmt::Display>(template: &str, args: &[A]) -> String {
+pub(crate) fn format_template<A: fmt::Display>(template: &str, args: &[A]) -> String {
   let mut rendered = String::new();
   let mut next = 0;
   let mut rest = template;
