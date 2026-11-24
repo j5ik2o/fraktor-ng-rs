@@ -2461,7 +2461,7 @@ nodes:
     module: actor-tests
     class: DomainNameSpec
     test_cases_approx: 6
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -2477,8 +2477,8 @@ nodes:
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/domain_name_spec.rs
   goal: G0issue142
 - id: actor-tests/src/test/scala/org/apache/pekko/util/DoubleLinkedListSpec.scala
   name: actor-tests:DoubleLinkedListSpec
@@ -3505,7 +3505,7 @@ nodes:
     module: actor-tests
     class: MessageSpec
     test_cases_approx: 1
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -3521,8 +3521,8 @@ nodes:
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/message_spec.rs
   goal: G0issue142
 - id: actor-tests/src/test/scala/org/apache/pekko/routing/MetricsBasedResizerSpec.scala
   name: actor-tests:MetricsBasedResizerSpec
