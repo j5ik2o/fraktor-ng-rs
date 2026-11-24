@@ -71,7 +71,7 @@ Scala の2つのスイートは、原典でも同じ操作を別名で呼ぶだ�
 kernel の `byte_string` モジュールに足した。どれも `core` と `alloc` だけを使う（syn-check の `cfg-std-forbid` は違反0）。#132 の `ByteString` の既存の公開 API（`empty`、`from_string`、`from_array`、`concat`、`iterator`、`as_input_stream`、`Clone`/`Debug`/`Default`）は変えていない。足したのは次の API だけである。
 
 - `ByteStringBuilder`（`byte_string_builder.rs`）：確定した共有配列の列と、`add_all` で溜めた未確定のバイトを持つ。`append` は先に未確定のバイトを1つの配列として確定させてから、渡された `ByteString` の配列を共有したまま末尾に積む（原典が `clearTemp()` のあと `ByteString1` をそのまま積むのと同じ）。空の `ByteString` を渡しても何も変わらない（原典の `if (bytes.nonEmpty)`）。`result` はビルダーを変えずに、それまでに追加したバイトを追加順に並べた `ByteString` を返す。返した値は、その後に追加しても変わらない。
-- `ByteString::from_ints(&[i32])`：各値の下位8ビットを並べる。原典の `fromInts(array: Int*)` は `Integral[Int]` の `toByte` で各値を `Byte` にする。Rust の `as u8` は同じビット列を取る。
+- `ByteString::from_ints(&[i32])`：各値の下位8ビットを並べる。原典の `fromInts(array: Int*)`（L125–126）は `CompactByteString.apply[T](bytes: T*)(implicit num: Integral[T])` を呼び、各値を `num.toInt(x).toByte` で `Byte` にする（L1196–1198）。`Int` の `toByte` は下位8ビットを取り、Rust の `as u8` は同じビット列を取る。
 - `ByteString::new_builder()`、`ByteString::create_builder()`：空のビルダーを返す。
 - `PartialEq`/`Eq`：バイトの列として比べる。内部の配列の分け方は結果に影響しない。原典の `ByteString` の等価性も、表現（`ByteString1C`、`ByteString1`、`ByteStrings`）ではなく要素の列で決まる。
 - クレート内向けの `ByteString::from_arrays` と `arrays()`：ビルダーが配列をコピーせずに受け渡すために使う。
@@ -89,7 +89,7 @@ kernel の `byte_string` モジュールに足した。どれも `core` と `all
 | 空の ByteString の追加は何も変えない | L1337、L1390 | 単体テスト `appending_an_empty_byte_string_changes_nothing` |
 | 何も追加しなければ `result()` は `ByteString.empty` | L1566–1567 | 単体テスト `an_empty_builder_results_in_the_empty_byte_string` |
 | `result()` の後もビルダーを使い続けられ、先に返した結果は変わらない | L1566–1575（`clearTemp` は確定させるだけ） | 単体テスト `a_result_can_be_followed_by_more_bytes` |
-| `fromInts` は各 `Int` を `toByte` で `Byte` にする | L125–126 | `test_creation`、単体テスト `from_ints_keeps_the_low_byte_of_each_value`（`256`→`0`、`-1`→`0xff`） |
+| `fromInts` は各 `Int` を `num.toInt(x).toByte` で `Byte` にする（下位8ビット） | L125–126、L1196–1198 | `test_creation`、単体テスト `from_ints_keeps_the_low_byte_of_each_value`（`256`→`0`、`-1`→`0xff`） |
 | 等価性はバイトの列で決まる | `ByteString` は `IndexedSeq[Byte]` の等価性を使う | 統合テストの8件中7件の `assert_eq!`、単体テスト `byte_strings_with_the_same_bytes_are_equal_however_they_are_split` |
 
 原典との差異は次のとおりで、原典テストが観測する値は変わらない。
@@ -102,7 +102,10 @@ kernel の `byte_string` モジュールに足した。どれも `core` と `all
 
 ### 独立レビュー（別系統のモデル）
 
-実装と自己レビューがどちらも Claude 系統なので、`docs/decisions/takt-workflow-design.md` §2.6 に従い、調整担当が手配する別系統の読み取り専用レビューを PR に対して1回行う。結果は PR のコメントと本節に記録する。
+- 実施者: 実装者とは別系統の、読み取り専用のレビュー担当。モデルは Codex（OpenAI GPT-6.2 Sol、`gpt-6.2-sol`）で、調整担当が手配した。実装（第2工程）と自己レビューがどちらも Claude Opus 5.5 なので、`docs/decisions/takt-workflow-design.md` §2.6 に従って別系統のレビューを足した。
+- 対象: PR #135 の固定 HEAD `d272ecc8b23aa8f9a3ff425bc74d93bba2559233`。比較元は `8cecd4783b864f7e19f6ff0a1ba6dfd96985658a`。原典は Pekko 固定 SHA `9a54d1294c3ac7821bbed3c940769c3d5027d1ff`。記録は [PR のコメント](https://github.com/j5ik2o/fraktor-ng-rs/pull/135#issuecomment-7132355633)にある。
+- 判定: APPROVE。原典8件（Scala 3＋3、Java 2）の入力の種類、追加順、生成結果、等値比較は等価で、移植テストの弱体化も既存公開 API の回帰もない。除外は0件である。固定 HEAD の `cargo test --locked --workspace` は 494 件成功・失敗0・無視0。製品変更前の `23e10601` で、対象3スイートのコンパイル失敗を再現した。
+- 文書への補足1件と対応状況: 下位8ビットへの変換の根拠として、原典の実式 `num.toInt(x).toByte`（`ByteString.scala` L1196–1198）を参照できる、という指摘。本書の「実装」節と自己レビューの表に追記した。テストと実装のコードは変えていない。
 
 ## 製品編集前の実測
 
