@@ -2,6 +2,7 @@
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
@@ -68,6 +69,16 @@ impl ShardQueue {
         true
       },
       | None => false,
+    }
+  }
+
+  /// Puts `envelopes` at the front of the local queue, keeping their order.
+  ///
+  /// Mirrors `DequeBasedMessageQueue.enqueueFirst`, which `unstashAll` uses:
+  /// the envelopes were received before anything still queued.
+  pub(crate) fn prepend_locally(&mut self, envelopes: Vec<Envelope>) {
+    for envelope in envelopes.into_iter().rev() {
+      self.local.push_front(envelope);
     }
   }
 
