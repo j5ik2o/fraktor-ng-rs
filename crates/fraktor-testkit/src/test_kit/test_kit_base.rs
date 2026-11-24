@@ -33,6 +33,8 @@ static TEST_ACTOR_ID: AtomicUsize = AtomicUsize::new(0);
 /// The interval at which a waiting test checks for a message while it waits on
 /// a boundary that does not signal arrivals by itself.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// The default interval at which Pekko's `awaitCond` evaluates a condition.
+const CONDITION_INTERVAL: Duration = Duration::from_millis(100);
 
 /// The part of a test kit that receives messages and checks them.
 ///
@@ -360,6 +362,41 @@ impl TestKitBase {
         },
       }
     }
+  }
+
+  /// Waits until `condition` holds or `max` has passed.
+  ///
+  /// Mirrors `TestKitBase.awaitCond`: the condition is evaluated once before the
+  /// first wait, so an already true condition returns without sleeping. The
+  /// deadline runs on the monotonic clock and the actor system keeps running
+  /// between evaluations, so a message that makes the condition true is
+  /// delivered during the wait. A condition that never holds fails with a
+  /// `timeout` assertion; a panic raised by the condition itself propagates.
+  pub(crate) fn await_cond(&mut self, mut condition: impl FnMut() -> bool, max: Duration) {
+    let stop = Instant::now() + max;
+    loop {
+      if condition() {
+        return;
+      }
+      let remaining = stop.saturating_duration_since(Instant::now());
+      assert!(remaining > Duration::ZERO, "timeout {max:?} expired");
+      self.drive_for(remaining.min(CONDITION_INTERVAL));
+    }
+  }
+
+  /// Returns the time left in the innermost `within` scope.
+  ///
+  /// Mirrors `TestKitBase.remaining`: the time left is measured against the
+  /// monotonic clock and saturates to zero once the deadline has passed.
+  ///
+  /// # Panics
+  ///
+  /// Panics when no `within` scope surrounds the call.
+  pub(crate) fn remaining(&self) -> Duration {
+    let Some(deadline) = *self.scope.borrow() else {
+      panic!("`remaining` may not be called outside of `within`");
+    };
+    deadline.saturating_duration_since(Instant::now())
   }
 
   /// Delivers messages of the system for `max`, stopping at the deadline.

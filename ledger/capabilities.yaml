@@ -90,7 +90,7 @@ capabilities:
   label: awaitCond
   category: classic
   regex: \bawaitCond\b
-  provided_by: null
+  provided_by: G0issue121
 - id: fish-for-message
   label: fishForMessage
   category: classic
