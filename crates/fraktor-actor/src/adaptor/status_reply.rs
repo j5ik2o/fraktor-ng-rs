@@ -39,6 +39,51 @@ impl StatusReply {
     Self { result: Err(Arc::new(error)) }
   }
 
+  /// Creates a reply from `result`, keeping only the text of an error.
+  ///
+  /// Mirrors Pekko's `StatusReply.fromTry`: `Ok` becomes a success, and `Err`
+  /// becomes an [ErrorMessage] with the error's `Display` text. Pekko uses the
+  /// exception's class name when its message is `null`; a Rust error has no
+  /// `null` text, so an empty text is replaced with
+  /// [`core::any::type_name`] of `E`. That name is the compiler's rendering
+  /// and is not a stable string.
+  ///
+  /// Pekko's Java API `fromCallable` is this function applied to the result
+  /// of a closure that returns `Result`.
+  pub fn from_result<T, E>(result: Result<T, E>) -> Self
+  where
+    T: Any + Send + Sync,
+    E: Error,
+  {
+    match result {
+      | Ok(value) => Self::success(value),
+      | Err(error) => {
+        let text = error.to_string();
+        if text.is_empty() {
+          Self::error_message(core::any::type_name::<E>())
+        } else {
+          Self::error_message(text)
+        }
+      },
+    }
+  }
+
+  /// Creates a reply from `result`, keeping an error and its concrete type.
+  ///
+  /// Mirrors Pekko's `StatusReply.fromTryKeepException`. Pekko's Java API
+  /// `fromCallableKeepException` is this function applied to the result of a
+  /// closure that returns `Result`.
+  pub fn from_result_keep_error<T, E>(result: Result<T, E>) -> Self
+  where
+    T: Any + Send + Sync,
+    E: Error + Send + Sync + 'static,
+  {
+    match result {
+      | Ok(value) => Self::success(value),
+      | Err(error) => Self::error(error),
+    }
+  }
+
   /// Returns whether this reply carries a successful value.
   pub fn is_success(&self) -> bool {
     self.result.is_ok()
