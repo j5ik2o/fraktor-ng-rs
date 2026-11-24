@@ -20,6 +20,7 @@ pub mod io;
 pub mod message;
 pub mod recency_list;
 pub mod segmented_recency_list;
+pub mod setup;
 pub mod supervision;
 pub mod timeout;
 pub mod version;
