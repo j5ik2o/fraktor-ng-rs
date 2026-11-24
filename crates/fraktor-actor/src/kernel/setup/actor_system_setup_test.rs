@@ -44,3 +44,13 @@ fn a_setup_of_one_type_is_not_returned_for_another() {
   assert_eq!(setups.get::<First>(), Some(&First(2)));
   assert_eq!(setups.get::<Second>(), None);
 }
+
+#[test]
+fn get_returns_the_registered_instance() {
+  let registered = Arc::new(First(1));
+  let setups = ActorSystemSetup::from_setups([Arc::clone(&registered) as Arc<dyn Setup>]).and(Second(2));
+  let cloned = setups.clone();
+
+  assert!(setups.get::<First>().is_some_and(|setup| core::ptr::eq(setup, Arc::as_ptr(&registered))));
+  assert!(cloned.get::<First>().is_some_and(|setup| core::ptr::eq(setup, Arc::as_ptr(&registered))));
+}

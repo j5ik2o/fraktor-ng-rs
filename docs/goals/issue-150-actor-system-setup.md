@@ -13,7 +13,7 @@
 | `actor-tests/src/test/scala/org/apache/pekko/actor/setup/ActorSystemSetupSpec.scala` | `crates/fraktor-actor/tests/actor_system_setup_spec.rs` | 5 | 5 | 5 | 0 |
 | `actor-tests/src/test/java/org/apache/pekko/actor/setup/ActorSystemSetupTest.java` | `crates/fraktor-actor/tests/actor_system_setup_test.rs` | 1 | 1 | 1 | 0 |
 
-合計は原典6件・移植6件・成功6件・除外0件。Scala の原典件数は `" in {"` の数で数えた（5件。`verify_red.py` の `count_original_cases` は WordSpec の `"..." should {` を数えきれず `None` を返す）。Java は `@Test` の1件で、`verify_red.py` も1件と数えた。`ignore` と `pending` はない。`ActorSystemSetupSpec` の `needs` は `test-kit`（`TestKit.shutdownActorSystem`）で、G0b が提供済み。`ActorSystemSetupTest` の `needs` は空。台帳の件数は原典の6ケースだけを数える。後述の補足の単体テスト6件は台帳に数えない。
+合計は原典6件・移植6件・成功6件・除外0件。Scala の原典件数は `" in {"` の数で数えた（5件。`verify_red.py` の `count_original_cases` は WordSpec の `"..." should {` を数えきれず `None` を返す）。Java は `@Test` の1件で、`verify_red.py` も1件と数えた。`ignore` と `pending` はない。`ActorSystemSetupSpec` の `needs` は `test-kit`（`TestKit.shutdownActorSystem`）で、G0b が提供済み。`ActorSystemSetupTest` の `needs` は空。台帳の件数は原典の6ケースだけを数える。後述の補足の単体テスト7件は台帳に数えない。
 
 ## 実行経路
 
@@ -23,7 +23,8 @@ TAKT を使わず、担当（Claude Opus 5.5）が直接実装した。TAKT に�
 |:---|:---|:---|
 | タグ付け | `32ba11f` | 2ノードの `goal: G0issue150`（台帳2行） |
 | テストと台帳 red | `b59b20f` | 移植テスト2本、2ノードの status `red` と rust の欄。製品差分0 |
-| 実装と台帳 green | 本書のコミット | `kernel::setup`（`Setup`、`ActorSystemSetup`）、`ActorSystem::with_setup` と `ActorSystem::setup`、単体テスト6件、台帳 green、本書 |
+| 実装と台帳 green | `7fc1398` | `kernel::setup`（`Setup`、`ActorSystemSetup`）、`ActorSystem::with_setup` と `ActorSystem::setup`、単体テスト6件、台帳 green、本書 |
+| レビュー指摘の修正 | 本書の更新のコミット | Java 移植テストに、登録したインスタンスそのものが返ることの確認を足した。単体テスト1件を追加。製品コードは変えていない |
 
 ### 着手時の調査と、調整担当の決定
 
@@ -64,7 +65,7 @@ TAKT を使わず、担当（Claude Opus 5.5）が直接実装した。TAKT に�
 | "provide a fluent creation alternative"（L47–55） | `provide_a_fluent_creation_alternative` | `a and b and c` で、同型の `b` が `a` を置き換え、`c` も入る | `a.and(b).and(c)` で `Some(&b)`、`Some(&c)` |
 | "be created with a set of setups"（L57–65） | `be_created_with_a_set_of_setups` | `ActorSystemSetup(s1, s2)` で2型が入り、3型目はない | `from_setups([..])` で `is_some` 2件、`is_none` 1件 |
 | "be available from the ExtendedActorSystem"（L67–78） | `be_available_from_the_extended_actor_system` | 設定つきで作ったシステムの `settings.setup.get` が `Some(setup)`、最後に停止 | `with_setup` で作り、`setup().get` が `Some(&setup)`、`terminate` 後に `is_terminated` |
-| `apiMustBeUsableFromJava`（Java L33–41） | `api_must_be_usable_from_java` | `create().withSetup(s).get(JavaSetup.class)` が存在し、`s` と等しい | `empty().with_setup(s).get::<JavaSetup>()` が `Some` で、`name` が `"Jasmine Rice"` |
+| `apiMustBeUsableFromJava`（Java L33–41） | `api_must_be_usable_from_java` | `create().withSetup(s).get(JavaSetup.class)` が存在し、`s` と等しい | `empty().with_setup(s).get::<JavaSetup>()` が `Some` で、`name` が `"Jasmine Rice"`。返る値の `name` のバイト列が、登録前の `s` のものと同じアドレスにある（同一のインスタンス） |
 
 ### 原典との差異（意図した差）
 
@@ -72,7 +73,7 @@ TAKT を使わず、担当（Claude Opus 5.5）が直接実装した。TAKT に�
 
 - **settings 層がない**：原典は `system.settings.setup` で読むが、移植は `system.setup()` で直接読む。移植には `Settings` に当たる型がなく、本ゴールでも作らない（調整担当の決定 A）。設定はシステムの起動や動作を変えず、生成後に読めるように保持するだけである。原典でも `ActorSystemSetup` の値を読むのは各拡張で、本スイートは保持と取得だけを確かめる。
 - **`get` の戻り値**：原典は値（参照）を `Option[T]` で返す。移植は設定の中の値への参照 `Option<&T>` を返す。Scala のテストは `Option[Setup]` に広げてから `===` で比べるが、比べる値は具体型の値なので、移植は具体型のまま比べる。
-- **Java の同一性の比較**：原典の `JavaSetup` は `equals` を上書きしないので、`assertEquals` は同一のインスタンスかを比べる。移植では設定の値が `ActorSystemSetup` へムーブされるので、元の変数とは比べられない。返る値が具体型 `JavaSetup` で、元の `name` を持つことを確かめる。
+- **Java の同一性の比較**：原典の `JavaSetup`（Java L25–31）は `equals` を上書きしないので、`assertEquals(javaSetting, result.get())`（L40）は `Object.equals`、つまり同一のインスタンスかを比べる。移植では設定の値が `ActorSystemSetup` へムーブされるので、ムーブ元の変数とは比べられない。そこで、ムーブの前に設定が持つヒープ上のデータ（`name` のバイト列）のアドレスを取り、`get` が返す値が同じアドレスのデータを持つことを `std::ptr::eq` で確かめる。ムーブではヒープ上のデータは動かないが、複製や、同じ名前で作り直した別の `JavaSetup` は別のバイト列を持つ。同じ名前の別インスタンスを登録するとこの確認だけが失敗することを、一時的にテストを書き換えて実測した（名前の確認は通り、同一性の確認で panic）。名前の確認も残した。`Arc` を手元に残せる `from_setups` の経路では、単体テスト `get_returns_the_registered_instance` が、返る参照と保持した `Arc` の指す先が同じであることを確かめる。
 - **不変性**：原典の `withSetup` は新しい値を返し、元の値は変わらない。移植の `with_setup` と `and` は `self` を受け取って返す。元の値を残したいときは `clone` してから足す（値は `Arc` で共有するので、`clone` は設定の値をコピーしない）。単体テストで、`clone` した元が変わらないことを固定した。
 - **`toString`**：原典は `ActorSystemSettings(クラス名,...)` を返す。移植の `Debug` は保持している設定の数だけを出す。`dyn Setup` から型名を得るには `Setup` に公開メソッドを足す必要があり、原典の公開面を超えるので足さない。
 - **`Setup` の境界**：`Setup` は `Any + Send + Sync` を要求する。`TypeId` で具体型を引くために `Any`（つまり `'static`）が要る。設定はスレッドをまたいで共有されうるので、`Send + Sync` を課した。
@@ -93,6 +94,7 @@ TAKT を使わず、担当（Claude Opus 5.5）が直接実装した。TAKT に�
 | `the_later_of_two_setups_of_one_type_wins_when_created_from_a_set` | `from_setups` で同じ型が2つあれば後の値が残る |
 | `adding_a_setup_leaves_a_clone_taken_before_unchanged` | 足す前に `clone` した値は変わらない |
 | `a_setup_of_one_type_is_not_returned_for_another` | `Setup::and` で同型が置き換わり、別の型では返らない |
+| `get_returns_the_registered_instance` | `from_setups` に渡した `Arc` の指す先そのものを `get` が返す。`and` で足した後も、`clone` した値からも同じ |
 | `a_system_created_without_a_setup_holds_an_empty_one`（`ActorSystem`） | 既存の `new` で作ったシステムの設定は空 |
 | `a_system_created_with_a_setup_returns_it_and_runs_as_one_created_without`（`ActorSystem`） | `with_setup` で作ったシステムは設定を返し、名前、起動状態、配送、停止は `new` と同じ。停止後も設定を読める |
 
@@ -108,7 +110,7 @@ PR 作成後、既出の指摘に対応した HEAD を固定して行う（`docs
 
 ## 製品編集前の実測
 
-`b59b20f` は `32ba11f` からの製品差分が0である（`git diff --stat 32ba11f b59b20f -- 'crates/*/src'` は空）。テストの blob は `actor_system_setup_spec.rs` が `175a4c94`、`actor_system_setup_test.rs` が `47079efa`。実装のコミットでは2本の統合テストを変えていない。
+`b59b20f` は `32ba11f` からの製品差分が0である（`git diff --stat 32ba11f b59b20f -- 'crates/*/src'` は空）。テストの blob は `actor_system_setup_spec.rs` が `175a4c94`、`actor_system_setup_test.rs` が `47079efa`。実装のコミット `7fc1398` では2本の統合テストを変えていない。その後、レビュー指摘への対応で `actor_system_setup_test.rs` に同一性の確認を足した（製品コードは変えていない）。
 
 | コミット | コマンド | 終了値 | 結果 |
 |:---|:---|---:|:---|
@@ -120,15 +122,15 @@ already_green ではない。`kernel::setup` がなく、コンパイルに失�
 
 ## 実装後の実測
 
-実装と台帳 green のコミットで、担当が次を実行した。
+実装と台帳 green のコミット `7fc1398` と、レビュー指摘を直したコミットで、担当が次を実行した。件数は修正後のもの。
 
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test actor_system_setup_spec -- --test-threads=1` | 0 | 5 passed / 0 failed / 0 ignored |
 | `cargo test -p fraktor-actor --test actor_system_setup_test -- --test-threads=1` | 0 | 1 passed / 0 failed / 0 ignored |
-| `cargo test -p fraktor-actor --lib kernel::setup` | 0 | 4 passed（`ActorSystemSetup` の単体テスト） |
+| `cargo test -p fraktor-actor --lib kernel::setup` | 0 | 5 passed（`ActorSystemSetup` の単体テスト） |
 | `cargo test -p fraktor-actor --lib actor_system` | 0 | 63 passed（既存61、新規2） |
-| `cargo test --workspace` | 0 | 69 スイート、695 passed / 0 failed / 0 ignored |
+| `cargo test --workspace` | 0 | 69 スイート、696 passed / 0 failed / 0 ignored |
 | `cargo fmt --check` | 0 | 差分なし |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
 | syn-check（`crates/fraktor-actor`、`crates/fraktor-testkit`） | 0 | 両方 `clean: true`、違反0 |
