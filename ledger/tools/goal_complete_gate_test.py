@@ -26,13 +26,15 @@ rollup.py --goal を走らせる。ここでは takt も cargo も node も起�
  14. 要件10: 2列表（g0a 形式）と5列表（g0b〜g0f 形式）の両方で一致 0
  15. 実物の docs/goals/*.md 全6本で、1行目から ID が取れ、表 id 集合が現行台帳の
      所属と一致する（文字列をテストへ埋め込まない）。終了値の期待は台帳のノード
-     状態から求める（全ノードが green か do_not_port のときだけ 0）
+     状態から求める（全ノードが rollup.is_done を満たすときだけ 0）
  16. 失敗時も終了コードは 0 で、JSON に exit_code 非0 を載せる（takt の output: json 契約）
  17. `-t` 直渡し（order.md 無し）でも meta.json の task から完了判定できる
  18. order.md も meta.json も無ければ判定不能として失敗し COMPLETE にしない
  19. 台帳 YAML が不正でも終了コード 0 で JSON を出し exit_code 非0 と原因を返す
  20. `## 対象ノード` 節の後に別の表があっても、節外の表を id と解釈しない
  21. `## 対象ノード` 節内で対象ノード表の後に別の表が続いても、最初の表だけを読む
+ 22. green と記録の揃った not_built（作らない区分）の混在 exit_code 0
+ 23. not_built でも、ケースの記録（承認・代替例）が欠けていれば完了にしない
 """
 import json
 import os
@@ -191,6 +193,63 @@ def test_green_and_do_not_port_is_complete():
         result = run_gate(root, response)
         assert result["exit_code"] == 0, result
         print("3. green + do_not_port: exit_code =", result["exit_code"])
+
+
+NOT_BUILT_CASE = (
+    "    total: 1\n"
+    "    ported: 0\n"
+    "    passing: 0\n"
+    "    excluded: []\n"
+    "    not_built:\n"
+    "    - name: someCase\n"
+    "      reason: the original checks a Java helper\n"
+    "      alternative: a Rust match\n"
+)
+
+
+def not_built_node(node_id: str, goal: str, approval: str) -> str:
+    """作らない区分のノード。approval はケースの要素に足す承認の行。"""
+    return (
+        f"- id: {node_id}\n"
+        f"  kind: test\n"
+        f"  pekko:\n"
+        f"    module: stub\n"
+        f"  status: not_built\n"
+        f"  triage:\n"
+        f"    kind: not_built\n"
+        f"    reason: served by the language\n"
+        f"  cases:\n"
+        f"{NOT_BUILT_CASE}{approval}"
+        f"  goal: {goal}\n"
+    )
+
+
+APPROVAL = "      approved_by: someone\n      approved_at: 2026-01-01\n"
+
+
+def test_green_and_not_built_is_complete():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.java", "a/B.java"]
+        ledger = ledger_yaml([(ids[0], "green", "G0w")]) + not_built_node(ids[1], "G0w", APPROVAL)
+        response = make_run(root, order_with(["docs/goals/g0w-stub.md"]), ledger,
+                            one_goal_doc("G0w", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] == 0, result
+        print("22. green + not_built: exit_code =", result["exit_code"])
+
+
+def test_not_built_without_approval_is_not_complete():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.java"]
+        ledger = "nodes:\n" + not_built_node(ids[0], "G0v", "")
+        response = make_run(root, order_with(["docs/goals/g0v-stub.md"]), ledger,
+                            one_goal_doc("G0v", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] != 0, result
+        assert "a/A.java" in result.get("output", ""), result
+        print("23. not_built without approval: exit_code =", result["exit_code"])
 
 
 def test_goal_without_members_is_not_complete():
@@ -355,6 +414,8 @@ def test_real_goal_documents_match_current_ledger():
     import re
     import yaml
 
+    import rollup
+
     ledger_nodes = (yaml.safe_load(REAL_LEDGER.read_text(encoding="utf-8")) or {}).get("nodes", [])
     docs = sorted(GOALS.glob("*.md"))
     assert docs, f"no goal documents under {GOALS}"
@@ -388,7 +449,7 @@ def test_real_goal_documents_match_current_ledger():
             assert members, (doc_path.name, "no ledger member for goal", goal_id)
 
             member_nodes = [n for n in ledger_nodes if n.get("goal") == goal_id]
-            complete = all(n.get("status") in ("green", "do_not_port") for n in member_nodes)
+            complete = all(rollup.is_done(n) for n in member_nodes)
             expected = 0 if complete else 1
             result = run_gate(root, response)
             assert result["exit_code"] == expected, (doc_path.name, complete, result)
@@ -576,6 +637,8 @@ def main() -> int:
         test_all_green_is_complete,
         test_green_and_do_not_port_is_complete,
         test_goal_without_members_is_not_complete,
+        test_green_and_not_built_is_complete,
+        test_not_built_without_approval_is_not_complete,
         test_order_without_goal_path_fails,
         test_order_with_multiple_goal_paths_fails,
         test_missing_goal_document_fails,

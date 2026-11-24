@@ -25,10 +25,10 @@
     module: actor-tests            # baseline の directory。集計キー
     class: ActorConfigurationVerificationSpec
     test_cases_approx: 10          # 近似。taggedAs つきのケースを含まない
-  status: unported                 # unported | red | green | do_not_port
+  status: unported                 # unported | red | green | do_not_port | not_built
   triage:
-    kind: pending                  # pending | as_is | adapt | do_not_port
-    reason: null                   # do_not_port のとき必須。人間だけが書ける。run は already_green の理由も書く（下記）
+    kind: pending                  # pending | as_is | adapt | do_not_port | not_built
+    reason: null                   # do_not_port と not_built のとき必須。人間だけが書ける。run は already_green の理由も書く（下記）
   needs:
     testkit: null                  # 未抽出（下記）。判明したら機能名の配列
     premise_flags: null            # 未抽出（下記）
@@ -40,6 +40,7 @@
     ported: null                   # Rust へ移植したケース数
     passing: null                  # 直近の実行で通ったケース数
     excluded: []                   # 人間が承認した除外。要素は {name, reason, approved_by, approved_at}
+    not_built: []                  # 作らない区分のケース（下記）。要素は {name, reason, alternative, approved_by, approved_at}。欄が無いときは空と同じ
   rust:
     crate: null                    # 移植先クレート（決まり次第）
     test_file: null                # 移植した Rust テストのパス
@@ -56,6 +57,7 @@
 | 4. ケース単位の除外はノード属性、決めるのは人間だけ | `cases.excluded` と、勘定に要る `cases.total`、`cases.ported`、`cases.passing` |
 | 8. import 近似は順序付けに使わない | `depends_on_impl.modules` はヒントである。ゲートにしない |
 | 20. `docs` は do_not_port（2026-11-13 決定） | `docs` の 173 ノードは `do_not_port`。rollup は除外率に計上し、合格率の分母から除く |
+| 作らない区分（オーナー決定、元帥の項目223、2026-11-25） | `status: not_built` と `cases.not_built`。rollup は作らない率とケース数を別に出し、合格率の分母から除く（下記「作らない区分」） |
 
 ## 欄の規則
 
@@ -101,9 +103,38 @@
 - `count_excluded` は PyYAML を呼ぶときだけ遅延 import する。`verify_red` を import する
   `record_already_green.py`（`uv run python3`、`--with pyyaml` なし）は、除外の検査を行わない
   限り PyYAML なしで動く
+- `not_built` は作らない区分にしたケースの一覧である（下記「作らない区分」）。要素は `name`（Pekko 側の
+  ケース名）、`reason`、`alternative`（同じ振る舞いを得る Rust のコードの例）、`approved_by`、
+  `approved_at` を持つ。書けるのは人間だけで、承認の欄の扱いは `excluded` と同じである
 - green の条件は、`passing` が `ported` に等しく、かつ `ported` と承認済みの `excluded` の件数の和が
   `total` に等しいことである
 - 候補の出し方は TAKT のワークフロー側で決める（未定）
+
+### 作らない区分（`not_built`）
+
+定義：原典のテストが検証しているのが原典の言語（Java、Scala）のための補助そのもので、観測できる
+振る舞いを Rust の言語機能・標準ライブラリ・既存の API で満たせるため、対応する公開面を作らない。
+
+- 当てはめる条件は次の2つを両方満たすことである。(1) 原典のテストが検証しているのが、原典の言語の
+  ための補助そのもの（例：Java のラムダや型消去を補うビルダー）であること。(2) そのテストが観測する
+  振る舞いを、Rust の言語機能（順序つきの `match`、ガード、`if let`）、標準ライブラリ（`Option` など）、
+  既存の公開 API で満たせること。満たせることは、ケースごとの `alternative` のコード例で示す
+- 既存の型への移植を先に検討する。観測できる振る舞いを持つものは移植する
+- 判定はケース単位で行う。候補の一覧は未判定として扱い、まとめてこの区分に入れない。1件ずつ
+  `reason` と `alternative` を書いたものだけを入れる
+- 実行時の契約、JVM の代替の設計が絡むもの、Java からの到達性を確かめるだけのもの、Java の文書の
+  サンプルは、この区分に自動では入れない
+- 除外（`excluded`。原典と等価に検証できないケース）と移植しない（`do_not_port`。モジュールや
+  ノードごと対象外にする決定）とは別の区分である。3つの件数を混ぜずに記録する
+- 全ケースが作らない区分のノードは `status: not_built`、`triage.kind: not_built` にし、`triage.reason`
+  に理由とゴール文書の場所を書く。`cases.total` は原典のケース数、`ported` と `passing` は 0、
+  `cases.not_built` の件数は `total` に等しい。`rust` の欄は null のまま
+- 一部のケースだけが作らない区分のノード（混在）は、残りのケースを移植し、status は移植の勘定で
+  決める。green の条件は `ported` と承認済みの `excluded` と `not_built` の件数の和が `total` に
+  等しいことになる。この勘定は `verify_red.py` と `verify_green.py` にまだ入っていない。最初に混在の
+  ノードを扱うゴールで入れる
+- `rollup.py` は、`not_built` のノードの記録（`triage`、`ported` が 0、件数の一致、各要素の5つの欄）を
+  検査し、欠けたノードを一覧に出してゴールの完了に数えない
 
 ## baseline から変換できるもの／できないもの
 
@@ -133,8 +164,9 @@
 | red から green | 上の green の条件を満たした | takt run |
 | green から red | 全体の再実行で失敗した。Pekko 側テストの理解が変わった場合も戻してよい | 自動、または takt run |
 | do_not_port への遷移と、その取り消し | `triage.reason` に理由を記入した | 人間だけ |
+| not_built への遷移と、その取り消し | `triage.reason` と、全ケースの `cases.not_built`（理由、代替例、承認）を記入した | 人間だけ（記入の作業は担当が行い、承認の欄には人間の決定を写す） |
 
-- TAKT の manager / run は、ノードを do_not_port にできない
+- TAKT の manager / run は、ノードを do_not_port にも not_built にもできない
 - 履歴は git の差分で追う。台帳内に履歴配列は持たない
 - `triage.reason` は、do_not_port の理由（人間だけが書ける）に加えて、run が
   `already_green: ` で始まる理由も書く。already_green は移植が正しく前提の実装が契約を
