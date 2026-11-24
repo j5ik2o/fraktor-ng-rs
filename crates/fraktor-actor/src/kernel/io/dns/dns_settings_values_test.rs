@@ -95,8 +95,6 @@ fn name_server_ips(values: &DnsSettingsValues) -> Vec<IpAddr> {
   values.name_servers().iter().map(SocketAddr::ip).collect()
 }
 
-// --- nameservers ---------------------------------------------------------
-
 // `Default` uses the host's name servers; the values come from the host, not
 // from anything the config holds.
 #[test]
@@ -190,8 +188,6 @@ fn explicit_nameservers_do_not_ask_the_host() {
   assert_eq!(host.name_server_calls.get(), 0);
 }
 
-// --- resolve-timeout -----------------------------------------------------
-
 #[test]
 fn the_resolve_timeout_is_kept() {
   let host = ControlledHost::with_defaults();
@@ -207,8 +203,6 @@ fn the_resolve_timeout_is_kept() {
   let values = build(&config, &host).expect("settings");
   assert_eq!(values.resolve_timeout(), Duration::from_millis(250));
 }
-
-// --- search-domains and ndots (the lazy resolv.conf) ---------------------
 
 #[test]
 fn default_search_domains_come_from_the_host() {
@@ -318,8 +312,6 @@ fn a_negative_explicit_ndots_is_rejected() {
   assert_eq!(build(&config, &host), Err(DnsSettingsError::NegativeNdots));
 }
 
-// --- cache policy --------------------------------------------------------
-
 #[test]
 fn forever_and_never_are_kept_as_cache_policies() {
   let host = ControlledHost::with_defaults();
@@ -355,8 +347,6 @@ fn a_zero_negative_ttl_is_rejected() {
   let config = base_config().with_negative_ttl(TtlSetting::Duration(Duration::ZERO));
   assert_eq!(build(&config, &host), Err(DnsSettingsError::NonPositiveTtl));
 }
-
-// --- id-generator-policy -------------------------------------------------
 
 fn with_policy(policy: &str) -> DnsSettingsConfig {
   DnsSettingsConfig::new(
@@ -412,8 +402,6 @@ fn an_unknown_policy_text_is_rejected() {
   let host = ControlledHost::with_defaults();
   assert_eq!(build(&with_policy("random"), &host), Err(DnsSettingsError::InvalidIdGeneratorPolicy));
 }
-
-// --- evaluation order ----------------------------------------------------
 
 // The original evaluates the fields in order and returns the first failure.
 // Both an invalid nameserver and an invalid policy are present; the nameserver
