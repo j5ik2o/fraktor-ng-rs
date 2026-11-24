@@ -1604,7 +1604,7 @@ nodes:
     test_file: crates/fraktor-actor/tests/byte_iterator_spec.rs
   goal: G0issue130
   verified_against: v2.0.0
-- id: actor-tests/src/test/scala-2.13+/org/apache/pekko/util/ByteStringBuilderScala213PlusSpec.scala
+- id: actor-tests/src/test/scala/org/apache/pekko/util/ByteStringBuilderScala213PlusSpec.scala
   name: actor-tests:ByteStringBuilderScala213PlusSpec
   kind: test
   pekko:
@@ -1622,15 +1622,15 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: 3
-    ported: 3
-    passing: 3
+    total: 5
+    ported: 5
+    passing: 5
     excluded: []
   rust:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/byte_string_builder_scala213_plus_spec.rs
   goal: G0issue133
-  verified_against: v1.7.1
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/util/ByteStringBuilderSpec.scala
   name: actor-tests:ByteStringBuilderSpec
   kind: test
