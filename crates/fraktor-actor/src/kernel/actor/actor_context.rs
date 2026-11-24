@@ -121,7 +121,8 @@ impl<'a> ActorContext<'a> {
   /// `UnrestrictedStash.preRestart` does. A stop sends the stash to dead
   /// letters with each message's original sender, as Pekko's mailbox clean-up
   /// does after `UnrestrictedStash.postStop`; the port's dead letters do not
-  /// publish a `DeadLetter` event yet. The stash has no capacity limit: Pekko's
+  /// publish a `DeadLetter` event yet. Terminating the system releases every
+  /// stash with the other queues. The stash has no capacity limit: Pekko's
   /// `stash-capacity` setting and `StashOverflowException` are not ported.
   ///
   /// # Panics
@@ -142,6 +143,10 @@ impl<'a> ActorContext<'a> {
   /// Mirrors `UnrestrictedStash.unstashAll()`, which prepends the stash to the
   /// mailbox: the stashed messages are handled before any message that is
   /// still queued for this actor, and after the current one returns.
+  ///
+  /// A stashed `Terminated` is queued again as a DeathWatch notice, as Pekko's
+  /// `enqueueFirst` does: the actor receives it again, and an `unwatch` of its
+  /// target before it is handled cancels it.
   pub fn unstash_all(&mut self) {
     let self_ref = self.self_ref();
     self.executor.unstash_all(&self_ref);

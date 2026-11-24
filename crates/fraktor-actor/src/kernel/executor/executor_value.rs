@@ -932,11 +932,30 @@ impl Executor {
   }
 
   /// Returns `owner`'s stash to the front of the local queue.
+  ///
+  /// A stashed `Terminated` is queued again as a pending DeathWatch notice, as
+  /// Pekko's `UnrestrictedStash.enqueueFirst` calls `terminatedQueuedFor`: the
+  /// actor re-receives it, and an `unwatch` of its target before it is handled
+  /// cancels it, like any other queued notice.
   pub(crate) fn unstash_all(&mut self, owner: &ActorRef) {
     if let Some(index) = self.stashes.iter().position(|(held, _)| held == owner) {
       let (_, stash) = self.stashes.swap_remove(index);
+      let stash = stash.into_iter().map(|envelope| self.requeue_notice(envelope)).collect();
       self.queue.prepend_locally(stash);
     }
+  }
+
+  fn requeue_notice(&mut self, envelope: Envelope) -> Envelope {
+    let (recipient, message, sender) = envelope.into_parts();
+    let message = match message.downcast_ref::<Terminated>() {
+      | Some(notice) => {
+        let pending = Arc::new(PendingTermination { watcher: recipient.clone(), notice: notice.clone() });
+        self.pending_terminations.push(pending.clone());
+        Message::new(pending)
+      },
+      | None => message,
+    };
+    Envelope::new(recipient, message, sender)
   }
 
   pub(crate) fn stop_and_reply(&mut self, target: &ActorRef, reply_to: ActorRef, message: Message) {
@@ -1061,6 +1080,7 @@ impl Executor {
     self.queue.clear();
     self.watchers.clear();
     self.pending_terminations.clear();
+    self.stashes.clear();
     self.deferred_replies.clear();
     self.parents.clear();
     self.pending_stops.clear();

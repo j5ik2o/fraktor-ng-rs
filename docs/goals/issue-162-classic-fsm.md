@@ -119,7 +119,10 @@ executor を変えずに済む。ただし送り直したメッセージは受�
 | `context_stash_test::unstash_all_puts_the_stash_ahead_of_messages_in_the_local_queue` | 同じシャードの actor が送り局所キューで待つ `c`、`d` より先に `a`、`b` が届く |
 | `context_stash_test::unstash_all_keeps_the_stash_first_in_first_out_across_rounds` | 5 件の stash が退避した順に届く |
 | `context_stash_test::a_restart_returns_the_stash_to_the_new_instance_before_later_messages` | 失敗による再起動の後、新しいインスタンスが `a`、`b` を `c` より先に受ける |
-| `context_stash_test::a_new_actor_does_not_inherit_a_stopped_actors_stash` | 停止したアクターの stash は、同じ recipe の新しいアクターに渡らない |
+| `context_stash_test::a_stop_releases_the_stash_and_a_new_actor_does_not_inherit_it` | `ping` への `pong` で退避を確かめてから止める。停止で退避した payload が解放され、同じ recipe の新しいアクターには渡らない |
+| `context_stash_test::terminating_the_system_releases_the_stash_while_the_system_is_held` | system の値を持ったまま `terminate` すると、退避した payload が解放される |
+| `context_stash_test::an_unstashed_terminated_is_received_again` | 退避して戻した `Terminated` をもう一度受ける（ActorWithStashSpec の「re-receive unstashed Terminated messages」の実行時契約。ノードは unported のまま） |
+| `context_stash_test::an_unwatch_after_unstash_all_cancels_the_unstashed_terminated` | `unstash_all` の直後に `unwatch` すると、戻した `Terminated` は届かない（Pekko の `enqueueFirst` が `terminatedQueuedFor` で通知として積み直すため） |
 | `executor_value::tests::a_stopped_actor_sends_its_stash_to_dead_letters_with_the_original_senders_in_order` | 停止時に stash が元の送り手のまま、退避した順に dead letters へ届く（dead letters を記録用の handle に差し替えて観測） |
 
 ## 最終の検証
@@ -127,8 +130,8 @@ executor を変えずに済む。ただし送り直したメッセージは受�
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test abstract_fsm_actor_test --test abstract_fsm_with_stash_actor_test` | 0 | 各 1 passed、0 failed（原典 2 件） |
-| `cargo test -p fraktor-actor --test context_stash_test` | 0 | 5 passed、0 failed |
-| `cargo test --workspace` | 0 | 836 passed、0 failed、0 ignored（74 結果） |
+| `cargo test -p fraktor-actor --test context_stash_test` | 0 | 8 passed、0 failed |
+| `cargo test --workspace` | 0 | 839 passed、0 failed、0 ignored（74 結果） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
 | `cargo fmt --check` | 0 | 差分なし |
 | syn-check（CI と同じく `crates/*` ごと、Release/locked） | 0 | fraktor-actor 255 ファイル、fraktor-testkit 46 ファイル、violations 0、parse failures 0 |
@@ -149,6 +152,9 @@ executor を変えずに済む。ただし送り直したメッセージは受�
 | `unstash_all` を自分への再送（候補 C）にする | boundary、局所キュー、再起動の 3 件が失敗 |
 | 再起動の前に stash を戻さない | `a_restart_returns_the_stash_to_the_new_instance_before_later_messages` が失敗 |
 | 停止時に stash を捨てる | `a_stopped_actor_sends_its_stash_to_dead_letters_with_the_original_senders_in_order` が失敗 |
+| 停止時に stash を残す | `a_stop_releases_the_stash_and_a_new_actor_does_not_inherit_it` が失敗 |
+| `stop_all` で stash を空にしない | `terminating_the_system_releases_the_stash_while_the_system_is_held` が失敗 |
+| `unstash_all` で `Terminated` を通知として積み直さない | `an_unwatch_after_unstash_all_cancels_the_unstashed_terminated` が失敗 |
 
 ## G0 と対象ゴールの確認
 
@@ -158,3 +164,14 @@ executor を変えずに済む。ただし送り直したメッセージは受�
 | `check_needs.py --goal G0issue162` | needs 閉性 OK |
 | `rollup.py --goal G0a`〜`G0f` | 各ゴール「完了: 全ノードが green か do_not_port」 |
 | `check_needs.py --goal G0a`〜`G0f` | 各ゴール「needs 閉性 OK」 |
+
+## PR #164 のレビュー対応（修正 1）
+
+基準 HEAD は `d64980157d2b90ce70bfa145e97018920b024e6e`。
+
+| 指摘 | 分類 | 対応 |
+|:---|:---|:---|
+| `terminate`（`stop_all`）が executor の stash を解放しない（Devin、Codex、Cursor、CodeRabbit のレビュー本文で重複） | 直す | `stop_all` で `stashes` を空にした。先行の回帰 `terminating_the_system_releases_the_stash_while_the_system_is_held` は修正なしで失敗する。個別停止の dead letters への送り出しは変えていない |
+| 停止のテストが退避の前に止めている（Devin） | 直す | `ping` に `pong` を返させて退避を確かめてから止め、payload の解放も確かめる形にした。停止時に stash を残す変異で失敗する |
+| 退避した `Terminated` が `unwatch` で取り消されない（Devin） | 直す | Pekko の `UnrestrictedStash.enqueueFirst` は `Terminated` を `terminatedQueuedFor` で積み直すので、その後の `unwatch` で取り消される。`unstash_all` で同じく DeathWatch の通知として積み直した。既存の `unwatch` が待ち中の通知を取り消す契約に揃えただけで、公開 API は増やしていない |
+
