@@ -630,7 +630,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/abstract_fsm_actor_test.rs
   goal: G0issue162
-  verified_against: v1.7.1
+  verified_against: v2.0.0
 - id: actor-tests/src/test/java/org/apache/pekko/actor/AbstractFSMWithStashActorTest.java
   name: actor-tests:AbstractFSMWithStashActorTest
   kind: test
@@ -657,7 +657,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/abstract_fsm_with_stash_actor_test.rs
   goal: G0issue162
-  verified_against: v1.7.1
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorConfigurationVerificationSpec.scala
   name: actor-tests:ActorConfigurationVerificationSpec
   kind: test
@@ -833,15 +833,15 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: 15
-    ported: 15
-    passing: 15
+    total: 18
+    ported: 18
+    passing: 18
     excluded: []
   rust:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/actor_path_spec.rs
   goal: G0a
-  verified_against: v1.7.1
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorRefSpec.scala
   name: actor-tests:ActorRefSpec
   kind: test
@@ -1595,15 +1595,15 @@ nodes:
     - actor
     coverage: approx
   cases:
-    total: 1
-    ported: 1
-    passing: 1
+    total: 2
+    ported: 2
+    passing: 2
     excluded: []
   rust:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/byte_iterator_spec.rs
   goal: G0issue130
-  verified_against: v1.7.1
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala-2.13+/org/apache/pekko/util/ByteStringBuilderScala213PlusSpec.scala
   name: actor-tests:ByteStringBuilderScala213PlusSpec
   kind: test
@@ -2620,15 +2620,15 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: 17
-    ported: 17
-    passing: 17
+    total: 18
+    ported: 18
+    passing: 18
     excluded: []
   rust:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/event_stream_spec.rs
   goal: G0f
-  verified_against: v1.7.1
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/dispatch/ExecutionContextSpec.scala
   name: actor-tests:ExecutionContextSpec
   kind: test
@@ -3462,15 +3462,15 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: 2
-    ported: 2
-    passing: 2
+    total: 4
+    ported: 4
+    passing: 4
     excluded: []
   rust:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/marker_logging_spec.rs
   goal: G0issue108
-  verified_against: v1.7.1
+  verified_against: v2.0.0
 - id: actor-tests/src/test/java/org/apache/pekko/japi/MatchBuilderTest.java
   name: actor-tests:MatchBuilderTest
   kind: test
@@ -4565,15 +4565,15 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: 9
-    ported: 9
-    passing: 9
+    total: 20
+    ported: 20
+    passing: 20
     excluded: []
   rust:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/status_reply_spec.rs
   goal: G0issue105
-  verified_against: v1.7.1
+  verified_against: v2.0.0
 - id: actor-tests/src/test/java/org/apache/pekko/pattern/StatusReplyTest.java
   name: actor-tests:StatusReplyTest
   kind: test
@@ -5179,7 +5179,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/version_spec.rs
   goal: G0issue139
-  verified_against: v1.7.1
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala-jdk21-only/org/apache/pekko/dispatch/VirtualThreadPoolDispatcherSpec.scala
   name: actor-tests:VirtualThreadPoolDispatcherSpec
   kind: test
