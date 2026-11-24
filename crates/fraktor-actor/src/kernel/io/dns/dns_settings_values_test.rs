@@ -218,6 +218,21 @@ fn default_ndots_comes_from_the_host() {
   assert_eq!(values.ndots(), 2);
 }
 
+// The original's "use host ndots if set to default" case writes the search
+// domain and leaves only ndots as default; that one default must still read the
+// host's resolv.conf, once.
+#[test]
+fn a_default_ndots_beside_explicit_search_domains_comes_from_the_host() {
+  let host = ControlledHost::with_defaults();
+  let config = base_config()
+    .with_nameservers(NameserversSetting::Single(String::from("127.0.0.1")))
+    .with_search_domains(SearchDomainsSetting::Single(String::from("example.com")));
+  let values = build(&config, &host).expect("settings");
+  assert_eq!(values.search_domains(), ["example.com"]);
+  assert_eq!(values.ndots(), 2);
+  assert_eq!(host.resolv_conf_calls.get(), 1);
+}
+
 // Without a resolv.conf the search list is empty and ndots falls back to 1,
 // matching the original's empty defaults.
 #[test]
