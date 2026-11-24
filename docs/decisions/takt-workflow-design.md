@@ -501,7 +501,7 @@ takt 0.74.0 は、1 ステップの knowledge を連結した文字列の先頭 
 2,000 字を超えるものが多い（`architecture` は約 12,000 字）ので、builtin を
 先に並べるとプロジェクトの規約は本文に 1 行も載らない。
 
-- knowledge `fraktor-porting-rules`（1,935 字）は、配列の先頭に置く。
+- knowledge `fraktor-porting-rules`（1,998 字）は、配列の先頭に置く。
   mini-core への引数（`plan_knowledge`、`development_knowledge`）と、
   equivalence-review の knowledge が該当する。equivalence-review は
   fragment の並びを上書きしている

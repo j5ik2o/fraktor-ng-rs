@@ -289,6 +289,8 @@ def make_scenario(root: Path, *, nodes_yaml: str, cargo_body: str, passed: int,
     env = {k: v for k, v in os.environ.items() if k != "TAKT_PREVIOUS_RESPONSE_FILE"}
     env["TAKT_PREVIOUS_RESPONSE_FILE"] = str(response)
     env["PEKKO_ORIGINAL_ROOT"] = str(original_root)
+    # 原典を変更のない現行の基準 commit にする（verify_red は原典を検査してから数える）
+    env["PEKKO_BASELINE_FILE"] = str(prepare_baseline_source(root))
     env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
     return {"root": root, "env": env}
 
@@ -700,13 +702,21 @@ def test_mark_green_preserves_human_reason():
         print("13a-2. mark_green preserves human reason:", node["triage"]["reason"])
 
 
-def _run_record_already_green(root: Path, *, current_source: bool = True) -> dict:
+def _run_record_already_green(root: Path, *, current_source: bool = True, prepare: bool = True,
+                              original_root: Path | None = None) -> dict:
     """record_already_green.py を cwd=root で実行し、stdout の JSON を返す。
 
-    root/pekko を基準の原典として用意する（current_source=False なら過去の基準の原典）。
+    prepare=True なら root/pekko を基準の原典として用意し直す（current_source=False なら過去の
+    基準の原典）。False なら既に用意した root/baseline.env と原典をそのまま使う（原典を
+    変更してから記録させるテスト用）。original_root を渡すと PEKKO_ORIGINAL_ROOT にする。
     """
     env = {k: v for k, v in os.environ.items() if k != "PEKKO_ORIGINAL_ROOT"}
-    env["PEKKO_BASELINE_FILE"] = str(prepare_baseline_source(root, current=current_source))
+    if prepare:
+        env["PEKKO_BASELINE_FILE"] = str(prepare_baseline_source(root, current=current_source))
+    else:
+        env["PEKKO_BASELINE_FILE"] = str(root / "baseline.env")
+    if original_root is not None:
+        env["PEKKO_ORIGINAL_ROOT"] = str(original_root)
     proc = subprocess.run(
         [sys.executable, str(RECORD_ALREADY_GREEN)],
         cwd=str(root), env=env, capture_output=True, text=True, check=False,
@@ -753,8 +763,135 @@ def test_record_already_green_refuses_a_source_that_is_not_the_current_baseline(
         result = _run_record_already_green(root, current_source=False)
         assert result["recorded"] is False and result["already_green"] is True, result
         assert OLD_BASELINE_TAG in result["detail"], result
+        assert result["source_ok"] is False, result
         assert (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8") == before
         print("13d-2. record-already-green refuses a historical baseline source")
+
+
+def _dirty_original_scenario(root: Path, *, committed_cases: int, local_cases: int,
+                             passed: int) -> dict:
+    """原典を committed_cases 件で基準 commit にし、追跡ファイルを local_cases 件の内容に書き換える。
+
+    レビューで示された再現（現行の基準の checkout にある追跡済みテストを、過去の基準の内容に置く）を
+    合成の基準で作る。HEAD は基準 commit のままで、変更は作業ツリーにだけある。
+    """
+    scenario = make_scenario(
+        root,
+        nodes_yaml=ledger_yaml([case_block(NODE_ID, None, None, None)]),
+        cargo_body=CARGO_STUB_OK, passed=passed,
+        original_cases=committed_cases, with_original=True,
+    )
+    write(root / "pekko" / NODE_ID, java_original(local_cases))
+    return scenario
+
+
+def test_modified_tracked_original_is_rejected_by_verify_red():
+    """HEAD が基準 commit でも、追跡ファイルが書き換わった原典では数えない（source_rejected）。
+
+    修正前は書き換えた内容のケース数 1 と通過 1 が一致し、already_green になっていた。
+    利用者の変更は消さない。
+    """
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = _dirty_original_scenario(root, committed_cases=2, local_cases=1, passed=1)
+        before = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        result = run_verify_red(scenario)
+        assert result["classification"] == "source_rejected", result
+        assert NODE_ID in result["detail"] and "local change" in result["detail"], result
+        assert (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8") == before
+        assert (root / "pekko" / NODE_ID).read_text(encoding="utf-8") == java_original(1), (
+            "the user's change to the source must be kept"
+        )
+        saved = json.loads((root / ".takt" / "already-green-result.json").read_text(encoding="utf-8"))
+        assert saved["classification"] == "source_rejected", saved
+        record = _run_record_already_green(root, prepare=False)
+        assert record["source_ok"] is False and record["recorded"] is False, record
+        assert (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8") == before
+        print("13h. modified tracked original → source_rejected, recorder refuses, change kept")
+
+
+def test_untracked_file_in_original_is_rejected_by_verify_red():
+    """基準 commit に無いファイルを原典に置いても、そのノードを数えない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(NODE_ID, None, None, None)]),
+            cargo_body=CARGO_STUB_OK, passed=1,
+            original_cases=None, with_original=False,
+        )
+        write(root / "pekko" / NODE_ID, java_original(1))
+        result = run_verify_red(scenario)
+        assert result["classification"] == "source_rejected", result
+        assert (root / "pekko" / NODE_ID).exists(), "the untracked file must be kept"
+        print("13i. untracked file in original → source_rejected")
+
+
+def test_recorder_rejects_a_source_modified_after_verify_red():
+    """verify_red の後に原典が書き換わったら、already_green でも green を書かない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(NODE_ID, None, None, None)]),
+            cargo_body=CARGO_STUB_OK, passed=2,
+            original_cases=2, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["classification"] == "already_green", result
+        assert result["source_tag"] == BASELINE_TAG, result
+        assert result["source_root"] == str((root / "pekko").resolve()), result
+        write(root / "pekko" / NODE_ID, java_original(1))
+        before = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        record = _run_record_already_green(root, prepare=False)
+        assert record["source_ok"] is False and record["recorded"] is False, record
+        assert (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8") == before
+        print("13j. source modified after verify_red → recorder refuses")
+
+
+def test_recorder_rejects_a_different_source_root_than_verify_red():
+    """verify_red と記録で原典の場所が違えば、どちらも基準でも green を書かない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(NODE_ID, None, None, None)]),
+            cargo_body=CARGO_STUB_OK, passed=2,
+            original_cases=2, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["classification"] == "already_green", result
+        # 同じ commit の別の clone を、記録のステップだけが使う
+        other = root / "other-pekko"
+        _git("clone", "-q", str(root / "pekko"), str(other), cwd=root)
+        before = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        record = _run_record_already_green(root, prepare=False, original_root=other)
+        assert record["source_ok"] is False and record["recorded"] is False, record
+        assert "verify_red used" in record["detail"], record
+        assert (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8") == before
+        print("13k. different source root between verify_red and recorder → refused")
+
+
+def test_workflow_stops_before_ledger_update_when_the_source_is_rejected():
+    """source_rejected は verify_red の when(true) で ABORT、source_ok が false なら ledger-update へ進まない。"""
+    import yaml
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = {s["name"]: s for s in doc["steps"]}
+    verify_rules = steps["verify_red"]["rules"]
+    assert not any("source_rejected" in r["condition"] and r.get("next") != "ABORT"
+                   for r in verify_rules), verify_rules
+    assert verify_rules[-1] == {"condition": "when(true)", "next": "ABORT"}, verify_rules
+    rec_rules = steps["record-already-green"]["rules"]
+    assert rec_rules == [
+        {"condition": "when(context.record-already-green.result.json.source_ok == true)",
+         "next": "ledger-update"},
+        {"condition": "when(true)", "next": "ABORT"},
+    ], rec_rules
+    # ledger-update へ入る遷移は record-already-green の source_ok だけ
+    into_ledger_update = [(name, r) for name, step in steps.items()
+                          for r in step.get("rules", []) if r.get("next") == "ledger-update"]
+    assert [name for name, _ in into_ledger_update] == ["record-already-green"], into_ledger_update
+    print("13l. rejected source never reaches ledger-update")
 
 
 def test_record_already_green_preserves_human_reason():
@@ -1676,6 +1813,11 @@ def main() -> int:
         test_mark_green_preserves_human_reason,
         test_record_already_green_writes_green_and_reason,
         test_record_already_green_refuses_a_source_that_is_not_the_current_baseline,
+        test_modified_tracked_original_is_rejected_by_verify_red,
+        test_untracked_file_in_original_is_rejected_by_verify_red,
+        test_recorder_rejects_a_source_modified_after_verify_red,
+        test_recorder_rejects_a_different_source_root_than_verify_red,
+        test_workflow_stops_before_ledger_update_when_the_source_is_rejected,
         test_record_already_green_preserves_human_reason,
         test_record_already_green_skips_when_not_already_green,
         test_record_already_green_without_result_file,

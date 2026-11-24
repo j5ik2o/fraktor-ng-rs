@@ -11,9 +11,10 @@
    - `rust`: `crate` と `test_file`（port-test が記録済みのものを確認し、
      実際のパスとずれていれば直す）
    - `verified_against`: 照合に使った原典の基準タグ。
-     `python3 ledger/tools/pekko_baseline.py source-tag --pekko pekko` が出す値を書く
+     `python3 ledger/tools/pekko_baseline.py source-tag` が出す値を書く（原典の場所は
+     verify_red と同じ規則で決まる。`--pekko` で別の場所を指定しない）
      （ノードの最上位、`goal` の次の行。record-already-green が書いた値があれば確かめる）。
-     終了コードが 0 でなければ、原典が現行の基準ではないので green を記録せず、
+     終了コードが 0 でなければ、原典が変更のない現行の基準ではないので green を記録せず、
      「台帳の更新や判定を実行できない」として報告して止まる
    - `goal`: 処理中のゴール ID が発行時に既に書かれていることを確かめる。書かない
      （この欄は人間が発行時に記録する。書かれていない、または処理中のゴール ID と

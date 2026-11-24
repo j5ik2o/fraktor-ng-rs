@@ -12,13 +12,12 @@
 - ゴール定義文書（タスク本文でパスが指定される）の write_scope 節。
   前提基盤の判定（bootstrap か前提不足か）に使う
 - 台帳 `ledger/nodes.yaml` の対象ノード
-- Pekko 原典：基準タグ（現行は v2.0.0。正は `tools/pekko-source/pekko-baseline.env`）を
-  チェックアウトしたソース。作業ツリー直下の `pekko/`（git 管理外）を既定とし、
-  無ければ `../pekko`、または環境で指定された場所。ノード id のファイルと、
-  そのテストが検証する実装側のソースを見る
-- 原典が基準タグであることを
-  `python3 ledger/tools/pekko_baseline.py source-tag --pekko <原典の場所>` で確かめる
-  （終了コード 0 で基準タグを出す。それ以外は基準でない原典なので使わない）
+- Pekko 原典（v2.0.0）：`python3 ledger/tools/pekko_baseline.py source-root` が出す
+  場所だけを使う（`PEKKO_ORIGINAL_ROOT`、無ければ作業ツリー直下の `pekko/`。後続の
+  verify_red と台帳記録も同じ場所を使う）。このコマンドは、変更のない基準 commit で
+  なければ終了コード 1 になる。そのときや、別の場所（`../pekko` など）しか無いときは、
+  原典を参照できないものとして扱う。ノード id のファイルと、そのテストが検証する
+  実装側のソースを見る
 - 原典を参照できなければ、「原典を参照できない」と報告して
   終了してください（ABORT 相当）
 

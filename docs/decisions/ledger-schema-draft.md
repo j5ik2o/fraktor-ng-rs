@@ -177,10 +177,14 @@
 - 2026-11-25 の切り替え時点の判定済みノード（green 50、do_not_port 173）は、過去の照合の
   記録として `v1.7.1` を持つ。v2.0.0 との照合を終えたノードだけ、その行を `v2.0.0` に変える。
   照合していないノードを v2.0.0 と書き換えない
-- 新しく green にするノードは、照合に使った原典の HEAD から決めたタグを書く。
-  `record_already_green.py` は `pekko_baseline.source_tag` で決め、ledger-update は
-  `pekko_baseline.py source-tag --pekko pekko` の出力を書く。どちらも、原典が現行の基準 commit で
-  なければ失敗し、green を記録しない（旧原典で照合したノードに現行タグを付けない）
+- 新しく green にするノードは、照合に使った原典から決めたタグを書く。原典の場所は全ステップで
+  `pekko_baseline.source_root()`（`PEKKO_ORIGINAL_ROOT`、無ければ `pekko/`）である。
+  `verify_red.py` は数える前に、`record_already_green.py` は記録の前に `pekko_baseline.source_tag` で
+  原典を検査し、ledger-update は `pekko_baseline.py source-tag` の出力を書く。HEAD が現行の基準
+  commit でないか、追跡ファイルの変更・無視されない未追跡ファイル・assume-unchanged /
+  skip-worktree の印があれば失敗し、green を記録しない（旧原典や手を加えた原典で照合したノードに
+  現行タグを付けない）。`record_already_green.py` は、verify_red が記録した原典の場所やタグと
+  違うときも拒否する。拒否されたら workflow は ledger-update へ進まない
 - 行の位置はノードの最上位、`goal` の次である。欄が無いノードに書くときは、ノードの末尾に足す
 - 検査は `uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger --ledger ledger/nodes.yaml`
   で、違反があれば終了コード 1 になる。CI でも実行する

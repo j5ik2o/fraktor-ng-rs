@@ -12,6 +12,10 @@ set -euo pipefail
 unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE \
   GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS \
   GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR GIT_NAMESPACE
+# replace ref で別の commit に見せかけられないようにする。
+export GIT_NO_REPLACE_OBJECTS=1
+# CDPATH があると cd が移動先を stdout に出し、$(cd ... && pwd) の値が壊れる。
+unset CDPATH
 
 # TAKT の runtime.prepare サンドボックスは XDG_CONFIG_HOME を作業ツリー内の空ディレクトリへ
 # 向ける。run 用 opencode サーバは provider 定義を利用者設定から解決するため、graft しないと
@@ -71,6 +75,20 @@ prepare_node_modules() {
 
 prepare_node_modules
 
+# 原典に手が加わっていないか（追跡ファイルの変更、無視されない未追跡ファイル、
+# assume-unchanged / skip-worktree の印）。利用者の変更は消さずに報告する。
+# grep -q は途中で読むのをやめて git を SIGPIPE で落とし、pipefail で判定を誤るので使わない。
+local_changes() {
+  local changes hidden
+  changes=$(git -C "$target" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)
+  hidden=$(git -C "$target" ls-files -v | grep -E '^[a-zS] ' || true)
+  if [ -n "$changes" ] || [ -n "$hidden" ]; then
+    printf '%s\n%s\n' "$changes" "$hidden" | grep -v '^$' | head -5
+    return 0
+  fi
+  return 1
+}
+
 prepare() {
   rm -rf "$target"
   if [ -d "$local_repo" ] && git -C "$local_repo" rev-parse --git-dir >/dev/null 2>&1; then
@@ -89,6 +107,11 @@ if [ -e "$target" ] || [ -L "$target" ]; then
      && [ "$(cd "$toplevel" && pwd -P)" = "$(cd "$target" && pwd -P)" ] \
      && head=$(git -C "$target" rev-parse --verify HEAD^{commit} 2>/dev/null); then
     if [ "$head" = "$expected" ]; then
+      if changes=$(local_changes); then
+        echo "pekko/: local changes on top of $tag; not removing them. Restore an unmodified checkout:" >&2
+        echo "$changes" >&2
+        exit 1
+      fi
       exit 0
     fi
     echo "pekko/: HEAD is $head, expected $expected; not removing it" >&2

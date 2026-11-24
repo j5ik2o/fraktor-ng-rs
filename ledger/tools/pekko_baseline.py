@@ -6,8 +6,11 @@
 PEKKO_BASELINE_FILE で別の基準ファイルを指せる（テスト用）。
 
 使い方:
-    # pekko/ の HEAD が現行の基準 commit なら、その基準タグを 1 行で出す（違えば終了コード 1）
-    python3 ledger/tools/pekko_baseline.py source-tag --pekko pekko
+    # 原典（PEKKO_ORIGINAL_ROOT、無ければ pekko/）が変更のない現行の基準 commit なら、
+    # その基準タグを 1 行で出す（違えば終了コード 1）
+    python3 ledger/tools/pekko_baseline.py source-tag
+    # 同じ検査をして、原典の絶対パスを出す（triage・port-test が読む場所）
+    python3 ledger/tools/pekko_baseline.py source-root
 
     # 台帳の verified_against を検査し、照合済みタグ別の件数を出す（違反があれば終了コード 1）
     uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger --ledger ledger/nodes.yaml
@@ -83,6 +86,15 @@ class Baseline:
         return set(self.historical) | set(self.historical.values())
 
 
+# 原典の置き場所の既定（cwd 相対）。tools/pekko-source/prepare_pekko_source.sh が用意する。
+DEFAULT_SOURCE_ROOT = "pekko"
+
+
+def source_root() -> Path:
+    """全ステップが共有する原典の場所。PEKKO_ORIGINAL_ROOT があればそれ、無ければ pekko/。"""
+    return Path(os.environ.get("PEKKO_ORIGINAL_ROOT") or DEFAULT_SOURCE_ROOT)
+
+
 def baseline_file() -> Path:
     return Path(os.environ.get("PEKKO_BASELINE_FILE") or DEFAULT_BASELINE_FILE)
 
@@ -107,7 +119,8 @@ def load(path: Path | None = None) -> Baseline:
     if not tag or not commit or not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise BaselineError(f"{path}: PEKKO_BASELINE_TAG and a 40-hex PEKKO_BASELINE_COMMIT are required")
     historical: dict[str, str] = {}
-    for item in values.get("PEKKO_HISTORICAL_BASELINES", "").split():
+    # 区切りはカンマ。空白で区切ると、シェルで source したときに 2 項目目がコマンドになる。
+    for item in filter(None, values.get("PEKKO_HISTORICAL_BASELINES", "").split(",")):
         old_tag, sep, old_commit = item.partition(":")
         if not sep or not old_tag or not re.fullmatch(r"[0-9a-f]{40}", old_commit):
             raise BaselineError(f"{path}: PEKKO_HISTORICAL_BASELINES item must be <tag>:<commit>: {item!r}")
@@ -119,13 +132,19 @@ def load(path: Path | None = None) -> Baseline:
 
 
 def source_tag(baseline: Baseline, pekko_dir: str | Path) -> str:
-    """pekko_dir が現行の基準 commit をチェックアウトした原典なら、現行タグを返す。
+    """pekko_dir が現行の基準 commit をそのままチェックアウトした原典なら、現行タグを返す。
 
-    新しく green にするノードの照合済みタグはここで決める。過去の基準の原典で
-    照合したノードに現行タグを付けないため、現行の基準 commit 以外は BaselineError にする。
+    新しく green にするノードの照合済みタグはここで決める。次のどれかに当たれば
+    BaselineError にする（旧原典や手を加えた原典での照合に現行タグを付けない）。
+    - HEAD が現行の基準 commit でない
+    - 追跡ファイルの変更（未 stage・stage 済み）、または無視されない未追跡ファイルがある
+    - assume-unchanged か skip-worktree の印が付いたファイルがある（変更が status に出ない）
+    原典の中身は変えない（利用者の変更を自動で消さない）。
     """
     pekko_dir = Path(pekko_dir)
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    # replace ref で別の commit に見せかけられないようにする。
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
 
     def git(*args: str) -> str:
         proc = subprocess.run(["git", "-C", str(pekko_dir), *args], env=env,
@@ -146,6 +165,20 @@ def source_tag(baseline: Baseline, pekko_dir: str | Path) -> str:
         known = f" (historical baseline {old[0]})" if old else ""
         raise BaselineError(
             f"{pekko_dir}: HEAD is {head}{known}, not the current baseline {baseline.tag} {baseline.commit}"
+        )
+    changes = git("status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none").splitlines()
+    if changes:
+        shown = "; ".join(c.strip() for c in changes[:5])
+        raise BaselineError(
+            f"{pekko_dir}: {len(changes)} local change(s) on top of {baseline.tag} ({shown}); "
+            "the source must be an unmodified checkout (not removed automatically)"
+        )
+    hidden = [line for line in git("ls-files", "-v").splitlines()
+              if line[:1].islower() or line[:1] == "S"]
+    if hidden:
+        raise BaselineError(
+            f"{pekko_dir}: {len(hidden)} file(s) marked assume-unchanged or skip-worktree "
+            f"({'; '.join(h[2:] for h in hidden[:5])}); their changes are not visible to git status"
         )
     return baseline.tag
 
@@ -188,11 +221,14 @@ def _load_nodes(path: str) -> list[dict]:
 
 
 def cmd_source_tag(args) -> int:
-    try:
-        print(source_tag(load(), args.pekko))
-    except BaselineError as error:
-        print(error, file=sys.stderr)
-        return 1
+    print(source_tag(load(), args.pekko or source_root()))
+    return 0
+
+
+def cmd_source_root(args) -> int:
+    root = source_root()
+    source_tag(load(), root)
+    print(root.resolve())
     return 0
 
 
@@ -233,15 +269,21 @@ def cmd_check_ledger(args) -> int:
 
 
 def _active_files(root: Path) -> list[Path]:
-    files = []
-    for rel in ACTIVE_PATHS:
-        path = root / rel
-        if path.is_file():
-            files.append(path)
-        elif path.is_dir():
-            files.extend(p for p in sorted(path.rglob("*")) if p.is_file())
-    history = {root / h for h in HISTORY_TOOLS}
-    return [p for p in files if p not in history and "__pycache__" not in p.parts]
+    """現役の経路のうち、git が扱うファイル（追跡済みと、無視されない未追跡）を返す。
+
+    .takt/runs/ など git が無視する生成物（過去の run の記録）は対象にしない。
+    """
+    proc = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+         "--", *ACTIVE_PATHS],
+        env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+        capture_output=True, check=False,
+    )
+    if proc.returncode != 0:
+        raise BaselineError(f"{root}: git ls-files failed: {proc.stderr.decode(errors='replace').strip()}")
+    history = set(HISTORY_TOOLS)
+    names = sorted({n for n in proc.stdout.decode("utf-8").split("\0") if n})
+    return [root / n for n in names if n not in history and (root / n).is_file()]
 
 
 def find_stale_refs(root: Path, baseline: Baseline) -> list[str]:
@@ -282,9 +324,11 @@ def cmd_check_refs(args) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("source-tag", help="pekko/ が現行の基準なら、その基準タグを出す")
-    p.add_argument("--pekko", default="pekko")
+    p = sub.add_parser("source-tag", help="原典が変更のない現行の基準なら、その基準タグを出す")
+    p.add_argument("--pekko", default=None, help="既定は PEKKO_ORIGINAL_ROOT、無ければ pekko")
     p.set_defaults(func=cmd_source_tag)
+    p = sub.add_parser("source-root", help="全ステップが使う原典を検査し、その絶対パスを出す")
+    p.set_defaults(func=cmd_source_root)
     p = sub.add_parser("check-ledger", help="台帳の verified_against を検査して集計する")
     p.add_argument("--ledger", default="ledger/nodes.yaml")
     p.add_argument("--pekko", default=None, help="現行の原典。ノードのファイルの有無も数える")

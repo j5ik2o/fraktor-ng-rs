@@ -11,6 +11,7 @@
   already_green           移植が正しく、前提の実装が既に契約を満たしている
   unexpected_pass         最初から通ったが、移植の正しさを確かめられない
   unclassifiable          機械分類できない（軽量モデルの判定ステップへ）
+  source_rejected         原典が変更のない現行の基準 commit でない（cargo も台帳も触らず止める）
 
 already_green は「移植の正しさ（原典 Pekko のケース数と、人間が承認した除外の件数の和が、
 通過したケース数に一致し、1 件以上通っている）」と「前提の実装が契約を満たす（対象テストの
@@ -43,15 +44,16 @@ import subprocess
 import sys
 
 import excluded_approvals
+import pekko_baseline
 
 LEDGER = "ledger/nodes.yaml"
 
 # already_green の判定結果を record-already-green へ渡す固定パス（cwd 相対）。
 ALREADY_GREEN_RESULT = os.path.join(".takt", "already-green-result.json")
 
-# 原典 Pekko のチェックアウト先。tools/pekko-source/prepare_pekko_source.sh が
-# cwd に pekko/ を用意する。環境依存パスをコードへ直書きしないため環境変数で上書きできる。
-DEFAULT_ORIGINAL_ROOT = "pekko"
+# 原典 Pekko の場所は pekko_baseline.source_root()（PEKKO_ORIGINAL_ROOT、無ければ cwd の pekko/。
+# tools/pekko-source/prepare_pekko_source.sh が用意する）。record-already-green と ledger-update も
+# 同じ関数で場所を決め、同じ検査（変更のない現行の基準 commit か）を通す。
 
 # 原典のケース書式。Java は @Test 注釈と、その直後の void メソッド宣言。
 JAVA_TEST = re.compile(r"^\s*@Test\b", re.MULTILINE)
@@ -247,8 +249,7 @@ def count_original_cases(node_id: str) -> int | None:
     数えられないと判断する）。
     0 件は「ケースが無い」であり、移植の正しさを確かめられないため None とする。
     """
-    root = os.environ.get("PEKKO_ORIGINAL_ROOT", DEFAULT_ORIGINAL_ROOT)
-    path = os.path.join(root, node_id)
+    path = os.path.join(pekko_baseline.source_root(), node_id)
     if not os.path.exists(path):
         return None
     try:
@@ -340,6 +341,22 @@ def main() -> int:
         print(json.dumps(result))
         return 0
 
+    # 原典が変更のない現行の基準でなければ、ケース数も分類も信用できない。台帳を書かずに止める
+    # （workflow は source_rejected を when(true) の ABORT で受ける）。原典には触れない。
+    root = pekko_baseline.source_root()
+    try:
+        tag = pekko_baseline.source_tag(pekko_baseline.load(), root)
+    except pekko_baseline.BaselineError as error:
+        result = {"classification": "source_rejected", "node": node, "detail": str(error)}
+        try:
+            write_result(result)
+        except OSError as write_error:
+            print(json.dumps({**result, "result_write_failed": str(write_error)},
+                             ensure_ascii=False))
+            return 1
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+
     stem = os.path.splitext(os.path.basename(test_file))[0]
     proc = subprocess.run(
         ["cargo", "test", "-p", crate, "--test", stem],
@@ -387,6 +404,8 @@ def main() -> int:
         "passed": passed,
         "excluded": excluded,
         "reason": reason,
+        "source_tag": tag,
+        "source_root": str(root.resolve()),
         "detail": out[-1500:],
     }
     try:

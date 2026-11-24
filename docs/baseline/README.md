@@ -17,7 +17,13 @@
 
 原典は `tools/pekko-source/prepare_pekko_source.sh` が作業ツリー直下の `pekko/` に用意する。
 基準ファイルのタグで clone し、HEAD が基準 commit と一致しなければ失敗する。過去の基準の
-`pekko/` が残った作業ツリーでは、消さずに失敗する（旧原典のまま run を再開させない）。
+`pekko/` が残った作業ツリーや、基準 commit の上に変更（追跡ファイルの変更、無視されない
+未追跡ファイル、assume-unchanged / skip-worktree の印）がある `pekko/` では、消さずに失敗する
+（旧原典や手を加えた原典のまま run を再開させない。利用者の変更は自動で消さない）。
+
+原典を読むステップ（triage、port-test、verify_red、record-already-green、ledger-update）は、
+同じ場所（`PEKKO_ORIGINAL_ROOT`、無ければ `pekko/`）を同じ検査（`pekko_baseline.source_tag`）に
+通してから使う。record-already-green が拒否したら、ワークフローは ledger-update へ進まず止まる。
 
 ## 過去の基準（履歴）
 
@@ -47,13 +53,15 @@ python3 ledger/tools/pekko_baseline.py check-refs
 凍結スナップショットのディレクトリ（`docs/baseline/pekko-v1.7.1/`）を指すパスは、履歴への
 参照なので許す。凍結した v1.7.1 の baseline を読むための道具（`ledger/tools/convert_baseline.py`、
 `ledger/tools/recount_supplement.py`）と基準ファイル自身も対象外である。`docs/goals/`、
-`docs/decisions/`、`crates/` の過去の記録は履歴として扱い、検査しない。
+`docs/decisions/`、`crates/` の過去の記録は履歴として扱い、検査しない。走査するのは git が扱う
+ファイル（追跡済みと、無視されない未追跡）だけで、`.takt/runs/` など git が無視する過去の run の
+記録は読まない。
 
 ## 照合の状態を見る
 
 ```sh
 # 現行の原典が基準タグか（基準タグを 1 行で出す。違えば終了コード 1）
-python3 ledger/tools/pekko_baseline.py source-tag --pekko pekko
+python3 ledger/tools/pekko_baseline.py source-tag
 
 # 台帳の照合済みタグの検査と集計。現行タグで未照合のノードの一覧と、
 # 現行の原典にファイルが無いノードの件数も出す
@@ -64,6 +72,7 @@ uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger \
 ## 基準を変えるとき
 
 1. `tools/pekko-source/pekko-baseline.env` の現行タグ・commit・タグ object・決定日を書き換え、
-   それまでの現行タグを `PEKKO_HISTORICAL_BASELINES` に足す
+   それまでの現行タグを `PEKKO_HISTORICAL_BASELINES` に足す（`<タグ>:<commit>` をカンマで
+   区切る。空白で区切ると、シェルが 2 項目目をコマンドとして実行する）
 2. この README の表に決定を記録する
 3. `pekko_baseline.py check-refs` と `check-ledger` が通ることを確かめる

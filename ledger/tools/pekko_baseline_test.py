@@ -63,6 +63,11 @@ def test_load_reads_current_and_historical() -> None:
         assert b.historical == {OLD: "b" * 40}, b
         assert b.known_tags() == {CURRENT, OLD}
         assert b.historical_tokens() == {OLD, "b" * 40}
+        two = write_baseline(Path(root) / "two.env", (
+            f"PEKKO_BASELINE_TAG={CURRENT}\nPEKKO_BASELINE_COMMIT={'a' * 40}\n"
+            f"PEKKO_HISTORICAL_BASELINES={OLD}:{'b' * 40},vTEST-0:{'c' * 40}\n"
+        ))
+        assert pekko_baseline.load(two).historical == {OLD: "b" * 40, "vTEST-0": "c" * 40}
 
 
 def test_load_rejects_malformed_files() -> None:
@@ -96,6 +101,45 @@ def test_source_tag_accepts_only_the_current_commit() -> None:
             assert OLD in str(error) and head in str(error), error
         else:
             raise AssertionError("a historical baseline checkout must not resolve to the current tag")
+
+
+def test_source_tag_rejects_local_changes_and_keeps_them() -> None:
+    """HEAD が基準 commit でも、変更・未追跡・印付きのファイルがあれば拒否し、中身は変えない。"""
+    changes = {
+        "modified": lambda repo: (repo / "marker.txt").write_text("older baseline content", encoding="utf-8"),
+        "staged": lambda repo: ((repo / "marker.txt").write_text("staged", encoding="utf-8"),
+                                git("add", "marker.txt", cwd=repo)),
+        "untracked": lambda repo: (repo / "Extra.java").write_text("x", encoding="utf-8"),
+        "assume-unchanged": lambda repo: (git("update-index", "--assume-unchanged", "marker.txt", cwd=repo),
+                                          (repo / "marker.txt").write_text("hidden", encoding="utf-8")),
+        "skip-worktree": lambda repo: (git("update-index", "--skip-worktree", "marker.txt", cwd=repo),
+                                       (repo / "marker.txt").write_text("hidden", encoding="utf-8")),
+    }
+    for label, change in changes.items():
+        with tempfile.TemporaryDirectory() as root:
+            pekko = Path(root) / "pekko"
+            head = make_repo(pekko, "current")
+            change(pekko)
+            before = {p.name: p.read_bytes() for p in pekko.iterdir() if p.is_file()}
+            try:
+                pekko_baseline.source_tag(baseline(current_commit=head), pekko)
+            except pekko_baseline.BaselineError:
+                pass
+            else:
+                raise AssertionError(f"{label}: a changed source must not resolve to the current tag")
+            assert {p.name: p.read_bytes() for p in pekko.iterdir() if p.is_file()} == before, label
+
+
+def test_source_root_follows_pekko_original_root() -> None:
+    old = os.environ.pop("PEKKO_ORIGINAL_ROOT", None)
+    try:
+        assert pekko_baseline.source_root() == Path("pekko")
+        os.environ["PEKKO_ORIGINAL_ROOT"] = "/somewhere/pekko"
+        assert pekko_baseline.source_root() == Path("/somewhere/pekko")
+    finally:
+        os.environ.pop("PEKKO_ORIGINAL_ROOT", None)
+        if old is not None:
+            os.environ["PEKKO_ORIGINAL_ROOT"] = old
 
 
 def test_source_tag_rejects_missing_and_nested_directories() -> None:
@@ -149,6 +193,13 @@ def test_summarize_separates_current_from_unverified() -> None:
 def test_find_stale_refs_allows_only_history_directory_paths() -> None:
     with tempfile.TemporaryDirectory() as root:
         root = Path(root)
+        git("init", "-q", cwd=root)
+        # TAKT の run の記録は git が無視する。旧タグが残っていても現役の参照ではない
+        (root / ".takt").mkdir()
+        (root / ".takt" / ".gitignore").write_text("runs/\n", encoding="utf-8")
+        report = root / ".takt" / "runs" / "20261120-000000" / "reports" / "triage.md"
+        report.parent.mkdir(parents=True)
+        report.write_text(f"原典: Pekko {OLD}\n", encoding="utf-8")
         facet = root / ".takt" / "facets" / "x.md"
         facet.parent.mkdir(parents=True)
         facet.write_text(
@@ -165,6 +216,13 @@ def test_find_stale_refs_allows_only_history_directory_paths() -> None:
         (root / "docs" / "old-goal.md").write_text(f"{OLD}\n", encoding="utf-8")
         hits = pekko_baseline.find_stale_refs(root, baseline())
         assert [h.split(": ", 1)[0] for h in hits] == [".takt/facets/x.md:3", ".takt/facets/x.md:4"], hits
+        # 同じ行を現役の facet に追跡ファイルとして置けば検出する
+        git("add", ".takt/facets/x.md", cwd=root)
+        tracked = root / ".takt" / "facets" / "y.md"
+        tracked.write_text(f"原典: Pekko {OLD}\n", encoding="utf-8")
+        git("add", ".takt/facets/y.md", cwd=root)
+        hits = pekko_baseline.find_stale_refs(root, baseline())
+        assert ".takt/facets/y.md:1" in [h.split(": ", 1)[0] for h in hits], hits
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess:
@@ -187,6 +245,8 @@ def main() -> int:
         test_load_reads_current_and_historical,
         test_load_rejects_malformed_files,
         test_source_tag_accepts_only_the_current_commit,
+        test_source_tag_rejects_local_changes_and_keeps_them,
+        test_source_root_follows_pekko_original_root,
         test_source_tag_rejects_missing_and_nested_directories,
         test_check_nodes_rules,
         test_summarize_separates_current_from_unverified,

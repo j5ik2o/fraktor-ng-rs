@@ -309,8 +309,11 @@ steps:
         timeout_ms: 120000
         output: json
     rules:
-      - condition: when(true)
+      # 原典が変更のない現行の基準でない（source_ok が false）なら ledger-update へ進めない
+      - condition: when(context.record-already-green.result.json.source_ok == true)
         next: ledger-update
+      - condition: when(true)
+        next: ABORT
   - name: ledger-update
     edit: true
     persona: coder

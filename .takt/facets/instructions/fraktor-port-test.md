@@ -5,8 +5,8 @@
 標準の write-tests-first への差分。ここでのテストは新規に考えるもの
 ではなく、**Pekko 原典テストの移植**である。
 
-- 対象は triage レポートで指定されたノード1件。原典（基準タグの Pekko の
-  ファイル。現行の基準は v2.0.0、正は `tools/pekko-source/pekko-baseline.env`）を
+- 対象は triage レポートで指定されたノード1件。原典（Pekko v2.0.0 の
+  ファイル。場所は `python3 ledger/tools/pekko_baseline.py source-root` の出力）を
   正として移植する
 - 置き場所は検証対象クレートの `tests/` 配下に、ノード1件＝
   ファイル1件。ファイル冒頭に出典（基準タグとリポジトリ相対パス。
