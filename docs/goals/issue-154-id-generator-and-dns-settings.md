@@ -45,7 +45,8 @@
 | テストと台帳 red（第1工程） | `3460283` | 移植テスト2本、2ノードの status `red` と rust の欄。製品差分0 |
 | 実装と台帳 green（第2工程） | `69cd1a3` | kernel の公開項目14個、adaptor の型2個、依存 `getrandom`、単体テスト、2ノードの green、統合テストへの import 1行 |
 | 担当のレビュー修正 | `a41b70c`、`4f67deb` | 後述の「実装者自身のレビュー」と aislop の指摘 |
-| ゴール文書 | 本書のコミット | 本書 |
+| ゴール文書 | `78de2a1` | 本書の初版 |
+| PR #157 の指摘への対応 | `7eef22e`、`152b7a0` | 後述の「PR #157 のレビュー指摘への対応」 |
 
 第1工程のテストには取りこぼしが1件あった。`id_generator_spec.rs` が trait `IdGenerator` を import しておらず、実装後も `next_id` を呼べなかった。第2工程の投入文で、この import 1行の追加だけを許可した。アサーションは変えていない。
 
@@ -102,7 +103,7 @@ IdGeneratorSpec の2ケースは、原典と同じく `next_id` を2回呼び、
 ## 実装
 
 - kernel の `io::dns` に14の公開項目を足した（`IdGeneratorPolicy`、`IdGenerator`、`IdGenerationError`、`HostDnsConfiguration`、`NameserversSetting`、`SearchDomainsSetting`、`NdotsSetting`、`TtlSetting`、`DnsSettingsConfig`、`Ttl`、`NonPositiveTtlError`、`CachePolicy`、`DnsSettingsError`、`DnsSettingsValues`。うち `IdGenerator` と `HostDnsConfiguration` は trait）。どれも `core` と `alloc` だけを使う。既存の `NameserverAddressError` には `core::error::Error` の実装だけを足した（`DnsSettingsError::InvalidNameserver` の `source` にするため）。
-- `DnsSettingsValues::new` は、原典の `class DnsSettings` のフィールドの初期化と同じ順（nameservers、resolve-timeout、positive-ttl、negative-ttl、search-domains、ndots）で評価し、最初の失敗を返す。name server の文字列は、#136 の `DnsSettings::parse_nameserver_address` で読む。`"default"` の name server が `None` か空なら `UnableToDetermineDefaultNameservers`、明示の空のリストは `EmptyNameservers`、負の ndots は `NegativeNdots`、ゼロの TTL は `NonPositiveTtl` にする。ホストの name server は `Default` のときだけ読み、resolv.conf は search-domains か ndots が `Default` のときだけ、1回の生成で最大1回読む（原典の `lazy val resolvConf` と同じ）。
+- `DnsSettingsValues::new` は、原典の `class DnsSettings` のフィールドの初期化と同じ順（nameservers、resolve-timeout、positive-ttl、negative-ttl、search-domains、ndots）で評価し、最初の失敗を返す。name server の文字列は、#136 の `DnsSettings::parse_nameserver_address` で読む。`"default"` の name server が `None` か空なら `UnableToDetermineDefaultNameservers`、明示の空のリストは `EmptyNameservers`、負の ndots は `NegativeNdots`、ゼロの TTL は `NonPositiveTtl` にする。各設定の値の変換は、設定の型の impl に置いた（`NameserversSetting::resolve`、`TtlSetting::cache_policy`、`SearchDomainsSetting::resolve`、`NdotsSetting::resolve`、`IdGeneratorPolicy::from_config_value`。どれも `pub(crate)`）。`DnsSettingsValues::new` は評価の順序と、ホストを読むかどうかだけを受け持つ。ホストの name server は `Default` のときだけ読み、resolv.conf は search-domains か ndots が `Default` のときだけ、1回の生成で最大1回読む（原典の `lazy val resolvConf` と同じ）。
 - adaptor に `RandomIdGenerator` と `UnsupportedIdGeneratorPolicyError` を足した。ID は原典の `(nextInt(65536) + Short.MinValue).toShort` と同じく、0〜65535 の値 `x` から `x − 32768` にする。ThreadLocalRandom は、Java の `ThreadLocalRandom` と同じ SplitMix 系の状態（増分 `0x9E37_79B9_7F4A_7C15` と `mix32`）をスレッドごとに持ち、種は std の `RandomState` から作る。SecureRandom は、呼ぶたびに `getrandom::fill` で2バイトを読み、失敗は `IdGenerationError::EntropyUnavailable` で返す。
 - 依存 `getrandom = "0.3"`（0.3.4）を `fraktor-actor` に足した。使うのは `adaptor/random_id_generator.rs` だけである。`Cargo.lock` には `cfg-if`、`libc`、`r-efi`、`wasip2`、`wit-bindgen` も入ったが、`libc` 以外は UEFI と WASI の対象でだけ使われる。
 
@@ -147,6 +148,15 @@ IdGeneratorSpec の2ケースは、原典と同じく `next_id` を2回呼び、
 
 PR 作成後、既出の指摘に対応した HEAD を固定して行う（`docs/decisions/takt-workflow-design.md` §2.6）。結果はここに追記する。
 
+## PR #157 のレビュー指摘への対応
+
+| 指摘 | 分類 | 対応 |
+|:---|:---|:---|
+| Devin: TTL の変換が `TtlSetting` の値だけで決まるのに、型の外の自由関数にある（`fraktor-coding-rules.md` の rich-domain-model） | 直す | `7eef22e`。TTL に加えて、同じ形の nameservers、search-domains、ndots、ID ポリシーの変換も、それぞれの型の impl に移した。`DnsSettingsValues::new` には評価の順序とホストの読み取りだけを残した。振る舞いは変えておらず、既存の単体テスト143件と統合テスト12件はそのまま通る |
+| Devin: 検索ドメインを明示し、ndots だけを既定にした組み合わせ（原典の "use host ndots if set to default"）で、ホストの ndots が返ることを確かめる単体テストがない | 直す | `152b7a0`。単体テスト `a_default_ndots_beside_explicit_search_domains_comes_from_the_host` を足した（search は明示の値、ndots はホストの 2、resolv.conf は1回だけ読む）。resolv.conf を読む条件から ndots を外すと、このテストが失敗することを確かめた。原典12件の統合テストとアサーションは変えていない |
+
+Codex と CodeRabbit は指摘なしだった。
+
 ## 製品編集前の実測
 
 第1工程の成果 `3460283753673e52865eb740aee0515182153107`（`32d869f` からの製品差分0。`git diff --stat 32d869f 3460283 -- 'crates/*/src' Cargo.toml Cargo.lock 'crates/*/Cargo.toml'` は空）で、担当が自分の作業ツリーで次を再実行した。テストの blob は、`id_generator_spec.rs` が `dc2b0e51`、`dns_settings_spec.rs` が `308ca154` である。
@@ -161,15 +171,15 @@ already_green ではない。製品に ID 生成と設定値の型がなく、2�
 
 ## 実装後の実測
 
-担当のレビュー修正の後の HEAD（`4f67deb`）で、担当が自分の作業ツリーで次を実行した。
+PR #157 の指摘に対応した後の HEAD（`152b7a0`）で、担当が自分の作業ツリーで次を実行した。
 
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test id_generator_spec -- --test-threads=1` | 0 | 2 passed / 0 failed / 0 ignored |
 | `cargo test -p fraktor-actor --test dns_settings_spec -- --test-threads=1` | 0 | 10 passed / 0 failed / 0 ignored |
-| `cargo test -p fraktor-actor --lib io::dns` | 0 | 143 passed |
+| `cargo test -p fraktor-actor --lib io::dns` | 0 | 144 passed（PR の指摘への対応前は 143） |
 | `cargo test -p fraktor-actor --lib random_id_generator` | 0 | 12 passed |
-| `cargo test --workspace` | 0 | 71 スイート、768 passed / 0 failed / 0 ignored |
+| `cargo test --workspace` | 0 | 71 スイート、769 passed / 0 failed / 0 ignored（対応前は 768） |
 | `cargo fmt --check` | 0 | 差分なし |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
 | syn-check（`crates/fraktor-actor`、`crates/fraktor-testkit`） | 0 | 両方 `clean: true`、違反0、抑制0 |
