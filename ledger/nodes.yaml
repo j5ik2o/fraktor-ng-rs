@@ -3706,7 +3706,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue139
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/dispatch/PinnedActorSpec.scala
   name: actor-tests:PinnedActorSpec
   kind: test
@@ -5137,7 +5137,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue139
 - id: actor-tests/src/test/scala-jdk21-only/org/apache/pekko/dispatch/VirtualThreadPoolDispatcherSpec.scala
   name: actor-tests:VirtualThreadPoolDispatcherSpec
   kind: test
