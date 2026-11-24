@@ -975,7 +975,7 @@ nodes:
     module: actor-tests
     class: ActorSystemSetupSpec
     test_cases_approx: 5
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -991,8 +991,8 @@ nodes:
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/actor_system_setup_spec.rs
   goal: G0issue150
 - id: actor-tests/src/test/java/org/apache/pekko/actor/setup/ActorSystemSetupTest.java
   name: actor-tests:ActorSystemSetupTest
@@ -1001,7 +1001,7 @@ nodes:
     module: actor-tests
     class: ActorSystemSetupTest
     test_cases_approx: 1
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -1017,8 +1017,8 @@ nodes:
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/actor_system_setup_test.rs
   goal: G0issue150
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorSystemSpec.scala
   name: actor-tests:ActorSystemSpec
