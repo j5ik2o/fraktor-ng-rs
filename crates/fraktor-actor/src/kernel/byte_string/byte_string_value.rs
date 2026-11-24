@@ -121,10 +121,13 @@ impl ByteString {
 
   /// Returns a stream that reads the bytes from the start, in order.
   ///
-  /// Corresponds to Pekko's `asInputStream`.
+  /// Corresponds to Pekko's `asInputStream`. The stream supports marks when
+  /// the byte string holds at most one array, as the stream of Pekko's
+  /// `ByteString1C` and `ByteString1` does, and not when it holds several, as
+  /// the stream of Pekko's `ByteStrings` does not.
   #[must_use]
   pub fn as_input_stream(&self) -> ByteStringInputStream {
-    ByteStringInputStream::new(self.iterator())
+    ByteStringInputStream::new(self.iterator(), self.arrays.len() <= 1)
   }
 }
 

@@ -91,6 +91,17 @@ impl ByteIterator {
     copied
   }
 
+  /// Moves past up to `count` bytes, and returns how many it moved past.
+  pub(crate) fn skip_bytes(&mut self, count: usize) -> usize {
+    let mut skipped = 0;
+    while skipped < count && self.has_next() {
+      let step = (self.arrays[self.current].len() - self.offset).min(count - skipped);
+      skipped += step;
+      self.advance(step);
+    }
+    skipped
+  }
+
   // Moves past `count` bytes of the current array, which has at least that
   // many left, and onto the next array when this one is used up.
   fn advance(&mut self, count: usize) {
