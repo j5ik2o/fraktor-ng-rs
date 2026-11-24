@@ -1592,7 +1592,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue130
 - id: actor-tests/src/test/scala-2.13+/org/apache/pekko/util/ByteStringBuilderScala213PlusSpec.scala
   name: actor-tests:ByteStringBuilderScala213PlusSpec
   kind: test
@@ -1696,7 +1696,7 @@ nodes:
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue130
 - id: actor-tests/src/test/scala/org/apache/pekko/util/ByteStringSpec.scala
   name: actor-tests:ByteStringSpec
   kind: test
