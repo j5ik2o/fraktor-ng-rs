@@ -2888,9 +2888,9 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: 3
-    ported: 3
-    passing: 0
+    total: null
+    ported: null
+    passing: null
     excluded: []
   rust:
     crate: fraktor-actor
