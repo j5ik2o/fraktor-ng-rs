@@ -3557,7 +3557,7 @@ nodes:
     module: actor-tests
     class: NameserverAddressParserSpec
     test_cases_approx: 4
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -3568,14 +3568,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 4
+    ported: 4
+    passing: 4
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/nameserver_address_parser_spec.rs
+  goal: G0issue136
 - id: actor-tests/src/test/java/org/apache/pekko/japi/pf/PFBuilderTest.java
   name: actor-tests:PFBuilderTest
   kind: test
@@ -4104,7 +4104,7 @@ nodes:
     module: actor-tests
     class: ResolvConfParserSpec
     test_cases_approx: 9
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -4115,14 +4115,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 9
+    ported: 9
+    passing: 9
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/resolv_conf_parser_spec.rs
+  goal: G0issue136
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/RestartStrategySpec.scala
   name: actor-tests:RestartStrategySpec
   kind: test
