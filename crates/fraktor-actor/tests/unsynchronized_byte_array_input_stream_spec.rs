@@ -15,7 +15,9 @@
 // - `markSupported()` is `mark_supported()`.
 // - `mark(readAheadLimit)` is `mark(read_ahead_limit)`. The original ignores the
 //   limit (its comment on L34); the port ignores it too.
-// - `reset()` is `reset()`.
+// - `reset()` is `reset()`. Java's `reset()` throws an `IOException` when the
+//   stream does not support marks; the port's returns that failure as an
+//   `Err`. This stream supports marks, so the test expects `Ok`.
 // - `skip(n)` is `skip(n)`, which returns how many bytes it skipped. Java's
 //   `long` count is `usize` here.
 // - `read()` returns `Some(byte)` where Java returns the byte as an `Int`, and
@@ -42,7 +44,7 @@ fn support_mark_and_reset() {
   // The limit is ignored, as it is in the original and in `ByteArrayInputStream`.
   stream.mark(1);
   assert_eq!(stream.read(), Some(b'b'));
-  stream.reset();
+  stream.reset().expect("a stream over one array supports reset");
   assert_eq!(stream.read(), Some(b'b'));
   drop(stream);
 }
