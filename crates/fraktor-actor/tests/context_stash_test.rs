@@ -23,6 +23,12 @@
 //   it again as a DeathWatch notice (`terminatedQueuedFor`). The first case is
 //   the runtime contract of ActorWithStashSpec's "re-receive unstashed
 //   Terminated messages"; that node stays unported in the ledger.
+// - Notices for one watched actor share one DeathWatch record, as Pekko keys
+//   `terminatedQueued` by the actor: two stashed `Terminated` for the same
+//   target are re-received once, while each other target keeps its own.
+// - A delivery may stash again after `unstashAll` emptied the stash, because
+//   Pekko only refuses the delivery that is the stash's newest entry.
+// - A stash that the stop hook returns to the mailbox is released by the stop.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -280,5 +286,173 @@ fn an_unwatch_after_unstash_all_cancels_the_unstashed_terminated() {
 
   probe.expect_msg("terminated");
   probe.expect_no_message(core::time::Duration::from_millis(200));
+  spec.terminate();
+}
+
+// Watches every target on `watch`. Stashes the first notice for each target and
+// watches that target again, which yields a second notice for it; stashes the
+// second notice too and then unstashes everything. Every notice handled after
+// that is counted per target.
+struct RepeatWatcher {
+  targets: Vec<ActorRef>,
+  notices: Vec<usize>,
+  replayed: Arc<std::sync::Mutex<Vec<ActorRef>>>,
+  probe: ActorRef,
+}
+
+impl Actor for RepeatWatcher {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    let Some(notice) = message.downcast_ref::<Terminated>() else {
+      for target in self.targets.clone() {
+        context.watch(&target);
+      }
+      context.tell(&self.probe, "watching");
+      return;
+    };
+    let index = self.targets.iter().position(|target| target == notice.target()).expect("a watched target");
+    self.notices[index] += 1;
+    match self.notices[index] {
+      | 1 => {
+        context.stash();
+        let target = self.targets[index].clone();
+        context.watch(&target);
+      },
+      | 2 => {
+        context.stash();
+        if self.notices.iter().all(|count| *count >= 2) {
+          context.unstash_all();
+          context.tell(&self.probe, "unstashed");
+        }
+      },
+      | _ => {
+        self.replayed.lock().unwrap().push(notice.target().clone());
+        context.tell(&self.probe, "replayed");
+      },
+    }
+  }
+}
+
+fn replayed_notices(target_count: usize) -> (Vec<ActorRef>, Vec<ActorRef>) {
+  let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
+  let mut probe = TestProbe::new(spec.system_mut());
+  let targets: Vec<ActorRef> = (0..target_count).map(|_| spec.system_mut().actor_of(Props::new(|| Idle))).collect();
+  let replayed = Arc::new(std::sync::Mutex::new(Vec::new()));
+  let watcher = spec.system_mut().actor_of(Props::new({
+    let targets = targets.clone();
+    let replayed = replayed.clone();
+    let probe = probe.ref_handle();
+    move || RepeatWatcher {
+      targets: targets.clone(),
+      notices: alloc_zeroes(targets.len()),
+      replayed: replayed.clone(),
+      probe: probe.clone(),
+    }
+  }));
+  watcher.tell("watch", spec.system().dead_letters());
+  probe.expect_msg("watching");
+  for target in &targets {
+    spec.system_mut().stop(target);
+  }
+  probe.expect_msg("unstashed");
+  for _ in 0..target_count {
+    probe.expect_msg("replayed");
+  }
+  probe.expect_no_message(core::time::Duration::from_millis(200));
+  let replayed = replayed.lock().unwrap().clone();
+  spec.terminate();
+  (targets, replayed)
+}
+
+fn alloc_zeroes(len: usize) -> Vec<usize> {
+  vec![0; len]
+}
+
+#[test]
+fn two_stashed_terminated_for_one_target_are_received_again_once() {
+  let (targets, replayed) = replayed_notices(1);
+  assert_eq!(replayed, targets);
+}
+
+#[test]
+fn stashed_terminated_for_different_targets_are_each_received_again_once() {
+  let (targets, mut replayed) = replayed_notices(2);
+  replayed.sort_by_key(|target| targets.iter().position(|known| known == target));
+  assert_eq!(replayed, targets);
+}
+
+// In its first delivery, stashes, unstashes, stashes again, and unstashes
+// again, as a Pekko actor may. Every delivery is reported to the probe.
+struct Restasher {
+  probe: ActorRef,
+  deliveries: usize,
+}
+
+impl Actor for Restasher {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    self.deliveries += 1;
+    if self.deliveries == 1 {
+      context.stash();
+      context.unstash_all();
+      context.stash();
+      context.unstash_all();
+    }
+    context.tell(&self.probe, message);
+  }
+}
+
+#[test]
+fn a_delivery_may_stash_again_after_unstash_all() {
+  let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
+  let mut probe = TestProbe::new(spec.system_mut());
+  let restasher = spec.system_mut().actor_of(Props::new({
+    let probe = probe.ref_handle();
+    move || Restasher { probe: probe.clone(), deliveries: 0 }
+  }));
+
+  restasher.tell("item", spec.system().dead_letters());
+
+  expect_texts(&mut probe, &["item", "item", "item"]);
+  probe.expect_no_message(core::time::Duration::from_millis(200));
+  spec.terminate();
+}
+
+// Stashes every message and returns the stash to the mailbox in its stop hook,
+// as `UnrestrictedStash.postStop` does.
+struct UnstashOnStop {
+  probe: ActorRef,
+}
+
+impl Actor for UnstashOnStop {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    if message == "ping" {
+      context.tell(&self.probe, "pong");
+    } else {
+      context.stash();
+    }
+  }
+
+  fn post_stop_with_context(&mut self, context: &mut ActorContext<'_>) {
+    context.unstash_all();
+  }
+}
+
+#[test]
+fn a_stash_returned_by_the_stop_hook_is_released_by_the_stop() {
+  let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
+  let mut probe = TestProbe::new(spec.system_mut());
+  let stasher = spec.system_mut().actor_of(Props::new({
+    let probe = probe.ref_handle();
+    move || UnstashOnStop { probe: probe.clone() }
+  }));
+  let sender = spec.system().dead_letters();
+  let released = Arc::new(AtomicUsize::new(0));
+  stasher.tell(ReleaseCounter(released.clone()), sender.clone());
+  stasher.tell("ping", sender);
+  probe.expect_msg("pong");
+  assert_eq!(released.load(Ordering::SeqCst), 0, "the payload is held by the stash");
+
+  spec.system_mut().stop(&stasher);
+
+  assert_eq!(released.load(Ordering::SeqCst), 1, "the stop released the stash the hook returned");
   spec.terminate();
 }

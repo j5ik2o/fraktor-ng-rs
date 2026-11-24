@@ -114,8 +114,11 @@ where
 
   /// Moves to `next`, telling the handlers when Pekko's `makeTransition` would.
   ///
-  /// A `goto` into a state with no state function stops the actor, as Pekko
-  /// terminates the machine with the failure `Next state %s does not exist`.
+  /// A `goto` into a state with no state function keeps the current state and
+  /// data and tells no handler. Pekko's `makeTransition` records the failure
+  /// `Next state %s does not exist` through `terminate`, which logs it and runs
+  /// `onTermination`, but does not stop the actor; the port has neither hook,
+  /// so only the unchanged state remains.
   fn make_transition(&mut self, context: &mut ActorContext<'_>, target: Option<S>, data: Option<D>) {
     let Some((current_state, current_data)) = self.current.take() else {
       return;
@@ -124,7 +127,6 @@ where
     let next_state = target.unwrap_or_else(|| current_state.clone());
     if !self.has_state(&next_state) {
       self.current = Some((current_state, current_data));
-      context.stop(&context.self_ref());
       return;
     }
     if notifies || current_state != next_state {

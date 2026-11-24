@@ -153,7 +153,8 @@ pub(crate) struct Executor {
   hook_child_creation_refused: bool,
   terminated: bool,
   clock: Option<Arc<dyn Clock>>,
-  stashes: Vec<(ActorRef, Vec<Envelope>)>,
+  stashes: Vec<(ActorRef, Vec<(u64, Envelope)>)>,
+  next_delivery: u64,
 }
 
 impl Executor {
@@ -182,6 +183,7 @@ impl Executor {
       terminated: false,
       clock: None,
       stashes: Vec::new(),
+      next_delivery: 0,
     };
     executor.function_refs.push(executor.dead_letters.clone());
     executor
@@ -769,6 +771,7 @@ impl Executor {
     }
     self.forget_child(target);
     self.stash_to_dead_letters(target);
+    self.queued_to_dead_letters(target);
     self.watchers.retain(|(watcher, _)| watcher != target);
     self.pending_terminations.retain(|pending| &pending.watcher != target);
     self.notify_watchers(target, true, false);
@@ -903,12 +906,28 @@ impl Executor {
   }
 
   /// Registers a reply to `reply_to` after `target` stops.
-  /// Puts `message` from `sender` aside in `owner`'s stash.
-  pub(crate) fn stash(&mut self, owner: ActorRef, message: Message, sender: ActorRef) {
+  /// Returns a number that tells one delivery apart from every other.
+  pub(crate) fn next_delivery_id(&mut self) -> u64 {
+    self.next_delivery += 1;
+    self.next_delivery
+  }
+
+  /// Puts `message` from `sender`, handled in `delivery`, aside in `owner`'s
+  /// stash.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the newest entry of the stash is the same delivery, as
+  /// `UnrestrictedStash.stash` compares the current envelope with
+  /// `theStash.last`.
+  pub(crate) fn stash(&mut self, owner: ActorRef, delivery: u64, message: Message, sender: ActorRef) {
     let envelope = Envelope::new(owner.clone(), message, sender);
     match self.stashes.iter_mut().find(|(held, _)| held == &owner) {
-      | Some((_, stash)) => stash.push(envelope),
-      | None => self.stashes.push((owner, alloc::vec![envelope])),
+      | Some((_, stash)) => {
+        assert!(stash.last().is_none_or(|(last, _)| *last != delivery), "Can't stash the same message more than once");
+        stash.push((delivery, envelope));
+      },
+      | None => self.stashes.push((owner, alloc::vec![(delivery, envelope)])),
     }
   }
 
@@ -924,10 +943,31 @@ impl Executor {
     if let Some(index) = self.stashes.iter().position(|(held, _)| held == owner) {
       let (_, stash) = self.stashes.swap_remove(index);
       let dead_letters = self.dead_letters();
-      for envelope in stash {
+      for (_, envelope) in stash {
         let (_, message, sender) = envelope.into_parts();
         self.send(sender, &dead_letters, message);
       }
+    }
+  }
+
+  /// Sends the envelopes still queued locally for the stopped `target` to dead
+  /// letters, in queue order.
+  ///
+  /// Mirrors the mailbox clean-up after Pekko stops an actor: every message
+  /// left in the mailbox, including a stash that `postStop` or a failed
+  /// restart returned to it, goes to `deadLetters`. A queued DeathWatch notice
+  /// goes as its `Terminated`. Envelopes for other actors stay where they are,
+  /// and envelopes still waiting at the shard boundary reach the stopped actor
+  /// later and are dropped there, as before.
+  fn queued_to_dead_letters(&mut self, target: &ActorRef) {
+    let dead_letters = self.dead_letters();
+    for envelope in self.queue.take_addressed_to(target) {
+      let (_, message, sender) = envelope.into_parts();
+      let message = match message.downcast_ref::<Arc<PendingTermination>>() {
+        | Some(pending) => Message::new(pending.notice.clone()),
+        | None => message,
+      };
+      self.send(sender, &dead_letters, message);
     }
   }
 
@@ -936,11 +976,13 @@ impl Executor {
   /// A stashed `Terminated` is queued again as a pending DeathWatch notice, as
   /// Pekko's `UnrestrictedStash.enqueueFirst` calls `terminatedQueuedFor`: the
   /// actor re-receives it, and an `unwatch` of its target before it is handled
-  /// cancels it, like any other queued notice.
+  /// cancels it, like any other queued notice. Pekko keys that record by the
+  /// watched actor, so notices for one target share a single pending record:
+  /// the first one handled consumes it and the others are dropped.
   pub(crate) fn unstash_all(&mut self, owner: &ActorRef) {
     if let Some(index) = self.stashes.iter().position(|(held, _)| held == owner) {
       let (_, stash) = self.stashes.swap_remove(index);
-      let stash = stash.into_iter().map(|envelope| self.requeue_notice(envelope)).collect();
+      let stash = stash.into_iter().map(|(_, envelope)| self.requeue_notice(envelope)).collect();
       self.queue.prepend_locally(stash);
     }
   }
@@ -949,8 +991,17 @@ impl Executor {
     let (recipient, message, sender) = envelope.into_parts();
     let message = match message.downcast_ref::<Terminated>() {
       | Some(notice) => {
-        let pending = Arc::new(PendingTermination { watcher: recipient.clone(), notice: notice.clone() });
-        self.pending_terminations.push(pending.clone());
+        let queued = self.pending_terminations.iter().find(|pending| {
+          pending.watcher == recipient && Self::same_watch_target(pending.notice.target(), notice.target())
+        });
+        let pending = match queued {
+          | Some(pending) => pending.clone(),
+          | None => {
+            let pending = Arc::new(PendingTermination { watcher: recipient.clone(), notice: notice.clone() });
+            self.pending_terminations.push(pending.clone());
+            pending
+          },
+        };
         Message::new(pending)
       },
       | None => message,

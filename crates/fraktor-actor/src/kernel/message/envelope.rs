@@ -21,6 +21,10 @@ impl Envelope {
     Self { recipient, message, sender }
   }
 
+  pub(crate) fn is_addressed_to(&self, recipient: &ActorRef) -> bool {
+    &self.recipient == recipient
+  }
+
   pub(crate) fn into_parts(self) -> (ActorRef, Message, ActorRef) {
     (self.recipient, self.message, self.sender)
   }

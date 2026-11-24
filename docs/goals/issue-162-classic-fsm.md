@@ -74,11 +74,14 @@ executor を変えずに済む。ただし送り直したメッセージは受�
 | 項目 | Pekko | 候補 A |
 |:---|:---|:---|
 | 処理されないイベント | `whenUnhandled` の既定は警告を記録して `stay` | 記録せずに `stay` |
-| 存在しない状態への `goto` | 理由 `Failure` で終了し、`onTermination` を呼ぶ | アクターを止める。`onTermination` は無い |
-| 停止時の stash | 受信箱に戻し、dead letters へ送る。dead letters は `DeadLetter` を event stream に流す | dead letters へ送る（元の送り手、退避した順）。port の dead letters は `DeadLetter` をまだ流さないため、利用者からは観測できない。破棄を保証とはしない |
+| 存在しない状態への `goto` | `terminate` で理由 `Failure` を記録してログに出し、`onTermination` を呼ぶ。アクターは止めず、状態も変えない | 状態とデータを変えずに動き続ける（Pekko と同じ）。ログと `onTermination` は無い |
+| 停止時の stash | 受信箱に戻し、受信箱の後始末で dead letters へ送る。dead letters は `DeadLetter` を event stream に流す | dead letters へ送る（元の送り手、退避した順）。停止フックや置き換えに失敗した再起動が局所キューへ戻した分も、停止時に局所キューから取り出して送る。port の dead letters は `DeadLetter` をまだ流さないため、利用者からは観測できない。破棄を保証とはしない |
+| 停止したアクター宛てで boundary に残る封筒 | 受信箱の後始末で dead letters へ | 従来どおり、後の配送で受け手が見つからず捨てられる（局所キューの分だけを dead letters へ送る） |
+| 先頭へ戻す範囲 | アクターごとの受信箱の先頭 | シャードに 1 本の局所キューの先頭。同じアクター宛ての順は Pekko と同じだが、同じシャードの他のアクター宛てのメッセージも追い越す（Pekko はアクター間の順を約束しない） |
 | `DeadLetter` の受け手 | 元の受け手を `DeadLetter.recipient` に残す | dead letters の handle に渡るのは送り手とメッセージだけ |
 | stash の容量と mailbox の要件 | `stash-capacity`、`StashOverflowException`、`DequeBasedMessageQueueSemantics` の要求 | 上限なし（既定）。要件の検査なし |
-| 同じメッセージを 2 回 stash | `IllegalStateException` | panic（同じ配送で 2 回目の `stash` が呼ばれたとき） |
+| 同じメッセージを 2 回 stash | 現在の配送が stash の末尾と同じなら `IllegalStateException`。`unstashAll` で空にした後は同じ配送でも再び stash できる | 同じ条件で panic。`unstash_all` の後の再 stash は Pekko と同じく受け付ける |
+| 同じ監視対象の `Terminated` を複数戻す | `terminatedQueued` は対象ごとに 1 件で、最初に処理した 1 件だけが届く | 同じ（対象ごとに 1 件の通知記録を共有する） |
 | タイマー、状態のタイムアウト、遷移の購読 | あり | 無い（今回の原典は使わない） |
 
 ### 影響と戻し方
@@ -108,8 +111,8 @@ executor を変えずに済む。ただし送り直したメッセージは受�
 | `crates/fraktor-actor/src/kernel/actor/fsm.rs` | `Fsm<S, D>`。`Actor` を実装し、`pre_start` で初期遷移を通知し、`receive` で現在の状態の状態関数を登録順に試す |
 | `crates/fraktor-actor/src/kernel/actor/fsm_state.rs` | `FsmState<S, D>`（`goto`、`stay`、`using`） |
 | `crates/fraktor-actor/src/kernel/actor/actor_context.rs` | 処理中のメッセージを保持し、`stash` と `unstash_all` を公開する |
-| `crates/fraktor-actor/src/kernel/executor/executor_value.rs` | アクターごとの stash 表。再起動の前に戻し、停止時に dead letters へ送る |
-| `crates/fraktor-actor/src/kernel/executor/shard_queue.rs` | `prepend_locally`（局所キューの先頭へ順序を保って戻す） |
+| `crates/fraktor-actor/src/kernel/executor/executor_value.rs` | アクターごとの stash 表と配送番号。再起動の前に戻し、`Terminated` は対象ごとの通知記録として積み直す。停止時は stash と局所キューの残りを dead letters へ送り、system の終了で空にする |
+| `crates/fraktor-actor/src/kernel/executor/shard_queue.rs` | `prepend_locally`（局所キューの先頭へ順序を保って戻す）、`take_addressed_to`（停止したアクター宛ての封筒を順に取り出す） |
 
 ## 回帰のテスト（原典外、台帳の件数に含めない）
 
@@ -123,18 +126,29 @@ executor を変えずに済む。ただし送り直したメッセージは受�
 | `context_stash_test::terminating_the_system_releases_the_stash_while_the_system_is_held` | system の値を持ったまま `terminate` すると、退避した payload が解放される |
 | `context_stash_test::an_unstashed_terminated_is_received_again` | 退避して戻した `Terminated` をもう一度受ける（ActorWithStashSpec の「re-receive unstashed Terminated messages」の実行時契約。ノードは unported のまま） |
 | `context_stash_test::an_unwatch_after_unstash_all_cancels_the_unstashed_terminated` | `unstash_all` の直後に `unwatch` すると、戻した `Terminated` は届かない（Pekko の `enqueueFirst` が `terminatedQueuedFor` で通知として積み直すため） |
+| `context_stash_test::two_stashed_terminated_for_one_target_are_received_again_once` | 同じ対象の `Terminated` を 2 件 stash して戻すと、再び届くのは 1 件 |
+| `context_stash_test::stashed_terminated_for_different_targets_are_each_received_again_once` | 2 つの対象でそれぞれ 2 件ずつ戻すと、各対象 1 件ずつ届く |
+| `context_stash_test::a_delivery_may_stash_again_after_unstash_all` | 同じ配送で `stash → unstash_all → stash → unstash_all` が通り、メッセージは 2 回再び届く（Pekko の Java 実測と同じ） |
+| `context_stash_test::a_stash_returned_by_the_stop_hook_is_released_by_the_stop` | 停止フックで `unstash_all` した payload が、停止の時点で解放される |
+| `fsm_test::stay_using_replaces_the_data_silently_and_goto_the_same_state_notifies` | `stay().using` はデータだけを替えて通知せず、同じ状態への `goto` は通知する |
+| `fsm_test::a_goto_into_an_unknown_state_keeps_the_machine_running_in_its_state` | 存在しない状態への `goto` の後も動き続け、`next` で `start->next` を通知する |
 | `executor_value::tests::a_stopped_actor_sends_its_stash_to_dead_letters_with_the_original_senders_in_order` | 停止時に stash が元の送り手のまま、退避した順に dead letters へ届く（dead letters を記録用の handle に差し替えて観測） |
+| `executor_value::tests::a_stash_returned_by_the_stop_hook_reaches_dead_letters_and_other_actors_keep_their_queue` | 停止フックで戻した stash が停止時に dead letters へ届き、局所キューで待つ他のアクター宛てのメッセージはそのまま届く |
+| `executor_value::tests::a_stash_returned_by_a_restart_whose_replacement_fails_reaches_dead_letters` | 再起動が stash を戻した後に置き換えが失敗して止まると、戻した分が dead letters へ届く |
+| `executor_value::tests::stashing_the_newest_stashed_delivery_again_is_refused_and_another_delivery_is_not` | stash の末尾と同じ配送の 2 回目は拒まれ、別の配送や `unstash_all` の後は受け付ける |
 
 ## 最終の検証
 
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test abstract_fsm_actor_test --test abstract_fsm_with_stash_actor_test` | 0 | 各 1 passed、0 failed（原典 2 件） |
-| `cargo test -p fraktor-actor --test context_stash_test` | 0 | 8 passed、0 failed |
-| `cargo test --workspace` | 0 | 839 passed、0 failed、0 ignored（74 結果） |
+| `cargo test -p fraktor-actor --test context_stash_test --test fsm_test` | 0 | 12 passed と 2 passed、0 failed |
+| `cargo test --workspace` | 0 | 848 passed、0 failed、0 ignored（75 結果） |
+| `cargo check -p fraktor-actor --lib --no-default-features` | 0 | 成功（kernel の追加は `alloc` と `core` のみ） |
+| `git diff --check` | 0 | 指摘なし |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
 | `cargo fmt --check` | 0 | 差分なし |
-| syn-check（CI と同じく `crates/*` ごと、Release/locked） | 0 | fraktor-actor 255 ファイル、fraktor-testkit 46 ファイル、violations 0、parse failures 0 |
+| syn-check（CI と同じく `crates/*` ごと、Release/locked） | 0 | fraktor-actor 256 ファイル、fraktor-testkit 46 ファイル、violations 0、parse failures 0 |
 | `npm run check:aislop` | 0 | accepted と一致 |
 | `verify_green.py --crate fraktor-actor` | 0 | `all_pass: true` |
 | CI の python テスト 5 本（`goal_complete_gate_test.py` ほか） | 0 | すべて成功 |
@@ -155,6 +169,11 @@ executor を変えずに済む。ただし送り直したメッセージは受�
 | 停止時に stash を残す | `a_stop_releases_the_stash_and_a_new_actor_does_not_inherit_it` が失敗 |
 | `stop_all` で stash を空にしない | `terminating_the_system_releases_the_stash_while_the_system_is_held` が失敗 |
 | `unstash_all` で `Terminated` を通知として積み直さない | `an_unwatch_after_unstash_all_cancels_the_unstashed_terminated` が失敗 |
+| 停止時に局所キューの分を dead letters へ送らない | 停止フックと置き換えに失敗した再起動の unit 2 件、`a_stash_returned_by_the_stop_hook_is_released_by_the_stop` が失敗 |
+| 同じ対象の通知記録を共有しない | 対象 1 つと 2 つの `Terminated` の 2 件が失敗 |
+| 再 stash を処理中のメッセージの取り出しで拒む（修正前） | `a_delivery_may_stash_again_after_unstash_all` が失敗 |
+| 末尾と同じ配送の再 stash を拒まない | `stashing_the_newest_stashed_delivery_again_is_refused_and_another_delivery_is_not` が失敗 |
+| 存在しない状態への `goto` でアクターを止める（修正前） | `a_goto_into_an_unknown_state_keeps_the_machine_running_in_its_state` が失敗 |
 
 ## G0 と対象ゴールの確認
 
@@ -175,3 +194,14 @@ executor を変えずに済む。ただし送り直したメッセージは受�
 | 停止のテストが退避の前に止めている（Devin） | 直す | `ping` に `pong` を返させて退避を確かめてから止め、payload の解放も確かめる形にした。停止時に stash を残す変異で失敗する |
 | 退避した `Terminated` が `unwatch` で取り消されない（Devin） | 直す | Pekko の `UnrestrictedStash.enqueueFirst` は `Terminated` を `terminatedQueuedFor` で積み直すので、その後の `unwatch` で取り消される。`unstash_all` で同じく DeathWatch の通知として積み直した。既存の `unwatch` が待ち中の通知を取り消す契約に揃えただけで、公開 API は増やしていない |
 
+## PR #164 の独立レビュー対応（修正 2）
+
+基準 HEAD は `e3af16b89e3ea459d931706e0d507114740aedc2`。§2.6 の独立レビュー（OpenAI Codex、差し戻し）の指摘と処理。
+
+| 指摘 | 分類 | 対応 |
+|:---|:---|:---|
+| 停止フックで `unstash_all` した stash が dead letters に届かない。置き換えに失敗した再起動で戻した分も同じ | 直す | 停止の処理で、stash 表を dead letters へ送った後に、局所キューに残る停止したアクター宛ての封筒を順に取り出して dead letters へ送る（Pekko の受信箱の後始末）。他のアクター宛ての封筒と、既存の終了の契約は変えていない。unit 2 件と統合 1 件で確かめた |
+| 同じ監視対象の `Terminated` を複数戻すと全件が再び届く | 直す | Pekko の `terminatedQueued` は対象ごとに 1 件なので、`unstash_all` で積み直すとき、同じ監視者と対象の通知記録が待っていればそれを共有する。最初に処理した 1 件だけが届く。単発の再受信と `unwatch` の回帰はそのまま通る |
+| 同じ配送の再 stash が Pekko と違い、rustdoc の説明も不正確 | 直す | Pekko は現在の配送と stash の末尾を比べる。配送ごとに番号を付けて同じ比較にした。`unstash_all` の後の再 stash は通る。公開 API の形は変えていない |
+| 存在しない状態への `goto` の説明（レビューの照合で判明） | 直す | Pekko の `makeTransition` は `terminate` で失敗を記録するだけで、アクターを止めない。port もアクターを止めず状態を保つ形に揃え、差異表を正した |
+| `git diff --check` がゴール文書の末尾の空行を検出 | 直す | 末尾の空行を削除した |
