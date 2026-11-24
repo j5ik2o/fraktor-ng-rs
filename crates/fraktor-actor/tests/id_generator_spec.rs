@@ -19,6 +19,7 @@
 // does not compile: that compile error is the intended red for this node.
 
 use fraktor_actor::adaptor::RandomIdGenerator;
+use fraktor_actor::kernel::io::dns::IdGenerator;
 use fraktor_actor::kernel::io::dns::IdGeneratorPolicy;
 
 // "provide a thread-local-random"

@@ -27,3 +27,5 @@ impl fmt::Display for NameserverAddressError {
     })
   }
 }
+
+impl core::error::Error for NameserverAddressError {}
