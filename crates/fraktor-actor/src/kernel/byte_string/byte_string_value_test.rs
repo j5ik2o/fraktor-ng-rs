@@ -34,6 +34,23 @@ fn concat_keeps_the_left_bytes_before_the_right_bytes() {
 }
 
 #[test]
+fn from_ints_keeps_the_low_byte_of_each_value() {
+  assert_eq!(bytes(&ByteString::from_ints(&[1, 2, 3])), vec![1, 2, 3]);
+  assert_eq!(bytes(&ByteString::from_ints(&[256, -1])), vec![0, 0xff]);
+  assert_eq!(bytes(&ByteString::from_ints(&[])), b"");
+}
+
+#[test]
+fn byte_strings_with_the_same_bytes_are_equal_however_they_are_split() {
+  let whole = ByteString::from_string("abc");
+  let split = ByteString::from_string("a").concat(&ByteString::from_string("bc"));
+
+  assert_eq!(whole, split);
+  assert_ne!(whole, ByteString::from_string("abd"));
+  assert_eq!(ByteString::from_ints(&[97, 98, 99]), whole);
+}
+
+#[test]
 fn each_iterator_starts_from_the_first_byte() {
   let string = ByteString::from_string("xy");
   let mut first = string.iterator();

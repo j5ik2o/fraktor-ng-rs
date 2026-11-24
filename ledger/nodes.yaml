@@ -1600,7 +1600,7 @@ nodes:
     module: actor-tests
     class: ByteStringBuilderScala213PlusSpec
     test_cases_approx: 3
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -1611,14 +1611,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 3
+    ported: 3
+    passing: 3
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/byte_string_builder_scala213_plus_spec.rs
+  goal: G0issue133
 - id: actor-tests/src/test/scala/org/apache/pekko/util/ByteStringBuilderSpec.scala
   name: actor-tests:ByteStringBuilderSpec
   kind: test
@@ -1626,7 +1626,7 @@ nodes:
     module: actor-tests
     class: ByteStringBuilderSpec
     test_cases_approx: 3
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -1637,14 +1637,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 3
+    ported: 3
+    passing: 3
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/byte_string_builder_spec.rs
+  goal: G0issue133
 - id: actor-tests/src/test/scala/org/apache/pekko/util/ByteStringInitializationSpec.scala
   name: actor-tests:ByteStringInitializationSpec
   kind: test
@@ -1730,7 +1730,7 @@ nodes:
     module: actor-tests
     class: ByteStringTest
     test_cases_approx: 2
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -1741,14 +1741,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 2
+    ported: 2
+    passing: 2
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/byte_string_test.rs
+  goal: G0issue133
 - id: actor-tests/src/test/scala/org/apache/pekko/testkit/CallingThreadDispatcherModelSpec.scala
   name: actor-tests:CallingThreadDispatcherModelSpec
   kind: test
