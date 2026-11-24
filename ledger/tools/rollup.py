@@ -58,6 +58,16 @@ def is_text(value) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def mapping(value) -> dict:
+    """マッピングならそのまま、そうでなければ空のマッピングを返す（壊れた記録で止めない）。"""
+    return value if isinstance(value, dict) else {}
+
+
+def is_case_name(value) -> bool:
+    """ケース名は空白以外の文字列で、前後に空白を持たない（重複の判定をすり抜けさせない）。"""
+    return is_text(value) and value == value.strip()
+
+
 def is_zero(value) -> bool:
     """整数の 0 か（bool の False と、欠落・null は 0 と見なさない）。"""
     return type(value) is int and value == 0
@@ -67,6 +77,7 @@ def is_valid_not_built_case(record) -> bool:
     """作らないケースの1要素が、3つの文字列欄と人による承認記録を持つかを返す。"""
     return (isinstance(record, dict)
             and all(is_text(record.get(k)) for k in NOT_BUILT_TEXT_KEYS)
+            and is_case_name(record.get("name"))
             and is_approved_by_human(record))
 
 
@@ -75,24 +86,35 @@ def not_built_problems(node: dict) -> list[str]:
     if node.get("status") != "not_built":
         return []
     problems = []
-    triage = node.get("triage") or {}
+    if not isinstance(node.get("triage"), dict):
+        problems.append("triage がマッピングでない")
+    if not isinstance(node.get("cases"), dict):
+        problems.append("cases がマッピングでない")
+    triage = mapping(node.get("triage"))
     if triage.get("kind") != "not_built":
         problems.append("triage.kind が not_built でない")
     if not is_text(triage.get("reason")):
         problems.append("triage.reason が空")
-    cases = node.get("cases") or {}
+    cases = mapping(node.get("cases"))
     records = cases.get("not_built")
     if not isinstance(records, list) or not records:
         return problems + ["cases.not_built が空"]
     for key in ("ported", "passing"):
         if not is_zero(cases.get(key)):
             problems.append(f"cases.{key} が整数の 0 でない")
-    if len(records) != cases.get("total"):
+    total = cases.get("total")
+    if type(total) is not int or total <= 0:
+        problems.append("cases.total が正の整数でない")
+    elif len(records) != total:
         problems.append("cases.not_built の件数が cases.total と違う")
+    # 全件を作らないノードでは、同じケースを除外にも記録できない（区分が二重になる）。
+    if cases.get("excluded"):
+        problems.append("全件を作らないノードに cases.excluded がある")
     for index, record in enumerate(records):
         if not is_valid_not_built_case(record):
             problems.append(f"cases.not_built[{index}] の name・reason・alternative・承認記録が揃っていない")
-    names = [r.get("name") for r in records if isinstance(r, dict) and is_text(r.get("name"))]
+    names = [r.get("name").strip() for r in records
+             if isinstance(r, dict) and is_text(r.get("name"))]
     duplicated = sorted({name for name in names if names.count(name) > 1})
     if duplicated:
         problems.append(f"cases.not_built のケース名が重複している: {', '.join(duplicated)}")
@@ -108,11 +130,12 @@ def case_counts(test_nodes: list[dict]) -> dict:
 
     有効な要素の判定は、除外が is_approved_by_human、作らないが is_valid_not_built_case である。
     作らないは、記録の揃ったノード（not_built_problems が空）の要素だけを有効に数える。
+    status が not_built のノードの除外は、区分が二重になるので有効に数えない（記録件数には入る）。
     """
     counts = {"ported": 0, "excluded": 0, "excluded_recorded": 0,
               "not_built": 0, "not_built_recorded": 0}
     for n in test_nodes:
-        cases = n.get("cases") or {}
+        cases = mapping(n.get("cases"))
         ported = cases.get("ported")
         if type(ported) is int:
             counts["ported"] += ported
@@ -120,8 +143,9 @@ def case_counts(test_nodes: list[dict]) -> dict:
         excluded = cases.get("excluded")
         if isinstance(excluded, list):
             counts["excluded_recorded"] += len(excluded)
-            counts["excluded"] += sum(1 for e in excluded
-                                      if isinstance(e, dict) and is_approved_by_human(e))
+            if n.get("status") != "not_built":
+                counts["excluded"] += sum(1 for e in excluded
+                                          if isinstance(e, dict) and is_approved_by_human(e))
         not_built = cases.get("not_built")
         if isinstance(not_built, list):
             counts["not_built_recorded"] += len(not_built)

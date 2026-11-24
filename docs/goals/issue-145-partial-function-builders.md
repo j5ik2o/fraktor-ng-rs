@@ -127,7 +127,7 @@ fn generic_class_with_predicate_alternative() {
 | `rollup.py --goal G0issue145` | 0 | 2件、`{'not_built': 2}`、完了 |
 | `check_needs.py --goal G0issue145` | 0 | needs 閉性 OK |
 | `check_needs.py` と `rollup.py` を `G0a`〜`G0f` の各々で | 0 | 12コマンドすべて終了値0 |
-| `goal_complete_gate_test.py` | 0 | 35 passed, 0 failed |
+| `goal_complete_gate_test.py` | 0 | 39 passed, 0 failed |
 | `verify_red_test.py` | 0 | 48 passed, 0 failed |
 | `verify_green_test.py`、`verify_green_test_aislop.py`、`verify_green_test_crate.py` | 0 | 成功 |
 | `npm ci` → `npm run check:aislop` | 0 | warn 以上の指摘は受理済み一覧と一致 |
@@ -149,7 +149,15 @@ fn generic_class_with_predicate_alternative() {
 
 ## 独立レビュー（別系統のモデル）
 
-PR 作成後、既出の指摘に対応した HEAD を固定して行う（`docs/decisions/takt-workflow-design.md` §2.6）。結果はここに追記する。
+固定 HEAD `b20191f` を、Codex の GPT-6.2 Sol が読み取り専用で1回レビューした（`docs/decisions/takt-workflow-design.md` §2.6、[PR のコメント](https://github.com/j5ik2o/fraktor-ng-rs/pull/165#issuecomment-7147906343)）。4ケースを作らないとする個別判断は妥当で、台帳の不正な記録について P2 の指摘が3件あり、差し戻しになった。副元帥の承認で、同じ担当が1回だけ追加で直した。
+
+| 指摘 | 対応 |
+|:---|:---|
+| `triage` や `cases` がマッピングでないと `AttributeError` で止まり、ほかのゴール（G0f）の `rollup.py` と `check_needs.py` も止まる | マッピングでない記録を診断に回す。対象ゴールなら未完了、ほかのゴールは判定を続ける。テスト（37、38） |
+| 全件を作らないノードで、同じケースを承認済みの除外にも置くと完了になり、除外と作らないに二重に数える | 全件を作らないノードの `cases.excluded` を記録の不足にし、そのノードの除外を有効な件数に数えない。テスト（39） |
+| `total: true` が1件と等しいとされ、前後に空白のある名前で重複を隠せる | `total` は正の整数、ケース名は前後に空白を持たないことを求め、重複は空白を除いて比べる。テスト（40） |
+
+追加の4テストは、`b20191f` の `rollup.py` では失敗し（`35 passed, 4 failed`）、修正後は成功する（`39 passed`）。レビューの隔離コピーの再現入力（5種と、前提に使う3種）で修正の前後を比べた。修正前は、マッピングでない記録で G0issue145・G0f の `rollup.py` と G0f の `check_needs.py` が `AttributeError` で終わり、ほかの3種は G0issue145 が完了になって、合成した能力で G0issue145 を前提にする G0f の `check_needs.py` も充足になった。修正後は、5種とも G0issue145 が未完了（終了値1）、G0f の `rollup.py` と `check_needs.py` は終了値0、合成した前提の3種は G0f の `check_needs.py` が未充足（終了値1）になった。二重の記録の集計は、修正前の「除外=1（記録 1） 作らない=4（記録 4）」が「除外=0（記録 1） 作らない=3（記録 4）」になった。
 
 ## 再現手順
 

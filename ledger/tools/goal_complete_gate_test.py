@@ -45,6 +45,11 @@ rollup.py --goal を走らせる。ここでは takt も cargo も node も起�
      ほかのゴールのその誤記で、対象ゴールの完了判定は止まらない
  36. ほかのゴールの not_built の記録不足は、対象ゴールの未完了一覧に入らない。対象ゴール
      自身の記録不足は、未完了一覧に not_built と不足の内容つきで出る
+ 37. not_built の triage や cases がマッピングでなくても止まらない。対象ゴールなら未完了、
+     ほかのゴールは判定を続ける
+ 38. check_needs も、ほかのゴールの壊れた not_built の記録で止まらない
+ 39. 全件を作らないノードに承認済みの除外があれば未完了で、除外の有効件数にも数えない
+ 40. not_built の total が正の整数でない（true）、前後に空白のあるケース名で重複を隠すなら完了にしない
 """
 import json
 import os
@@ -374,6 +379,97 @@ def test_another_goals_not_built_shortfall_stays_out_of_the_goal_pending_list():
         assert "b/B.java (not_built、作らない区分の記録が不足" in pending, result
         print("36. another goal's shortfall stays out, the goal's own is listed: exit_code =",
               result["exit_code"])
+
+
+def raw_not_built_node(node_id: str, goal: str, triage: str, cases: str) -> str:
+    """triage と cases の YAML をそのまま差し込んだ not_built のノード（壊れた記録の再現用）。"""
+    return (
+        f"- id: {node_id}\n"
+        f"  kind: test\n"
+        f"  pekko:\n"
+        f"    module: stub\n"
+        f"  status: not_built\n"
+        f"{triage}{cases}"
+        f"  goal: {goal}\n"
+    )
+
+
+GOOD_TRIAGE = "  triage:\n    kind: not_built\n    reason: served by the language\n"
+GOOD_CASES = "  cases:\n" + NOT_BUILT_CASE + APPROVAL
+
+
+def test_non_mapping_triage_or_cases_is_diagnosed_and_other_goals_continue():
+    """triage や cases がマッピングでなくても止まらない。対象なら未完了、ほかのゴールは判定を続ける。"""
+    for label, triage, cases in (("37a. triage that is not a mapping", "  triage: not_built\n", GOOD_CASES),
+                                 ("37b. cases that is not a mapping", GOOD_TRIAGE, "  cases: 1\n")):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            broken = raw_not_built_node("b/B.java", "G0p", triage, cases)
+            response = make_run(root, order_with(["docs/goals/g0p-stub.md"]), "nodes:\n" + broken,
+                                one_goal_doc("G0p", ["b/B.java"]))
+            result = run_gate(root, response)
+            assert result["exit_code"] == 1, (label, result)
+            pending = result["output"].split("未完了", 1)[1]
+            assert "b/B.java (not_built、作らない区分の記録が不足" in pending, (label, result)
+            ledger = ledger_yaml([("a/A.java", "green", "G0o")]) + broken
+            response = make_run(root, order_with(["docs/goals/g0o-stub.md"]), ledger,
+                                one_goal_doc("G0o", ["a/A.java"]))
+            result = run_gate(root, response)
+            assert result["exit_code"] == 0, (label, result)
+            print(f"{label}: own goal incomplete, another goal exit_code =", result["exit_code"])
+
+
+def test_check_needs_continues_past_another_goals_broken_not_built():
+    """check_needs は、ほかのゴールの壊れた not_built の記録で止まらない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        copy_rollup(root)
+        write(root / "ledger" / "tools" / "check_needs.py",
+              (ROLLUP.parent / "check_needs.py").read_text(encoding="utf-8"))
+        write(root / "ledger" / "capabilities.yaml", "capabilities: []\n")
+        ledger = ("nodes:\n"
+                  "- id: a/A.java\n  kind: test\n  pekko:\n    module: stub\n"
+                  "  status: green\n  needs:\n    testkit: []\n  goal: G0n\n"
+                  + raw_not_built_node("b/B.java", "G0m", "  triage: not_built\n", "  cases: 1\n"))
+        write(root / "ledger" / "nodes.yaml", ledger)
+        proc = subprocess.run(
+            [sys.executable, "ledger/tools/check_needs.py", "--ledger", "ledger/nodes.yaml",
+             "--capabilities", "ledger/capabilities.yaml", "--goal", "G0n"],
+            cwd=str(root), capture_output=True, text=True, check=False)
+        assert proc.returncode == 0, (proc.stdout, proc.stderr)
+        print("38. check_needs past another goal's broken not_built: exit", proc.returncode)
+
+
+def test_not_built_node_with_an_exclusion_is_not_complete_or_double_counted():
+    """全件を作らないノードに承認済みの除外を残すと未完了で、除外の有効件数にも数えない。"""
+    excluded = ("    excluded:\n"
+                "    - name: someCase\n      reason: also excluded\n"
+                "      approved_by: someone\n      approved_at: 2026-01-01\n")
+    cases = NOT_BUILT_CASE.replace("    excluded: []\n", excluded)
+    assert_not_built_incomplete("39a. not_built with an approved exclusion of the same case",
+                                APPROVAL, cases)
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ledger = "nodes:\n" + not_built_node("a/A.java", "G0l", APPROVAL, cases)
+        response = make_run(root, order_with(["docs/goals/g0l-stub.md"]), ledger,
+                            one_goal_doc("G0l", ["a/A.java"]))
+        result = run_gate(root, response)
+        assert "除外=0（記録 1） 作らない=0（記録 1）" in result["output"], result
+        print("39b. the double record is counted only as recorded")
+
+
+def test_not_built_with_a_non_integer_total_or_padded_duplicate_name_is_not_complete():
+    """total は正の整数で、ケース名の前後の空白で重複の判定をすり抜けさせない。"""
+    assert_not_built_incomplete("40a. not_built with total: true", APPROVAL,
+                                NOT_BUILT_CASE.replace("    total: 1\n", "    total: true\n"))
+    record = ("    - name: {name}\n"
+              "      reason: the original checks a Java helper\n"
+              "      alternative: a Rust match\n"
+              "      approved_by: someone\n      approved_at: 2026-01-01\n")
+    cases = ("    total: 2\n    ported: 0\n    passing: 0\n    excluded: []\n"
+             "    not_built:\n" + record.format(name="someCase")
+             + record.format(name="'someCase '"))
+    assert_not_built_incomplete("40b. not_built with a duplicated name padded by a space", "", cases)
 
 
 def test_takt_triage_treats_the_same_statuses_as_done():
@@ -793,6 +889,10 @@ def main() -> int:
         test_not_built_with_a_nonzero_or_missing_passing_is_not_complete,
         test_non_list_not_built_record_is_diagnosed_without_crashing,
         test_another_goals_not_built_shortfall_stays_out_of_the_goal_pending_list,
+        test_non_mapping_triage_or_cases_is_diagnosed_and_other_goals_continue,
+        test_check_needs_continues_past_another_goals_broken_not_built,
+        test_not_built_node_with_an_exclusion_is_not_complete_or_double_counted,
+        test_not_built_with_a_non_integer_total_or_padded_duplicate_name_is_not_complete,
         test_order_without_goal_path_fails,
         test_order_with_multiple_goal_paths_fails,
         test_missing_goal_document_fails,

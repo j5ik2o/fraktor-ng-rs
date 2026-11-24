@@ -134,13 +134,15 @@
   等しいことになる。この勘定は `verify_red.py` と `verify_green.py` にまだ入っていない。最初に混在の
   ノードを扱うゴールで入れる
 - `rollup.py` は、`not_built` のノードの記録を検査し、欠けたノードを一覧に出してゴールの完了に数えない。
-  検査するのは、`triage.kind` と `triage.reason`、`ported` と `passing` が整数の 0、`cases.not_built` が配列であること、`cases.not_built` の件数が `total` に
+  検査するのは、`triage` と `cases` がマッピングであること、`triage.kind` と `triage.reason`、`ported` と `passing` が整数の 0、
+  `total` が正の整数であること、`cases.excluded` が空であること（同じケースを除外と作らないに二重に置かない）、`cases.not_built` が配列であること、`cases.not_built` の件数が `total` に
   等しいこと、各要素の `name`・`reason`・`alternative` が空白以外の文字列であること、`name` が
-  ノード内で重複しないこと、承認の2欄が除外と同じ `excluded_approvals.is_approved_by_human`
+  前後に空白を持たず、ノード内で重複しないこと、承認の2欄が除外と同じ `excluded_approvals.is_approved_by_human`
   （空白以外の文字列の承認者、時刻を含まない実在の暦日）を満たすことである。台帳は除外の検査と
   同じ専用ローダで読む
 - `rollup.py` のケースの勘定は、除外と作らないについて、承認記録の有効な件数と台帳に書かれた件数を
-  分けて出す。作らないの有効な件数は、記録の揃ったノードの要素だけを数える
+  分けて出す。作らないの有効な件数は、記録の揃ったノードの要素だけを数える。status が not_built のノードの除外は、有効な件数に数えない。
+  マッピングでない記録は数えず、止まらずに診断へ回す（ほかのゴールの判定を続ける）
 - TAKT の triage（`.takt/facets/instructions/fraktor-triage.md`、`.takt/workflows/fraktor-port-node.yaml`）は、
   記録の揃った not_built を処理済みとして移植し直さない。対象ゴールに属する、記録の不足した not_built は
   needs_human にする。判定には `rollup.py --goal` のそのゴールの未完了一覧を使い、ほかのゴールのノードの
