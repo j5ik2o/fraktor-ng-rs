@@ -1,5 +1,9 @@
-// Ported from Pekko v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff):
+// Ported from Pekko v2.0.0 (SHA 9fbd2283b1cf701c90a1223bf621942c191db61f):
 //   actor-tests/src/test/java/org/apache/pekko/actor/AbstractFSMWithStashActorTest.java
+// First ported from v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff).
+// The file was added on both lines by the same patch (upstream 32f6cb2c01 #3477
+// in v1.7.1, 90b02d6068 #3475 in v2.0.0); v2.0.0's copy is written for JUnit 5
+// and its one case is unchanged.
 //
 // The original's one `@Test` case is kept as one test, named after the case,
 // with the original name as a comment.
