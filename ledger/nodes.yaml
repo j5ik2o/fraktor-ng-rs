@@ -4000,7 +4000,7 @@ nodes:
     module: actor-tests
     class: RecencyListSpec
     test_cases_approx: 1
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -4011,14 +4011,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 1
+    ported: 1
+    passing: 1
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/recency_list_spec.rs
+  goal: G0issue124
 - id: actor-tests/src/test/scala/org/apache/pekko/util/ReflectSpec.scala
   name: actor-tests:ReflectSpec
   kind: test
