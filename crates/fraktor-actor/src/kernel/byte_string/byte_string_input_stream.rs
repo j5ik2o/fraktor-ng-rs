@@ -35,6 +35,13 @@ impl ByteStringInputStream {
   /// Corresponds to Java's `InputStream.read(buffer)`. As the `InputStream`
   /// contract and Pekko's `UnsynchronizedByteArrayInputStream` do, an empty
   /// `buffer` reads `Some(0)` without looking for the end of the stream.
+  ///
+  /// A read fills `buffer` across the parts of a concatenated byte string.
+  /// Pekko's concatenation reads through `java.io.SequenceInputStream`, which
+  /// stops each read at the end of the current part, so reading `a` followed
+  /// by `bc` into a 3-byte buffer returns 1 byte there and 3 bytes here. The
+  /// bytes and their order are the same; only how many one read returns
+  /// differs, which the `InputStream` contract leaves to the implementation.
   pub fn read_into(&mut self, buffer: &mut [u8]) -> Option<usize> {
     if buffer.is_empty() {
       Some(0)

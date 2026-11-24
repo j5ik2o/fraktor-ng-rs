@@ -112,6 +112,7 @@ kernel に2つのモジュールを足した。どちらも `core` と `alloc` �
 
 - EOF は `-1` ではなく `None` で返す。見つからない検索も `-1` ではなく `None` で返す。
 - 長さ0のバッファへの `read_into` は、EOF かどうかに関係なく `Some(0)` を返す。`InputStream` の契約と、原典の単一表現が使う `UnsynchronizedByteArrayInputStream`（L140–142）に合わせた。原典の連結表現が使う JDK の `SequenceInputStream` は、EOF のときに長さ0でも `-1` を返す。原典の中で表現によって結果が異なる場合で、原典テストはどちらも使わない。単体テスト `an_empty_buffer_reads_zero_bytes_before_and_at_the_end` で移植の振る舞いを確かめている。
+- 連結したバイト列への `read_into` は、部分の境界をまたいでバッファを埋める。原典の連結表現は JDK の `SequenceInputStream` で読み、1回の読み出しは今の部分の末尾で止まる。そのため `a` と `bc` の連結を3バイトのバッファに読むと、原典の1回目は1バイト、移植は3バイトを返す。読み切った内容と順序は同じで、1回に返す件数だけが違う。`InputStream` の契約は、1回に返す件数を実装に任せている。原典テストの `copy` は `-1` まで読み続けるので、この差は観測しない（PR #132 の Devin Review の指摘で追記）。単体テスト `a_buffer_read_returns_what_fits_then_the_rest_then_the_end` で、移植の振る舞いを確かめている。
 - 原典の3つの表現は1つの型にまとめた。`ByteString1.fromString` も `ByteString1C.fromString` も同じ `from_string` である。`ByteString1`（配列の一部を共有する表現）は作っていない。`fromArray` は原典でもコピーしてコンパクトな表現（`ByteString1C`）を返すので、スライスのケースの観測は変わらない。
 - `ByteArrayIterator(array)` は原典では配列を共有するが、移植の `from_array` はコピーする。原典テストは配列を書き換えないので、観測は変わらない。
 - `Int` の位置と長さは `usize` にした。負の値は型で表せない。原典の `fromArray` が負の `offset`/`length` を0とみなす分岐は、移植には存在しない。
