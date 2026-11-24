@@ -19,7 +19,8 @@ pub enum WireFormatError {
   /// A domain name holds a label whose two high bits are `01` or `10`, which
   /// RFC 1035 section 4.1.4 reserves. The value is the label type, `1` or `2`.
   ReservedLabelType(u8),
-  /// A domain name grew longer than 255 characters.
+  /// A domain name's dotted text grew longer than 255 characters, the
+  /// original's limit. It is not RFC 1035's limit of 255 octets on the wire.
   NameTooLong,
   /// A question names a record type code that is not a known record type.
   UnknownRecordType(u16),

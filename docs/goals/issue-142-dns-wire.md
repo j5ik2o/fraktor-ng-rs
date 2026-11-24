@@ -33,7 +33,7 @@ TAKT を使わず、担当（Claude Opus 5.5）が直接実装した。TAKT に�
 |:---|:---|:---|
 | タグ付け | `be01a47` | 2ノードの `goal: G0issue142`（台帳2行） |
 | テストと台帳 red | `f8c4d03` | 移植テスト2本、2ノードの status `red` と rust の欄。製品差分0 |
-| 実装と台帳 green | `e2aa776` | kernel の `io::dns` に8型、単体テスト53件、2ノードの green。統合テストは不変 |
+| 実装と台帳 green | `e2aa776` | kernel の `io::dns` に8型、単体テスト53件（レビュー対応で2型・6件を追加）、2ノードの green。統合テストは不変 |
 | ゴール文書 | 本書のコミット | 本書 |
 
 ## 原典との照合
@@ -107,7 +107,8 @@ kernel の `io::dns` モジュールに足した。どれも `core` と `alloc` 
 - 原典の `ResourceRecord.parse` は、`A`・`CNAME`・`AAAA`・`SRV` のデータを型つきのレコードにデコードし、他の型は `UnknownRecord` としてバイト列のまま持つ。移植は全ての型をバイト列のまま持つ。レコードデータのデコードは issue の対象外である。そのため、TC のない応答で `A` のデータが4バイトに満たないとき、原典は例外を投げるが、移植は受け付ける。
 - 原典は失敗を例外で伝える。移植は `Result` で返し、原典の例外メッセージに対応する列挙子を持つ。
 - 原典の `Message.id` は `Short`、移植は `u16`。同じ16ビットを持つ。id は照合に使うだけの不透明な値で、このゴールには問い合わせとの照合がないため、専用型にせず `u16` のままにした（`fraktor-coding-rules.md` の domain-primitive の狭い例外。理由は `message.rs` のフィールドにも書いた）。
-- `ResourceRecord` の型コードとクラスコードは `u16` のまま持つ。原典の `UnknownRecord` と同じく、定数のないコードも持てる必要があるためである。
+- `ResourceRecord` の型コードとクラスコードは、専用型 `RecordTypeCode`・`RecordClassCode` で持つ。原典の `UnknownRecord` と同じく定数のないコードも持てるよう、どちらも任意の16ビット値を包む。`RecordTypeCode::record_type()` は登録済みの型があれば返す（PR #144 の Devin の指摘で、`u16` から変えた）。
+- 名前の長さの上限は、原典の `MaxNameLength` と同じく、組み立てた `.` 区切りの文字列の文字数で255を超えたら失敗にする。RFC 1035 の255オクテットの上限（各ラベルの長さバイトと終端の0を数える）とは別で、255文字の名前はワイヤ上で257オクテットだが受け付ける（PR #144 の Devin の指摘で、コードのコメントでも区別した）。
 - 原典の `RecordType` と `RecordClass` は公開コンストラクタで任意のコードと名前を作れる。移植は定数だけを公開する。
 - メッセージの書き出し（`Message.write`、`Question.write`、`DomainName.write`、`MessageFlags.apply`）、`opCode`・`responseCode`、`Question.isSame` は移植していない。問い合わせの送信と resolver の側にあり、対象外である。
 
@@ -144,7 +145,18 @@ already_green ではない。製品に DNS メッセージを読む型がなく�
 | `verify_green.py --crate fraktor-actor` | 0 | `all_pass: true` |
 | `goal_complete_gate_test.py`、`verify_red_test.py`、`verify_green_test.py` | 0 | 成功 |
 
+PR #144 の Devin の指摘への対応後の HEAD でも、同じコマンドを再実行して同じ結果を確かめた（`--lib io::dns` は 96 passed、`cargo test --workspace` は 668 passed）。
+
 台帳は `G0issue142` と `G0a`〜`G0f` の各々で `check_needs.py` と `rollup.py` を実行し、14コマンドすべて終了値0だった（needs の閉性は OK で、対象ノードはすべて green。`G0issue142` は2件で `{'green': 2}`）。
+
+## PR #144 のレビュー指摘への対応
+
+| 指摘 | 分類 | 対応 |
+|:---|:---|:---|
+| Devin: Pekko 互換の文字数上限は DNS のワイヤ長上限とは別 | 直す | `domain_name.rs` の定数のコメントと rustdoc、`WireFormatError::NameTooLong` の説明、境界テストのコメントで、原典の文字数の上限と RFC 1035 のオクテットの上限を区別した。振る舞いは原典どおりで変えていない |
+| Devin: レコードの型コードとクラスコードを型で区別できない | 直す | 専用型 `RecordTypeCode`・`RecordClassCode` を足し、`ResourceRecord` の欄と取得メソッドをその型にした。単体テスト6件を足した |
+| Codex | 指摘なし | — |
+| CodeRabbit | 対象なし | 利用上限のため、レビューは行われなかった |
 
 ## 再現手順
 

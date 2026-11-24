@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use core::time::Duration;
 
-use super::{DomainName, WireFormatError, WireReader};
+use super::{DomainName, RecordClassCode, RecordTypeCode, WireFormatError, WireReader};
 
 #[cfg(test)]
 #[path = "resource_record_test.rs"]
@@ -24,11 +24,8 @@ const LARGEST_DATA_LENGTH: u16 = 0x7FFF;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceRecord {
   name: DomainName,
-  // Raw codes, as the original's `UnknownRecord` keeps them: a record may hold
-  // any type and class code, including ones `RecordType` and `RecordClass`
-  // have no constant for.
-  record_type_code: u16,
-  record_class_code: u16,
+  record_type_code: RecordTypeCode,
+  record_class_code: RecordClassCode,
   ttl: Duration,
   data: Vec<u8>,
 }
@@ -51,8 +48,8 @@ impl ResourceRecord {
   ///   the original's `Ttl.fromPositive` rejects it.
   pub(crate) fn parse(reader: &mut WireReader<'_>) -> Result<Self, WireFormatError> {
     let name = DomainName::parse(reader)?;
-    let record_type_code = reader.read_u16()?;
-    let record_class_code = reader.read_u16()?;
+    let record_type_code = RecordTypeCode::new(reader.read_u16()?);
+    let record_class_code = RecordClassCode::new(reader.read_u16()?);
     let ttl_seconds = reader.read_i32()?;
     let ttl =
       u64::try_from(ttl_seconds).map(Duration::from_secs).map_err(|_| WireFormatError::NegativeTtl(ttl_seconds))?;
@@ -70,13 +67,13 @@ impl ResourceRecord {
 
   /// Returns the record type code.
   #[must_use]
-  pub const fn record_type_code(&self) -> u16 {
+  pub const fn record_type_code(&self) -> RecordTypeCode {
     self.record_type_code
   }
 
   /// Returns the record class code.
   #[must_use]
-  pub const fn record_class_code(&self) -> u16 {
+  pub const fn record_class_code(&self) -> RecordClassCode {
     self.record_class_code
   }
 

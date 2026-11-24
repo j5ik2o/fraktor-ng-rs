@@ -110,6 +110,8 @@ fn name_of_labels(lengths: &[usize]) -> Vec<u8> {
   bytes
 }
 
+// 255 characters of dotted text take 257 octets on the wire, more than the
+// RFC 1035 limit; the original counts characters, so the name is accepted.
 #[test]
 fn a_name_of_255_characters_is_accepted() {
   let name = parse(&name_of_labels(&[63, 63, 63, 63])).unwrap();

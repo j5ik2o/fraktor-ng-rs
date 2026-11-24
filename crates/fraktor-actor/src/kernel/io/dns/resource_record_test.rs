@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use core::time::Duration;
 
 use super::ResourceRecord;
-use crate::kernel::io::dns::{WireFormatError, WireReader};
+use crate::kernel::io::dns::{RecordClass, RecordClassCode, RecordType, RecordTypeCode, WireFormatError, WireReader};
 
 fn record_bytes(record_type: u16, ttl: i32, data_length: u16, data: &[u8]) -> Vec<u8> {
   let mut bytes = Vec::from([3, b'w', b'w', b'w', 0]);
@@ -22,8 +22,8 @@ fn a_record_keeps_its_envelope_and_data() {
   let mut reader = WireReader::new(&bytes);
   let record = ResourceRecord::parse(&mut reader).unwrap();
   assert_eq!(record.name().as_str(), "www");
-  assert_eq!(record.record_type_code(), 1);
-  assert_eq!(record.record_class_code(), 1);
+  assert_eq!(record.record_type_code(), RecordTypeCode::from(RecordType::A));
+  assert_eq!(record.record_class_code(), RecordClassCode::from(RecordClass::IN));
   assert_eq!(record.ttl(), Duration::from_secs(300));
   assert_eq!(record.data(), [192, 0, 2, 1]);
   assert_eq!(reader.position(), bytes.len());
@@ -32,7 +32,8 @@ fn a_record_keeps_its_envelope_and_data() {
 #[test]
 fn a_record_of_a_type_without_a_constant_is_kept() {
   let record = ResourceRecord::parse(&mut WireReader::new(&record_bytes(99, 1, 1, &[7]))).unwrap();
-  assert_eq!(record.record_type_code(), 99);
+  assert_eq!(record.record_type_code(), RecordTypeCode::new(99));
+  assert_eq!(record.record_type_code().record_type(), None);
   assert_eq!(record.data(), [7]);
 }
 

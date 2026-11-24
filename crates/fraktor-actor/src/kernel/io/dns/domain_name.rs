@@ -9,10 +9,16 @@ use super::{WireFormatError, WireReader};
 #[path = "domain_name_test.rs"]
 mod tests;
 
-// RFC 1035 section 2.3.4 limits a name to 255 octets, so a well-formed name
-// never holds more than a handful of compression pointers. Bounding the
-// pointers followed makes `parse` finish even when the pointers form a cycle.
+// RFC 1035 section 2.3.4 limits a name to 255 octets on the wire, so a
+// well-formed name never holds more than a handful of compression pointers.
+// Bounding the pointers followed makes `parse` finish even when the pointers
+// form a cycle.
 const MAX_POINTER_HOPS: usize = 16;
+// The original's `MaxNameLength`, compared with the length of the dotted text
+// it builds. This is not the RFC's 255-octet wire limit, which also counts each
+// label's length byte and the terminating zero: a dotted name of 255
+// characters takes 257 octets on the wire and is still accepted, as in the
+// original.
 const MAX_NAME_LENGTH: usize = 255;
 const POINTER_TAG: u8 = 0xC0;
 
@@ -49,8 +55,10 @@ impl DomainName {
   ///   pointers does.
   /// - [`WireFormatError::ReservedLabelType`] when a length byte's two high
   ///   bits are `01` or `10`.
-  /// - [`WireFormatError::NameTooLong`] when the name grows past 255
-  ///   characters.
+  /// - [`WireFormatError::NameTooLong`] when the dotted text grows past 255
+  ///   characters, the original's limit. The RFC 1035 limit of 255 octets on
+  ///   the wire, which counts the length bytes and the terminating zero, is not
+  ///   checked.
   pub fn parse(reader: &mut WireReader<'_>) -> Result<Self, WireFormatError> {
     let mut text = String::new();
     let mut length = 0_usize;
