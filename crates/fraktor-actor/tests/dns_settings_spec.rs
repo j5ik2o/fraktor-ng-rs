@@ -4,12 +4,14 @@
 // The original's ten cases under `"DNS settings" must` are kept as one test
 // each, named after the case, with the original name as a comment.
 //
-// The original reads HOCON `Config` and falls back to the `defaultConfig` that
-// mirrors the DNS reference configuration: `nameservers = "default"`,
-// `resolve-timeout = 1s`, `search-domains = []`, `ndots = 1`,
-// `positive-ttl = forever`, `negative-ttl = never`,
-// `id-generator-policy = thread-local-random`. The port writes those same
-// values as typed inputs into `DnsSettingsConfig` through `default_config`.
+// The original reads HOCON `Config` and falls back to the spec's own
+// `defaultConfig` fixture: `nameservers = "default"`, `resolve-timeout = 1s`,
+// `search-domains = []`, `ndots = 1`, `positive-ttl = forever`,
+// `negative-ttl = never`, `id-generator-policy = thread-local-random`. That
+// fixture is not Pekko's `reference.conf` (whose DNS defaults differ, for
+// example `resolve-timeout = 5s` and `id-generator-policy =
+// enhanced-double-hash-random`). The port writes the fixture's values as typed
+// inputs into `DnsSettingsConfig` through `default_config`.
 // Where the original builds `parseString(..).withFallback(defaultConfig)`, the
 // written keys win, so the port overrides `default_config` with `with_*`.
 //
