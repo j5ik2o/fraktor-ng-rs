@@ -6,6 +6,8 @@ pub mod actor_ref;
 pub mod actor_system;
 pub mod address;
 pub mod broadcast;
+pub mod byte_iterator;
+pub mod byte_string;
 
 mod clock;
 

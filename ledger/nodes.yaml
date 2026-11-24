@@ -1573,7 +1573,7 @@ nodes:
     module: actor-tests
     class: ByteIteratorSpec
     test_cases_approx: 1
-  status: red
+  status: green
   triage:
     kind: pending
     reason: null
@@ -1585,9 +1585,9 @@ nodes:
     - actor
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 1
+    ported: 1
+    passing: 1
     excluded: []
   rust:
     crate: fraktor-actor
@@ -1678,7 +1678,7 @@ nodes:
     module: actor-tests
     class: ByteStringInputStreamSpec
     test_cases_approx: 3
-  status: red
+  status: green
   triage:
     kind: pending
     reason: null
@@ -1689,9 +1689,9 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 3
+    ported: 3
+    passing: 3
     excluded: []
   rust:
     crate: fraktor-actor
