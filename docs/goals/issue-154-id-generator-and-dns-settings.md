@@ -47,6 +47,7 @@
 | 担当のレビュー修正 | `a41b70c`、`4f67deb` | 後述の「実装者自身のレビュー」と aislop の指摘 |
 | ゴール文書 | `78de2a1` | 本書の初版 |
 | PR #157 の指摘への対応 | `7eef22e`、`152b7a0` | 後述の「PR #157 のレビュー指摘への対応」 |
+| 独立レビューの指摘への対応 | `50d22a2`、`af56ec8` | 後述の「独立レビュー（別系統のモデル）」 |
 
 第1工程のテストには取りこぼしが1件あった。`id_generator_spec.rs` が trait `IdGenerator` を import しておらず、実装後も `next_id` を呼べなかった。第2工程の投入文で、この import 1行の追加だけを許可した。アサーションは変えていない。
 
@@ -104,7 +105,7 @@ IdGeneratorSpec の2ケースは、原典と同じく `next_id` を2回呼び、
 
 - kernel の `io::dns` に14の公開項目を足した（`IdGeneratorPolicy`、`IdGenerator`、`IdGenerationError`、`HostDnsConfiguration`、`NameserversSetting`、`SearchDomainsSetting`、`NdotsSetting`、`TtlSetting`、`DnsSettingsConfig`、`Ttl`、`NonPositiveTtlError`、`CachePolicy`、`DnsSettingsError`、`DnsSettingsValues`。うち `IdGenerator` と `HostDnsConfiguration` は trait）。どれも `core` と `alloc` だけを使う。既存の `NameserverAddressError` には `core::error::Error` の実装だけを足した（`DnsSettingsError::InvalidNameserver` の `source` にするため）。
 - `DnsSettingsValues::new` は、原典の `class DnsSettings` のフィールドの初期化と同じ順（nameservers、resolve-timeout、positive-ttl、negative-ttl、search-domains、ndots）で評価し、最初の失敗を返す。name server の文字列は、#136 の `DnsSettings::parse_nameserver_address` で読む。`"default"` の name server が `None` か空なら `UnableToDetermineDefaultNameservers`、明示の空のリストは `EmptyNameservers`、負の ndots は `NegativeNdots`、ゼロの TTL は `NonPositiveTtl` にする。各設定の値の変換は、設定の型の impl に置いた（`NameserversSetting::resolve`、`TtlSetting::cache_policy`、`SearchDomainsSetting::resolve`、`NdotsSetting::resolve`、`IdGeneratorPolicy::from_config_value`。どれも `pub(crate)`）。`DnsSettingsValues::new` は評価の順序と、ホストを読むかどうかだけを受け持つ。ホストの name server は `Default` のときだけ読み、resolv.conf は search-domains か ndots が `Default` のときだけ、1回の生成で最大1回読む（原典の `lazy val resolvConf` と同じ）。
-- adaptor に `RandomIdGenerator` と `UnsupportedIdGeneratorPolicyError` を足した。ID は原典の `(nextInt(65536) + Short.MinValue).toShort` と同じく、0〜65535 の値 `x` から `x − 32768` にする。ThreadLocalRandom は、Java の `ThreadLocalRandom` と同じ SplitMix 系の状態（増分 `0x9E37_79B9_7F4A_7C15` と `mix32`）をスレッドごとに持ち、種は std の `RandomState` から作る。SecureRandom は、呼ぶたびに `getrandom::fill` で2バイトを読み、失敗は `IdGenerationError::EntropyUnavailable` で返す。
+- adaptor に `RandomIdGenerator` と `UnsupportedIdGeneratorPolicyError` を足した。ID は原典の `(nextInt(65536) + Short.MinValue).toShort` と同じく、0〜65535 の値 `x` から `x − 32768` にする。ThreadLocalRandom は、Java の `ThreadLocalRandom` と同じ SplitMix 系の状態（増分 `0x9E37_79B9_7F4A_7C15` と `mix32`）をスレッドごとに持ち、種は std の `RandomState` から作る。SecureRandom は、呼ぶたびに `getrandom::fill` で2バイトを読み、失敗は `IdGenerationError::EntropyUnavailable` で返す。どの乱数源を読むかは、非公開の表 `DrawSources`（ポリシーごとの乱数源）を通して決める。本番は OS と std の乱数源を使い、単体テストは値を固定した乱数源を渡す。
 - 依存 `getrandom = "0.3"`（0.3.4）を `fraktor-actor` に足した。使うのは `adaptor/random_id_generator.rs` だけである。`Cargo.lock` には `cfg-if`、`libc`、`r-efi`、`wasip2`、`wit-bindgen` も入ったが、`libc` 以外は UEFI と WASI の対象でだけ使われる。
 
 ## 原典との差異
@@ -146,7 +147,14 @@ IdGeneratorSpec の2ケースは、原典と同じく `next_id` を2回呼び、
 
 ### 独立レビュー（別系統のモデル）
 
-PR 作成後、既出の指摘に対応した HEAD を固定して行う（`docs/decisions/takt-workflow-design.md` §2.6）。結果はここに追記する。
+- 実施者: 実装者とは別系統の、読み取り専用のレビュー担当。モデルは Codex（OpenAI GPT-6.2 Sol、medium）で、調整担当が手配した。実装の2工程は DGX（`dgx/deepseek-v4.1-flash`）、自己レビューとレビュー対応は Claude Opus 5.5 なので、`docs/decisions/takt-workflow-design.md` §2.6 に従って別系統のレビューを足した。
+- 対象: PR #157 の固定 HEAD `db279f3fd1f2abf811756c26a6c949a21da54cd8`。比較元は `b7b395495560591b0f84df0536eb4137fc11fb7e`。原典は Pekko 固定 SHA `9a54d1294c3ac7821bbed3c940769c3d5027d1ff`。記録は [PR のコメント](https://github.com/j5ik2o/fraktor-ng-rs/pull/157#issuecomment-7143485210)にある。
+- 判定: 指摘あり。原典12ケースの対応、評価の順序、既存の公開 API の不変、red の再実測（終了値101、E0432）、固定 HEAD での統合テストと workspace のテストは確認済みとされた。指摘は2件（中1、低1）。
+
+| 指摘 | 分類 | 対応 |
+|:---|:---|:---|
+| 中: どの乱数源が選ばれたかをテストで区別できない。SecureRandom を thread-local の乱数源に誤配線しても、既存のテストは通る | 直す | `50d22a2`。`next_id` を、非公開の表 `DrawSources`（ポリシーごとの乱数源）を通す形にした。値を固定した別々の乱数源を渡す単体テストを3件足した。ThreadLocalRandom は thread-local の乱数源を読み、SecureRandom は secure の乱数源を読み、secure の乱数源の失敗は `EntropyUnavailable` のまま返って thread-local へ切り替わらないことを確かめる。SecureRandom を thread-local の乱数源に誤配線すると2件が失敗し、失敗時に thread-local へ切り替える変更を入れると1件が失敗することを確かめ、どちらも元に戻した。公開 API、kernel の no_std、原典2件のアサーションは変えていない |
+| 低: `dns_settings_spec.rs` のコメントが、テストの既定値を「DNS の reference configuration を写したもの」と書いている。実際は spec 固有の fixture で、Pekko の `reference.conf` の既定値（`resolve-timeout = 5s`、`search-domains = default`、`ndots = default`、`id-generator-policy = enhanced-double-hash-random`）とは違う | 直す | `af56ec8`。コメントを spec の fixture の説明に直した。入力値、原典10ケース、アサーションは変えていない（差分はコメントだけ） |
 
 ## PR #157 のレビュー指摘への対応
 
@@ -167,19 +175,19 @@ Codex と CodeRabbit は指摘なしだった。
 | `cargo test -p fraktor-actor --test dns_settings_spec -- --test-threads=1` | 101 | compile-red。`E0432` が1件（`CachePolicy` ほか10型が未定義、L33）。宣言10件、実行0件、除外0件 |
 | `verify_red.py`（ノードごと。原典を `PEKKO_ORIGINAL_ROOT` に置いて実行） | 0 | 2ノードとも `expected_compile_error`、`excluded: 0`。台帳はすでに red で、書き換えなし |
 
-already_green ではない。製品に ID 生成と設定値の型がなく、2本ともコンパイルに失敗した。第2工程で `id_generator_spec.rs` に import を1行足した後（blob `d5926600`）も、`6e3356c` の作業ツリーにそのファイルを置いて再実測し、`E0432` が3件（足した `IdGenerator` を含む）で compile-red になることを確かめた。`dns_settings_spec.rs` は第2工程以降も変えていない。
+already_green ではない。製品に ID 生成と設定値の型がなく、2本ともコンパイルに失敗した。第2工程で `id_generator_spec.rs` に import を1行足した後（blob `d5926600`）も、`6e3356c` の作業ツリーにそのファイルを置いて再実測し、`E0432` が3件（足した `IdGenerator` を含む）で compile-red になることを確かめた。`dns_settings_spec.rs` は、独立レビューの指摘でコメントだけを直した（blob `5fbb7fa6`）。これも `6e3356c` の作業ツリーに置いて再実測し、終了値101、`E0432` の1件で compile-red になることを確かめた。
 
 ## 実装後の実測
 
-PR #157 の指摘に対応した後の HEAD（`152b7a0`）で、担当が自分の作業ツリーで次を実行した。
+独立レビューの指摘に対応した後の HEAD（`af56ec8`）で、担当が自分の作業ツリーで次を実行した。
 
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test id_generator_spec -- --test-threads=1` | 0 | 2 passed / 0 failed / 0 ignored |
 | `cargo test -p fraktor-actor --test dns_settings_spec -- --test-threads=1` | 0 | 10 passed / 0 failed / 0 ignored |
 | `cargo test -p fraktor-actor --lib io::dns` | 0 | 144 passed（PR の指摘への対応前は 143） |
-| `cargo test -p fraktor-actor --lib random_id_generator` | 0 | 12 passed |
-| `cargo test --workspace` | 0 | 71 スイート、769 passed / 0 failed / 0 ignored（対応前は 768） |
+| `cargo test -p fraktor-actor --lib random_id_generator` | 0 | 15 passed（独立レビューの対応前は 12） |
+| `cargo test --workspace` | 0 | 71 スイート、772 passed / 0 failed / 0 ignored（PR の指摘への対応前は 768、独立レビューの対応前は 769） |
 | `cargo fmt --check` | 0 | 差分なし |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
 | syn-check（`crates/fraktor-actor`、`crates/fraktor-testkit`） | 0 | 両方 `clean: true`、違反0、抑制0 |
