@@ -2435,7 +2435,7 @@ nodes:
     module: actor-tests
     class: DnsSettingsSpec
     test_cases_approx: 10
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -2451,8 +2451,8 @@ nodes:
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/dns_settings_spec.rs
   goal: G0issue154
 - id: actor-tests/src/test/scala/org/apache/pekko/io/dns/internal/DomainNameSpec.scala
   name: actor-tests:DomainNameSpec
@@ -3008,7 +3008,7 @@ nodes:
     module: actor-tests
     class: IdGeneratorSpec
     test_cases_approx: 2
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -3024,8 +3024,8 @@ nodes:
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/id_generator_spec.rs
   goal: G0issue154
 - id: actor-tests/src/test/scala/org/apache/pekko/util/ImmutableIntMapSpec.scala
   name: actor-tests:ImmutableIntMapSpec
