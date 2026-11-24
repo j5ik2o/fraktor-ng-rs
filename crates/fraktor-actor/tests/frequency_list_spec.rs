@@ -35,8 +35,9 @@
 // asserts nothing. The port keeps it as an evaluation whose result is discarded,
 // and does not turn it into an assertion: faithfulness to the original wins over
 // turning a no-op into a stronger check here. `check(frequency, Nil)` therefore
-// only confirms that the size is 0, because the original's `forall` over an empty
-// list does not call `contains`.
+// confirms that the size is 0 and that both frequency orders are empty, as the
+// original's `check` does (its `forall` over an empty list does not call
+// `contains`).
 //
 // The test calls the production `FrequencyList`. Until it exists the file does
 // not compile: that compile error is the intended red for this node.

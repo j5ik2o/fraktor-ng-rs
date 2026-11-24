@@ -25,11 +25,14 @@ mod tests;
 /// entries that survived earlier evictions age together with the list.
 ///
 /// Under dynamic aging the buckets stay in Pekko's order, which is not always
-/// sorted by priority. An updated value moves forward from its current bucket,
-/// and a removal that skips a value can lower the age. A value updated after
-/// that can get a priority below the bucket it leaves, and Pekko then places
-/// it right after that bucket, so a less frequent removal takes the values in
-/// front of it first. The port keeps that order.
+/// sorted by priority. Placing an updated value searches only forward from its
+/// current bucket: it walks past every next bucket whose priority is below the
+/// new one, uses the next bucket if its priority is equal, and otherwise
+/// inserts a bucket after the last one it walked. It never moves back. A
+/// removal that skips a value can lower the age, so a value updated after
+/// that can get a priority below the bucket it leaves and still land after
+/// that bucket. A less frequent removal then takes the values in front of it
+/// first. The port keeps that order.
 ///
 /// Pekko pairs a doubly linked list of frequency buckets with a doubly linked
 /// list of values in each bucket and a hash map of values. The kernel has no

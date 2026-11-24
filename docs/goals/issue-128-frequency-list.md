@@ -69,6 +69,19 @@ age を更新するのは `remove_least_frequent` と `remove_least_frequent_ski
 
 ## 等価性レビュー
 
+### 独立レビュー（別系統のモデル）
+
+- 実施者: 実装者とは別の、読み取り専用のレビュー担当。モデルは Codex（OpenAI GPT-6.2 Sol）。コーディネーターが実セッションの turn_context（2026-11-24T10:12:35.974Z）で `gpt-6.2-sol` を確かめた。第2工程の修正と TAKT のレビューが同じ claude-opus-5-5 だったため、`docs/decisions/takt-workflow-design.md` §2.6 に従って別系統のレビューを足した。
+- 対象: PR #129 の固定 HEAD `cbe1edd34d116379360028973d4fc189fdad9636`。[移植テスト](https://github.com/j5ik2o/fraktor-ng-rs/blob/cbe1edd34d116379360028973d4fc189fdad9636/crates/fraktor-actor/tests/frequency_list_spec.rs)、[移植の実装](https://github.com/j5ik2o/fraktor-ng-rs/blob/cbe1edd34d116379360028973d4fc189fdad9636/crates/fraktor-actor/src/kernel/frequency_list/frequency_list_value.rs)。
+- 原典: Pekko 固定 SHA `9a54d1294c3ac7821bbed3c940769c3d5027d1ff` の原典テスト、`FrequencyList.scala`、`DoubleLinkedList.scala`。
+- 範囲: 原典と移植のテスト・実装の静的な照合。テストと台帳の再実行はレビュー担当の範囲外で、本書の実測を使う。全面的な API 互換性は対象外。
+- 判定: 原典3ケースはすべて観測上等価。操作の取りこぼし、アサーションの弱体化、近似はない。`Accesses`・`Age`・`Priority` の型分けと、aging と skip の並びの回帰テストも原典と等価。除外0。
+- 記述への指摘2件と修正状況（どちらも修正済み。コメント・rustdoc・本書の記述だけを変え、テストの操作・アサーションと実装は変えていない）:
+  1. 移植テスト冒頭のコメントが、空の `check` は size だけを確かめると書いていた。原典の `check`（Spec L34–39）と移植（L77–80）は、空のときも両方向の順序を比べる。コメントをそれに合わせた。
+  2. 型の rustdoc と本書が、更新した値は常に「元のバケットの直後」に入るように読めた。一般には今のバケットから前方へ探し、priority の小さい途中のバケットを通り過ぎる（原典 `FrequencyList.scala` L222–231、`DoubleLinkedList.scala` L79–90・L129–137）。「直後」は回帰テストの状況に限ると書き直した。
+
+### 実装者自身のレビュー
+
 実施者は第2工程の review と follow-up-review（claude-sdk / claude-opus-5-5）と、本 issue の担当（Claude Opus 5.5）。Pekko 固定 SHA の原典テスト・原典実装・`DoubleLinkedList` と、移植の実装・テストを突き合わせた。判定は「等価」。原典3ケースは観測上等価で、除外0。
 
 | 原典の振る舞い | 原典の根拠 | 移植で確かめているテスト |
@@ -90,7 +103,7 @@ age を更新するのは `remove_least_frequent` と `remove_least_frequent_ski
 
 **境界の扱い（第1工程から持ち越した確認事項）。** 原典の `removeOverallLeastRecentOutside` は `timestamp < now - d`（L183）、`removeOverallMostRecentWithin` は `timestamp > now - d`（L189）で、どちらも strict である。原典のテストデータには境界ちょうどの時刻に更新した値がないため、原典3ケースでは strict と non-strict を区別できない。移植では同じ向き（`<` と `>`, `recency_list_value.rs:134`／`:149` と同じ形）にし、境界ちょうどの値が両方向とも残ることを単体テスト `frequency_list_value_test.rs::a_value_updated_exactly_at_the_boundary_stays_for_both_windows` で直接確かめている。
 
-**dynamic aging と skip の組み合わせ（PR #129 のレビュー指摘）。** 原典のバケットの並びは、dynamic aging のもとで常に priority の昇順になるとは限らない。skip 付きの削除で priority の高い値を先に消すと age が上がり、そのあと skip した値を消すと age が下がる。age が下がったあとに更新した値は、今のバケットより低い priority になることがある。原典の `findNextOrElseInsert`（実装 L222–231）は今のバケットから前へだけたどるので、その値は今のバケットの直後に入る。このため、次の最小頻度の削除は、priority がより高い前方の値から消す。移植は原典と同じ並びを保つ。型の rustdoc と `remove_least_frequent_skipping` の rustdoc にこの例外を書き、単体テスト `an_age_lowered_after_a_skipping_removal_keeps_pekkos_bucket_order` で確かめている。
+**dynamic aging と skip の組み合わせ（PR #129 のレビュー指摘）。** 原典のバケットの並びは、dynamic aging のもとで常に priority の昇順になるとは限らない。skip 付きの削除で priority の高い値を先に消すと age が上がり、そのあと skip した値を消すと age が下がる。age が下がったあとに更新した値は、今のバケットより低い priority になることがある。原典の `increaseAdjustedFrequency`（実装 L222–231）が呼ぶ `findNextOrElseInsert`（`DoubleLinkedList.scala` L79–90・L129–137）は、今のバケットから前方へだけ探す。次のバケットの priority が新しい priority より小さいあいだはそれを通り過ぎ、次のバケットが等しければそこに入り、そうでなければ最後に通ったバケットの後ろに新しいバケットを挿入する。後ろへは戻らない。そのため値は、今のバケットより低い priority でも、今のバケットより後ろに入る。回帰テストの状況では今のバケットの後ろに別のバケットがないので、値は今のバケットの直後に入る。このため、次の最小頻度の削除は、priority がより高い前方の値から消す。移植は原典と同じ並びを保つ。型の rustdoc と `remove_least_frequent_skipping` の rustdoc にこの例外を書き、単体テスト `an_age_lowered_after_a_skipping_removal_keeps_pekkos_bucket_order` で確かめている。
 
 原典との差異は次のとおりで、原典テストが観測する値は変わらない。
 
@@ -113,7 +126,7 @@ age を更新するのは `remove_least_frequent` と `remove_least_frequent_ski
 
 ## 実装後の実測
 
-第2工程の統合後の `6469f09`（テストの blob は `9694b8d140c2266ae793654a0772b9aad08e9413` のまま）で次を実行した。
+第2工程の統合後の `6469f09`（テストの blob は `9694b8d140c2266ae793654a0772b9aad08e9413` のまま）で次を実行した。独立レビューの指摘1で移植テスト冒頭のコメントだけを直したため、テストの blob は `05f39314114d9dc7a120103bd1bfb1066bda4f5e` に変わった。`9694b8d1` との差分はコメント3行で、テストの操作とアサーションは同じである。
 
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
