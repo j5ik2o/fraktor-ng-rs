@@ -36,9 +36,18 @@ impl ResolvConfParser {
   ///   `i32` after each `ndots:`, the last one winning.
   ///
   /// Returns [`ResolvConfParseError::InvalidNdots`] when a `ndots:` value is not
-  /// an `i32`. The value is read with ASCII digits and an optional `+` or `-`
-  /// sign. The original's `toInt` (`Integer.parseInt`) also accepts other
-  /// Unicode decimal digits, such as the full-width `５`; this port rejects them.
+  /// an `i32`. The value is read as the original's `toInt`
+  /// (`Integer.parseInt`) reads it: an optional ASCII `+` or `-`, then one or
+  /// more decimal digits from any of the BMP's runs of Unicode decimal digits,
+  /// such as the full-width `５` or the Arabic-Indic `٣`. Digits outside the
+  /// BMP, other numbers such as `²`, and values past the `i32` range are
+  /// errors.
+  ///
+  /// The accepted digits are those of JDK 11 and later (Unicode 10.0 and
+  /// later): 37 runs of ten, 370 characters, measured to be the same on JDK 21,
+  /// 25 and 26. JDK 8 (Unicode 6.2) lacks two of these runs, the Sinhala Lith
+  /// digits `U+0DE6`..=`U+0DEF` and the Myanmar Tai Laing digits
+  /// `U+A9F0`..=`U+A9F9`, and rejects them; this parser accepts them.
   pub fn parse_lines<'a, I: IntoIterator<Item = &'a str>>(lines: I) -> Result<ResolvConf, ResolvConfParseError> {
     let mut search = Vec::new();
     let mut ndots = DEFAULT_NDOTS;
@@ -54,7 +63,7 @@ impl ResolvConfParser {
         | "options" => {
           for option in split_ascii_whitespace(args) {
             if let Some(value) = option.strip_prefix("ndots:") {
-              ndots = value.parse::<i32>().map_err(|_| ResolvConfParseError::InvalidNdots)?;
+              ndots = parse_java_int(value).ok_or(ResolvConfParseError::InvalidNdots)?;
             }
           }
         },
@@ -63,6 +72,55 @@ impl ResolvConfParser {
     }
     Ok(ResolvConf::new(search, ndots))
   }
+}
+
+// The zero of each run of ten decimal digits that `Character.digit(ch, 10)`
+// accepts. Measured over every code point on Temurin 21.0.13, 25.0.5 and
+// 26.0.2.1, the JDK 11 and later set (Unicode 10.0 and later): all general
+// category Nd runs in the BMP. JDK 8 (Unicode 6.2) lacks `U+0DE6` and `U+A9F0`.
+const DECIMAL_DIGIT_ZEROS: [u32; 37] = [
+  0x0030, 0x0660, 0x06F0, 0x07C0, 0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0B66, 0x0BE6, 0x0C66, 0x0CE6, 0x0D66, 0x0DE6,
+  0x0E50, 0x0ED0, 0x0F20, 0x1040, 0x1090, 0x17E0, 0x1810, 0x1946, 0x19D0, 0x1A80, 0x1A90, 0x1B50, 0x1BB0, 0x1C40,
+  0x1C50, 0xA620, 0xA8D0, 0xA900, 0xA9D0, 0xA9F0, 0xAA50, 0xABF0, 0xFF10,
+];
+
+// Java's `Integer.parseInt(text)`: an optional ASCII sign, then at least one
+// decimal digit, within the `i32` range. Java reads UTF-16 units and never
+// treats a surrogate as a digit, so a digit outside the BMP is rejected here
+// because no zero in the table lies outside it. The value is built negative,
+// as Java does, so `i32::MIN` does not overflow.
+fn parse_java_int(text: &str) -> Option<i32> {
+  let (negative, digits) = match text.as_bytes().first() {
+    | Some(b'-') => (true, &text[1..]),
+    | Some(b'+') => (false, &text[1..]),
+    | _ => (false, text),
+  };
+  if digits.is_empty() {
+    return None;
+  }
+  let mut value: i32 = 0;
+  for character in digits.chars() {
+    let digit = decimal_digit_value(character)?;
+    value = value.checked_mul(10)?.checked_sub(digit)?;
+  }
+  if negative {
+    Some(value)
+  } else {
+    value.checked_neg()
+  }
+}
+
+// `Character.digit(character, 10)`: the digit's value, or `None`.
+fn decimal_digit_value(character: char) -> Option<i32> {
+  let code = u32::from(character);
+  DECIMAL_DIGIT_ZEROS.iter().find_map(|zero| {
+    let offset = code.checked_sub(*zero)?;
+    if offset < 10 {
+      i32::try_from(offset).ok()
+    } else {
+      None
+    }
+  })
 }
 
 // Java's `String.trim`: strip the `U+0000`..`U+0020` characters at both ends.

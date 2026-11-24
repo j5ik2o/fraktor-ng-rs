@@ -115,7 +115,7 @@ kernel の `version` モジュールに足した。どれも `core` と `alloc` 
 - 原典の `compareTo` は、数が等しいときの修飾子の比較で `else` が抜けている。そのため `Version("1.2-M1").compareTo(Version("1.2.0"))` は負、`Version("1.2.0").compareTo(Version("1.2-M1"))` も負（`"".compareTo("M1")`）になり、反対称でない。原典テストは前者の向きだけを見る。移植は Rust の `Ord` の契約に合わせて反対称にし、修飾子のない正式版を常に大きくした（`orders_an_unqualified_release_above_the_same_number_with_a_qualifier`）。
 - 原典の `compareTo` は数の差を `Int` の引き算で求めるため、`2147483647` と `-1` のように差が桁あふれする組で符号が逆になる。移植は `i32` を直接比べ、桁あふれしない（`orders_i32_extremes_without_overflow`）。
 - 修飾子の比較は、原典が `String.compareTo`（UTF-16 の符号単位の順）、移植が `str::cmp`（UTF-8 のバイト順、つまり符号位置の順）である。違いが出るのは、`U+10000` 以上の文字と `U+E000`〜`U+FFFF` の文字を比べるときだけである。
-- `Integer.parseInt` と `Character.isDigit` は ASCII 以外の Unicode の10進数字も数字とみなす。移植は ASCII の数字だけを読む。たとえば `"١.٢"` は原典では `1.2`、移植では `InvalidNumber` になる。no_std の kernel に Unicode の数字の表を持ち込まないための差で、[G0issue136](issue-136-dns-settings.md) の ndots と同じ扱いである。`require` の `\d` は Java の既定でも ASCII だけなので、差はない。
+- `Integer.parseInt` と `Character.isDigit` は ASCII 以外の Unicode の10進数字も数字とみなす。移植は ASCII の数字だけを読む。たとえば `"١.٢"` は原典では `1.2`、移植では `InvalidNumber` になる。no_std の kernel に Unicode の数字の表を持ち込まないための差で、[G0issue136](issue-136-dns-settings.md) の ndots と同じ扱いだった（ndots の差は [#159](https://github.com/j5ik2o/fraktor-ng-rs/issues/159) で解消した。`Version` は変えていない）。`require` の `\d` は Java の既定でも ASCII だけなので、差はない。
 - 原典の `require` は、minor・patch・M・RC の番号が `Int` を超えると `toInt` で `NumberFormatException` を投げる。移植は数字列を値として比べ、桁あふれしない（`compares_large_numbers_without_overflow`）。原典テストはこの入力を使わない。
 - 原典は失敗を例外で伝える。移植は `Result` で返す。
 - 原典の2引数 `require`（`Version.current` を使う）と `Version.Zero` は移植していない。起動時の強制と crate の版は issue の対象外である。

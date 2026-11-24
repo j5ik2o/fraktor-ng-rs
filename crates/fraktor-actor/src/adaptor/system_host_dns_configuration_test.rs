@@ -285,6 +285,14 @@ fn carriage_returns_end_resolv_conf_lines() {
   assert_eq!(host.resolv_conf(), Some(ResolvConf::new(strings(&["b.example"]), 2)));
 }
 
+// A full-width `ndots` is a decimal digit to the original's `toInt`
+// (`Integer.parseInt`), so the search list and `ndots` are both read.
+#[test]
+fn a_full_width_ndots_is_read_with_the_search_list() {
+  let (_dir, host) = host_with("search a.example b.example\noptions ndots:\u{FF15}\n");
+  assert_eq!(host.resolv_conf(), Some(ResolvConf::new(strings(&["a.example", "b.example"]), 5)));
+}
+
 // A parse failure is `None`, as the original's `Failure` branch.
 #[test]
 fn an_invalid_ndots_is_none() {
@@ -354,6 +362,29 @@ fn default_name_servers_fail_without_a_file() {
 fn an_unparseable_resolv_conf_falls_back_to_the_original_defaults() {
   let (_dir, host) = host_with("nameserver 192.0.2.1\nsearch example.com\noptions ndots:x\n");
   let values = DnsSettingsValues::new(&default_config(), &host).expect("the host has name servers");
+  assert!(values.search_domains().is_empty());
+  assert_eq!(values.ndots(), 1);
+}
+
+// The `"default"` settings take a full-width `ndots` and the search list from
+// the file, instead of falling back to the defaults.
+#[test]
+fn default_settings_take_a_full_width_ndots_from_the_file() {
+  let (_dir, host) = host_with("nameserver 192.0.2.1\nsearch example.com\noptions ndots:\u{0663}\n");
+  let values = DnsSettingsValues::new(&default_config(), &host).expect("the host has name servers");
+  assert_eq!(values.search_domains(), strings(&["example.com"]).as_slice());
+  assert_eq!(values.ndots(), 3);
+}
+
+// A decimal digit outside the BMP is not a digit to `Integer.parseInt`, so the
+// file is unparseable and the search list and `ndots` fall back to the
+// original's defaults, while the name servers are still read.
+#[test]
+fn a_supplementary_digit_ndots_falls_back_to_the_original_defaults() {
+  let (_dir, host) = host_with("nameserver 192.0.2.1\nsearch example.com\noptions ndots:\u{1D7D3}\n");
+  assert_eq!(host.resolv_conf(), None);
+  let values = DnsSettingsValues::new(&default_config(), &host).expect("the host has name servers");
+  assert_eq!(values.name_servers(), &[addr("192.0.2.1:53")]);
   assert!(values.search_domains().is_empty());
   assert_eq!(values.ndots(), 1);
 }

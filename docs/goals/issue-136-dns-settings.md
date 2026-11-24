@@ -103,7 +103,7 @@ kernel の `io::dns` モジュールに足した。どれも `core` と `alloc` 
 - 原典は失敗を例外で伝える（`parseNameserverAddress` の `IllegalArgumentException`、`parseLines` の `NumberFormatException`）。移植は `Result` で返す。原典の正規表現の `.` は行終端文字（`\n`、`\r`、`U+0085`、`U+2028`、`U+2029`）に一致しないため、それを含む文字列は全体が一致せず `IllegalArgumentException` になる。移植は、それを `Unparseable` として最初に返す（独立レビューの指摘で追加）。
 - `parseFile`（ファイルの読み込みと `Try`）は移植していない。OS の設定の取得は対象外である。
 - 原典の `ResolvConf.ndots` は `Int` で、移植は `i32`。`Integer.parseInt` と `i32::from_str` は、どちらも `+5`・`-1` を読み、範囲外を失敗にする。
-- `Integer.parseInt` は ASCII 以外の Unicode の10進数字（全角の `５` など）も読む。移植の `i32::from_str` は ASCII の数字だけを読むため、`options ndots:５` は `InvalidNdots` になる。no_std の kernel に Unicode の数字の表を持ち込まないための差で、rustdoc にも書いた。原典テストはこの入力を使わない。
+- `Integer.parseInt` は ASCII 以外の Unicode の10進数字（全角の `５` など）も読む。移植の `i32::from_str` は ASCII の数字だけを読むため、`options ndots:５` は `InvalidNdots` になる。no_std の kernel に Unicode の数字の表を持ち込まないための差で、rustdoc にも書いた。原典テストはこの入力を使わない。（この差は [#159](https://github.com/j5ik2o/fraktor-ng-rs/issues/159) で解消した。末尾の「後続：#159」を参照）
 - ndots は専用型にせず `i32` のままにした。`fraktor-coding-rules.md` の domain-primitive の狭い例外（特別な扱いも範囲・書式の確認も要らず、ほかの属性と関係しない属性）に当たる。原典は整数であること以外に条件を置かず（負の値も残る）、このゴールには ndots を使って計算する処理がない。しきい値を解釈する処理を移植するときに専用型を作る。理由は `resolv_conf.rs` のフィールドにも書いた。
 
 ### 独立レビュー（別系統のモデル）
@@ -171,4 +171,70 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0issue136
 uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0issue136
+```
+
+## 後続：#159 ndots の Unicode 十進数字
+
+[Issue #159](https://github.com/j5ik2o/fraktor-ng-rs/issues/159)（Orca 項目239）は、上の「原典との差異」に書いた ndots の差を解消する。PR #158 の独立レビューで、ホスト設定の adaptor を通すと search と ndots がどちらも既定値に戻ることが分かった。原典のテストは増えず、台帳のノード・件数（原典9件・移植9件・成功9件・除外0件）と統合テスト `resolv_conf_parser_spec.rs` は変えていない。記録は、このパーサーのゴールである本書に置く。
+
+- 実行経路: 調整担当の指示で TAKT には登録せず、Claude Opus 5.5 が隔離 worktree（ブランチ `j5ik2o/issue-159-ndots-unicode`、起点 `316d8f5`）で直接実装した
+- 原典: [ResolvConfParser.scala](https://github.com/apache/pekko/blob/9a54d1294c3ac7821bbed3c940769c3d5027d1ff/actor/src/main/scala/org/apache/pekko/io/dns/internal/ResolvConfParser.scala) の `ndots = option.drop(NdotsOption.length).toInt`
+
+### 原典の受理範囲（一次根拠と実測）
+
+- Pekko v1.7.1 は Scala 2.12.21、2.13.18、3.3.7 でビルドする（`project/Dependencies.scala` L46–49）。`toInt` は、2.13.18 の `StringOps.scala` L907、2.12.21 の `StringLike.scala` L310 で、どちらも `java.lang.Integer.parseInt(s)` である。Scala 3 は 2.13 の標準ライブラリを使う
+- Pekko の CI の JDK は 8、11、17、21 である（`.github/workflows/nightly-builds.yml` L118 の `javaVersion: [8, 11, 17, 21]`）
+- `Integer.parseInt` を、全コード点（サロゲートを除く `U+0000`〜`U+10FFFF`）の1文字ずつに対して、Temurin 21.0.13、25.0.5、26.0.2.1 で実測した。3版とも結果は同じで、受理は370文字だった。BMP の一般カテゴリ Nd の37の連続10文字（`0`〜`9` の値）だけを受理し、BMP 外の Nd（`U+1D7D3`、`U+104A5` など）は拒否した。`parseInt` は UTF-16 の単位で読み、サロゲートは数字にならないためである
+- JDK 8、11、17 は手元にないため実測していない。Unicode の [DerivedAge.txt（16.0.0）](https://www.unicode.org/Public/16.0.0/ucd/DerivedAge.txt) で37の範囲の追加版を調べると、`U+0DE6`（シンハラ文字の Lith 数字）と `U+A9F0`（Tai Laing 数字）だけが Unicode 7.0 で、ほかは 6.0 以前だった。JDK 11 は Unicode 10.0、JDK 17 は 13.0 なので37範囲すべてを持ち、JDK 8（Unicode 6.2）だけがこの2範囲を拒否する
+- 符号は先頭の ASCII の `+` か `-` だけ。全角の `＋`・`－`、符号だけ、二重の符号は拒否する。`-2147483648`〜`2147483647` の外は、全角の数字でも拒否する。先頭のゼロは読む。テストに文字列で書いた入力（46件）を Temurin 21.0.13 で `Integer.parseInt` に通し、期待値と一致することを確かめた。範囲ごとのテストは上の全コード点の実測による
+
+### 実装
+
+- `ResolvConfParser::parse_lines` の ndots の読み取りを、`str::parse::<i32>` から非公開関数 `parse_java_int` に替えた。37範囲の `0` のコード点を定数表に持ち、各文字の値を引く。値は Java と同じく負の側で積み、`i32::MIN` で桁あふれしない。採用した表は JDK 11 以降の37範囲である。この基準と JDK 8 との差（2範囲）は、公開 rustdoc（`parse_lines`）と表のコメントに書いた（PR #161 の Devin の指摘で rustdoc に追加）
+- kernel の no_std を保つ。`core` と `alloc` だけを使い、syn-check の `cfg-std-forbid` と `port-adaptor-boundary` は違反0である
+- 公開 API は変えていない。`ResolvConfParseError::InvalidNdots` と `ResolvConf` の型・関数はそのままで、rustdoc の説明だけを原典に合わせて直した。以前は失敗にしていた入力の一部が成功するだけで、成功していた入力の結果は変わらない。保存済みのデータはない
+
+### テスト
+
+- 単体テスト（`resolv_conf_parser_test.rs`）: 全角と他文字体系の数字、符号つき、37範囲すべての `0` と `9`、各範囲の前後のコード点、BMP 外の数字、Nd 以外の数（`²`、`Ⅴ`、`①`、`五` など）、符号だけと二重の符号、数字以外の文字、先頭ゼロ、`i32` の両端と桁あふれを確かめる。全コード点で受理が370文字になることも確かめる
+- adaptor のテスト（`system_host_dns_configuration_test.rs`）: 全角の ndots で search と ndots の両方が読めること、`"default"` 設定で Arabic-Indic の `٣` から ndots 3 と search が入ること、BMP 外の数字では `resolv_conf()` が `None` になり、search が空、ndots が 1、name server は読めることを確かめる
+
+### 製品編集前の実測（red）
+
+テストだけのコミット `a465c71`（起点 `316d8f5` からの製品差分0）で `cargo test -p fraktor-actor --lib -- resolv_conf_parser system_host_dns` を実行し、72件中8件が失敗した。失敗は全角・他文字体系の数字を含む7件（`a_full_width_ndots_digit_parses`、`a_signed_full_width_ndots_value_parses`、`decimal_digits_of_other_scripts_parse`、`every_decimal_digit_run_the_jdk_accepts_parses`、`leading_zeros_parse`、`the_ends_of_the_i32_range_parse`、`a_full_width_ndots_is_read_with_the_search_list`）と `default_settings_take_a_full_width_ndots_from_the_file` である。ASCII だけの入力、BMP 外の数字、符号、桁あふれのテストは修正前から通った。
+
+### 実装後の実測
+
+実装のコミット `ef91eed` で、担当が自分の worktree で次を実行した。
+
+| コマンド | 終了値 | 結果 |
+|:---|---:|:---|
+| `cargo test --workspace` | 0 | 71 スイート、828 passed / 0 failed / 0 ignored |
+| `cargo test -p fraktor-actor --test resolv_conf_parser_spec -- --test-threads=1` | 0 | 9 passed |
+| `cargo test -p fraktor-actor --lib io::dns` | 0 | 157 passed |
+| `cargo test -p fraktor-actor --lib system_host_dns` | 0 | 43 passed |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
+| `cargo fmt --check` | 0 | 差分なし |
+| syn-check（`crates/fraktor-actor`、`crates/fraktor-testkit`） | 0 | 両方 `clean: true`。fraktor-actor は 250 files、違反0、抑制0 |
+| `npm ci` → `npm run check:aislop` | 0 | warn 以上の指摘は受理済み一覧と一致 |
+| CI の python テスト5本（`goal_complete_gate_test.py` など） | 0 | すべて成功 |
+| `verify_green.py --crate fraktor-actor` | 0 | `all_pass: true` |
+
+台帳は `G0issue136` と `G0a`〜`G0f` の各々で `check_needs.py` と `rollup.py` を実行し、14コマンドすべて終了値0だった（needs の閉性は OK、対象ノードはすべて green。`G0issue136` は `{'green': 2}`）。
+
+### 再現手順（JDK の実測）
+
+```java
+// Probe.java: java Probe.java で実行する
+public class Probe {
+  public static void main(String[] a) {
+    int accepted = 0;
+    for (int cp = 0; cp <= 0x10FFFF; cp++) {
+      if (cp >= 0xD800 && cp <= 0xDFFF) continue;
+      try { Integer.parseInt(new String(Character.toChars(cp))); accepted++; }
+      catch (NumberFormatException e) {}
+    }
+    System.out.println(System.getProperty("java.version") + " accepted=" + accepted);
+  }
+}
 ```
