@@ -1,6 +1,6 @@
 # ゴール G0issue128：classic FrequencyListSpec
 
-[Issue #128](https://github.com/j5ik2o/fraktor-ng-rs/issues/128)（Orca 項目140）の第2工程の対象は、Pekko v1.7.1 の classic `FrequencyListSpec`。原典は「FrequencyList must」の下に3ケースを持つ。1ケースは頻度の昇順・降順と、同じ頻度の中での更新順、件数指定と skip 付きの両方向削除を確かめる。1ケースは1秒ずつ進める制御時計で全体の新旧順と窓による削除を確かめる。1ケースは dynamic aging の並びと削除結果を確かめる。 [原典のテスト](https://github.com/apache/pekko/blob/9a54d1294c3ac7821bbed3c940769c3d5027d1ff/actor-tests/src/test/scala/org/apache/pekko/util/FrequencyListSpec.scala) [原典の実装](https://github.com/apache/pekko/blob/9a54d1294c3ac7821bbed3c940769c3d5027d1ff/actor/src/main/scala/org/apache/pekko/util/FrequencyList.scala)
+[Issue #128](https://github.com/j5ik2o/fraktor-ng-rs/issues/128)（Orca 項目140）の対象は、Pekko v1.7.1 の classic `FrequencyListSpec`。原典は「FrequencyList must」の下に3ケースを持つ。1ケースは頻度の昇順・降順と、同じ頻度の中での更新順、件数指定と skip 付きの両方向削除を確かめる。1ケースは1秒ずつ進める制御時計で全体の新旧順と窓による削除を確かめる。1ケースは dynamic aging の並びと削除結果を確かめる。 [原典のテスト](https://github.com/apache/pekko/blob/9a54d1294c3ac7821bbed3c940769c3d5027d1ff/actor-tests/src/test/scala/org/apache/pekko/util/FrequencyListSpec.scala) [原典の実装](https://github.com/apache/pekko/blob/9a54d1294c3ac7821bbed3c940769c3d5027d1ff/actor/src/main/scala/org/apache/pekko/util/FrequencyList.scala)
 
 ## 対象ノード
 
@@ -9,6 +9,20 @@
 | `actor-tests/src/test/scala/org/apache/pekko/util/FrequencyListSpec.scala` | `crates/fraktor-actor/tests/frequency_list_spec.rs` | 3 |
 
 台帳は原典3件、移植3件、成功3件、除外0件。`needs` は空のままで、TestKit の機能は使わない。
+
+## 実行経路
+
+正規 TAKT の2工程で進めた。ゴールを発行する前に、開始点のブランチ `j5ik2o/issue-128-takt` で台帳の対象ノードの `goal:` 行だけを `G0issue128` にした（`5798643`、`ledger/README.md` のゴール発行手順）。そのうえでゴール `12812e6c-bba8-411d-b1cf-c4cc863d7128`（ブランチ `takt/20261124T0841-goal-12812e6c`、統合先 main）を作り、共有 takt-mcp（f6c0d505）から2工程を順に投入した。ワークフローはどちらも `simple`（親 simple、修正は子 review-remediation）、runtimeAssignment は既定の `opus-standard`。
+
+| 工程 | workKey / タスク | run | 結果 |
+|:---|:---|:---|:---|
+| 第1工程（テストと台帳 red） | `issue-128/01-source-red` / `issue-128-1-frequencylistspec` | `20261124-084202-issue-128-1-frequencylistspec-8pvg2d` | completed（08:58:34Z）、ゴールブランチへ統合（`cfc3080`） |
+| 第2工程（実装・等価性・台帳 green） | `issue-128/02-implementation-ledger` / `issue-128-2-frequencylist-wo-s` | `20261124-085940-issue-128-2-frequencylist-wo-s-vpjzao` | completed（09:54:50Z）、ゴールブランチへ統合（`6469f09`） |
+
+step_start の provider / model の実測は、plan・review・review-adjudication・fix-plan・fix・fix-verifier・follow-up-review・supervise が claude-sdk / claude-opus-5-5、write_tests・implement が opencode / dgx/deepseek-v4.1-flash。codex や Spark への切替は起きていない。
+
+- 第1工程の成果は、台帳の対象ノードで status・cases・rust を書いていた。cases の total・ported・passing は green の時点で書く欄（`.takt/facets/instructions/fraktor-ledger-update.md` L9）、red への遷移は status 行だけ（`ledger/tools/verify_red.py` の `mark_red`）、rust は port-test が記録する欄（`.takt/facets/instructions/fraktor-port-test.md` L32–34）である。TAKT が統合を自動で済ませたため、統合後のゴールブランチで cases を null に戻した（`7e68734`）。第1工程で台帳に残る差分は status `red` と rust の2欄で、製品差分は0。
+- 第2工程の review は、計算量の記述と原典の行番号の誤りで REJECT した。担当が run に追加指示を送り、記述ではなく実装を直した（各値がバケット内の配置番号を持ち、削除を対数時間にした）。あわせて、同じキーの別の値で更新したときに保持している値を残すこと、時計なしの全体順の削除が panic することを単体テストで確かめた。
 
 ## 原典との照合
 
@@ -53,7 +67,7 @@ age を更新するのは `remove_least_frequent` と `remove_least_frequent_ski
 
 ## 等価性レビュー
 
-実施者は本 issue の担当で、Pekko 固定 SHA の原典テスト・原典実装・`DoubleLinkedList` と、移植の実装・テストを突き合わせた。判定は「等価」。原典3ケースは観測上等価で、除外0。
+実施者は第2工程の review と follow-up-review（claude-sdk / claude-opus-5-5）と、本 issue の担当（Claude Opus 5.5）。Pekko 固定 SHA の原典テスト・原典実装・`DoubleLinkedList` と、移植の実装・テストを突き合わせた。判定は「等価」。原典3ケースは観測上等価で、除外0。
 
 | 原典の振る舞い | 原典の根拠 | 移植で確かめているテスト |
 |:---|:---|:---|
@@ -86,36 +100,28 @@ age を更新するのは `remove_least_frequent` と `remove_least_frequent_ski
 
 ## 製品編集前の実測
 
-テストの blob は `9694b8d140c2266ae793654a0772b9aad08e9413`（第1工程から変更なし、`crates/fraktor-actor/tests/frequency_list_spec.rs`）。write_tests 工程で、製品を編集する前の状態を次で確認した。
+第1工程の統合後、台帳を絞った `7e68734e48b84196e1b41abdd941ee8f0339698a`（`5798643` からの製品差分0、テストの blob `9694b8d140c2266ae793654a0772b9aad08e9413`）で次を実行した。
 
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
-| `cargo test -p fraktor-actor --test frequency_list_spec -- --test-threads=1` | 101 | compile-red。`E0432 unresolved import fraktor_actor::kernel::frequency_list` の1件。宣言3件、実行0件、除外0件 |
+| `cargo test -p fraktor-actor --test frequency_list_spec -- --test-threads=1` | 101 | compile-red。`E0432 unresolved import fraktor_actor::kernel::frequency_list`（`tests/frequency_list_spec.rs:50`）の1件。宣言3件、実行0件、除外0件 |
+| `rollup.py --goal G0issue128` | — | ノード1件、`{'red': 1}` |
 
 ## 実装後の実測
 
-テストの blob は `9694b8d140c2266ae793654a0772b9aad08e9413` のまま変えていない。実行時の HEAD は `7e68734e48b84196e1b41abdd941ee8f0339698a`（このボトムアップで作られたコミットの SHA はワークフロー完了後に確定する）。
-
-次の表は、レビュー指摘の修正（バケット内の配置番号による削除、update で保持している値を残すこと、時計なしの panic の単体テスト）を入れたあとのコードで再実行した結果である。
+第2工程の統合後の `6469f09`（テストの blob は `9694b8d140c2266ae793654a0772b9aad08e9413` のまま）で次を実行した。
 
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test frequency_list_spec -- --test-threads=1` | 0 | 3 passed / 0 failed / 0 ignored |
-| `cargo test -p fraktor-actor --lib frequency_list` | 0 | 6 passed（境界の単体テスト1件、`updating_a_held_value_keeps_the_value_first_added` 1件、時計なしの panic の単体テスト4件） |
-| `cargo test -p fraktor-actor --test recency_list_spec --test segmented_recency_list_spec` | 0 | 1 passed / 4 passed（回帰） |
-| `cargo test -p fraktor-actor --lib recency` | 0 | 10 passed（RecencyList と SegmentedRecencyList の単体テスト、回帰） |
+| `cargo test -p fraktor-actor --lib frequency_list` | 0 | 6 passed（境界1件、保持値1件、時計なしの panic 4件） |
+| `cargo test --workspace` | 0 | 55 スイート、459 passed / 0 failed / 0 ignored |
 | `cargo fmt --check` | 0 | 差分なし |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
 | `cargo run --quiet --release --locked --manifest-path tools/syn-check/Cargo.toml -- --format json crates/fraktor-actor` | 0 | `clean: true`、151 files、違反0 |
-
-次の項目は、レビュー指摘の修正より前のコードで実行した結果で、修正後には再実行していない。
-
-| コマンド | 終了値 | 結果 |
-|:---|---:|:---|
-| `cargo test --workspace` | 0 | 55 スイートすべて 0 failed |
 | `npm ci` → `npm run check:aislop` | 0 | warn 以上の指摘は受理済み一覧と一致 |
 
-台帳は、修正より前に `G0issue128` と `G0a`〜`G0f` の各々で `check_needs.py` と `rollup.py` を実行し、14コマンドすべて終了値0だった（needs 閉性 OK、全対象ノード green）。`G0issue128` は 1 件で `{'green': 1}`。台帳ファイルは修正で変えていない。
+台帳は `G0issue128` と `G0a`〜`G0f` の各々で `check_needs.py` と `rollup.py` を実行し、14コマンドすべて終了値0だった（needs 閉性 OK、全対象ノード green。`G0issue128` は1件で `{'green': 1}`）。
 
 ## 再現手順
 

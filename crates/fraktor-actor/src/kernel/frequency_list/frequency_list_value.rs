@@ -78,9 +78,9 @@ struct Stamped<A> {
 }
 
 // The double-linked list of frequency buckets. A bucket is identified by the
-// `u64` id it was allocated, and the list records the order separately from
-// the bucket's payload in `order`: the least frequent bucket id and the most
-// frequent bucket id, with each bucket naming its `less`/`more` neighbour.
+// `u64` id it was allocated. The list keeps the least and the most frequent
+// bucket ids in `first` and `last`, and each bucket names its `less`/`more`
+// neighbour.
 //
 // Keeping the link fields in `Bucket` and the bucket store here mirrors Pekko's
 // `DoubleLinkedList[FrequencyNode]`, where `getFirstOrElsePrepend`,
