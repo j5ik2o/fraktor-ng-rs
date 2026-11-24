@@ -76,7 +76,7 @@ G0issue130 で入れた `ByteStringInputStream` の公開 API は `read` と `re
 
 原典3ケースの観測は変わらない。
 
-- **builder の結果の mark 対応**：Pekko の `ByteStringBuilder` は、配列や大きな列を足すたびに独立した断片を作り、断片が2つ以上なら `ByteStrings` を返す（L1355–1366、L1566–1575）。移植の builder は、`add_all` で足したバイトを1つの配列にまとめる。例：`builder ++= Array(1, 2)` の後に `builder ++= Array(3)` を足すと、原典は2断片の `ByteStrings`（mark 非対応）、移植は1配列（mark 対応）になる。差は「原典が非対応のものを、移植が対応と答える」の一方向だけである。builder には手を入れず、[#148](https://github.com/j5ik2o/fraktor-ng-rs/issues/148) で追跡する。単体テスト `a_built_byte_string_supports_marks_by_how_many_arrays_it_holds` で今の振る舞いを固定した。
+- **builder の結果の mark 対応**：Pekko の `ByteStringBuilder` は、配列や大きな列を足すたびに独立した断片を作り、断片が2つ以上なら `ByteStrings` を返す（L1355–1366、L1566–1575）。移植の builder は、`add_all` で足したバイトを1つの配列にまとめる。例：`builder ++= Array(1, 2)` の後に `builder ++= Array(3)` を足すと、原典は2断片の `ByteStrings`（mark 非対応）、移植は1配列（mark 対応）になる。差は「原典が非対応のものを、移植が対応と答える」の一方向だけである。builder には手を入れず、[#148](https://github.com/j5ik2o/fraktor-ng-rs/issues/148) で追跡する。単体テスト `a_built_byte_string_supports_marks_by_how_many_arrays_it_holds` で今の振る舞いを固定した。#148 では副元帥の決定（項目227）により意図した差として固定し、補足回帰と台帳の据え置きの根拠を [G0issue148 のゴール文書](issue-148-builder-mark.md) に記録した。
 - **skip の負の入力**：原典の `skip` は負の `n` で `IllegalArgumentException` を投げる。移植の `usize` では負の値を表せない。
 - **skip の JVM 整数の上限**：原典の `skip` は `Math.toIntExact(n)` と `Math.addExact` を使うので、`n` が `Int.MaxValue` を超えるか、位置との和が溢れると `ArithmeticException` を投げる。移植は `usize::MAX` でも残量で頭打ちにして返す。
 - **残量を超える skip の後の位置**：原典は残量で頭打ちにした値を返すが、位置は `n` だけ進める（L172–178）。そのため `"abc"` で `skip(50)` の後は位置50になり、続く `skip(0)` や `skip(1)` は `eod - offset` の負値（-47）を返す。移植は位置を末尾で止め、EOF の後の skip は0を返す。`read` が EOF を返す点と、mark の位置へ reset で戻れる点は同じである。
