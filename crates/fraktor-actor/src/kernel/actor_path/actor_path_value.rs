@@ -41,6 +41,15 @@ impl ActorPath {
     Some(Self::new(root, elements))
   }
 
+  /// Returns whether `element` is a legal path element.
+  ///
+  /// Mirrors `ActorPath.isValidPathElement`, the non-failing form of
+  /// [`Self::validate_path_element`].
+  #[must_use]
+  pub fn is_valid_path_element(element: &str) -> bool {
+    matches!(find_invalid_path_element_char_position(element), PathCode::Valid)
+  }
+
   /// Validates a path element and returns an error message when it is illegal.
   pub fn validate_path_element(element: &str) -> Result<(), String> {
     match find_invalid_path_element_char_position(element) {
