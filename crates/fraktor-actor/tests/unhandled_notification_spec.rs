@@ -69,22 +69,113 @@ impl EventSink for RecordingSink {
   }
 }
 
+/// One message of the bounded input of P1 to P3.
+///
+/// The set holds every message type the property covers: `i32` from -2 to 2,
+/// three `&'static str` values (one of them empty), and one type the kernel
+/// does not know.
+#[derive(Clone, Debug)]
+enum Input {
+  Number(i32),
+  Text(&'static str),
+  Unknown(Custom),
+}
+
+impl Input {
+  /// Every message of the bounded input, in the order a test sends them.
+  fn all() -> Vec<Input> {
+    let mut inputs: Vec<Input> = (-2_i32..=2).map(Input::Number).collect();
+    inputs.extend(["alpha", "", "with spaces"].map(Input::Text));
+    inputs.push(Input::Unknown(Custom(7)));
+    inputs
+  }
+
+  fn tell(&self, target: &ActorRef, sender: &ActorRef) {
+    match self {
+      | Input::Number(value) => target.tell(*value, sender.clone()),
+      | Input::Text(text) => target.tell(*text, sender.clone()),
+      | Input::Unknown(custom) => target.tell(custom.clone(), sender.clone()),
+    }
+  }
+
+  /// Checks that `message` is this input with its type kept.
+  fn assert_same(&self, message: &Message) {
+    match self {
+      | Input::Number(value) => assert_eq!(message.downcast_ref::<i32>(), Some(value)),
+      | Input::Text(text) => assert_eq!(message.downcast_ref::<&'static str>(), Some(text)),
+      | Input::Unknown(custom) => assert_eq!(message.downcast_ref::<Custom>(), Some(custom)),
+    }
+  }
+
+  /// The text the warning gives for this input: the `Debug` form of
+  /// `Message`, which quotes a string and names no value for an unknown type.
+  fn warning_form(&self) -> String {
+    match self {
+      | Input::Number(value) => format!("{value}"),
+      | Input::Text(text) => format!("{text:?}"),
+      | Input::Unknown(_) => String::from("<message of an unknown type>"),
+    }
+  }
+}
+
+/// The three senders of the bounded input: dead letters, the test actor, and
+/// another actor.
+fn senders(spec: &mut FraktorSpec) -> [ActorRef; 3] {
+  let dead_letters = spec.system().dead_letters();
+  let test_actor = spec.test_actor();
+  let other = TestProbe::new(spec.system_mut());
+  [dead_letters, test_actor, other.ref_handle()]
+}
+
+fn subscribe_to_unhandled(spec: &mut FraktorSpec) -> TestProbe {
+  let subscriber = TestProbe::new(spec.system_mut());
+  spec
+    .system()
+    .event_stream()
+    .subscribe(Some(subscriber.ref_handle()), EventClass::of::<UnhandledMessage>())
+    .expect("the probe is not null");
+  subscriber
+}
+
 /// Takes one `UnhandledMessage` from `probe`, checks its three fields, and
 /// checks that the same delivery produced no second report (I1).
 ///
 /// A duplicate made while this delivery runs is queued before the probe hands
 /// over the first report, so the zero-length wait below observes it without
 /// adding a pause to the test.
-fn assert_unhandled<T>(probe: &mut TestProbe, expected: &T, sender: &ActorRef, recipient: &ActorRef)
-where
-  T: Any + core::fmt::Debug + PartialEq,
-{
+fn assert_unhandled(probe: &mut TestProbe, expected: &Input, sender: &ActorRef, recipient: &ActorRef) {
+  assert_next_unhandled(probe, expected, sender, recipient);
+  probe.expect_no_message(Duration::ZERO);
+}
+
+/// Takes one `UnhandledMessage` from `probe` and checks its three fields,
+/// leaving later reports in the queue.
+fn assert_next_unhandled(probe: &mut TestProbe, expected: &Input, sender: &ActorRef, recipient: &ActorRef) {
   let unhandled: UnhandledMessage = probe.expect_msg_type();
-  let message = unhandled.message().downcast_ref::<T>().expect("the report keeps the message type");
-  assert_eq!(message, expected);
+  expected.assert_same(unhandled.message());
   assert_eq!(unhandled.sender(), sender);
   assert_eq!(unhandled.recipient(), recipient);
-  probe.expect_no_message(Duration::ZERO);
+}
+
+/// Sends every pair of the bounded input (3 senders x 9 messages) to `target`
+/// and checks one report per pair.
+fn assert_every_pair_is_reported_once(spec: &mut FraktorSpec, target: &ActorRef) {
+  let mut subscriber = subscribe_to_unhandled(spec);
+  let senders = senders(spec);
+  for input in Input::all() {
+    for sender in &senders {
+      input.tell(target, sender);
+      assert_unhandled(&mut subscriber, &input, sender, target);
+    }
+  }
+
+  // P4: the same message from the same sender, twice in a row, is two reports.
+  let repeated = Input::Number(0);
+  repeated.tell(target, &senders[0]);
+  repeated.tell(target, &senders[0]);
+  spec.system_mut().run_until_idle();
+  assert_next_unhandled(&mut subscriber, &repeated, &senders[0], target);
+  assert_unhandled(&mut subscriber, &repeated, &senders[0], target);
 }
 
 /// P1 and P4: every message that reaches an empty actor is reported once, with
@@ -92,56 +183,23 @@ where
 #[test]
 fn props_empty_reports_every_message_once_for_every_bounded_input() {
   let mut spec = FraktorSpec::new("UnhandledNotificationSpecP1");
-  let mut subscriber = TestProbe::new(spec.system_mut());
-  spec
-    .system()
-    .event_stream()
-    .subscribe(Some(subscriber.ref_handle()), EventClass::of::<UnhandledMessage>())
-    .expect("the probe is not null");
   let empty = spec.system_mut().actor_of(Props::empty());
 
-  let dead_letters = spec.system().dead_letters();
-  let test_actor = spec.test_actor();
-  let other = TestProbe::new(spec.system_mut());
-  let senders = [dead_letters, test_actor, other.ref_handle()];
-
-  for (index, value) in [-2_i32, -1, 0, 1, 2].iter().enumerate() {
-    let sender = &senders[index % senders.len()];
-    empty.tell(*value, sender.clone());
-    assert_unhandled(&mut subscriber, value, sender, &empty);
-  }
-
-  for text in ["alpha", "", "with spaces"] {
-    let sender = &senders[0];
-    empty.tell(text, sender.clone());
-    assert_unhandled(&mut subscriber, &text, sender, &empty);
-  }
-
-  let custom = Custom(7);
-  let sender = &senders[1];
-  empty.tell(custom.clone(), sender.clone());
-  assert_unhandled(&mut subscriber, &custom, sender, &empty);
+  assert_every_pair_is_reported_once(&mut spec, &empty);
 
   spec.terminate();
 }
 
 /// P2: an actor that calls `ActorContext::unhandled` reports the message with
-/// the sender of the delivery and itself as the recipient.
+/// the sender of the delivery and itself as the recipient, for the same input
+/// as P1.
 #[test]
 fn actor_context_unhandled_reports_the_message_and_sender() {
   let mut spec = FraktorSpec::new("UnhandledNotificationSpecP2");
-  let mut subscriber = TestProbe::new(spec.system_mut());
-  spec
-    .system()
-    .event_stream()
-    .subscribe(Some(subscriber.ref_handle()), EventClass::of::<UnhandledMessage>())
-    .expect("the probe is not null");
   let rejector = spec.system_mut().actor_of(Props::new(|| Rejector));
-  let sender = spec.test_actor();
 
-  rejector.tell(99_i32, sender.clone());
+  assert_every_pair_is_reported_once(&mut spec, &rejector);
 
-  assert_unhandled(&mut subscriber, &99, &sender, &rejector);
   spec.terminate();
 }
 
@@ -154,21 +212,122 @@ fn unhandled_is_reported_as_a_warning_to_the_event_sink() {
   let sink: Arc<dyn EventSink> = recording.clone();
   spec.system().set_event_sink(sink);
   let empty = spec.system_mut().actor_of(Props::empty());
-  let sender = spec.system().dead_letters();
-  let values = [-2_i32, 0, 2];
+  let senders = senders(&mut spec);
 
-  for value in values {
-    empty.tell(value, sender.clone());
+  let mut expected = Vec::new();
+  for input in Input::all() {
+    for sender in &senders {
+      input.tell(&empty, sender);
+      expected.push((
+        empty.path().to_string(),
+        format!("unhandled message from {}: {}", sender.path(), input.warning_form()),
+      ));
+    }
   }
   spec.system_mut().run_until_idle();
 
-  let warnings = recording.warnings.lock().unwrap();
-  assert_eq!(warnings.len(), values.len());
-  for (index, value) in values.iter().enumerate() {
-    let (source, text) = &warnings[index];
-    assert_eq!(source, &empty.path().to_string());
-    assert_eq!(text, &format!("unhandled message from {}: {}", sender.path(), value));
+  assert_eq!(*recording.warnings.lock().unwrap(), expected);
+
+  spec.terminate();
+}
+
+/// Records what each behaviour of [`Pusher`] received.
+type Trace = Arc<Mutex<Vec<String>>>;
+
+fn number_of(message: &Message) -> i32 {
+  *message.downcast_ref::<i32>().expect("the test sends i32 only")
+}
+
+/// Pushes a behaviour on its first message; the pushed behaviour reports every
+/// later message as unhandled.
+struct Pusher {
+  trace: Trace,
+}
+
+impl Actor for Pusher {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    let number = number_of(&message);
+    self.trace.lock().unwrap().push(format!("base:{number}"));
+    if number == 0 {
+      let trace = Arc::clone(&self.trace);
+      context.push_behavior(move |context: &mut ActorContext<'_>, message: Message| {
+        trace.lock().unwrap().push(format!("pushed:{}", number_of(&message)));
+        context.unhandled(message);
+      });
+    }
   }
+}
+
+/// I3: `unhandled` leaves the behaviour stack as it was. The pushed behaviour
+/// that calls it answers the next message too.
+#[test]
+fn unhandled_keeps_the_pushed_behavior() {
+  let mut spec = FraktorSpec::new("UnhandledNotificationSpecI3Stack");
+  let mut subscriber = subscribe_to_unhandled(&mut spec);
+  let trace = Trace::default();
+  let pusher = spec.system_mut().actor_of(Props::new({
+    let trace = Arc::clone(&trace);
+    move || Pusher { trace: Arc::clone(&trace) }
+  }));
+  let sender = spec.system().dead_letters();
+
+  for number in 0..3 {
+    pusher.tell(number, sender.clone());
+  }
+  spec.system_mut().run_until_idle();
+
+  assert_eq!(*trace.lock().unwrap(), ["base:0", "pushed:1", "pushed:2"]);
+  assert_next_unhandled(&mut subscriber, &Input::Number(1), &sender, &pusher);
+  assert_unhandled(&mut subscriber, &Input::Number(2), &sender, &pusher);
+
+  spec.terminate();
+}
+
+/// Stashes every number and reports it as unhandled; `"release"` returns the
+/// stash, and the numbers are then recorded instead.
+struct StashThenReport {
+  trace: Trace,
+  released: bool,
+}
+
+impl Actor for StashThenReport {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    if message == "release" {
+      self.released = true;
+      context.unstash_all();
+    } else if self.released {
+      self.trace.lock().unwrap().push(format!("replayed:{}", number_of(&message)));
+    } else {
+      context.stash();
+      context.unhandled(message);
+    }
+  }
+}
+
+/// I3: `unhandled` after `stash` leaves the stash as it was. `unstash_all`
+/// returns every stashed message, in order.
+#[test]
+fn unhandled_keeps_the_stash() {
+  let mut spec = FraktorSpec::new("UnhandledNotificationSpecI3Stash");
+  let mut subscriber = subscribe_to_unhandled(&mut spec);
+  let trace = Trace::default();
+  let actor = spec.system_mut().actor_of(Props::new({
+    let trace = Arc::clone(&trace);
+    move || StashThenReport { trace: Arc::clone(&trace), released: false }
+  }));
+  let sender = spec.system().dead_letters();
+
+  for number in 1..=3 {
+    actor.tell(number, sender.clone());
+  }
+  actor.tell("release", sender.clone());
+  spec.system_mut().run_until_idle();
+
+  assert_eq!(*trace.lock().unwrap(), ["replayed:1", "replayed:2", "replayed:3"]);
+  for number in 1..=3 {
+    assert_next_unhandled(&mut subscriber, &Input::Number(number), &sender, &actor);
+  }
+  subscriber.expect_no_message(Duration::ZERO);
 
   spec.terminate();
 }
