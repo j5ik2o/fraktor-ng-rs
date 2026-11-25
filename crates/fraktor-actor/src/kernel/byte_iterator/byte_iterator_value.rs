@@ -44,6 +44,11 @@ impl ByteIterator {
     self.current < self.arrays.len()
   }
 
+  /// Returns how many bytes are left to read.
+  pub(crate) fn remaining(&self) -> usize {
+    self.arrays.get(self.current..).map_or(0, |rest| rest.iter().map(|array| array.len()).sum::<usize>()) - self.offset
+  }
+
   /// Consumes the iterator up to the first byte equal to `elem`, and returns
   /// that byte's index counted from the iterator's position when this search
   /// is called.
