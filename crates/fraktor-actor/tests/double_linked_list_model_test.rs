@@ -409,7 +409,7 @@ impl Run {
   // P5: a closure of the caller that panics leaves the list as it was.
   fn panicking_closure(&mut self, l: usize) {
     let id = self.live_id(l);
-    let op = self.rng.below(8);
+    let op = self.rng.below(10);
     self.log.push(format!("list {l}: panicking closure, operation {op}, id {id:?}"));
     let list = &mut self.lists[l];
     let panicking_new = || -> Value { panic!("{CLOSURE_PANIC}") };
@@ -425,7 +425,11 @@ impl Run {
       | (4, Some(_)) => drop(list.get_first_or_else_prepend(panicking_check, panicking_new)),
       | (5, Some(id)) => drop(list.get_previous_or_else_insert(id, panicking_check, panicking_new)),
       | (6, Some(id)) => drop(list.find_next_or_else_insert(id, panicking_check, |_| false, panicking_new)),
-      | (7, Some(id)) => drop(list.find_previous_or_else_insert(id, |_| true, panicking_check, panicking_new)),
+      | (7, Some(id)) => drop(list.find_previous_or_else_insert(id, panicking_check, |_| false, panicking_new)),
+      // `check` panics inside `find_*`: `is_before` / `is_after` stops at once,
+      // so a neighbour, when there is one, is checked.
+      | (8, Some(id)) => drop(list.find_next_or_else_insert(id, |_| false, panicking_check, panicking_new)),
+      | (9, Some(id)) => drop(list.find_previous_or_else_insert(id, |_| false, panicking_check, panicking_new)),
       | _ => panic!("{CLOSURE_PANIC}"),
     });
     assert!(
@@ -482,8 +486,9 @@ fn removing_an_id_from_another_list_panics_and_keeps_this_list() {
     let _removed: &str = mine.remove(foreign);
   });
   assert!(text.as_deref().is_some_and(|t| t.contains(ID_PANIC)), "panic message {text:?}");
-  assert_eq!(mine.forward_iter().collect::<Vec<_>>(), [a, b]);
-  assert_eq!(mine.backward_iter().collect::<Vec<_>>(), [b, a]);
+  // Bounded like `check`, so a cycle fails instead of never ending.
+  assert_eq!(mine.forward_iter().take(3).collect::<Vec<_>>(), [a, b]);
+  assert_eq!(mine.backward_iter().take(3).collect::<Vec<_>>(), [b, a]);
   assert_eq!((mine[a], mine[b]), ("a", "b"));
   assert_eq!(other.forward_iter().map(|id| other[id]).collect::<Vec<_>>(), ["other"]);
 }
