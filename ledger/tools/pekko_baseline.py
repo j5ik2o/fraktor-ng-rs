@@ -227,10 +227,10 @@ def check_lineage(path: str, baseline: Baseline) -> list[str]:
 
 
 def _load_nodes(path: str) -> list[dict]:
-    import yaml
+    """台帳の現役のノードを、rollup と同じ台帳専用のローダで読む（引用なしの不正な日付で止まらない）。"""
+    import rollup
 
-    with open(path, encoding="utf-8") as f:
-        return (yaml.safe_load(f) or {}).get("nodes", [])
+    return rollup.load_nodes(path)
 
 
 def cmd_source_tag(args) -> int:

@@ -32,6 +32,9 @@ def green_goals(nodes: list[dict], lineage: dict | None = None) -> set[str]:
     持つゴールは完了に数えない（能力の供給元にしない）。
     """
     lineage = lineage or {}
+    if "retired" in lineage:
+        # retired が配列でなければ rollup はどのゴールも完了にしないので、供給元にも数えない。
+        return set()
     by_goal: dict[str, list[dict]] = collections.defaultdict(list)
     for n in nodes:
         if n.get("goal"):

@@ -126,8 +126,10 @@ def carried_count_problems(n: dict, cases: dict, carried: list) -> list[str]:
         # 有効で一意な承認済みの除外だけを数える（同じケースの繰り返しで total を埋めない）。
         names = [e.get("name").strip() for e in excluded if isinstance(e, dict) and is_text(e.get("name"))] \
             if isinstance(excluded, list) else []
+        carried_names = {c["name"].strip() for c in carried if isinstance(c, dict) and is_text(c.get("name"))}
         approved = (isinstance(excluded, list) and len(names) == len(excluded) == len(set(names))
-                    and all(is_text(e.get("reason")) and is_approved_by_human(e) for e in excluded))
+                    and all(is_text(e.get("reason")) and is_approved_by_human(e) for e in excluded)
+                    and not carried_names & set(names))
         if not (approved and all(type(v) is int for v in (total, ported, passing))
                 and passing == ported and ported >= len(carried) and total == ported + len(excluded)):
             own.append("引き継ぎを持つ green のノードが total = ported + 有効で一意な承認済みの除外、"
