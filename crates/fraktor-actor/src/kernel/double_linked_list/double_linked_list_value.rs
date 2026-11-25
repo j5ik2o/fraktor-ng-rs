@@ -41,6 +41,10 @@ static NEXT_LIST: AtomicU64 = AtomicU64::new(0);
 /// came from another list), where Pekko's list would follow the stale links of
 /// the node it was given. Nodes are kept in an ordered map by id, so reaching a
 /// node takes logarithmic time instead of Pekko's constant time.
+///
+/// A list numbers its nodes from zero and never reuses a number. An insertion
+/// that would need a 2^64th number panics instead of wrapping around and
+/// overwriting a live node.
 pub struct DoubleLinkedList<A> {
   nodes: BTreeMap<NodeId, Node<A>>,
   first: Option<NodeId>,
@@ -57,9 +61,16 @@ struct Node<A> {
 
 impl<A> DoubleLinkedList<A> {
   /// Creates an empty list.
+  ///
+  /// # Panics
+  ///
+  /// Panics when 2^64 lists have already been created, so that two lists never
+  /// share a number.
   #[must_use]
   pub fn new() -> Self {
-    let list = NEXT_LIST.fetch_add(1, Ordering::Relaxed);
+    let list = NEXT_LIST
+      .try_update(Ordering::Relaxed, Ordering::Relaxed, |list| list.checked_add(1))
+      .expect("fewer than 2^64 lists are created");
     Self { nodes: BTreeMap::new(), first: None, last: None, list, next_id: 0 }
   }
 
@@ -283,7 +294,7 @@ impl<A> DoubleLinkedList<A> {
 
   fn allocate(&mut self, value: A) -> NodeId {
     let node = NodeId::new(self.list, self.next_id);
-    self.next_id += 1;
+    self.next_id = self.next_id.checked_add(1).expect("a list allocates fewer than 2^64 nodes");
     self.nodes.insert(node, Node { value, previous: None, next: None });
     node
   }

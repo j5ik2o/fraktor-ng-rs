@@ -89,7 +89,7 @@
 | `find_stops_at_the_end_of_the_list_and_inserts_there` | `find_*` がリストの端で止まり、そこに挿入する |
 | `index_mut_changes_the_value_in_place` | `list[id] = ..` と `get_mut` が値を書き換える |
 | `an_id_from_another_list_does_not_name_a_node_here` | 別のリストの id は、番号が同じでもこのリストのノードを指さない（`get`、`get_mut` が `None`） |
-| `removing_an_id_from_another_list_panics_and_keeps_this_list` | 別のリストの id で `remove` すると panic し、無関係な値を消さない |
+| `removing_an_id_from_another_list_panics` | 別のリストの id で `remove` すると panic する（panic の後もリストが変わらないことは、`tests/double_linked_list_model_test.rs` の同名のテストと PBT が `catch_unwind` で確かめる） |
 
 ## 最終の検証
 
@@ -135,3 +135,7 @@
 | 別のリストの id で無関係な要素を誤削除する（Devin、`double_linked_list_value.rs:279`） | 直す | 各リストが 0 から採番し、`NodeId` の等価が番号だけで決まっていたため、別のリストの id が一致して通っていた。リストに全体で一意の番号（`static` の `AtomicU64`、executor の採番と同じ形）を持たせ、`NodeId` にリストの番号を含めた。別のリストの id は map で引けず、`get` は `None`、他の操作は panic する。先に足した回帰 2 件は修正前に失敗した（`assert_ne!` が成り立たず、`remove` が panic しない）。`DoubleLinkedList::new` は atomic を使うため `const fn` でなくなった（この PR で足した API で、利用者はまだいない） |
 | Devin のレビュー本文（上の 1 件の要約） | 直す | 上と同じ |
 | CodeRabbit の利用上限の通知、Codex のレビュー失敗と利用上限の通知 | 採らない | 指摘を含まない通知で、対応する変更は無い |
+
+## 設計の独立レビューへの対応（2026-11-26）
+
+設計は [issue-176-double-linked-list-design.md](issue-176-double-linked-list-design.md)。`81d2e00` に対する設計レビューの指摘 F1〜F8 の処理は、その §8 にある。PBT（`tests/double_linked_list_model_test.rs`、P1〜P5、原典外）を足し、`next_id` と `NEXT_LIST` のあふれを panic にそろえ、Quint の仕様のゴーストに値と独立の判定を持たせた。別件は [#212](https://github.com/j5ik2o/fraktor-ng-rs/issues/212)（proptest）と [#213](https://github.com/j5ik2o/fraktor-ng-rs/issues/213)（Quint を CI で流す）。

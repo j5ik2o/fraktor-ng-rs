@@ -101,7 +101,7 @@ fn an_id_from_another_list_does_not_name_a_node_here() {
 
 #[test]
 #[should_panic(expected = "the node is in this list")]
-fn removing_an_id_from_another_list_panics_and_keeps_this_list() {
+fn removing_an_id_from_another_list_panics() {
   let mut mine = DoubleLinkedList::new();
   let mut other = DoubleLinkedList::new();
   let foreign = other.append("other");

@@ -28,11 +28,13 @@ module double_linked_list {
   type ListState = { nodes: Handle -> Entry, first: Link, last: Link, nextId: int }
   type Dir = Forward | Backward
   type Made = { s: ListState, h: Handle }
+  type GEntry = { h: Handle, v: int }
 
   // The lists, keyed by list number.
   var lists: int -> ListState
-  // The ghost order of each list: the handles from the first to the last node.
-  var ghost: int -> List[Handle]
+  // The ghost order of each list: the handles and values from the first to the
+  // last node.
+  var ghost: int -> List[GEntry]
   // Every handle any operation has returned for a new node, and how many.
   var issued: Set[Handle]
   var issueCount: int
@@ -148,14 +150,30 @@ module double_linked_list {
 
   // --- the ghost order, as Pekko's operations change it -----------------------
 
-  pure def indexOf(g: List[Handle], h: Handle): int = g.indices().filter(i => g[i] == h).fold(-1, (a, i) => i)
+  // A ghost entry keeps the handle and the value the operation was asked to
+  // store, independently of the links, so that a value stored or read wrong on
+  // the links side shows up.
+  pure def holds(g: List[GEntry], h: Handle): bool = g.indices().exists(i => g[i].h == h)
 
-  pure def insertAt(g: List[Handle], i: int, h: Handle): List[Handle] =
-    g.slice(0, i).append(h).concat(g.slice(i, g.length()))
+  pure def indexOf(g: List[GEntry], h: Handle): int = g.indices().filter(i => g[i].h == h).fold(-1, (a, i) => i)
 
-  pure def without(g: List[Handle], h: Handle): List[Handle] = g.select(x => x != h)
+  pure def insertAt(g: List[GEntry], i: int, e: GEntry): List[GEntry] =
+    g.slice(0, i).append(e).concat(g.slice(i, g.length()))
+
+  pure def without(g: List[GEntry], h: Handle): List[GEntry] = g.select(x => x.h != h)
 
   pure def reverse(g: List[Handle]): List[Handle] = g.foldl(List(), (acc, x) => List(x).concat(acc))
+
+  pure def keysOf(g: List[GEntry]): List[Handle] = g.foldl(List(), (acc, e) => acc.append(keyOf(e.h)))
+
+  pure def valuesOf(g: List[GEntry]): List[int] = g.foldl(List(), (acc, e) => acc.append(e.v))
+
+  // The ghost's `find_*` walk: from `i`, step while the neighbour's ghost value
+  // is at most `bound`.
+  pure def ghostStop(g: List[GEntry], i: int, d: Dir, bound: int): int =
+    range(0, MaxLen).foldl(i, (j, _) =>
+      if (d == Forward) (if (j + 1 < g.length() and g[j + 1].v <= bound) j + 1 else j)
+      else (if (j - 1 >= 0 and g[j - 1].v <= bound) j - 1 else j))
 
   // --- actions ----------------------------------------------------------------
 
@@ -171,7 +189,7 @@ module double_linked_list {
 
   // A new node goes in; `s2` is the list after the links change and `g2` the
   // ghost order after the same operation.
-  action commitNew(l: int, made: Made, s2: ListState, g2: List[Handle]): bool = all {
+  action commitNew(l: int, made: Made, s2: ListState, g2: List[GEntry]): bool = all {
     lists' = lists.set(l, s2),
     ghost' = ghost.set(l, g2),
     issued' = issued.union(Set(made.h)),
@@ -179,13 +197,24 @@ module double_linked_list {
     resultOk' = true,
   }
 
-  // The operation returned `got`; the ghost semantics names `want`.
-  action commitSame(l: int, s2: ListState, g2: List[Handle], got: Handle, want: Handle): bool = all {
+  // No new node; `ok` says whether the result agrees with the ghost semantics.
+  action commitSame(l: int, s2: ListState, g2: List[GEntry], ok: bool): bool = all {
     lists' = lists.set(l, s2),
     ghost' = ghost.set(l, g2),
     issued' = issued,
     issueCount' = issueCount,
-    resultOk' = got == want,
+    resultOk' = ok,
+  }
+
+  // The links and the ghost disagree on what the operation does. The state is
+  // kept and the failure is recorded, rather than disabling the step, which
+  // would hide the disagreement.
+  action disagree: bool = all {
+    lists' = lists,
+    ghost' = ghost,
+    issued' = issued,
+    issueCount' = issueCount,
+    resultOk' = false,
   }
 
   action prependValue(l: int, v: int): bool = {
@@ -193,7 +222,7 @@ module double_linked_list {
     val made = allocate(s, l, v)
     all {
       ghost.get(l).length() < MaxLen,
-      commitNew(l, made, insertBefore(made.s, keyOf(made.h), s.first), List(made.h).concat(ghost.get(l))),
+      commitNew(l, made, insertBefore(made.s, keyOf(made.h), s.first), List({ h: made.h, v: v }).concat(ghost.get(l))),
     }
   }
 
@@ -202,76 +231,81 @@ module double_linked_list {
     val made = allocate(s, l, v)
     all {
       ghost.get(l).length() < MaxLen,
-      commitNew(l, made, insertAfter(made.s, s.last, keyOf(made.h)), ghost.get(l).append(made.h)),
+      commitNew(l, made, insertAfter(made.s, s.last, keyOf(made.h)), ghost.get(l).append({ h: made.h, v: v })),
     }
   }
 
+  // `remove(h)` returns the value of the node; it must be the ghost's value.
   action removeNode(l: int, h: Handle): bool = {
     val s = lists.get(l)
+    val g = ghost.get(l)
+    val got = s.nodes.get(keyOf(h)).value
     val s1 = unlink(s, keyOf(h))
     all {
-      ghost.get(l).indices().exists(i => ghost.get(l)[i] == h),
-      commitSame(l, { ...s1, nodes: mapRemove(s1.nodes, keyOf(h)) }, without(ghost.get(l), h), h, h),
+      holds(g, h),
+      commitSame(l, { ...s1, nodes: mapRemove(s1.nodes, keyOf(h)) }, without(g, h), got == g[indexOf(g, h)].v),
     }
   }
 
   action moveToFront(l: int, h: Handle): bool = {
     val s = lists.get(l)
+    val g = ghost.get(l)
     val k = keyOf(h)
     val s1 = unlink(s, k)
     val s2 = if (s.first == To(k)) s else insertBefore(s1, k, s1.first)
     all {
-      ghost.get(l).indices().exists(i => ghost.get(l)[i] == h),
-      commitSame(l, s2, List(h).concat(without(ghost.get(l), h)), h, h),
+      holds(g, h),
+      commitSame(l, s2, List(g[indexOf(g, h)]).concat(without(g, h)), true),
     }
   }
 
   action moveToBack(l: int, h: Handle): bool = {
     val s = lists.get(l)
+    val g = ghost.get(l)
     val k = keyOf(h)
     val s1 = unlink(s, k)
     val s2 = if (s.last == To(k)) s else insertAfter(s1, s1.last, k)
     all {
-      ghost.get(l).indices().exists(i => ghost.get(l)[i] == h),
-      commitSame(l, s2, without(ghost.get(l), h).append(h), h, h),
+      holds(g, h),
+      commitSame(l, s2, without(g, h).append(g[indexOf(g, h)]), true),
     }
   }
 
   // `get_first_or_else_prepend(|v| v == c, || v)` and `get_last_or_else_append`.
+  // The links and the ghost each decide whether the end passes `check`.
   action getEndOrElseInsert(l: int, d: Dir, c: int, v: int): bool = {
     val s = lists.get(l)
     val g = ghost.get(l)
     val end = if (d == Forward) s.first else s.last
-    val endPasses = match end {
+    val linkPasses = match end {
       | Nil => false
       | To(k) => valueAt(s, k) == c
     }
     val gEnd = if (d == Forward) 0 else g.length() - 1
-    if (endPasses) {
-      // The ghost end must be the node the links returned.
+    val ghostPasses = if (g.length() == 0) false else g[gEnd].v == c
+    if (linkPasses and ghostPasses) {
       val got = match end { | Nil => { list: -1, n: -1 } | To(k) => k }
-      commitSame(l, s, g, got, keyOf(g[gEnd]))
-    } else {
+      commitSame(l, s, g, got == keyOf(g[gEnd].h))
+    } else if (not(linkPasses) and not(ghostPasses)) {
       val made = allocate(s, l, v)
       val s2 = if (d == Forward) insertBefore(made.s, keyOf(made.h), s.first) else insertAfter(made.s, s.last, keyOf(made.h))
-      val g2 = if (d == Forward) List(made.h).concat(g) else g.append(made.h)
-      all { g.length() < MaxLen, if (g.length() == 0) true else valueAt(s, keyOf(g[gEnd])) != c, commitNew(l, made, s2, g2) }
+      val g2 = if (d == Forward) List({ h: made.h, v: v }).concat(g) else g.append({ h: made.h, v: v })
+      all { g.length() < MaxLen, commitNew(l, made, s2, g2) }
+    } else {
+      disagree
     }
   }
 
   // `find_next_or_else_insert(h, |v| v <= bound, |v| v == c, || v)` and the
   // backward one. `bound = -1` never passes, which is
-  // `get_next_or_else_insert` / `get_previous_or_else_insert`.
+  // `get_next_or_else_insert` / `get_previous_or_else_insert`. The links and
+  // the ghost each walk and each decide whether the neighbour passes.
   action findOrElseInsert(l: int, d: Dir, h: Handle, bound: int, c: int, v: int): bool = {
     val s = lists.get(l)
     val g = ghost.get(l)
-    val i = indexOf(g, h)
-    // Ghost: walk from i while the neighbour passes, then look at the next neighbour.
-    val j = range(0, MaxLen).foldl(i, (j, _) =>
-      if (d == Forward) (if (j + 1 < g.length() and valueAt(s, keyOf(g[j + 1])) <= bound) j + 1 else j)
-      else (if (j - 1 >= 0 and valueAt(s, keyOf(g[j - 1])) <= bound) j - 1 else j))
+    val j = ghostStop(g, indexOf(g, h), d, bound)
     val neighbour = if (d == Forward) j + 1 else j - 1
-    val ghostHit = neighbour >= 0 and neighbour < g.length() and valueAt(s, keyOf(g[neighbour])) == c
+    val ghostHit = if (neighbour >= 0 and neighbour < g.length()) g[neighbour].v == c else false
     // Links: shift_while, then the neighbour of the node it stopped at.
     val start = shiftWhile(s, keyOf(h), d, bound)
     val peek = if (d == Forward) s.nodes.get(start).next else s.nodes.get(start).prev
@@ -280,45 +314,18 @@ module double_linked_list {
       | To(p) => valueAt(s, p) == c
     }
     all {
-      g.indices().exists(x => g[x] == h),
-      if (linkHit) {
+      holds(g, h),
+      if (linkHit and ghostHit) {
         val got = match peek { | Nil => { list: -1, n: -1 } | To(p) => p }
-        all { ghostHit, commitSame(l, s, g, got, keyOf(g[neighbour])) }
-      } else {
+        commitSame(l, s, g, got == keyOf(g[neighbour].h))
+      } else if (not(linkHit) and not(ghostHit)) {
         val made = allocate(s, l, v)
         val s2 = if (d == Forward) insertAfter(made.s, To(start), keyOf(made.h)) else insertBefore(made.s, keyOf(made.h), To(start))
-        val g2 = if (d == Forward) insertAt(g, j + 1, made.h) else insertAt(g, j, made.h)
-        all { not(ghostHit), g.length() < MaxLen, commitNew(l, made, s2, g2) }
+        val g2 = if (d == Forward) insertAt(g, j + 1, { h: made.h, v: v }) else insertAt(g, j, { h: made.h, v: v })
+        all { g.length() < MaxLen, commitNew(l, made, s2, g2) }
+      } else {
+        disagree
       },
-    }
-  }
-
-  // A disagreement between the links and the ghost on whether the neighbour
-  // passes would disable the action above and hide the bug, so this action
-  // records it as a failed result instead.
-  action findDisagrees(l: int, d: Dir, h: Handle, bound: int, c: int): bool = {
-    val s = lists.get(l)
-    val g = ghost.get(l)
-    val i = indexOf(g, h)
-    val j = range(0, MaxLen).foldl(i, (j, _) =>
-      if (d == Forward) (if (j + 1 < g.length() and valueAt(s, keyOf(g[j + 1])) <= bound) j + 1 else j)
-      else (if (j - 1 >= 0 and valueAt(s, keyOf(g[j - 1])) <= bound) j - 1 else j))
-    val neighbour = if (d == Forward) j + 1 else j - 1
-    val ghostHit = neighbour >= 0 and neighbour < g.length() and valueAt(s, keyOf(g[neighbour])) == c
-    val start = shiftWhile(s, keyOf(h), d, bound)
-    val peek = if (d == Forward) s.nodes.get(start).next else s.nodes.get(start).prev
-    val linkHit = match peek {
-      | Nil => false
-      | To(p) => valueAt(s, p) == c
-    }
-    all {
-      g.indices().exists(x => g[x] == h),
-      linkHit != ghostHit,
-      lists' = lists,
-      ghost' = ghost,
-      issued' = issued,
-      issueCount' = issueCount,
-      resultOk' = false,
     }
   }
 
@@ -337,11 +344,10 @@ module double_linked_list {
         g.length() > 0,
         nondet i = g.indices().oneOf()
         any {
-          removeNode(l, g[i]),
-          moveToFront(l, g[i]),
-          moveToBack(l, g[i]),
-          findOrElseInsert(l, d, g[i], bound, c, v),
-          findDisagrees(l, d, g[i], bound, c),
+          removeNode(l, g[i].h),
+          moveToFront(l, g[i].h),
+          moveToBack(l, g[i].h),
+          findOrElseInsert(l, d, g[i].h, bound, c, v),
         },
       },
     }
@@ -375,12 +381,16 @@ module double_linked_list {
   })
 
   // Walking forward visits every node once and ends; walking backward is the
-  // reverse; both are the ghost order. The length is the node count.
+  // reverse; both are the ghost order, and the values met on the way are the
+  // ghost's values. The length is the node count.
   val walksAreTheGhostOrder: bool = Lists.forall(l => {
     val s = lists.get(l)
-    val expected = ghost.get(l).foldl(List(), (acc, h) => acc.append(keyOf(h)))
+    val expected = keysOf(ghost.get(l))
+    val walked = walk(s, Forward)
     and {
-      walk(s, Forward) == expected,
+      walked == expected,
+      walked.foldl(List(), (acc, k) => acc.append(if (s.nodes.keys().contains(k)) s.nodes.get(k).value else -1))
+        == valuesOf(ghost.get(l)),
       walk(s, Backward) == reverse(expected),
       remaining(s, Forward) == Nil,
       remaining(s, Backward) == Nil,
@@ -392,12 +402,13 @@ module double_linked_list {
   // holds it: a removed handle names nothing, and a handle of one list never
   // names a node of another list.
   val handlesNameExactlyTheGhostNodes: bool = Lists.forall(l =>
-    issued.forall(h => found(lists.get(l), h) == ghost.get(l).indices().exists(i => ghost.get(l)[i] == h)))
+    issued.forall(h => found(lists.get(l), h) == holds(ghost.get(l), h)))
 
   // No handle is returned for two new nodes.
   val handlesAreNeverReused: bool = issued.size() == issueCount
 
-  // Every operation returned the node the ghost semantics names.
+  // Every operation returned what the ghost semantics names (the node, and the
+  // value for `remove`), and the links and the ghost never disagreed.
   val resultsMatchTheGhost: bool = resultOk
 
   val inv: bool = and {

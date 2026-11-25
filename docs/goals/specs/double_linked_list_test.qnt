@@ -28,7 +28,7 @@ module fixed {
       .then(appendValue(0, 1))
       .then(all {
         assert(not(found(lists.get(0), { list: 0, n: 0 }))),
-        assert(ghost.get(0) == List({ list: 0, n: 1 })),
+        assert(keysOf(ghost.get(0)) == List({ list: 0, n: 1 })),
         assert(inv),
         lists' = lists, ghost' = ghost, issued' = issued, issueCount' = issueCount, resultOk' = resultOk,
       })
@@ -43,7 +43,7 @@ module fixed {
       .then(moveToBack(0, { list: 0, n: 1 }))
       .then(moveToBack(0, { list: 0, n: 0 }))
       .then(all {
-        assert(ghost.get(0) == List({ list: 0, n: 2 }, { list: 0, n: 1 }, { list: 0, n: 0 })),
+        assert(keysOf(ghost.get(0)) == List({ list: 0, n: 2 }, { list: 0, n: 1 }, { list: 0, n: 0 })),
         assert(inv),
         lists' = lists, ghost' = ghost, issued' = issued, issueCount' = issueCount, resultOk' = resultOk,
       })
@@ -65,7 +65,8 @@ module fixed {
       .then(findOrElseInsert(0, Forward, { list: 0, n: 3 }, 0, 1, 1))
       .then(all {
         assert(issueCount == 5),
-        assert(ghost.get(0) == List({ list: 0, n: 3 }, { list: 0, n: 2 }, { list: 0, n: 4 }, { list: 0, n: 1 }, { list: 0, n: 0 })),
+        assert(keysOf(ghost.get(0)) == List({ list: 0, n: 3 }, { list: 0, n: 2 }, { list: 0, n: 4 }, { list: 0, n: 1 }, { list: 0, n: 0 })),
+        assert(valuesOf(ghost.get(0)) == List(0, 0, 1, 2, 2)),
         assert(inv),
         lists' = lists, ghost' = ghost, issued' = issued, issueCount' = issueCount, resultOk' = resultOk,
       })
