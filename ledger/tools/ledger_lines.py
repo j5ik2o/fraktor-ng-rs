@@ -100,15 +100,17 @@ def rename_id(lines: list[str], old_id: str, new_id: str) -> list[str]:
     ノードの最上位の範囲の中の `- id:` 行だけを対象にし、`retired` の id や本文は触れない。
     old_id が一意に見つからなければ ValueError（黙って何もしないで成功しない）。
     """
-    span = node_span(lines, old_id)
-    if span is None:
+    matches = [i for i, line in enumerate(lines)
+               if line.startswith("- id: ") and line.split(":", 1)[1].strip() == old_id]
+    if not matches:
         raise ValueError(f"{old_id}: nodes に無い")
+    if len(matches) > 1:
+        # 先頭だけを改名すると、残りが同じ旧 id のまま台帳に残る。保存する前に拒否する。
+        raise ValueError(f"{old_id}: - id: が {len(matches)} 個ある（一意でない）")
     if node_span(lines, new_id) is not None:
         raise ValueError(f"{new_id}: nodes に既にある")
-    for i in range(span[0], span[1]):
-        if lines[i].startswith("- id: ") and lines[i].split(":", 1)[1].strip() == old_id:
-            return lines[:i] + [f"- id: {new_id}\n"] + lines[i + 1 :]
-    raise ValueError(f"{old_id}: - id: の行が無い")
+    index = matches[0]
+    return lines[:index] + [f"- id: {new_id}\n"] + lines[index + 1 :]
 
 
 def set_nested_key(lines: list[str], node_id: str, section: str, key: str, value: str) -> list[str]:

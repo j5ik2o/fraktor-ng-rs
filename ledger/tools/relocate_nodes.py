@@ -119,6 +119,11 @@ def _plan(original: list[str], rows: list[Row]) -> tuple[list[tuple[Row, tuple[i
     plan: list[tuple[Row, tuple[int, int]]] = []
     errors: list[str] = []
     for row in rows:
+        occurrences = sum(1 for line in original
+                          if line.startswith("- id: ") and line.split(":", 1)[1].strip() == row.old_id)
+        if occurrences > 1:
+            errors.append(f"{row.old_id}: - id: が {occurrences} 個ある（一意でない）")
+            continue
         span = node_span(original, row.old_id)
         if row.kind == "move":
             new_span = node_span(original, row.new_id)

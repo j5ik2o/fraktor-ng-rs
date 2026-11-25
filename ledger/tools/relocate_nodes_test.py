@@ -234,6 +234,22 @@ def test_apply_refuses_when_the_new_id_already_exists():
         print("5. 移動先が既にあるときは書き換えない")
 
 
+def test_apply_refuses_a_duplicate_old_id():
+    """わざと壊す：同じ旧 id が 2 つある台帳は、改名する前に拒否して書き換えない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = make_root(Path(temporary))
+        make_table(root, delete=False)
+        ledger_path = root / "ledger" / "nodes.yaml"
+        text = ledger_path.read_text(encoding="utf-8").replace(
+            "- id: m/Kept.scala", _node("m/Old.scala", name="m:Old") + "- id: m/Kept.scala", 1)
+        ledger_path.write_text(text, encoding="utf-8")
+        proc = tool(root, "apply")
+        assert proc.returncode == 1, (proc.stdout, proc.stderr)
+        assert "一意でない" in proc.stderr, proc.stderr
+        assert ledger_path.read_text(encoding="utf-8") == text
+        print("5b. 旧 id が重複したら改名しない")
+
+
 def test_apply_is_idempotent():
     """2 回目の apply は変更 0 件で成功し、台帳も参照も変えない。"""
     with tempfile.TemporaryDirectory() as temporary:
@@ -302,6 +318,7 @@ def main() -> int:
         test_check_fails_when_the_ledger_still_has_the_old_id,
         test_check_fails_when_a_reference_remains,
         test_apply_refuses_when_the_new_id_already_exists,
+        test_apply_refuses_a_duplicate_old_id,
         test_apply_is_idempotent,
         test_read_table_rejects_bad_input,
         test_apply_works_without_pyyaml,
