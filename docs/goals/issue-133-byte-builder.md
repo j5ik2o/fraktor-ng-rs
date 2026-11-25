@@ -156,3 +156,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0issue133
 uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0issue133
 ```
+
+## Pekko v2.0.0 との照合（2026-11-25 追記）
+
+基準を Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）に切り替えた後に照合した。v1.7.1 は v2.0.0 の祖先ではないので、共通祖先 `0ca804c7af` から両方の系統を比べた。上の本文は v1.7.1 で照合したときの記録なので、そのまま残す。ここでは v2.0.0 の位置と判定だけを書く。台帳の `verified_against` は v2.0.0 にした（第3まとまり、`docs/baseline/pekko-v2.0.0-migration/batch-3.md`。第1・第2まとまりで扱ったノードは、それぞれの記録にある）。
+
+- `ByteStringBuilderSpec` と `ByteStringTest` は、ケースと入力が同じである（`ByteStringTest.java` は JUnit 5 化と javafmt だけ）。`ByteStringBuilderScala213PlusSpec` の移動と 2 ケースの追加は、上の追記と `batch-1.md` にある。
+- 出典の更新：`IterableOnce` 版が `ByteString` 版へ回す箇所は L1356 から L3323 に移った。`fef71efd85` で、`mutable.ArraySeq.ofByte` と `ArraySeq.ofByte` は配列を複製してから断片にする（L3324–3327）。移植の `add_all` はコピーするので、向きは同じである。
+- 出典の更新：`fromInts` の `num.toInt(x).toByte` は L1196–1198 から L3141 に移った。
+- 記録済みの差異（`append` という別名、数値の書き込みを移植しないこと、`i32`、`Hash` を実装しないこと）は維持する。

@@ -178,3 +178,11 @@ uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml -
 `clearing_diagnostic_context_removes_it_from_later_events` は同じロガーで MDC を設定して発行し、クリア後は再設定せずに発行する。最初の受信イベントが設定値を保持し、次の受信イベントが空になることを確認する。原典の4ケースに加え、`clear_mdc` 自体の作用を観測する補助テストである。隔離ワークスペースで `clear_mdc` を空処理にした場合にこのテストが失敗することを確認し、製品コードを復元した。
 
 第1工程の無加工ログ `stage1-orca-red.log` / `.exit` と `stage1-integration.json` はこの作業ツリーにはなく、原本の照合は未確認としてsuperviseへ引き継ぐ。managerによる成果SHAの受け入れ確認は完了イベント後に行われるもので、本節の検証成功に含めない。
+
+## Pekko v2.0.0 との照合（2026-11-25 追記）
+
+基準を Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）に切り替えた後に照合した。v1.7.1 は v2.0.0 の祖先ではないので、共通祖先 `0ca804c7af` から両方の系統を比べた。上の本文は v1.7.1 で照合したときの記録なので、そのまま残す。ここでは v2.0.0 の位置と判定だけを書く。台帳の `verified_against` は v2.0.0 にした（第3まとまり、`docs/baseline/pekko-v2.0.0-migration/batch-3.md`。第1・第2まとまりで扱ったノードは、それぞれの記録にある）。
+
+- テスト `LoggingAdapterTest.java` の変更は、JUnit 5 化（`ec27d6dd8c` #2724）、`assertInstanceOf`（`4d942a0ca7` #3088）、javafmt（`00b0a99278` #2081）だけである。ケースと入力は同じ（4 件）。
+- `ActorWithMDC.java` の変更は switch 構文だけで、分岐と呼ぶ logger のメソッドは同じである。
+- 記録済みの差異 7 件（購読する型の広さ、MDC と `messageLength` の型、日時と UUID の固定値、アクターの起動経路、旧コンストラクタの原因型、ログの入口を 1 つにまとめること、`No MDC` と `Null MDC`）は、すべて維持する。`LoggingAdapter.format1` の primitive 配列の分岐は書き方が変わったが、結果は同じである。

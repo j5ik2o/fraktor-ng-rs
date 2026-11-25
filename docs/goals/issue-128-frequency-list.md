@@ -151,3 +151,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0issue128
 uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0issue128
 ```
+
+## Pekko v2.0.0 との照合（2026-11-25 追記）
+
+基準を Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）に切り替えた後に照合した。v1.7.1 は v2.0.0 の祖先ではないので、共通祖先 `0ca804c7af` から両方の系統を比べた。上の本文は v1.7.1 で照合したときの記録なので、そのまま残す。ここでは v2.0.0 の位置と判定だけを書く。台帳の `verified_against` は v2.0.0 にした（第3まとまり、`docs/baseline/pekko-v2.0.0-migration/batch-3.md`。第1・第2まとまりで扱ったノードは、それぞれの記録にある）。
+
+- テストの変更は `ab12a8f5ec` #2766 と import の並びだけで、ケースと入力は同じ（3 件）。時計の移動は #124 と同じである。
+- 出典の更新：`n == 1` の最適化経路は L135、L151 から L136、L152 に移った（`FrequencyList.scala`）。`removeLeastFrequent(n)` と `removeMostFrequent(n)` の定義の行は L135、L151 である。
+- 出典の更新：`withOverallRecency.empty` は、時計を受け取る `empty(clock, dynamicAging)`（L31）に変わった。移植しない判断は変わらない。
+- 記録済みの差異（`removeOverall*` の panic、参照の順序マップ、通し番号の上限、skip の付く版の名前）は維持する。
