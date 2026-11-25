@@ -6,7 +6,7 @@
 
 同じ系統の [#124 RecencyList](issue-124-recency-list.md)、[#126 SegmentedRecencyList](issue-126-segmented-recency-list.md)、[#128 FrequencyList](issue-128-frequency-list.md) の続き。当初は [#177 FrequencySketchSpec](https://github.com/j5ik2o/fraktor-ng-rs/issues/177) と同じ PR の予定だったが、2026-11-25 に分担を変え、#177 は別の担当が単独の PR で扱う。
 
-設計（不変条件、PBT の性質、Quint の仕様と検査の結果、壊しうる入力、影響）は [issue-176-double-linked-list-design.md](issue-176-double-linked-list-design.md)、Quint の仕様は `docs/goals/specs/double_linked_list.qnt` にある。
+設計（不変条件、PBT の性質、Quint の仕様と検査の結果、壊しうる入力、影響）は [docs/design/issue-176-double-linked-list.md](../design/issue-176-double-linked-list.md)、Quint の仕様は `docs/design/specs/double_linked_list.qnt` にある。
 
 ## 対象ノード
 
@@ -138,4 +138,4 @@
 
 ## 設計の独立レビューへの対応（2026-11-26）
 
-設計は [issue-176-double-linked-list-design.md](issue-176-double-linked-list-design.md)。`81d2e00` に対する設計レビューの指摘 F1〜F8 の処理は、その §8 にある。PBT（`tests/double_linked_list_model_test.rs`、P1〜P5、原典外）を足し、`next_id` と `NEXT_LIST` のあふれを panic にそろえ、Quint の仕様のゴーストに値と独立の判定を持たせた。別件は [#212](https://github.com/j5ik2o/fraktor-ng-rs/issues/212)（proptest）と [#213](https://github.com/j5ik2o/fraktor-ng-rs/issues/213)（Quint を CI で流す）。
+設計は [docs/design/issue-176-double-linked-list.md](../design/issue-176-double-linked-list.md)。`81d2e00` に対する設計レビューの指摘 F1〜F8 の処理は、その §8 にある。PBT（`tests/double_linked_list_model_test.rs`、P1〜P5、原典外）を足し、`next_id` と `NEXT_LIST` のあふれを panic にそろえ、Quint の仕様のゴーストに値と独立の判定を持たせた。別件は [#212](https://github.com/j5ik2o/fraktor-ng-rs/issues/212)（proptest）と [#213](https://github.com/j5ik2o/fraktor-ng-rs/issues/213)（Quint を CI で流す）。

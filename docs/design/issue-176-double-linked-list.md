@@ -1,6 +1,6 @@
 # 設計：#176 DoubleLinkedList（PR #178）
 
-[Issue #176](https://github.com/j5ik2o/fraktor-ng-rs/issues/176) と [PR #178](https://github.com/j5ik2o/fraktor-ng-rs/pull/178) の設計の記録である。2026-11-25 のオーナーの決定で、実装の独立レビューを廃止し、設計の独立レビューに置き換えた。この PR は実装が先に済んでいたので、出来上がった時点（HEAD `6c267a185e371e5904cac48765d97d7eb311adc3`）の設計をあとから書いた。実装に関わっていない担当が、この文書を読んで設計をレビューした（`81d2e00` に対して要修正。指摘の処理は §8）。§8 の修正で変わった点（PBT の実装、`next_id` と `NEXT_LIST` のあふれ、Quint のゴーストと判定）は、もう一度レビューを受ける。経緯と検証の結果は [ゴール文書](issue-176-double-linked-list.md) にある。
+[Issue #176](https://github.com/j5ik2o/fraktor-ng-rs/issues/176) と [PR #178](https://github.com/j5ik2o/fraktor-ng-rs/pull/178) の設計の記録である。2026-11-25 のオーナーの決定で、実装の独立レビューを廃止し、設計の独立レビューに置き換えた。この PR は実装が先に済んでいたので、出来上がった時点（HEAD `6c267a185e371e5904cac48765d97d7eb311adc3`）の設計をあとから書いた。実装に関わっていない担当が、この文書を読んで設計をレビューした（`81d2e00` に対して要修正。指摘の処理は §8）。§8 の修正で変わった点（PBT の実装、`next_id` と `NEXT_LIST` のあふれ、Quint のゴーストと判定）は、もう一度レビューを受ける。経緯と検証の結果は [ゴール文書](../goals/issue-176-double-linked-list.md) にある。
 
 ## 1. 何をどう変えたか
 
@@ -118,7 +118,7 @@ panic の前後で並びが変わらないことは、コードを読むと成�
 
 **Quint は要る。** `DoubleLinkedList` は状態を持つデータ構造で、どの操作も複数のリンク（自分、前、次、`first`、`last`）を書き換える遷移である。不変条件 I1〜I3 は遷移の列の全体で成り立つ必要があり、固定のテストでは書き換えの順序の誤りを取りこぼしうる。実際に、PR #178 のレビューで、遷移の列（2 つのリストを作り、片方の id をもう片方に使う）でしか出ない誤り（I5 の違反）が見つかった。並行は無いので、仕様は 1 スレッドの遷移だけを扱う。
 
-仕様は `docs/goals/specs/double_linked_list.qnt`（本体）と `docs/goals/specs/double_linked_list_test.qnt`（インスタンスとテスト）。
+仕様は `docs/design/specs/double_linked_list.qnt`（本体）と `docs/design/specs/double_linked_list_test.qnt`（インスタンスとテスト）。
 
 - 状態：2 つのリスト（`lists: int -> ListState`）。各リストは、id をキーにしたノードの map と、`first`、`last`、`nextId` を持つ。コードの `BTreeMap<NodeId, Node>` と同じ形である。
 - 遷移：`prependValue`、`appendValue`、`removeNode`、`moveToFront`、`moveToBack`、`getEndOrElseInsert`（先頭と末尾の 2 つ）、`findOrElseInsert`（前後の `find_*` 2 つ。`bound = -1` で `get_next_or_else_insert` と `get_previous_or_else_insert`）。リンクの書き換えはコードの `insert_before`、`insert_after`、`link`、`unlink`、`shift_while` を 1 対 1 で写した。
@@ -133,12 +133,12 @@ panic の前後で並びが変わらないことは、コードを読むと成�
 
 | コマンド | 結果 |
 |:---|:---|
-| `quint typecheck docs/goals/specs/double_linked_list.qnt`、`..._test.qnt` | 成功 |
-| `quint test --main=fixed --match='^(foreignHandleWithTheSameNumberIsNotFound\|removedHandleIsNotFoundAndNotReused\|moveElementsToBack\|findNextElementOrElseInsert)$' docs/goals/specs/double_linked_list_test.qnt` | 4 passing |
-| `quint run --main=fixed --invariant=inv --max-samples=10000 --max-steps=40 --seed=0x1 docs/goals/specs/double_linked_list_test.qnt` | `[ok] No violation found`（10,000 トレース、各 41 状態、約 50 秒） |
-| `quint run --main=buggy --invariant=handlesNameExactlyTheGhostNodes --max-samples=2000 --max-steps=30 --seed=0x1 docs/goals/specs/double_linked_list_test.qnt` | `[violation]`。リスト 0 と 1 に 1 件ずつ追加した 2 手で、リスト 1 の id `{ list: 1, n: 0 }` がリスト 0 のノードを指す（PR #178 の Devin の指摘と同じ） |
+| `quint typecheck docs/design/specs/double_linked_list.qnt`、`..._test.qnt` | 成功 |
+| `quint test --main=fixed --match='^(foreignHandleWithTheSameNumberIsNotFound\|removedHandleIsNotFoundAndNotReused\|moveElementsToBack\|findNextElementOrElseInsert)$' docs/design/specs/double_linked_list_test.qnt` | 4 passing |
+| `quint run --main=fixed --invariant=inv --max-samples=10000 --max-steps=40 --seed=0x1 docs/design/specs/double_linked_list_test.qnt` | `[ok] No violation found`（10,000 トレース、各 41 状態、約 50 秒） |
+| `quint run --main=buggy --invariant=handlesNameExactlyTheGhostNodes --max-samples=2000 --max-steps=30 --seed=0x1 docs/design/specs/double_linked_list_test.qnt` | `[violation]`。リスト 0 と 1 に 1 件ずつ追加した 2 手で、リスト 1 の id `{ list: 1, n: 0 }` がリスト 0 のノードを指す（PR #178 の Devin の指摘と同じ） |
 
-**`quint test` には必ず `--match` を付け、`4 passing` を確かめる。** Quint 0.32.0 の `quint test --main=fixed docs/goals/specs/double_linked_list_test.qnt` は、`--match` が無いと `fixed` とだけ表示し、テストを 0 件流して exit 0 で終わる（2026-11-26 に実測。設計レビュー F8）。付け忘れると黙って何も検査しない。逆に `--match='.*'` のように広く取ると、`import ... .*` で取り込んだ定義も拾い、状態を持たずに失敗する。CI で流すことは [#213](https://github.com/j5ik2o/fraktor-ng-rs/issues/213) で扱う。
+**`quint test` には必ず `--match` を付け、`4 passing` を確かめる。** Quint 0.32.0 の `quint test --main=fixed docs/design/specs/double_linked_list_test.qnt` は、`--match` が無いと `fixed` とだけ表示し、テストを 0 件流して exit 0 で終わる（2026-11-26 に実測。設計レビュー F8）。付け忘れると黙って何も検査しない。逆に `--match='.*'` のように広く取ると、`import ... .*` で取り込んだ定義も拾い、状態を持たずに失敗する。CI で流すことは [#213](https://github.com/j5ik2o/fraktor-ng-rs/issues/213) で扱う。
 
 モデルの負の対照（仕様の写しに 1 つずつ入れて `quint run --main=fixed --invariant=inv` を流した。リポジトリの仕様は変えていない）：
 

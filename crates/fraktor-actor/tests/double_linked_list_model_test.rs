@@ -2,7 +2,7 @@
 // case; the ledger does not count them).
 //
 // The properties P1 to P5 are defined in
-// docs/goals/issue-176-double-linked-list-design.md §3. Each run drives three
+// docs/design/issue-176-double-linked-list.md §3. Each run drives three
 // lists with a random sequence of operations and, after every step, compares
 // each list with a model: a `Vec` of (id, value) in list order that applies the
 // Pekko semantics of each operation (the I8 table of the design). The sequences
