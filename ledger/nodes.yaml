@@ -26,12 +26,12 @@ nodes:
     crate: null
     test_file: null
   goal: null
-- id: actor-testkit-typed/src/test/java/org/apache/pekko/actor/testkit/typed/javadsl/ActorTestKitJUnit5Test.java
-  name: actor-testkit-typed:ActorTestKitJUnit5Test
+- id: actor-testkit-typed/src/test/java/org/apache/pekko/actor/testkit/typed/javadsl/ActorTestKitJUnitJupiterTest.java
+  name: actor-testkit-typed:ActorTestKitJUnitJupiterTest
   kind: test
   pekko:
     module: actor-testkit-typed
-    class: ActorTestKitJUnit5Test
+    class: ActorTestKitJUnitJupiterTest
     test_cases_approx: 4
   status: unported
   triage:
@@ -212,12 +212,12 @@ nodes:
     crate: null
     test_file: null
   goal: null
-- id: actor-testkit-typed/src/test/java/jdocs/org/apache/pekko/actor/testkit/typed/javadsl/JUnit5IntegrationExampleTest.java
-  name: actor-testkit-typed:JUnit5IntegrationExampleTest
+- id: actor-testkit-typed/src/test/java/jdocs/org/apache/pekko/actor/testkit/typed/javadsl/JUnitJupiterIntegrationExampleTest.java
+  name: actor-testkit-typed:JUnitJupiterIntegrationExampleTest
   kind: test
   pekko:
     module: actor-testkit-typed
-    class: JUnit5IntegrationExampleTest
+    class: JUnitJupiterIntegrationExampleTest
     test_cases_approx: 3
   status: unported
   triage:
@@ -3089,10 +3089,10 @@ nodes:
     module: actor-tests
     class: InetAddressDnsResolverSpec
     test_cases_approx: 10
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 原典 v2.0.0 で削除（削除コミット 2b5b3f8f43・確認日 2026-11-25）
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'test-actor-ref']
     premise_flags: []
@@ -3108,6 +3108,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v2.0.0
 - id: actor-tests/src/test/java/org/apache/pekko/util/JavaConverterScala3InlineTest.java
   name: actor-tests:JavaConverterScala3InlineTest
   kind: test
@@ -3115,10 +3116,10 @@ nodes:
     module: actor-tests
     class: JavaConverterScala3InlineTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 原典 v2.0.0 で削除（削除コミット 875840d3b8・確認日 2026-11-25）
   needs:
     testkit: []
     premise_flags: []
@@ -3134,6 +3135,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v2.0.0
 - id: actor-tests/src/test/java/org/apache/pekko/dispatch/JavaFutureTests.java
   name: actor-tests:JavaFutureTests
   kind: test
@@ -3167,10 +3169,10 @@ nodes:
     module: actor-tests
     class: JavaLoggerSpec
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 原典 v2.0.0 で削除（削除コミット 2323878ae1・確認日 2026-11-25）
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'test-actor', 'expect-msg']
     premise_flags: []
@@ -3186,6 +3188,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala-2/org/apache/pekko/util/LineNumberSpec.scala
   name: actor-tests:LineNumberSpec
   kind: test
@@ -4297,10 +4300,10 @@ nodes:
     module: actor-tests
     class: SameThreadExecutionContextSpec
     test_cases_approx: 3
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 原典 v2.0.0 で削除（削除コミット c742a98ddf・確認日 2026-11-25）
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -4316,6 +4319,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/util/Scala212CompatTest.scala
   name: actor-tests:Scala212CompatTest
   kind: test
@@ -4323,10 +4327,10 @@ nodes:
     module: actor-tests
     class: Scala212CompatTest
     test_cases_approx: 0
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 原典 v2.0.0 で削除（削除コミット 04f5fcd1b7・確認日 2026-11-25）
   needs:
     testkit: []
     premise_flags: []
@@ -4342,6 +4346,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/routing/ScatterGatherFirstCompletedSpec.scala
   name: actor-tests:ScatterGatherFirstCompletedSpec
   kind: test
@@ -5006,10 +5011,10 @@ nodes:
     module: actor-tests
     class: TypedActorSpec
     test_cases_approx: 25
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 原典 v2.0.0 で削除（削除コミット 2b5b3f8f43・確認日 2026-11-25）
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'test-actor', 'default-timeout', 'expect-msg', 'event-filter', 'within']
     premise_flags: ['java-serialization', 'thread-sleep']
@@ -5025,6 +5030,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala-2/org/apache/pekko/util/TypedMultiMapSpec.scala
   name: actor-tests:TypedMultiMapSpec
   kind: test
@@ -7406,7 +7412,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
-- id: actor-typed-tests/src/test/scala/org/apache/pekko/actor/typed/internal/adpater/PropsAdapterSpec.scala
+- id: actor-typed-tests/src/test/scala/org/apache/pekko/actor/typed/internal/adapter/PropsAdapterSpec.scala
   name: actor-typed-tests:PropsAdapterSpec
   kind: test
   pekko:
@@ -18382,10 +18388,10 @@ nodes:
     module: persistence
     class: DurableStateExceptionsSpec
     test_cases_approx: 1
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 原典 v2.0.0 で削除（削除コミット 39682c8ca7・確認日 2026-11-25）
   needs:
     testkit: []
     premise_flags: []
@@ -18401,6 +18407,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v2.0.0
 - id: persistence/src/test/scala/org/apache/pekko/persistence/EndToEndEventAdapterSpec.scala
   name: persistence:EndToEndEventAdapterSpec
   kind: test
@@ -23099,7 +23106,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
-- id: remote/src/test/scala-jdk9-only/org/apache/pekko/remote/artery/jfr/JFRRemotingFlightRecorderSpec.scala
+- id: remote/src/test/scala/org/apache/pekko/remote/artery/jfr/JFRRemotingFlightRecorderSpec.scala
   name: remote:JFRRemotingFlightRecorderSpec
   kind: test
   pekko:
@@ -23626,10 +23633,10 @@ nodes:
     module: remote
     class: PrimitivesSerializationSpec
     test_cases_approx: 4
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 原典 v2.0.0 で削除（削除コミット 5aad47eb6c・確認日 2026-11-25）
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: ['random']
@@ -23645,6 +23652,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v2.0.0
 - id: remote/src/test/scala/org/apache/pekko/remote/serialization/ProtobufSerializerSpec.scala
   name: remote:ProtobufSerializerSpec
   kind: test
@@ -24978,10 +24986,10 @@ nodes:
     module: remote
     class: TypedActorRemoteDeploySpec
     test_cases_approx: 2
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 原典 v2.0.0 で削除（削除コミット 2b5b3f8f43・確認日 2026-11-25）
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'expect-terminated']
     premise_flags: []
@@ -24997,6 +25005,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v2.0.0
 - id: remote/src/test/scala/org/apache/pekko/remote/artery/UntrustedSpec.scala
   name: remote:UntrustedSpec
   kind: test
@@ -26020,10 +26029,10 @@ nodes:
     module: stream-tests
     class: DeprecatedTlsSpec
     test_cases_approx: 6
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 原典 v2.0.0 で削除（削除コミット 18545a6737・確認日 2026-11-25）
   needs:
     testkit: ['extends-stream-spec', 'stream-testkit']
     premise_flags: ['thread-sleep', 'random']
@@ -26039,6 +26048,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v2.0.0
 - id: stream-tests/src/test/scala/org/apache/pekko/stream/DslConsistencySpec.scala
   name: stream-tests:DslConsistencySpec
   kind: test
@@ -26150,10 +26160,10 @@ nodes:
     module: stream-tests
     class: FanoutProcessorSpec
     test_cases_approx: 7
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 原典 v2.0.0 で削除（削除コミット f5c37ba255・確認日 2026-11-25）
   needs:
     testkit: ['extends-stream-spec', 'test-probe', 'expect-terminated']
     premise_flags: []
@@ -26169,6 +26179,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v2.0.0
 - id: stream-tests/src/test/scala/org/apache/pekko/stream/io/FileSinkSpec.scala
   name: stream-tests:FileSinkSpec
   kind: test
@@ -28042,7 +28053,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
-- id: stream-tests/src/test/scala-jdk9-only/org/apache/pekko/stream/scaladsl/FlowPublisherSinkSpec.scala
+- id: stream-tests/src/test/scala/org/apache/pekko/stream/scaladsl/FlowPublisherSinkSpec.scala
   name: stream-tests:FlowPublisherSinkSpec
   kind: test
   pekko:
@@ -28590,7 +28601,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
-- id: stream-tests/src/test/java-jdk9-only/org/apache/pekko/stream/javadsl/FlowUnfoldAsyncTest.java
+- id: stream-tests/src/test/java/org/apache/pekko/stream/javadsl/FlowUnfoldAsyncTest.java
   name: stream-tests:FlowUnfoldAsyncTest
   kind: test
   pekko:
@@ -30158,7 +30169,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
-- id: stream-tests/src/test/java-jdk9-only/org/apache/pekko/stream/javadsl/JavaFlowSupportCompileTest.java
+- id: stream-tests/src/test/java/org/apache/pekko/stream/javadsl/JavaFlowSupportCompileTest.java
   name: stream-tests:JavaFlowSupportCompileTest
   kind: test
   pekko:
@@ -30323,10 +30334,10 @@ nodes:
     module: stream-tests
     class: LazilyAsyncSpec
     test_cases_approx: 5
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 原典 v2.0.0 で削除（削除コミット 0dd219fab4・確認日 2026-11-25）
   needs:
     testkit: ['extends-stream-spec', 'default-timeout', 'stream-testkit']
     premise_flags: []
@@ -30342,6 +30353,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v2.0.0
 - id: stream-tests/src/test/java/org/apache/pekko/stream/javadsl/LazyAndFutureFlowTest.java
   name: stream-tests:LazyAndFutureFlowTest
   kind: test
@@ -31007,10 +31019,10 @@ nodes:
     module: stream-tests
     class: SetupSpec
     test_cases_approx: 21
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 原典 v2.0.0 で削除（削除コミット 0dd219fab4・確認日 2026-11-25）
   needs:
     testkit: ['extends-stream-spec']
     premise_flags: []
@@ -31026,6 +31038,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v2.0.0
 - id: stream-tests/src/test/java/org/apache/pekko/stream/javadsl/SetupTest.java
   name: stream-tests:SetupTest
   kind: test
@@ -31165,10 +31178,10 @@ nodes:
     module: stream-tests
     class: SinkForeachParallelSpec
     test_cases_approx: 5
-  status: unported
+  status: do_not_port
   triage:
-    kind: pending
-    reason: null
+    kind: do_not_port
+    reason: 原典 v2.0.0 で削除（削除コミット 19788583ee・確認日 2026-11-25）
   needs:
     testkit: ['extends-stream-spec', 'expect-msg', 'expect-no-message', 'test-probe', 'test-latch']
     premise_flags: []
@@ -31184,6 +31197,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v2.0.0
 - id: stream-tests/src/test/scala/org/apache/pekko/stream/scaladsl/SinkSpec.scala
   name: stream-tests:SinkSpec
   kind: test
@@ -32499,7 +32513,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
-- id: stream-tests-tck/src/test/scala-jdk9-only/org/apache/pekko/stream/tck/IterablePublisherViaJavaFlowPublisherTest.scala
+- id: stream-tests-tck/src/test/scala/org/apache/pekko/stream/tck/IterablePublisherViaJavaFlowPublisherTest.scala
   name: stream-tests-tck:IterablePublisherViaJavaFlowPublisherTest
   kind: test
   pekko:

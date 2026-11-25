@@ -37,7 +37,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ledger_lines import _set_top_level_key, line_sections, node_span
+from ledger_lines import _set_top_level_key, count_key, line_sections, node_span
 
 # 判定済み（原典と照合して決めた）status。pekko_baseline.py の JUDGED_STATUSES と同じ。
 JUDGED_STATUSES = ("green", "do_not_port", "not_built")
@@ -99,12 +99,24 @@ def _status(lines: list[str], span: tuple[int, int]) -> str | None:
     return read_field(lines, "status", span)
 
 
+def _refuse_duplicate(lines: list[str], node_id: str) -> None:
+    """同じ最上位の欄が 2 つ以上あるノードを拒否する。
+
+    YAML の読み手によっては後の欄が実値になる（PyYAML は後に書いた値を採る）。先頭だけを
+    書き換えると「変更した」と言いながら実値が変わらないので、書き換えずに失敗する。
+    """
+    count = count_key(lines, node_id, FIELD)
+    if count > 1:
+        raise ValueError(f"{node_id}: {FIELD} が {count} 個ある（どちらが実値か決められないので書き換えない）")
+
+
 def set_tag(lines: list[str], node_id: str, tag: str) -> list[str]:
     """1 ノードの verified_against を tag にした行を返す（判定済みの status でなければ ValueError）。"""
     span = _span(lines, node_id)
     status = _status(lines, span)
     if status not in JUDGED_STATUSES:
         raise ValueError(f"{node_id}: status {status!r} は {'/'.join(JUDGED_STATUSES)} でない")
+    _refuse_duplicate(lines, node_id)
     return _set_top_level_key(lines, node_id, FIELD, tag)
 
 
@@ -119,6 +131,7 @@ def _judged(lines: list[str]) -> list[tuple[str, str | None]]:
         span = _span(lines, node_id)
         status = _status(lines, span)
         if status in JUDGED_STATUSES:
+            _refuse_duplicate(lines, node_id)
             result.append((node_id, read_field(lines, FIELD, span)))
     return result
 
@@ -167,6 +180,7 @@ def cmd_apply(args) -> int:
     for node_id in ids:
         try:
             span = _span(lines, node_id)
+            _refuse_duplicate(lines, node_id)
             if read_field(lines, FIELD, span) == tag:
                 same.append(node_id)
                 continue

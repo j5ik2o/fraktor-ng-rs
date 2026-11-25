@@ -86,13 +86,73 @@ def _insert_after_key(lines: list[str], node_id: str, key: str, new_line: str) -
     return lines
 
 
-def _set_top_level_key(lines: list[str], node_id: str, key: str, value: str) -> list[str]:
-    """対象ノードの最上位の key 行を value に置き換える。無ければノードの末尾に足す。"""
+def count_key(lines: list[str], node_id: str, key: str) -> int:
+    """対象ノードの最上位の key 行の数を返す（二重欄の検出に使う）。"""
+    span = node_span(lines, node_id)
+    if span is None:
+        return 0
+    return sum(1 for i in range(span[0] + 1, span[1]) if re.match(rf"  {re.escape(key)}:", lines[i]))
+
+
+def rename_id(lines: list[str], old_id: str, new_id: str) -> list[str]:
+    """`nodes` の中の `- id: old_id` を `- id: new_id` に変える（1 行だけ）。
+
+    探すのは `nodes` の欄の `- id:` 行だけである。`retired` の id や本文は触れない
+    （`retired` にしか無い id を渡したら、その行を改名せずに ValueError）。old_id が `nodes` の
+    中で一意に見つからなければ ValueError（黙って何もしないで成功しない）。
+    """
+    sections = line_sections(lines)
+    matches = [i for i, line in enumerate(lines)
+               if sections[i] == "nodes" and line.startswith("- id: ")
+               and line.split(":", 1)[1].strip() == old_id]
+    if not matches:
+        raise ValueError(f"{old_id}: nodes に無い")
+    if len(matches) > 1:
+        # 先頭だけを改名すると、残りが同じ旧 id のまま台帳に残る。保存する前に拒否する。
+        raise ValueError(f"{old_id}: nodes に - id: が {len(matches)} 個ある（一意でない）")
+    if node_span(lines, new_id) is not None:
+        raise ValueError(f"{new_id}: nodes に既にある")
+    index = matches[0]
+    return lines[:index] + [f"- id: {new_id}\n"] + lines[index + 1 :]
+
+
+def set_nested_key(lines: list[str], node_id: str, section: str, key: str, value: str) -> list[str]:
+    """対象ノードの `section` の下の `key` 行を value に置き換える（2 段の欄）。
+
+    section は列 2 の `<section>:`、key は列 4 の `<key>:` として探す。どちらかが無ければ
+    ValueError（欄を新しく作らない。レイアウトを変えないため）。
+    """
+    span = node_span(lines, node_id)
+    if span is None:
+        raise ValueError(f"{node_id}: nodes に無い")
+    start, end = span
+    section_at = next((i for i in range(start + 1, end)
+                       if re.match(rf"  {re.escape(section)}:\s*$", lines[i])), None)
+    if section_at is None:
+        raise ValueError(f"{node_id}: {section} が無い")
+    for i in range(section_at + 1, end):
+        # 列 2 の次の欄に入ったら、その section は終わりである。
+        if TOP_LEVEL_KEY.match(lines[i]) and not lines[i].startswith(" "):
+            break
+        if re.match(r"  [A-Za-z_]", lines[i]):
+            break
+        if re.match(rf"    {re.escape(key)}:", lines[i]):
+            return lines[:i] + [f"    {key}: {_yaml_scalar(value)}\n"] + lines[i + 1 :]
+    raise ValueError(f"{node_id}: {section}.{key} が無い")
+
+
+def _set_top_level_key(lines: list[str], node_id: str, key: str, value: str,
+                       quote: bool = True) -> list[str]:
+    """対象ノードの最上位の key 行を value に置き換える。無ければノードの末尾に足す。
+
+    quote=False は、`name: m:Class` のように YAML の平スカラーとして安全な値を
+    既存の書き方（引用符なし）のまま書くときに使う。
+    """
     span = node_span(lines, node_id)
     if span is None:
         return lines
     start, end = span
-    new_line = f"  {key}: {_yaml_scalar(value)}\n"
+    new_line = f"  {key}: {_yaml_scalar(value) if quote else value}\n"
     for i in range(start + 1, end):
         if re.match(rf"  {re.escape(key)}:", lines[i]):
             return lines[:i] + [new_line] + lines[i + 1:]

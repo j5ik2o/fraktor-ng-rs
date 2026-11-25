@@ -179,6 +179,8 @@
 | do_not_port への遷移と、その取り消し | `triage.reason` に理由を記入した | 人間だけ |
 | not_built への遷移と、その取り消し | `triage.reason` と、全ケースの `cases.not_built`（理由、代替例、承認）を記入した | 人間だけ（記入の作業は担当が行い、承認の欄には人間の決定を写す） |
 
+- `do_not_port` の理由の例：モジュール単位の対象外、原典で削除（`原典 v2.0.0 で削除（削除コミット <SHA>・確認日 <YYYY-MM-DD>）`）。
+  原典で削除されたノードは `retired` にしない（後継が無く、`successor` と `cases.carried` を埋められない）
 - TAKT の manager / run は、ノードを do_not_port にも not_built にもできない
 - 履歴は git の差分で追う。台帳内に履歴配列は持たない
 - `triage.reason` は、do_not_port の理由（人間だけが書ける）に加えて、run が

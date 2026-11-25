@@ -66,6 +66,9 @@ python3 ledger/tools/pekko_baseline.py check-refs
 # 現行の原典が基準タグか（基準タグを 1 行で出す。違えば終了コード 1）
 python3 ledger/tools/pekko_baseline.py source-tag
 
+# 原典でパスが変わったノード・削除されたノードの根拠表と台帳の整合、旧 id の参照 0 件
+uv run --with pyyaml python3 ledger/tools/relocate_nodes.py check
+
 # 台帳の照合済みタグの検査と集計。現行タグで未照合のノードの一覧と、
 # 現行の原典にファイルが無いノードの件数も出す
 uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger \
@@ -76,8 +79,10 @@ uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger \
 
 - `v2.0.0-reverification.md`：判定済み 175 ノードの v2.0.0 再照合（1 ノード 1 行の根拠。台帳の
   `verified_against` を v2.0.0 に揃えた）
-- `v2.0.0-missing-unported.md`：v2.0.0 の原典にファイルが無い unported 23 ノード（移動 9・
-  原典で削除 14。台帳に記録する形式が規定されていないため、台帳は変えていない）
+- `v2.0.0-missing-unported.md`：v2.0.0 の原典にファイルが無い 23 ノード（移動 9・原典で削除 14）。
+  2026-11-25 の決定で、原典で削除の 14 件は `do_not_port`、移動 8 件は `id` を v2.0.0 のパスへ
+  付け替え、移動（ケースのみ）の 1 件は後継のケースを移植するときに記録する。旧 id と新 id の
+  対応、削除コミット、確認日は根拠表 `v2.0.0-port-targets.tsv` にある
 
 ## 基準を変えるとき
 
