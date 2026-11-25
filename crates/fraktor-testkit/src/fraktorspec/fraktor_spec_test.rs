@@ -88,7 +88,7 @@ impl Actor for Idle {
 fn await_cond_sees_every_actor_terminated_after_terminate() {
   let mut spec = FraktorSpec::new("PekkoSpecSpec");
   let actor = spec.system_mut().actor_of(Props::new(|| Idle));
-  let refs = vec![spec.test_actor(), actor];
+  let refs = [spec.test_actor(), actor];
   let system = spec.system().downgrade();
   assert!(refs.iter().all(|reference| !system.is_actor_terminated(reference)));
 

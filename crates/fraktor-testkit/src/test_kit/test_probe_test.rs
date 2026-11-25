@@ -13,9 +13,9 @@ use fraktor_actor::kernel::actor_system::ActorSystem;
 use fraktor_actor::kernel::message::Message;
 
 use super::TestProbe;
-use crate::test_kit::ReceiveWhile;
 use crate::test_kit::AutoPilot;
 use crate::test_kit::AutoPilotControl;
+use crate::test_kit::ReceiveWhile;
 
 fn failure_text(failure: Box<dyn core::any::Any + Send>) -> String {
   match failure.downcast::<String>() {

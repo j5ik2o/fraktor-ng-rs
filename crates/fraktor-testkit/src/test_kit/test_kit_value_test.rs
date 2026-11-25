@@ -392,10 +392,8 @@ fn receive_while_stops_when_idle_passes_between_messages() {
   send_all(&kit, &[1]);
   let started = Instant::now();
 
-  let received = kit.receive_while(
-    ReceiveWhile::new().max(Duration::from_secs(3)).idle(Duration::from_millis(50)),
-    small,
-  );
+  let received =
+    kit.receive_while(ReceiveWhile::new().max(Duration::from_secs(3)).idle(Duration::from_millis(50)), small);
 
   assert_eq!(received, vec![1]);
   assert!(started.elapsed() < Duration::from_secs(1));
@@ -418,9 +416,8 @@ fn receive_while_without_max_uses_the_remaining_time_of_within() {
   let mut spec = crate::fraktorspec::FraktorSpec::new("TestKitSpec");
   let started = Instant::now();
 
-  let received = spec.within(Duration::from_millis(200), |spec| {
-    spec.test_kit_mut().receive_while(ReceiveWhile::new(), small)
-  });
+  let received =
+    spec.within(Duration::from_millis(200), |spec| spec.test_kit_mut().receive_while(ReceiveWhile::new(), small));
 
   assert!(received.is_empty());
   assert!(started.elapsed() >= Duration::from_millis(200));

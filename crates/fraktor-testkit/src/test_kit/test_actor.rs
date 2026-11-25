@@ -96,6 +96,15 @@ impl TestActor {
     self.lock_queue().pop_front()
   }
 
+  /// Puts `received` back at the head of the queue, so the next wait takes it
+  /// first.
+  ///
+  /// Mirrors the `queue.offerFirst(lastMessage)` with which Pekko's
+  /// `receiveWhile` returns the message that ended it.
+  pub(crate) fn put_back(&self, received: ReceivedMessage) {
+    self.lock_queue().push_front(received);
+  }
+
   fn enqueue(&self, sender: &ActorRef, message: Message) {
     let ignored = {
       let ignore = self.ignore.lock().unwrap_or_else(|poisoned| poisoned.into_inner());

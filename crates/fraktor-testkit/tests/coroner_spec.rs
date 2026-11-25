@@ -4,11 +4,13 @@
 // Cases (original line numbers):
 //   - "generate a report if enough time passes" (L37-45): ported.
 //   - "not generate a report if cancelled early" (L47-54): ported.
-//   - "display thread counts if enabled" (L56-66): not ported yet. It reads the
-//     JVM's ThreadMXBean thread count; how to treat it is undecided.
-//   - "display deadlock information in its report" (L68-152): not ported yet.
-//     It relies on the JVM tracking the owner of each ReentrantLock; how to
-//     treat it is undecided.
+//   - "display thread counts if enabled" (L56-66): excluded with the owner's
+//     approval (ledger cases.excluded). It reads the JVM's ThreadMXBean.
+//   - "display deadlock information in its report" (L68-152): excluded with
+//     the owner's approval (ledger cases.excluded). It relies on the JVM
+//     tracking the owner of each ReentrantLock.
+//   The tests that stand in for these two are the unit tests of
+//   crates/fraktor-testkit/src/coroner_test.rs.
 //
 // Original test names are kept as comments next to each ported case.
 
