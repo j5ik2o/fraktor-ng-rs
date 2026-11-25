@@ -80,4 +80,4 @@
 ## 第2まとまりの補助の確認の追記
 
 - `ByteStringInputStream::skip` の rustdoc で、`skip(-1)` の `compile_fail` の例の隣に、同じ import と初期化で引数だけを正の値（`skip(1)`）にした例を足した。こちらはコンパイルでき、実行もできる。これで、`compile_fail` の例が失敗する理由が負の値の引数だけであることを、doctest そのものが示す。除外した「reject negative skip」の代わりの確認であり、台帳の件数には含めない（`batch-2.md` の「除外した 2 ケース」）。
-
+- `unsynchronized_byte_array_input_stream_spec.rs` の冒頭の注記で、代わりの確認を「first」「second」で指していたが、直後の列挙の順と逆だった（#168 の独立レビューの軽微な指摘）。ケース名で指すように直した。

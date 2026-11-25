@@ -38,9 +38,10 @@
 
 // Cases not ported. The owner (j5ik2o) approved both as exclusions on
 // 2026-11-25 (`cases.excluded` of this node), with checks that stand in for
-// them and are not counted: `tests/byte_string_input_stream_no_copy_test.rs`
-// for the first, and the `compile_fail` example on `ByteStringInputStream::skip`
-// with the skip boundary unit test for the second:
+// them and are not counted: the `compile_fail` example on
+// `ByteStringInputStream::skip` with the skip boundary unit test for "reject
+// negative skip", and `tests/byte_string_input_stream_no_copy_test.rs` for "not
+// copy the backing array":
 //   * "reject negative skip": `skip` takes a `usize`, which cannot be negative.
 //   * "not copy the backing array": the original writes to the array after
 //     building the stream and reads the new byte back. Safe Rust cannot write
