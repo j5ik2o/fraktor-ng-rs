@@ -14,6 +14,7 @@ use crate::kernel::io::dns::{DnsSettings, HostDnsConfiguration, ResolvConf, Reso
 #[cfg(test)]
 #[path = "system_host_dns_configuration_test.rs"]
 mod tests;
+mod windows_adapter;
 
 // The file both the original's `resolvConf` and the JDK's Unix
 // `ResolverConfigurationImpl` read.
