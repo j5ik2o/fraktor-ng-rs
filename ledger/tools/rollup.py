@@ -32,6 +32,7 @@
 """
 import argparse
 import collections
+import re
 import sys
 
 import yaml
@@ -214,6 +215,76 @@ def fmt_rate(x) -> str:
     return "-" if x is None else f"{x * 100:.1f}%"
 
 
+def load_retired(path: str) -> list[dict]:
+    """台帳の最上位 `retired` の一覧を返す（退役したノード。集計と照合の対象外）。"""
+    with open(path, encoding="utf-8") as f:
+        retired = (yaml.load(f, Loader=ledger_loader()) or {}).get("retired") or []
+    return retired if isinstance(retired, list) else [{"id": None, "retired": "retired が配列でない"}]
+
+
+# 引き継いだケースの要素のうち、空白以外の文字列であるべき欄。
+CARRIED_TEXT_KEYS = ("name", "from", "source", "rust_test", "verified_against", "evidence")
+RETIRED_AT = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def lineage_problems(nodes: list[dict], retired: list[dict]) -> dict[str, list[str]]:
+    """退役したノードと、そのケースを引き継いだノード（cases.carried）の記録の不足を、id ごとに返す。
+
+    退役したノードは、現行の nodes に同じ id が無く、retired.at（暦日）、retired.reason、
+    retired.successor（現行のノードの id）を持ち、後継の cases.carried に from が自分の要素がある
+    こと。cases.carried の要素は CARRIED_TEXT_KEYS を空白以外の文字列で持ち、from は退役した
+    ノードの id で、ケース名はノード内で重複しない。後継が green でなければ（部分移植）、
+    ported と passing は引き継いだ件数に等しく、total はそれより大きい整数でなければならない
+    （suite 全体を green と数えず、退役したノードの分と二重に数えない）。
+    """
+    active = {n.get("id") for n in nodes}
+    retired_ids = {r.get("id") for r in retired if isinstance(r, dict)}
+    problems: dict[str, list[str]] = collections.defaultdict(list)
+    by_id = {n.get("id"): n for n in nodes}
+    for r in retired:
+        rid = r.get("id") if isinstance(r, dict) else None
+        info = mapping(r.get("retired")) if isinstance(r, dict) else {}
+        if not is_text(rid):
+            problems[str(rid)].append("退役したノードに id が無い")
+            continue
+        if rid in active:
+            problems[rid].append("退役したノードと同じ id が現行の nodes にある")
+        if not (isinstance(info.get("at"), str) and RETIRED_AT.fullmatch(info["at"])):
+            problems[rid].append("retired.at が暦日でない")
+        if not is_text(info.get("reason")):
+            problems[rid].append("retired.reason が空")
+        successor = by_id.get(info.get("successor"))
+        if successor is None:
+            problems[rid].append("retired.successor が現行のノードでない")
+        elif not any(isinstance(c, dict) and c.get("from") == rid
+                     for c in (mapping(successor.get("cases")).get("carried") or [])):
+            problems[rid].append("後継の cases.carried にこのノードから引き継いだケースが無い")
+    for n in nodes:
+        cases = mapping(n.get("cases"))
+        carried = cases.get("carried")
+        if carried is None or carried == []:
+            continue
+        nid = n.get("id")
+        if not isinstance(carried, list):
+            problems[nid].append("cases.carried が配列でない")
+            continue
+        for index, c in enumerate(carried):
+            if not (isinstance(c, dict) and all(is_text(c.get(k)) for k in CARRIED_TEXT_KEYS)):
+                problems[nid].append(f"cases.carried[{index}] の {'・'.join(CARRIED_TEXT_KEYS)} が揃っていない")
+            elif c.get("from") not in retired_ids:
+                problems[nid].append(f"cases.carried[{index}] の from が退役したノードでない")
+        names = [c.get("name") for c in carried if isinstance(c, dict)]
+        if len(set(names)) != len(names):
+            problems[nid].append("cases.carried のケース名が重複している")
+        if n.get("status") != "green":
+            total, ported, passing = cases.get("total"), cases.get("ported"), cases.get("passing")
+            if not (type(ported) is int and type(passing) is int and ported == passing == len(carried)):
+                problems[nid].append("部分移植のノードの ported と passing が引き継いだ件数と違う")
+            if not (type(total) is int and type(ported) is int and total > ported):
+                problems[nid].append("部分移植のノードの total が ported より大きい整数でない")
+    return problems
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ledger", required=True)
@@ -242,6 +313,11 @@ def main() -> int:
         problems = not_built_problems(n)
         if problems:
             print(f"  作らない区分の記録が不足: {n['id']}: {'; '.join(problems)}")
+    retired = load_retired(args.ledger)
+    lineage = lineage_problems(nodes, retired)
+    print(f"  退役: {len(retired)} 件（集計の対象外）")
+    for node_id, problems in lineage.items():
+        print(f"  退役・引き継ぎの記録が不足: {node_id}: {'; '.join(problems)}")
 
     by_module: dict[str, list[dict]] = collections.defaultdict(list)
     for n in nodes:
@@ -260,9 +336,15 @@ def main() -> int:
     if args.goal:
         members = [n for n in nodes if n.get("goal") == args.goal]
         if not members:
+            gone = [r for r in retired if isinstance(r, dict) and r.get("goal") == args.goal]
+            if gone:
+                for r in gone:
+                    print(f"ゴール {args.goal}: 属するノード {r.get('id')} は退役した"
+                          f"（後継 {mapping(r.get('retired')).get('successor')}）。完了の判定はしない")
+                return 1
             print(f"ゴール {args.goal}: 属するノードが無い（未発行か ID の誤り）")
             return 1
-        pending = [n for n in members if not is_done(n)]
+        pending = [n for n in members if not is_done(n) or n.get("id") in lineage]
         print(
             f"ゴール {args.goal}: ノード {len(members)} 件、"
             f"status 内訳 {dict(collections.Counter(n.get('status') for n in members))}"
