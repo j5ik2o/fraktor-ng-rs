@@ -45,7 +45,7 @@ import sys
 
 import excluded_approvals
 from ledger_lines import (  # noqa: F401  (台帳の行単位の書き換え。以前からの名前を残す)
-    _insert_after_key, _is_empty_reason, _leaves_nodes, _set_top_level_key, _yaml_scalar)
+    _insert_after_key, _is_empty_reason, _is_filler, _leaves_nodes, _set_top_level_key, _yaml_scalar)
 import pekko_baseline
 
 LEDGER = "ledger/nodes.yaml"
@@ -132,7 +132,8 @@ def mark_green(node_id: str, total: int, passed: int, reason: str, verified_agai
             in_cases = False
             in_triage = False
             continue
-        if not in_block:
+        if not in_block or _is_filler(line):
+            # 空行と注記は、ノードの中の位置（cases や triage の中）を変えない。
             continue
         base_indent = len(line) - len(line.lstrip())
         if re.match(r"\s+cases:\s*$", line):
@@ -168,8 +169,31 @@ def mark_green(node_id: str, total: int, passed: int, reason: str, verified_agai
         reason_line = f"{reason_indent}reason: {_yaml_scalar(reason)}\n"
         lines = _insert_after_key(lines, node_id, "triage:", reason_line)
     lines = _set_top_level_key(lines, node_id, "verified_against", verified_against)
+    if not _written_node_is_green(lines, node_id, total, passed, verified_against):
+        return False
     open(LEDGER, "w", encoding="utf-8").write("".join(lines))
     return not reason_preserved
+
+
+def _written_node_is_green(lines: list[str], node_id: str, total: int, passed: int, tag: str) -> bool:
+    """書き込む前の台帳を読み直し、対象ノードに green・件数の 3 欄・照合タグがそろうかを確かめる。
+
+    PyYAML が無い起動（record_already_green は `uv run python3` で動く）では読み直せないので、
+    行単位の書き換えの結果をそのまま使う（True）。読めない YAML や欄の食い違いは False で、
+    台帳は書き換えない。
+    """
+    try:
+        import yaml
+    except ImportError:
+        return True
+    try:
+        doc = yaml.load("".join(lines), Loader=excluded_approvals.ledger_loader()) or {}
+    except (yaml.YAMLError, ValueError):
+        return False
+    node = next((n for n in doc.get("nodes") or [] if isinstance(n, dict) and n.get("id") == node_id), None)
+    cases = node.get("cases") if isinstance(node, dict) else None
+    return (isinstance(cases, dict) and node.get("status") == "green" and node.get("verified_against") == tag
+            and (cases.get("total"), cases.get("ported"), cases.get("passing")) == (total, passed, passed))
 
 
 def _rewrite_node(node_id: str, transform) -> bool:

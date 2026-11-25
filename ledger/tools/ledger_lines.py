@@ -22,13 +22,23 @@ def _yaml_scalar(text: str) -> str:
     return text
 
 
+# 最上位の欄（`retired:` など）。列 0 の注記や空行は欄ではない。
+TOP_LEVEL_KEY = re.compile(r"[A-Za-z_][\w-]*\s*:")
+
+
+def _is_filler(line: str) -> bool:
+    """空行か、注記だけの行か（どの位置にあっても、ノードの境界にも欄にもならない）。"""
+    return not line.strip() or line.lstrip().startswith("#")
+
+
 def _leaves_nodes(line: str) -> bool:
-    """`nodes:` の外の最上位の行か（`retired:` などの最上位の欄や、列 0 の注記）。
+    """`nodes:` の外の最上位の欄の行か（`retired:` など）。
 
     ノードは `- id:` で始まり、次の `- id:` かこの行で終わる。最上位の欄に入ったら、
-    以降の行（退役したノードなど）は現役のノードとして扱わない。
+    以降の行（退役したノードなど）は現役のノードとして扱わない。列 0 の注記や空行は
+    境界にしない（ノードの中の注記を挟んでも、同じノードの欄を書き換えられる）。
     """
-    return bool(line.strip()) and not line[0].isspace() and not line.startswith("- ") and not line.startswith("nodes:")
+    return bool(TOP_LEVEL_KEY.match(line)) and not line.startswith("nodes:")
 
 
 def _insert_after_key(lines: list[str], node_id: str, key: str, new_line: str) -> list[str]:
@@ -65,6 +75,7 @@ def _set_top_level_key(lines: list[str], node_id: str, key: str, value: str) -> 
     for i in range(start + 1, end):
         if re.match(rf"  {re.escape(key)}:", lines[i]):
             return lines[:i] + [new_line] + lines[i + 1:]
-    while end > start + 1 and not lines[end - 1].strip():
+    # ノードの後ろの空行と注記（次の欄や退役の節の見出しの注記）の前に足す。
+    while end > start + 1 and _is_filler(lines[end - 1]):
         end -= 1
     return lines[:end] + [new_line] + lines[end:]
