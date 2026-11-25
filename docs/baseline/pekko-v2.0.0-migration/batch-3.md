@@ -75,8 +75,12 @@
 - `ByteStringInputStream::skip` の rustdoc で、`skip(-1)` の `compile_fail` の例の隣に、同じ import と初期化で引数だけを正の値（`skip(1)`）にした例を足した。こちらはコンパイルでき、実行もできる。これで、`compile_fail` の例が失敗する理由が負の値の引数だけであることを、doctest そのものが示す。除外した「reject negative skip」の代わりの確認であり、台帳の件数には含めない（`batch-2.md` の「除外した 2 ケース」）。
 - `unsynchronized_byte_array_input_stream_spec.rs` の冒頭の注記で、代わりの確認を「first」「second」で指していたが、直後の列挙の順と逆だった（#168 の独立レビューの軽微な指摘）。ケース名で指すように直した。
 
-## 保留：ActorSystemScala213PlusSpec
+## ActorSystemScala213PlusSpec の退役と引き継ぎ（項目294）
 
-- 台帳のノード `actor-tests/src/test/scala-2.13+/org/apache/pekko/actor/ActorSystemScala213PlusSpec.scala` は、main の状態のまま（green、`verified_against: v1.7.1`、1/1/1）にした。この PR では変えていない。
-- 事実：v2.0.0 にこのファイルはない。上流 #2486 は、1.x では `3be76d1be7` でこの scala-2.13+ のファイルを足し、2.0 では `d5ee8a63e3` で同じケース「Scala's Using automatically terminates ActorSystem」を `actor-tests/src/test/scala/org/apache/pekko/actor/ActorSystemSpec.scala` の L345–351 に入れた（`batch-2.md` の訂正）。Rust のテスト `crates/fraktor-actor/tests/actor_system_scala213_plus_spec.rs` は 1 passed で、冒頭に移動先が書いてある。
-- 保留の理由：退役と、後継への 1 ケースの引き継ぎを台帳で表す欄（`retired`、`cases.carried`）と、その検査は、レビューの往復が長引いたため、この PR から外した（調整担当の決定、2026-11-25）。その変更は、枝 `j5ik2o/pekko-2-ported-migration-3-lineage`（`e0aac72`）に保全してある。決まるまで、この 1 ケースは v2.0.0 で照合済みに数えない。`ActorSystemSpec` のノードは unported のままである。
+#169 では保留にしたこの 1 ケースを、別の PR（項目294）で台帳に記録する。
+
+- 事実：v2.0.0 に `actor-tests/src/test/scala-2.13+/org/apache/pekko/actor/ActorSystemScala213PlusSpec.scala` はない。上流 #2486 は、1.x では `3be76d1be7` でこの scala-2.13+ のファイルを足し、2.0 では `d5ee8a63e3` で同じケース「Scala's Using automatically terminates ActorSystem」を `actor-tests/src/test/scala/org/apache/pekko/actor/ActorSystemSpec.scala` の L345–351 に入れた。Rust のテスト `crates/fraktor-actor/tests/actor_system_scala213_plus_spec.rs` は 1 passed である。
+- 台帳：旧 id のノードは、台帳の最上位の `retired` へ移した。欄は v1.7.1 で照合した当時のまま残し、`retired.at`、`reason`、`successor` を足した。凍結スナップショット `docs/baseline/pekko-v1.7.1/ledger.yaml` と Rust の回帰テストは、そのまま残した。
+- 後継の `ActorSystemSpec` には、引き継いだ 1 件を `cases.carried` に記録した（ケース名、退役元の id、v2.0.0 の原典の位置、Rust テスト、照合したタグ v2.0.0、実行の結果）。`cases` は 20/1/1 で、status は unported のままにした。suite 全体は green にしない。ノード最上位の `verified_against` は、unported には書けないので書いていない。
+- 検査：規則は `docs/decisions/ledger-schema-draft.md` の「退役と引き継ぎ」にある。`ledger/tools/lineage.py` が、rollup、`check_needs`、ゴールの関門、CI の `check-ledger` から同じ規則で使われる。不正な承継は、全体の検査を 0 以外にし、後継が属するゴールを完了にせず、能力の供給元にもしない。回帰テストは `goal_complete_gate_test.py` と `ledger/tools/retired_lineage_test.py`（CI に追加）にある。
+- 集計：rollup の N は 1261 から 1260 に、green は 49 から 48 になる（退役したノードがクラス数から外れる）。ケースの移植数は 289 のまま変わらない（二重に数えない）。
