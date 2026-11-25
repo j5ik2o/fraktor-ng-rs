@@ -126,14 +126,32 @@ def count_excluded(ledger_path: str, node_id: str) -> int | None:
     excluded = cases["excluded"]
     if excluded is None:
         return 0
-    if not isinstance(excluded, list):
+    if excluded_problems(excluded):
         return None
-    if not excluded:
-        return 0
-    for item in excluded:
-        if not isinstance(item, dict) or not is_approved_by_human(item):
-            return None
     return len(excluded)
+
+
+def excluded_problems(excluded) -> list[str]:
+    """cases.excluded の記録の不足を返す。rollup.py の混在の勘定と count_excluded が共有する。
+
+    配列でない、要素がマッピングでない、人による承認記録が無い（is_approved_by_human）、
+    ケース名が同じ要素が複数ある、のどれかがあれば、その理由を返す。同名の要素を 2 回数えて
+    件数式を満たすことを防ぐ。空配列と null は不足なしとする。
+    """
+    if excluded is None:
+        return []
+    if not isinstance(excluded, list):
+        return ["cases.excluded が配列でない"]
+    problems = []
+    for index, item in enumerate(excluded):
+        if not isinstance(item, dict) or not is_approved_by_human(item):
+            problems.append(f"cases.excluded[{index}] に人による承認記録が無い")
+    names = [item.get("name").strip() for item in excluded
+             if isinstance(item, dict) and is_text(item.get("name"))]
+    duplicated = sorted({name for name in names if names.count(name) > 1})
+    if duplicated:
+        problems.append(f"cases.excluded のケース名が重複している: {', '.join(duplicated)}")
+    return problems
 
 
 def is_approved_by_human(item: dict) -> bool:

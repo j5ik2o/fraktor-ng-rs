@@ -36,7 +36,7 @@ import sys
 import yaml
 
 from excluded_approvals import (
-    is_approved_by_human, is_case_name, is_text, is_valid_not_built_case, ledger_loader)
+    excluded_problems, is_approved_by_human, is_case_name, is_text, is_valid_not_built_case, ledger_loader)
 
 # ゴールの完了に数える status。check_needs.py も同じ集合を使い、
 # TAKT の triage（fraktor-triage.md、fraktor-port-node.yaml）も同じ status を処理済みとする。
@@ -93,8 +93,9 @@ def mixed_not_built_problems(node: dict) -> list[str]:
         return ["cases.not_built が配列でない"]
     problems = not_built_records_problems(records)
     excluded = cases.get("excluded") or []
+    problems += excluded_problems(excluded)
     if not isinstance(excluded, list):
-        return problems + ["cases.excluded が配列でない"]
+        return problems
     not_built_names = {r.get("name").strip() for r in records if isinstance(r, dict) and is_text(r.get("name"))}
     excluded_names = {e.get("name").strip() for e in excluded if isinstance(e, dict) and is_text(e.get("name"))}
     overlap = sorted(not_built_names & excluded_names)
