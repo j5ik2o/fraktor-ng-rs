@@ -180,3 +180,64 @@ fn ready_returns_on_a_terminated_system_when_the_latch_is_open() {
 
   assert!(latch.is_open());
 }
+
+#[derive(Clone, Copy, Debug)]
+enum LatchOp {
+  CountDown,
+  Open,
+  Reset,
+}
+
+const LATCH_OPS: [LatchOp; 3] = [LatchOp::CountDown, LatchOp::Open, LatchOp::Reset];
+
+/// Every sequence of `length` operations, in a fixed order.
+fn latch_op_sequences(length: usize) -> Vec<Vec<LatchOp>> {
+  (0..length).fold(vec![Vec::new()], |sequences, _| {
+    sequences
+      .into_iter()
+      .flat_map(|sequence| {
+        LATCH_OPS.iter().map(move |op| {
+          let mut next = sequence.clone();
+          next.push(*op);
+          next
+        })
+      })
+      .collect()
+  })
+}
+
+// Property (specs/test_latch.qnt, `counterInRange` and `readyOnlyWhenOpen`):
+// for every count up to 4 and every sequence of up to 5 operations, the latch
+// is open exactly when the model's counter is zero, where count_down saturates
+// at zero, open sets it to zero, and reset restores the count. Checked over
+// the whole bounded domain instead of a random sample.
+#[test]
+fn is_open_follows_the_counter_model_for_every_bounded_sequence() {
+  let system = system();
+  for count in 0..=4 {
+    for length in 0..=5 {
+      for sequence in latch_op_sequences(length) {
+        let latch = latch(count, &system);
+        let mut model = count;
+        for op in &sequence {
+          match op {
+            | LatchOp::CountDown => {
+              latch.count_down();
+              model = model.saturating_sub(1);
+            },
+            | LatchOp::Open => {
+              latch.open();
+              model = 0;
+            },
+            | LatchOp::Reset => {
+              latch.reset();
+              model = count;
+            },
+          }
+          assert_eq!(latch.is_open(), model == 0, "count {count}, sequence {sequence:?}");
+        }
+        assert_eq!(latch.is_open(), model == 0, "count {count}, sequence {sequence:?}");
+      }
+    }
+  }
+}

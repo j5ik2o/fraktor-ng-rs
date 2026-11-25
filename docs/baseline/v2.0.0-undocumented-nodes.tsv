@@ -40,6 +40,8 @@ actor-tests/src/test/scala/org/apache/pekko/util/FrequencyListSpec.scala	no-repo
 actor-tests/src/test/scala/org/apache/pekko/util/RecencyListSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/SegmentedRecencyListSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/VersionSpec.scala	no-report
+testkit/src/test/scala/org/apache/pekko/testkit/AbstractSpec.scala	no-report
+testkit/src/test/scala/org/apache/pekko/testkit/CoronerSpec.scala	no-report
 testkit/src/test/scala/org/apache/pekko/testkit/DefaultTimeoutSpec.scala	no-report
 testkit/src/test/scala/org/apache/pekko/testkit/ExplicitlyTriggeredSchedulerSpec.scala	no-report
 testkit/src/test/scala/org/apache/pekko/testkit/ImplicitSenderSpec.scala	no-report

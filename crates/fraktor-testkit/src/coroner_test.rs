@@ -130,3 +130,29 @@ fn result_of_a_running_watch_is_false_when_max_passes_first() {
   assert!(!coroner.result(Duration::from_millis(20)));
   coroner.cancel();
 }
+
+// Property (specs/watch_handle.qnt, `cancelledWritesNothing` and
+// `finishedConsistent`): whichever of cancel and expiry comes first, a watch
+// whose result is `true` (cancelled) wrote nothing, and one whose result is
+// `false` (expired) wrote the full report. The race is driven over every pair
+// of watch duration and cancel delay from 0 to 6 ms.
+#[test]
+fn the_outcome_and_the_output_agree_whichever_of_cancel_and_expiry_comes_first() {
+  for duration in 0..=6 {
+    for delay in 0..=6 {
+      let out = Captured::default();
+      let coroner = watch(Duration::from_millis(duration), "Race", out.clone());
+      std::thread::sleep(Duration::from_millis(delay));
+
+      coroner.cancel();
+
+      let cancelled = coroner.result(Duration::from_secs(1));
+      let report = out.text();
+      if cancelled {
+        assert_eq!(report, "", "duration {duration}ms, delay {delay}ms");
+      } else {
+        assert!(report.contains("Coroner's Report: Race"), "duration {duration}ms, delay {delay}ms: {report}");
+      }
+    }
+  }
+}

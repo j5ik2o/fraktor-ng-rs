@@ -466,3 +466,58 @@ impl Actor for SetFlag {
     *self.seen.lock().unwrap() = true;
   }
 }
+
+/// Every queue of at most `max_length` values drawn from `0..values`.
+fn bounded_queues(max_length: usize, values: usize) -> Vec<Vec<usize>> {
+  let mut queues = vec![Vec::new()];
+  let mut frontier = vec![Vec::new()];
+  for _ in 0..max_length {
+    frontier = frontier
+      .into_iter()
+      .flat_map(|queue: Vec<usize>| {
+        (0..values).map(move |value| {
+          let mut next = queue.clone();
+          next.push(value);
+          next
+        })
+      })
+      .collect();
+    queues.extend(frontier.iter().cloned());
+  }
+  queues
+}
+
+// Property (specs/receive_while.qnt, `nothingLostOrReordered`,
+// `pickedOnlyAccepted`, `withinLimit` and `lastIsLastPicked`): for every queue
+// of up to 4 messages from 0..4, with even messages accepted, and every limit
+// from none to 4, the call returns the longest accepted prefix cut at the
+// limit, the rest of the queue stays queued in order, and the last message is
+// the last one picked. Checked over the whole bounded domain.
+#[test]
+fn receive_while_takes_the_accepted_prefix_and_keeps_the_rest_for_every_bounded_queue() {
+  let mut kit = test_kit();
+  let limits = [None, Some(0), Some(1), Some(2), Some(3), Some(4)];
+  for queue in bounded_queues(4, 4) {
+    for limit in limits {
+      send_all(&kit, &queue);
+      let mut call = ReceiveWhile::new().max(Duration::from_millis(1));
+      if let Some(limit) = limit {
+        call = call.messages(limit);
+      }
+
+      let picked = kit.receive_while(call, |message| message.downcast_ref::<usize>().copied().filter(|v| v % 2 == 0));
+
+      let accepted = queue.iter().take_while(|value| *value % 2 == 0).count();
+      let expected = accepted.min(limit.unwrap_or(usize::MAX));
+      assert_eq!(picked, queue[..expected], "queue {queue:?}, limit {limit:?}");
+      let last = kit.last_message().and_then(|last| last.downcast_ref::<usize>().copied());
+      assert_eq!(last, picked.last().copied(), "queue {queue:?}, limit {limit:?}");
+      let rest: Vec<usize> = kit
+        .receive_n(queue.len() - expected, Duration::from_secs(1))
+        .iter()
+        .map(|received| *received.downcast_ref::<usize>().expect("a usize message"))
+        .collect();
+      assert_eq!(rest, queue[expected..], "queue {queue:?}, limit {limit:?}");
+    }
+  }
+}
