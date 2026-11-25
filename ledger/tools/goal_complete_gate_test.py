@@ -669,6 +669,51 @@ def test_a_scalar_retired_list_is_diagnosed_without_crashing_the_goal_check():
     print("43j. a scalar retired is diagnosed and the goal check ends with 1")
 
 
+CARRIED_YAML = ("    carried:\n    - name: case\n      from: old/A.scala\n      source: new/S.scala L1\n"
+                "      rust_test: t.rs\n      verified_against: v2.0.0\n      evidence: 1 passed\n")
+RETIRED_YAML = ("retired:\n- id: old/A.scala\n  kind: test\n  pekko:\n    module: stub\n  cases:\n    ported: 1\n"
+                "  goal: G0r\n  retired:\n    at: 2026-11-25\n    reason: moved\n    successor: new/S.scala\n")
+
+
+def lineage_node(node_id: str, goal: str, status: str, total: int, ported: int, excluded: str = "    excluded: []\n") -> str:
+    return (f"- id: {node_id}\n  kind: test\n  pekko:\n    module: stub\n  status: {status}\n"
+            f"  cases:\n    total: {total}\n    ported: {ported}\n    passing: {ported}\n{excluded}"
+            f"{CARRIED_YAML}  goal: {goal}\n")
+
+
+def gate_and_whole(ledger: str, goal: str, member: str) -> tuple[int, int]:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        response = make_run(root, order_with([f"docs/goals/{goal.lower()}-stub.md"]), ledger, one_goal_doc(goal, [member]))
+        gate = run_gate(root, response)["exit_code"]
+        whole = subprocess.run([sys.executable, str(ROLLUP), "--ledger", str(root / "ledger" / "nodes.yaml")],
+                               capture_output=True, text=True).returncode
+        return gate, whole
+
+
+def test_the_named_successor_is_judged_the_same_whichever_node_comes_first():
+    """未指定の後継に同じケースを置いても、並び順によらず正式な後継のゴールは完了で、全体の検査は 0 以外。"""
+    right = lineage_node("new/S.scala", "G0s", "green", 1, 1)
+    wrong = lineage_node("new/W.scala", "G0w", "unported", 3, 1)
+    for label, nodes in (("wrong first", wrong + right), ("wrong last", right + wrong)):
+        gate, whole = gate_and_whole("nodes:\n" + nodes + RETIRED_YAML, "G0s", "new/S.scala")
+        assert gate == 0, (label, gate)
+        assert whole != 0, (label, whole)
+        print(f"43k. {label}: the named successor's gate = {gate}, whole rollup = {whole}")
+
+
+def test_a_green_successor_counts_only_valid_distinct_exclusions_and_its_carried_cases():
+    """承認済みの同じ除外の繰り返しや、引き継いだのに ported が 0 の green は、ゴールでも全体でも通さない。"""
+    approval = "      approved_by: someone\n      approved_at: 2026-01-01\n"
+    repeated = "    excluded:\n" + "".join("    - name: same\n      reason: r\n" + approval for _ in range(19))
+    distinct = "    excluded:\n" + "".join(f"    - name: case {i}\n      reason: r\n" + approval for i in range(20))
+    for label, node in (("19 copies of one exclusion", lineage_node("new/S.scala", "G0s", "green", 20, 1, repeated)),
+                        ("carried but 20/0/0", lineage_node("new/S.scala", "G0s", "green", 20, 0, distinct))):
+        gate, whole = gate_and_whole("nodes:\n" + node + RETIRED_YAML, "G0s", "new/S.scala")
+        assert gate != 0 and whole != 0, (label, gate, whole)
+        print(f"43l. {label}: gate = {gate}, whole rollup = {whole}")
+
+
 def test_goal_whose_nodes_are_all_retired_is_not_complete():
     """属するノードがすべて退役したゴールは、完了と判定しない（退役を理由に出す）。"""
     with tempfile.TemporaryDirectory() as temporary:
@@ -1125,6 +1170,8 @@ def main() -> int:
         test_a_duplicated_retired_id_reaches_every_successor_it_names,
         test_a_green_successor_must_cover_its_total_with_ported_and_approved_exclusions,
         test_a_scalar_retired_list_is_diagnosed_without_crashing_the_goal_check,
+        test_the_named_successor_is_judged_the_same_whichever_node_comes_first,
+        test_a_green_successor_counts_only_valid_distinct_exclusions_and_its_carried_cases,
         test_takt_triage_treats_the_same_statuses_as_done,
         test_not_built_with_a_nonzero_or_missing_passing_is_not_complete,
         test_non_list_not_built_record_is_diagnosed_without_crashing,
