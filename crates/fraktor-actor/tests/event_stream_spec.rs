@@ -1,7 +1,10 @@
-// Ported from Pekko v1.7.1:
+// Ported from Pekko v2.0.0 (SHA 9fbd2283b1cf701c90a1223bf621942c191db61f):
 //   actor-tests/src/test/scala/org/apache/pekko/event/EventStreamSpec.scala
+// First ported from v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff).
+// v2.0.0 adds the case "remove one unrelated subscription or all subscriptions
+// for the same actor" (upstream 25f8b12436, #3658).
 //
-// The original file holds one suite of 17 cases. The port keeps every case and
+// The original file holds one suite of 18 cases. The port keeps every case and
 // its name, and it keeps the class hierarchy (A, B2, B3, C) and the trait
 // hierarchy (T, AT, ATT, BT, BTT, CC, CCATBT) the original declares. Rust has
 // no run-time class hierarchy, so each case declares the super-type relation
@@ -246,6 +249,40 @@ fn verify_level(bus: &EventStream, spec: &mut FraktorSpec, level: LogLevel) {
     let event: Error = spec.expect_msg_type();
     assert_eq!(event.message(), "error");
   }
+}
+
+// Original: `"remove one unrelated subscription or all subscriptions for the same actor" in { ... }`
+//
+// The original builds `new EventStream(system, false)`, a stream without debug
+// output whose unsubscriber is not started; the port builds the same stream and
+// does not start one either. The two channels are `M` and `String`, which are
+// unrelated, so removing the `M` subscription leaves the `String` one in place.
+#[test]
+fn an_event_stream_must_remove_one_unrelated_subscription_or_all_subscriptions_for_the_same_actor() {
+  let mut spec = FraktorSpec::new("EventStreamSpec");
+  let bus = EventStream::new(spec.system().downgrade(), false);
+  let mut listener = TestProbe::new(spec.system_mut());
+  assert!(bus.subscribe(Some(listener.ref_handle()), EventClass::of::<M>()).expect("the probe is not null"));
+  assert!(bus.subscribe(Some(listener.ref_handle()), EventClass::of::<String>()).expect("the probe is not null"));
+  bus.publish(M(1));
+  bus.publish(String::from("both subscriptions"));
+  let received: M = listener.expect_msg_type();
+  assert_eq!(received, M(1));
+  let received: String = listener.expect_msg_type();
+  assert_eq!(received, "both subscriptions");
+
+  assert!(bus.unsubscribe(Some(listener.ref_handle()), EventClass::of::<M>()).expect("the probe is not null"));
+  bus.publish(M(2));
+  bus.publish(String::from("remaining subscription"));
+  let received: String = listener.expect_msg_type();
+  assert_eq!(received, "remaining subscription");
+  listener.expect_no_message(Duration::from_millis(100));
+
+  bus.unsubscribe_all(Some(listener.ref_handle())).expect("the probe is not null");
+  bus.publish(M(3));
+  bus.publish(String::from("no subscriptions"));
+  listener.expect_no_message(Duration::from_millis(100));
+  spec.terminate();
 }
 
 // Original: `"manage subscriptions" in { ... }`

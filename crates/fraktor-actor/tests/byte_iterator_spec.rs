@@ -1,8 +1,16 @@
-// Ported from Pekko v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff):
+// Ported from Pekko v2.0.0 (SHA 9fbd2283b1cf701c90a1223bf621942c191db61f):
 //   actor-tests/src/test/scala/org/apache/pekko/util/ByteIteratorSpec.scala
+// First ported from v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff), which
+// had the first case. v2.0.0 adds "match ByteArrayIterator semantics for
+// getShort/Int/Long across both fast and cross-fragment paths" (upstream
+// f481c59dd9, #2952). Its other changes to the file (246fae4fb8 #3300, which
+// reaches `otherIndexOf` through a method handle instead of reflection,
+// 9dfca01566 #3348 and 870d4499cc #2235, which reorder imports) leave the first
+// case's assertions unchanged.
 //
-// The original's single case under "A ByteIterator should" is kept as one test,
-// named after the case, with the original name as a comment. Its eight
+// The original's two cases under "A ByteIterator should" are kept as one test
+// each, named after the case, with the original name as a comment. The notes
+// below up to the first test are about the first case. Its eight
 // assertions run in the original order, each on a fresh iterator over the same
 // six bytes, because a search consumes the iterator (original L25-L27).
 //
@@ -27,7 +35,8 @@
 // The test calls the production `ByteIterator`. Until it exists the file does
 // not compile: that compile error is the intended red for this node.
 
-use fraktor_actor::kernel::byte_iterator::ByteIterator;
+use fraktor_actor::kernel::byte_iterator::{ByteIterator, ByteOrder};
+use fraktor_actor::kernel::byte_string::ByteString;
 
 // The original's `freshIterator()`.
 fn fresh_iterator() -> ByteIterator {
@@ -53,4 +62,73 @@ fn a_byte_iterator_should_correctly_implement_index_of() {
   assert_eq!(other_index_of(fresh_iterator(), 0x20, 1), Some(1));
   assert_eq!(other_index_of(fresh_iterator(), 0x10, 1), Some(2));
   assert_eq!(other_index_of(fresh_iterator(), 0x10, 3), Some(5));
+}
+
+// Notes on the second case.
+//
+// The original reads with an implicit `java.nio.ByteOrder`; the port passes a
+// `ByteOrder` to `get_short`, `get_int` and `get_long`, which return `i16`,
+// `i32` and `i64` as Scala's `Short`, `Int` and `Long` are signed. The original
+// throws `NoSuchElementException` when too few bytes are left; the port returns
+// `None`. Every read in this case has the bytes it needs, so each expected value
+// is `Some`.
+//
+// The original's `iterator.drop(off)` is the helper `drop` below, which reads
+// and discards `off` bytes and hands the same iterator back. `left ++ right` is
+// `concat`, whose iterator walks both arrays as the original's
+// `MultiByteArrayIterator` does. `withClue` becomes the assertion message.
+
+// The original's `iterator.drop(n)`.
+fn drop(mut iterator: ByteIterator, count: usize) -> ByteIterator {
+  for _ in 0..count {
+    iterator.next();
+  }
+  iterator
+}
+
+// "A ByteIterator should match ByteArrayIterator semantics for getShort/Int/Long across both fast and cross-fragment paths"
+#[test]
+fn a_byte_iterator_should_match_byte_array_iterator_semantics_for_get_short_int_long_across_both_fast_and_cross_fragment_paths(
+) {
+  // 16 bytes is large enough to fit a long (8B) entirely inside one fragment for the fast
+  // path AND to span every possible split for the cross-fragment path.
+  let bytes: Vec<u8> = (0..16_u32).map(|i| ((i * 31 + 7) & 0xFF) as u8).collect();
+
+  let reference = |off: usize, byte_order: ByteOrder| -> (Option<i16>, Option<i32>, Option<i64>) {
+    let it = drop(ByteIterator::from_array(&bytes), off);
+    let s = it.clone().get_short(byte_order);
+    let i = it.clone().get_int(byte_order);
+    let l = it.clone().get_long(byte_order);
+    (s, i, l)
+  };
+
+  // Build a multi-fragment ByteString for every split point and read at every offset.
+  for split in 1..bytes.len() {
+    let left = ByteString::from_array(&bytes, 0, split);
+    let right = ByteString::from_array(&bytes, split, bytes.len() - split);
+    let combined = left.concat(&right);
+
+    for byte_order in [ByteOrder::BigEndian, ByteOrder::LittleEndian] {
+      for off in 0..=bytes.len() - 8 {
+        let (ref_s, ref_i, ref_l) = reference(off, byte_order);
+        assert!(ref_s.is_some() && ref_i.is_some() && ref_l.is_some());
+
+        assert_eq!(
+          drop(combined.iterator(), off).get_short(byte_order),
+          ref_s,
+          "split={split}, off={off}, byteOrder={byte_order:?}, getShort: "
+        );
+        assert_eq!(
+          drop(combined.iterator(), off).get_int(byte_order),
+          ref_i,
+          "split={split}, off={off}, byteOrder={byte_order:?}, getInt: "
+        );
+        assert_eq!(
+          drop(combined.iterator(), off).get_long(byte_order),
+          ref_l,
+          "split={split}, off={off}, byteOrder={byte_order:?}, getLong: "
+        );
+      }
+    }
+  }
 }

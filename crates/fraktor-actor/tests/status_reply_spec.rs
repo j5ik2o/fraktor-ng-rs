@@ -1,7 +1,31 @@
-//! Port of the nine cases in Pekko v1.7.1's classic StatusReplySpec.
+//! Port of Pekko v2.0.0's classic StatusReplySpec (SHA 9fbd2283b1cf701c90a1223bf621942c191db61f).
 //!
 //! Upstream: `actor-tests/src/test/scala/org/apache/pekko/pattern/StatusReplySpec.scala`
-//! (<https://raw.githubusercontent.com/apache/pekko/v1.7.1/actor-tests/src/test/scala/org/apache/pekko/pattern/StatusReplySpec.scala>).
+//! (<https://raw.githubusercontent.com/apache/pekko/v2.0.0/actor-tests/src/test/scala/org/apache/pekko/pattern/StatusReplySpec.scala>).
+//!
+//! First ported from v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff), which
+//! had nine cases. v2.0.0 has twenty, and this file ports all of them. The new
+//! ones are "include exception type in toString for non text-error" (upstream
+//! 6287b9de07, #3271), the five "create from Try ..." cases (upstream f1a36ba76b,
+//! #2796) and the five "create from Callable ..." cases (upstream 037b88ad29,
+//! #2812).
+//!
+//! Scala's `Try[T]` is Rust's `Result<T, E>`: `StatusReply.fromTry` is
+//! `StatusReply::from_result` and `fromTryKeepException` is
+//! `from_result_keep_error`. Java's `Callable` reports a failure by throwing;
+//! the Rust counterpart is a closure that returns `Result<T, E>`. The port has
+//! no separate `fromCallable`: each Callable case calls its closure and passes
+//! the result to the same two functions. A panic is not caught, because a panic
+//! is not a recoverable error in Rust, while Pekko catches only `NonFatal`
+//! exceptions.
+//!
+//! Pekko replaces a `null` exception message with the class name
+//! (`java.lang.RuntimeException`). A Rust error always has a `Display` text, and
+//! no text is the empty string, so the port replaces an empty text with
+//! `core::any::type_name` of the error type. Java distinguishes `null` from an
+//! empty message (an empty one is kept); the port cannot, so an empty text is
+//! treated as Java's `null`. The type name is the compiler's rendering and is
+//! not a stable string, so the cases compare it with `type_name` itself.
 
 use core::error::Error;
 use core::fmt;
@@ -24,7 +48,7 @@ use fraktor_testkit::test_kit::TestProbe;
 
 const ASK_TIMEOUT: Duration = Duration::from_secs(3);
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 struct TestException(&'static str);
 
 impl fmt::Display for TestException {
@@ -34,6 +58,37 @@ impl fmt::Display for TestException {
 }
 
 impl Error for TestException {}
+
+// Stands in for the original's `new RuntimeException()`, whose message is `null`.
+#[derive(Debug)]
+struct RuntimeException;
+
+impl fmt::Display for RuntimeException {
+  fn fmt(&self, _formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    Ok(())
+  }
+}
+
+impl Error for RuntimeException {}
+
+fn assert_success_woho(reply: &StatusReply) {
+  assert!(reply.is_success());
+  assert_eq!(reply.get_value().expect("successful reply").downcast_ref::<&'static str>(), Some(&"woho"));
+}
+
+fn assert_text_error(reply: &StatusReply, message: &str) {
+  assert!(reply.is_error());
+  let error = reply.get_error().expect("failed reply");
+  assert_eq!(error.to_string(), message);
+  // `reply.getError shouldBe a[StatusReply.ErrorMessage]`
+  assert!(error.downcast_ref::<ErrorMessage>().is_some(), "the error is an ErrorMessage");
+}
+
+fn assert_kept_test_exception(reply: &StatusReply) {
+  assert!(reply.is_error());
+  // `reply.getError should ===(TestException("boo"))`
+  assert_eq!(reply.get_error().expect("failed reply").downcast_ref::<TestException>(), Some(&TestException("boo")));
+}
 
 // pattern match success
 #[test]
@@ -82,6 +137,44 @@ fn typed_error_reply_carries_the_original_exception() {
   let error = StatusReply::match_reply(Some(&reply)).expect("present reply").expect_err("failed reply");
   assert_eq!(error.downcast_ref::<TestException>().expect("original error").to_string(), "boho!");
 }
+
+// include exception type in toString for non text-error
+//
+// Added in v2.0.0 (upstream 6287b9de07, #3271). Pekko's `toString` renders a
+// non-text error as `Error(<exception>)` and leaves the type to the exception's
+// own `toString`; `Throwable.toString` starts with the class name, as the
+// original's `TestException` does, but an exception may override it. The port
+// names the type itself: the reply's `Debug` (it has no `Display`, because a
+// success carries a type-erased `Message` that has no text) adds the error's
+// type name in front of the error's own `Debug`. The error here prints only
+// its message, so the type name can come only from the reply.
+#[test]
+fn include_exception_type_in_to_string_for_non_text_error() {
+  let rendered = format!("{:?}", StatusReply::error(UnnamedTestException("boho!")));
+  assert!(rendered.contains("UnnamedTestException"), "rendered [{rendered}]");
+  assert!(rendered.contains("boho!"), "rendered [{rendered}]");
+
+  // A text error is rendered as its text, as Pekko's `Error(<message>)`.
+  let rendered = format!("{:?}", StatusReply::error_message("boho!"));
+  assert_eq!(rendered, "Error(boho!)");
+}
+
+// An error whose `Debug` and `Display` print only the message, not the type.
+struct UnnamedTestException(&'static str);
+
+impl fmt::Debug for UnnamedTestException {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str(self.0)
+  }
+}
+
+impl fmt::Display for UnnamedTestException {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str(self.0)
+  }
+}
+
+impl Error for UnnamedTestException {}
 
 // flatten a Future[StatusReply]
 #[test]
@@ -137,6 +230,83 @@ fn ask_with_status_unwraps_original_exception() {
     panic!("expected a reply error, got {error:?}");
   };
   assert_eq!(error.downcast_ref::<TestException>().expect("original error").to_string(), "boho");
+}
+
+// create from Try success
+#[test]
+fn create_from_try_success() {
+  let reply = StatusReply::from_result(Ok::<_, TestException>("woho"));
+  assert_success_woho(&reply);
+}
+
+// create from Try failure with message
+#[test]
+fn create_from_try_failure_with_message() {
+  let reply = StatusReply::from_result(Err::<&'static str, _>(TestException("boo")));
+  assert_text_error(&reply, "boo");
+}
+
+// create from Try failure keeping exception
+#[test]
+fn create_from_try_failure_keeping_exception() {
+  let reply = StatusReply::from_result_keep_error(Err::<&'static str, _>(TestException("boo")));
+  assert_kept_test_exception(&reply);
+}
+
+// create from Try success via fromTryKeepException
+#[test]
+fn create_from_try_success_via_from_try_keep_exception() {
+  let reply = StatusReply::from_result_keep_error(Ok::<_, TestException>("woho"));
+  assert_success_woho(&reply);
+}
+
+// create from Try failure with null message
+#[test]
+fn create_from_try_failure_with_null_message() {
+  let reply = StatusReply::from_result(Err::<&'static str, _>(RuntimeException));
+  assert!(reply.is_error());
+  assert_eq!(reply.get_error().expect("failed reply").to_string(), core::any::type_name::<RuntimeException>());
+}
+
+// create from Callable success
+#[test]
+fn create_from_callable_success() {
+  let callable = || -> Result<&'static str, TestException> { Ok("woho") };
+  let reply = StatusReply::from_result(callable());
+  assert_success_woho(&reply);
+}
+
+// create from Callable failure with message
+#[test]
+fn create_from_callable_failure_with_message() {
+  let callable = || -> Result<&'static str, TestException> { Err(TestException("boo")) };
+  let reply = StatusReply::from_result(callable());
+  assert_text_error(&reply, "boo");
+}
+
+// create from CallableKeepException success
+#[test]
+fn create_from_callable_keep_exception_success() {
+  let callable = || -> Result<&'static str, TestException> { Ok("woho") };
+  let reply = StatusReply::from_result_keep_error(callable());
+  assert_success_woho(&reply);
+}
+
+// create from CallableKeepException failure keeping exception
+#[test]
+fn create_from_callable_keep_exception_failure_keeping_exception() {
+  let callable = || -> Result<&'static str, TestException> { Err(TestException("boo")) };
+  let reply = StatusReply::from_result_keep_error(callable());
+  assert_kept_test_exception(&reply);
+}
+
+// create from Callable failure with null message
+#[test]
+fn create_from_callable_failure_with_null_message() {
+  let callable = || -> Result<&'static str, RuntimeException> { Err(RuntimeException) };
+  let reply = StatusReply::from_result(callable());
+  assert!(reply.is_error());
+  assert_eq!(reply.get_error().expect("failed reply").to_string(), core::any::type_name::<RuntimeException>());
 }
 
 fn poll_ready<F: Future>(future: F) -> F::Output {

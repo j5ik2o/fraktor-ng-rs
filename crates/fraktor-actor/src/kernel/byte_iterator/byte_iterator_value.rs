@@ -2,6 +2,8 @@
 
 use alloc::{sync::Arc, vec, vec::Vec};
 
+use super::ByteOrder;
+
 #[cfg(test)]
 #[path = "byte_iterator_value_test.rs"]
 mod tests;
@@ -75,6 +77,46 @@ impl ByteIterator {
       index += 1;
     }
     None
+  }
+
+  /// Reads the next two bytes as an `i16` in `byte_order`.
+  ///
+  /// Corresponds to Pekko's `getShort(implicit byteOrder)`. When fewer than two
+  /// bytes are left it returns `None` and consumes nothing, as Pekko's
+  /// `ByteArrayIterator` throws `NoSuchElementException` before it reads.
+  pub fn get_short(&mut self, byte_order: ByteOrder) -> Option<i16> {
+    self.read_number(byte_order).map(i16::from_be_bytes)
+  }
+
+  /// Reads the next four bytes as an `i32` in `byte_order`.
+  ///
+  /// Corresponds to Pekko's `getInt(implicit byteOrder)`. When fewer than four
+  /// bytes are left it returns `None` and consumes nothing.
+  pub fn get_int(&mut self, byte_order: ByteOrder) -> Option<i32> {
+    self.read_number(byte_order).map(i32::from_be_bytes)
+  }
+
+  /// Reads the next eight bytes as an `i64` in `byte_order`.
+  ///
+  /// Corresponds to Pekko's `getLong(implicit byteOrder)`. When fewer than
+  /// eight bytes are left it returns `None` and consumes nothing.
+  pub fn get_long(&mut self, byte_order: ByteOrder) -> Option<i64> {
+    self.read_number(byte_order).map(i64::from_be_bytes)
+  }
+
+  // Reads the next `N` bytes, most significant first, across array boundaries.
+  // Leaves the iterator untouched when fewer than `N` bytes are left.
+  fn read_number<const N: usize>(&mut self, byte_order: ByteOrder) -> Option<[u8; N]> {
+    let mut bytes = [0_u8; N];
+    let (current, offset) = (self.current, self.offset);
+    if self.copy_into(&mut bytes) < N {
+      (self.current, self.offset) = (current, offset);
+      return None;
+    }
+    if byte_order == ByteOrder::LittleEndian {
+      bytes.reverse();
+    }
+    Some(bytes)
   }
 
   /// Moves up to `buffer.len()` bytes into `buffer`, and returns how many it
