@@ -22,7 +22,6 @@ use std::{
 };
 
 use super::{read_name_servers, SystemHostDnsConfiguration};
-use crate::adaptor::UnsupportedHostDnsPlatformError;
 use crate::kernel::io::dns::{
   DnsSettingsConfig, DnsSettingsError, DnsSettingsValues, HostDnsConfiguration, NameserversSetting, NdotsSetting,
   ResolvConf, SearchDomainsSetting, TtlSetting,
@@ -69,9 +68,13 @@ impl Drop for TempDir {
 
 // `create` (not `create_all`) fails when the path already exists.
 fn private_directory_builder() -> DirBuilder {
-  let mut builder = DirBuilder::new();
+  let builder = DirBuilder::new();
   #[cfg(unix)]
-  std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+  let builder = {
+    let mut builder = builder;
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder
+  };
   builder
 }
 
@@ -128,28 +131,38 @@ fn default_config() -> DnsSettingsConfig {
 // `ResolverConfigurationImpl` both open.
 #[test]
 fn a_resolv_conf_host_reads_the_etc_resolv_conf() {
-  assert_eq!(
-    SystemHostDnsConfiguration::for_platform(false),
-    Ok(SystemHostDnsConfiguration::reading("/etc/resolv.conf"))
-  );
+  assert_eq!(SystemHostDnsConfiguration::for_platform(false), SystemHostDnsConfiguration::reading("/etc/resolv.conf"));
 }
 
-// Windows keeps its name servers outside `resolv.conf`; reading them is not
-// ported (#160), so creating the configuration there fails with an error that
-// says so instead of quietly finding no name server.
+// On Windows the name servers come from the IP Helper, as the JDK's Windows
+// `ResolverConfigurationImpl` reads them, and the original skips `resolv.conf`.
 #[test]
-fn windows_is_reported_as_unsupported() {
-  let error: UnsupportedHostDnsPlatformError =
-    SystemHostDnsConfiguration::for_platform(true).expect_err("Windows is not supported");
-  assert!(error.to_string().contains("not supported"));
+fn a_windows_host_reads_the_ip_helper_and_has_no_resolv_conf() {
+  let host = SystemHostDnsConfiguration::for_platform(true);
+  assert_eq!(host, SystemHostDnsConfiguration::ip_helper());
+  assert_eq!(host.resolv_conf(), None);
 }
 
 #[test]
 fn new_follows_the_platform_it_runs_on() {
-  assert_eq!(SystemHostDnsConfiguration::new(), SystemHostDnsConfiguration::for_platform(cfg!(windows)));
+  assert_eq!(SystemHostDnsConfiguration::new(), Ok(SystemHostDnsConfiguration::for_platform(cfg!(windows))));
 }
 
-// A `nameserver` line without a port gets the original's fallback port 53.
+// On a real Windows host the IP Helper answers, and a name server it yields
+// has no IPv6 scope ID, which the JDK skips. The host's own servers are not
+// compared, as they depend on its network.
+#[cfg(windows)]
+#[test]
+fn the_ip_helper_of_a_windows_host_is_read() {
+  assert!(crate::adaptor::windows_ip_helper::read_adapters().is_some());
+  let host = SystemHostDnsConfiguration::new().expect("Windows is supported");
+  for server in host.name_servers().unwrap_or_default() {
+    if let SocketAddr::V6(server) = server {
+      assert_eq!(server.scope_id(), 0);
+    }
+  }
+}
+
 #[test]
 fn an_ipv4_name_server_without_a_port_uses_port_53() {
   let (_dir, host) = host_with("nameserver 192.0.2.1\n");

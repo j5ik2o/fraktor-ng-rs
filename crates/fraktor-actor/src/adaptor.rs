@@ -15,6 +15,8 @@ mod system_host_dns_configuration;
 mod unsupported_host_dns_platform_error;
 mod unsupported_id_generator_policy_error;
 mod unwind_catcher;
+mod windows_adapter;
+mod windows_ip_helper;
 
 pub use ask_driver::attach_wait_driver;
 pub use ask_error::AskError;
