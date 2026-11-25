@@ -5157,7 +5157,7 @@ nodes:
     module: actor-tests
     class: UnsynchronizedByteArrayInputStreamSpec
     test_cases_approx: 3
-  status: green
+  status: red
   triage:
     kind: pending
     reason: null
@@ -5168,15 +5168,15 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: 3
-    ported: 3
-    passing: 3
+    total: 14
+    ported: 12
+    passing: 12
     excluded: []
   rust:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/unsynchronized_byte_array_input_stream_spec.rs
   goal: G0issue147
-  verified_against: v1.7.1
+  verified_against: null
 - id: actor-tests/src/test/scala/org/apache/pekko/util/VersionSpec.scala
   name: actor-tests:VersionSpec
   kind: test
