@@ -343,6 +343,22 @@ def test_apply_refuses_a_duplicate_field():
         print("8b. verified_against が二重なら拒否する")
 
 
+def test_plan_refuses_a_duplicate_field():
+    """plan も二重欄を拒否する（先頭が現行タグでも、後ろの値を黙って見落とさない）。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        quoted = ledger(tag=CURRENT).replace(
+            f"  verified_against: {CURRENT}\n- id: m/B.scala",
+            f"  verified_against: {CURRENT}\n  verified_against: {PAST}\n- id: m/B.scala",
+        )
+        path = write_ledger(root, quoted)
+        proc = tool(root, "plan", "--ledger", str(path))
+        assert proc.returncode == 1, (proc.stdout, proc.stderr)
+        assert "2 個" in proc.stderr, proc.stderr
+        assert proc.stdout == "", proc.stdout
+        print("8b2. plan も二重欄を拒否する")
+
+
 def test_apply_refuses_when_a_line_outside_the_node_changes():
     """わざとノードの外を変える道具に差し替えると、書き込まずに失敗する（外の行の防御）。"""
     with tempfile.TemporaryDirectory() as temporary:
@@ -495,6 +511,7 @@ def main() -> int:
         test_apply_is_idempotent_and_reports_no_change,
         test_apply_refuses_duplicate_ids_and_writes_nothing,
         test_apply_refuses_a_duplicate_field,
+        test_plan_refuses_a_duplicate_field,
         test_apply_refuses_when_a_line_outside_the_node_changes,
         test_apply_writes_nothing_when_a_later_id_fails,
         test_dry_run_writes_nothing,

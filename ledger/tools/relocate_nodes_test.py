@@ -97,7 +97,8 @@ def make_table(root: Path, *, move: bool = True, delete: bool = True) -> Path:
         rows.append("\t".join(["delete", "m/Deleted.scala", "-", "原典から削除", SHA, DATE]))
     path = root / "docs" / "baseline" / "port-targets.tsv"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(TABLE_HEADER + "\n".join(rows) + "\n", encoding="utf-8")
+    head = f"# tag: {TAG}\n" if delete else ""
+    path.write_text(head + TABLE_HEADER + "\n".join(rows) + "\n", encoding="utf-8")
     return path
 
 
@@ -112,6 +113,11 @@ def make_root(base: Path, *, moved: bool = False) -> Path:
         "対象: `m/Old.scala`（旧 id の参照）\n", encoding="utf-8")
     # 凍結した過去の基準は、旧 id を持っていても書き換えない。
     (history / "ledger.yaml").write_text("file: m/Old.scala\n", encoding="utf-8")
+    # git 管理外の過去の実行記録。旧 id を持っていても、置換も検査もしない。
+    (root / ".takt" / "runs").mkdir(parents=True, exist_ok=True)
+    (root / ".takt" / ".gitignore").write_text("*\n!.gitignore\n", encoding="utf-8")
+    (root / ".takt" / "runs" / "old-run.md").write_text("報告: m/Old.scala\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
     return root
 
 
@@ -144,7 +150,7 @@ def test_apply_moves_and_deletes():
         deleted = after[after.index("- id: m/Deleted.scala"):]
         assert "  status: do_not_port" in deleted
         assert "    kind: do_not_port" in deleted
-        assert f"    reason: {relocate_table.DELETE_REASON.format(short=SHA[:10], date=DATE)}" in deleted
+        assert f"    reason: {relocate_table.DELETE_REASON.format(tag=TAG, short=SHA[:10], date=DATE)}" in deleted
         assert f"  verified_against: {TAG}" in deleted
         # 移動したノードの status・cases・goal はそのまま。
         moved = after[after.index("- id: m/New.scala"):after.index("- id: m/Kept.scala")]
@@ -154,6 +160,20 @@ def test_apply_moves_and_deletes():
         frozen = root / relocate_table.history_dirs()[0] / "ledger.yaml"
         assert "m/Old.scala" in frozen.read_text(encoding="utf-8")
         print("1. 移動と削除を適用し、対象の欄だけを変える")
+
+
+def test_apply_leaves_ignored_run_history_alone():
+    """`.takt/runs/` のような git 管理外の過去の記録は、置換も検査もしない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = make_root(Path(temporary))
+        make_table(root)
+        assert tool(root, "apply").returncode == 0
+        assert "`m/New.scala`" in (root / "docs" / "goals" / "g.md").read_text(encoding="utf-8")
+        run = root / ".takt" / "runs" / "old-run.md"
+        assert "m/Old.scala" in run.read_text(encoding="utf-8")
+        proc = tool(root, "check")
+        assert proc.returncode == 0, (proc.stdout, proc.stderr)
+        print("2b. git 管理外の実行記録は置換も検査もしない")
 
 
 def test_check_passes_after_apply():
@@ -277,6 +297,7 @@ def test_apply_works_without_pyyaml():
 def main() -> int:
     tests = [
         test_apply_moves_and_deletes,
+        test_apply_leaves_ignored_run_history_alone,
         test_check_passes_after_apply,
         test_check_fails_when_the_ledger_still_has_the_old_id,
         test_check_fails_when_a_reference_remains,

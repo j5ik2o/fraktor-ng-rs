@@ -1,4 +1,6 @@
 # 原典 v2.0.0 の移動（8 件）と原典で削除（14 件）の根拠表。1 行 1 件。
+# tag: v2.0.0
+# tag は delete 行の verified_against（原典の確認に使ったタグ）。move 行は使わない。
 # kind: move（old_id から new_id へ）または delete（new_id は -）。
 # deleted_in: 旧パスを削除した v2.0.0 の commit（move では改名として扱う commit）。confirmed_at: 確認日。
 kind	old_id	new_id	reason	deleted_in	confirmed_at

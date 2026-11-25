@@ -78,10 +78,12 @@ uv run python3 ledger/tools/reverify_against.py apply \
 ない。
 
 置換は手で書かず、1 行 1 件の根拠表（`docs/baseline/v2.0.0-port-targets.tsv`。旧 id・新 id・理由・
-削除コミット・確認日）を読む `ledger/tools/relocate_nodes.py` で行う。台帳の行の書き換えは
-`ledger_lines.py` を通る。`apply` は PyYAML なしで動き、冪等である。`check` は根拠表と台帳の
-整合と、旧 id の文字列参照 0 件（`ledger`・`docs`・`.takt`・`scripts` を探す。根拠表と凍結した
-過去の基準は履歴として除く）を見る。CI でも `check` を実行する。
+削除コミット・確認日。`# tag:` は delete 行の `verified_against`）を読む
+`ledger/tools/relocate_nodes.py` で行う。台帳の行の書き換えは `ledger_lines.py` を通る。`apply` は
+PyYAML なしで動き、冪等である。`check` は根拠表と台帳の整合と、旧 id の文字列参照 0 件を見る
+（`ledger`・`docs`・`.takt`・`scripts` のうち git が扱うファイルだけを探す。根拠表と凍結した
+過去の基準は履歴として除き、`.takt/runs/` のような git 管理外の過去の実行記録は書き換えない）。
+CI でも `check` を実行する。
 
 ```sh
 python3 ledger/tools/relocate_nodes.py apply --dry-run   # 何が変わるか（書かない）

@@ -84,7 +84,7 @@ def _read_line_field(lines: list[str], span: tuple[int, int], key: str, indent: 
     return None
 
 
-def _apply_delete(lines: list[str], row: Row, tag: str) -> tuple[list[str], str | None]:
+def _apply_delete(lines: list[str], row: Row) -> tuple[list[str], str | None]:
     original = lines
     before = node_span(original, row.old_id)
     if before is None:
@@ -92,7 +92,7 @@ def _apply_delete(lines: list[str], row: Row, tag: str) -> tuple[list[str], str 
     lines = _set_top_level_key(original, row.old_id, "status", "do_not_port")
     lines = set_nested_key(lines, row.old_id, "triage", "kind", "do_not_port")
     lines = set_nested_key(lines, row.old_id, "triage", "reason", row.delete_reason)
-    lines = _set_top_level_key(lines, row.old_id, "verified_against", tag)
+    lines = _set_top_level_key(lines, row.old_id, "verified_against", row.tag)
     after = node_span(lines, row.old_id)
     if _comparable(original, before, DELETE_DROP) != _comparable(lines, after, DELETE_DROP):
         return lines, f"{row.old_id}: status・triage・verified_against 以外の行が変わった"
@@ -114,7 +114,7 @@ def _paths(args) -> tuple[Path, Path, Path]:
     return root, table if table.is_absolute() else root / table, ledger if ledger.is_absolute() else root / ledger
 
 
-def _plan(original: list[str], rows: list[Row], tag: str) -> tuple[list[tuple[Row, tuple[int, int]]], list[str]]:
+def _plan(original: list[str], rows: list[Row]) -> tuple[list[tuple[Row, tuple[int, int]]], list[str]]:
     """適用する行と、そのノードの元の行の範囲を返す（元の台帳だけで決める）。"""
     plan: list[tuple[Row, tuple[int, int]]] = []
     errors: list[str] = []
@@ -143,20 +143,17 @@ def _plan(original: list[str], rows: list[Row], tag: str) -> tuple[list[tuple[Ro
             verified = _read_line_field(original, span, "verified_against", "  ")
             already = (status == "do_not_port" and kind == "do_not_port"
                        and reason in (row.delete_reason, _yaml_scalar(row.delete_reason))
-                       and verified in (tag, f'"{tag}"'))
+                       and verified in (row.tag, f'"{row.tag}"'))
             if not already:
                 plan.append((row, span))
     return plan, errors
 
 
 def cmd_apply(args) -> int:
-    import pekko_baseline
-
-    tag = pekko_baseline.load().tag
     root, table, ledger = _paths(args)
     rows = read_table(table)
     original = ledger.read_text(encoding="utf-8").splitlines(keepends=True)
-    plan, errors = _plan(original, rows, tag)
+    plan, errors = _plan(original, rows)
     if errors:
         for error in errors:
             print(error, file=sys.stderr)
@@ -172,7 +169,7 @@ def cmd_apply(args) -> int:
             after_ids.append(row.new_id)
             moves += 1
         else:
-            lines, error = _apply_delete(lines, row, tag)
+            lines, error = _apply_delete(lines, row)
             after_ids.append(row.old_id)
             deletes += 1
         if error:
@@ -215,10 +212,8 @@ def _node_by_id(nodes: list[dict], node_id: str) -> dict | None:
 
 
 def cmd_check(args) -> int:
-    import pekko_baseline
     import rollup
 
-    tag = pekko_baseline.load().tag
     root, table, ledger = _paths(args)
     rows = read_table(table)
     nodes = rollup.load_nodes(ledger)
@@ -257,8 +252,8 @@ def cmd_check(args) -> int:
             if triage.get("reason") != row.delete_reason:
                 problems.append(f"{row.old_id}: triage.reason が {row.delete_reason!r} でない"
                                 f"（{triage.get('reason')!r}）")
-            if node.get("verified_against") != tag:
-                problems.append(f"{row.old_id}: verified_against が {tag} でない"
+            if node.get("verified_against") != row.tag:
+                problems.append(f"{row.old_id}: verified_against が {row.tag} でない"
                                 f"（{node.get('verified_against')!r}）")
     for line in find_references(root, table.resolve(), rows):
         problems.append(f"旧 id の参照が残っている: {line}")
@@ -269,7 +264,7 @@ def cmd_check(args) -> int:
         return 1
     print(f"根拠表 {len(rows)} 件（move {sum(1 for r in rows if r.kind == 'move')}、"
           f"delete {sum(1 for r in rows if r.kind == 'delete')}）と台帳が一致し、"
-          f"旧 id の参照は 0 件（基準 {tag}）")
+          f"旧 id の参照は 0 件（根拠表のタグ {sorted({r.tag for r in rows if r.tag})}）")
     return 0
 
 

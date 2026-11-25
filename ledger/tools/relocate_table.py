@@ -6,6 +6,7 @@ PyYAML を使わない（`apply` を PyYAML なしで動かす経路を壊さな
 """
 import datetime
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,7 +21,7 @@ def history_dirs() -> tuple[str, ...]:
 
     return tuple(f"docs/baseline/pekko-{tag}/" for tag in sorted(pekko_baseline.load().historical))
 
-DELETE_REASON = "原典 v2.0.0 で削除（削除コミット {short}・確認日 {date}）"
+DELETE_REASON = "原典 {tag} で削除（削除コミット {short}・確認日 {date}）"
 HEADER = ["kind", "old_id", "new_id", "reason", "deleted_in", "confirmed_at"]
 
 
@@ -32,6 +33,8 @@ class Row:
     reason: str
     deleted_in: str
     confirmed_at: str
+    # 根拠表の `# tag:` が指す原典のタグ（delete 行の verified_against）。move 行だけの表では空。
+    tag: str = ""
 
     @property
     def short(self) -> str:
@@ -39,7 +42,7 @@ class Row:
 
     @property
     def delete_reason(self) -> str:
-        return DELETE_REASON.format(short=self.short, date=self.confirmed_at)
+        return DELETE_REASON.format(tag=self.tag, short=self.short, date=self.confirmed_at)
 
 
 def _valid_date(text: str) -> bool:
@@ -53,8 +56,14 @@ def read_table(path: str | Path) -> list[Row]:
     """根拠表（TSV）を読み、1 行 1 件のレコードにする。書式の違反は ValueError。"""
     rows: list[Row] = []
     header_seen = False
+    tag = None
     for number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
-        if not line.strip() or line.startswith("#"):
+        if not line.strip():
+            continue
+        if line.startswith("#"):
+            matched = re.match(r"#\s*tag:\s*(\S+)\s*$", line)
+            if matched:
+                tag = matched.group(1)
             continue
         fields = line.split("\t")
         if not header_seen:
@@ -64,7 +73,7 @@ def read_table(path: str | Path) -> list[Row]:
             continue
         if len(fields) != len(HEADER):
             raise ValueError(f"{path}:{number}: 欄の数が {len(HEADER)} でない: {line!r}")
-        rows.append(Row(*fields))
+        rows.append(Row(*fields, tag=tag or ""))
     if not rows:
         raise ValueError(f"{path}: 行が無い")
     for row in rows:
@@ -89,27 +98,44 @@ def read_table(path: str | Path) -> list[Row]:
     new_ids = [r.new_id for r in rows if r.kind == "move"]
     if len(set(new_ids)) != len(new_ids):
         raise ValueError(f"{path}: new_id が重複している")
+    if any(r.kind == "delete" for r in rows):
+        if not tag:
+            raise ValueError(f"{path}: delete 行があるのに `# tag: <削除を確認したタグ>` が無い")
+        import pekko_baseline
+
+        if tag not in pekko_baseline.load().known_tags():
+            raise ValueError(f"{path}: # tag: {tag!r} は基準ファイルの知るタグでない")
     return rows
 
 
 def _scope_files(root: Path, table: Path) -> list[Path]:
-    """旧 id の文字列参照を探すファイル（根拠表と凍結した過去の基準を除く）。"""
+    """旧 id の文字列参照を探すファイル（根拠表と凍結した過去の基準を除く）。
+
+    git が扱うファイル（追跡済みと、無視されない未追跡）だけを対象にする。`.takt/runs/` の
+    ような git 管理外の過去の実行記録は、当時の原典のパスを持っているので書き換えない
+    （`pekko_baseline._active_files` と同じ扱い）。
+    """
     files: list[Path] = []
     table = table.resolve()
     history = history_dirs()
-    for name in SCOPE:
-        base = root / name
-        if not base.is_dir():
+    proc = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+         "--", *SCOPE],
+        capture_output=True, check=False,
+    )
+    if proc.returncode != 0:
+        raise ValueError(f"{root}: git ls-files に失敗した: {proc.stderr.decode(errors='replace').strip()}")
+    for name in proc.stdout.decode("utf-8").split("\0"):
+        if not name:
             continue
-        for path in sorted(base.rglob("*")):
-            if not path.is_file() or path.resolve() == table:
-                continue
-            relative = path.relative_to(root).as_posix()
-            if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
-                continue
-            if any(relative.startswith(d) for d in history):
-                continue
-            files.append(path)
+        path = root / name
+        if not path.is_file() or path.resolve() == table:
+            continue
+        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+            continue
+        if any(name.startswith(d) for d in history):
+            continue
+        files.append(path)
     return files
 
 

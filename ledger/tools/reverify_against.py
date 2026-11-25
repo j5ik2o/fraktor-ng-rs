@@ -131,6 +131,7 @@ def _judged(lines: list[str]) -> list[tuple[str, str | None]]:
         span = _span(lines, node_id)
         status = _status(lines, span)
         if status in JUDGED_STATUSES:
+            _refuse_duplicate(lines, node_id)
             result.append((node_id, read_field(lines, FIELD, span)))
     return result
 
