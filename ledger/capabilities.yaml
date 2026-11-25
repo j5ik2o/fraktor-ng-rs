@@ -75,7 +75,7 @@ capabilities:
   label: TestLatch
   category: classic
   regex: \bTestLatch\b
-  provided_by: null
+  provided_by: G0issue180
 - id: within
   label: within
   category: classic
@@ -100,7 +100,7 @@ capabilities:
   label: receiveWhile
   category: classic
   regex: \breceiveWhile\b
-  provided_by: null
+  provided_by: G0issue180
 - id: receive-n
   label: receiveN
   category: classic

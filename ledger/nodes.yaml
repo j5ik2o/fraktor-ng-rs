@@ -33234,12 +33234,12 @@ nodes:
   goal: null
 - id: testkit/src/test/scala/org/apache/pekko/testkit/AbstractSpec.scala
   name: testkit:AbstractSpec
-  kind: test
+  kind: fixture
   pekko:
     module: testkit
     class: AbstractSpec
     test_cases_approx: 0
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -33250,14 +33250,15 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 0
+    ported: 0
+    passing: 0
     excluded: []
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue180
+  verified_against: v2.0.0
 - id: testkit/src/test/scala/org/apache/pekko/testkit/CoronerSpec.scala
   name: testkit:CoronerSpec
   kind: test
@@ -33265,7 +33266,7 @@ nodes:
     module: testkit
     class: CoronerSpec
     test_cases_approx: 4
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -33276,14 +33277,23 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
-    excluded: []
+    total: 4
+    ported: 2
+    passing: 2
+    excluded:
+    - name: display thread counts if enabled
+      reason: "v2.0.0 の testkit/src/test/scala/org/apache/pekko/testkit/CoronerSpec.scala L56-66。原典は JVM の ThreadMXBean（getThreadCount、resetPeakThreadCount、getPeakThreadCount）が数えるプロセスのスレッド数と最大値を報告に書くことを観測する。Rust の標準ライブラリにはプロセスのスレッドを数える API が無いので、等価には確かめられない。代わりに、報告の形（題名、アーキテクチャ、OS、使える並列度の行の順）を crates/fraktor-testkit/src/coroner_test.rs で確かめる（件数に含めない）。承認：オーナー本人（j5ik2o）が元帥の項目365（e5608）で「除外として承認し、代わりのテストを足す」と回答した。この記録はその転記"
+      approved_by: j5ik2o
+      approved_at: 2026-11-25
+    - name: display deadlock information in its report
+      reason: "v2.0.0 の testkit/src/test/scala/org/apache/pekko/testkit/CoronerSpec.scala L68-152。原典は 2 本のスレッドを ReentrantLock で互いに待たせ、JVM が ownable synchronizer の所有者を追って見つけた deadlock を、ThreadMXBean.findDeadlockedThreads とスレッドのダンプで報告に書くことを観測する。Rust の標準ライブラリはほかのスレッドを列挙できず、Mutex の所有者も見せないので、等価には確かめられない。代わりに、報告が報告したスレッドの名前とそのスタックを含むこと、watch の期限切れの報告が Coroner のスレッドから出ることを crates/fraktor-testkit/src/coroner_test.rs で確かめる（件数に含めない）。承認：オーナー本人（j5ik2o）が元帥の項目365（e5608）で「除外として承認し、代わりのテストを足す」と回答した。この記録はその転記"
+      approved_by: j5ik2o
+      approved_at: 2026-11-25
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-testkit
+    test_file: crates/fraktor-testkit/tests/coroner_spec.rs
+  goal: G0issue180
+  verified_against: v2.0.0
 - id: testkit/src/test/scala/org/apache/pekko/testkit/DefaultTimeoutSpec.scala
   name: testkit:DefaultTimeoutSpec
   kind: test

@@ -12,6 +12,7 @@ use fraktor_actor::kernel::supervision::SupervisorStrategy;
 
 use crate::test_kit::expected_messages::ClassOf;
 use crate::test_kit::AutoPilot;
+use crate::test_kit::ReceiveWhile;
 use crate::test_kit::ReceivedMessage;
 use crate::test_kit::TestKitBase;
 use crate::test_kit_extension::TestKitSettings;
@@ -193,6 +194,15 @@ impl TestProbe {
   pub fn await_cond(&mut self, condition: impl FnMut() -> bool, max: Duration) {
     let max = self.base.settings().dilated(max);
     self.base.await_cond(condition, max);
+  }
+
+  /// Takes messages while `pick` accepts them and returns what it picked,
+  /// corresponding to `receiveWhile`.
+  ///
+  /// The call ends at the first message `pick` rejects, which stays queued for
+  /// the next wait, or at the first of the [`ReceiveWhile`] limits.
+  pub fn receive_while<T>(&mut self, limits: ReceiveWhile, pick: impl FnMut(&Message) -> Option<T>) -> Vec<T> {
+    self.base.receive_while(limits, pick)
   }
 
   /// Waits until `predicate` accepts a message, dropping the ones before it.
