@@ -2,9 +2,16 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
+
+use fraktor_actor::kernel::actor::Actor;
+use fraktor_actor::kernel::actor::ActorContext;
+use fraktor_actor::kernel::actor::Props;
+use fraktor_actor::kernel::message::Message;
 
 use super::FraktorSpec;
 use crate::fraktorspec::FraktorSpecHooks;
+use crate::test_kit::ReceiveWhile;
 use crate::test_kit::TestKit;
 
 struct RecordingHooks {
@@ -66,4 +73,39 @@ fn new_creates_a_running_system() {
 
   assert!(!spec.system().is_terminated());
   assert_eq!(spec.system().name(), "PekkoSpecSpec");
+}
+
+struct Idle;
+
+impl Actor for Idle {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+}
+
+// The capability that Pekko's "terminate all actors" (PekkoSpecSpec) uses:
+// after the spec shuts its system down, `awaitCond` sees the test actor and
+// the actors of the system as terminated.
+#[test]
+fn await_cond_sees_every_actor_terminated_after_terminate() {
+  let mut spec = FraktorSpec::new("PekkoSpecSpec");
+  let actor = spec.system_mut().actor_of(Props::new(|| Idle));
+  let refs = [spec.test_actor(), actor];
+  let system = spec.system().downgrade();
+  assert!(refs.iter().all(|reference| !system.is_actor_terminated(reference)));
+
+  spec.terminate();
+
+  spec.await_cond(|| refs.iter().all(|reference| system.is_actor_terminated(reference)), Duration::from_secs(2));
+}
+
+#[test]
+fn receive_while_reads_the_test_actor_of_the_spec() {
+  let mut spec = FraktorSpec::new("PekkoSpecSpec");
+  let test_actor = spec.test_actor();
+  test_actor.tell(7usize, test_actor.clone());
+
+  let received = spec.receive_while(ReceiveWhile::new().max(Duration::from_millis(200)).messages(1), |message| {
+    message.downcast_ref::<usize>().copied()
+  });
+
+  assert_eq!(received, vec![7]);
 }

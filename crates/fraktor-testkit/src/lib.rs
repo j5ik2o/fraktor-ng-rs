@@ -5,6 +5,7 @@
 //! trait, the `ImplicitSender` sender, and the `FraktorSpec` base that owns an
 //! actor system and its test actor.
 
+pub mod coroner;
 pub mod default_timeout;
 pub mod event_filter;
 pub mod fraktorspec;

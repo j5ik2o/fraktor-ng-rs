@@ -17,6 +17,7 @@ use crate::event_filter::EventSinkRegistry;
 use crate::fraktorspec::fraktor_spec_hooks::FraktorSpecHooks;
 use crate::test_kit::expected_messages::ClassOf;
 use crate::test_kit::AutoPilot;
+use crate::test_kit::ReceiveWhile;
 use crate::test_kit::TestKit;
 use crate::test_kit_extension::TestKitSettings;
 use crate::test_kit_extension::TestTimeFactor;
@@ -172,6 +173,23 @@ impl FraktorSpec {
   /// is queued, corresponding to `setAutoPilot`.
   pub fn set_auto_pilot<P: AutoPilot + 'static>(&self, pilot: P) {
     self.test_kit.set_auto_pilot(pilot);
+  }
+
+  /// Takes messages of the test actor while `pick` accepts them, corresponding
+  /// to `receiveWhile`.
+  pub fn receive_while<T>(&mut self, limits: ReceiveWhile, pick: impl FnMut(&Message) -> Option<T>) -> Vec<T> {
+    self.test_kit.receive_while(limits, pick)
+  }
+
+  /// Waits until `condition` holds or the dilated `max` has passed,
+  /// corresponding to `awaitCond`.
+  ///
+  /// The system keeps running between evaluations, also after `terminate`,
+  /// where a condition such as "every actor is terminated" reads the system
+  /// through a [`WeakActorSystem`](fraktor_actor::kernel::actor_system::WeakActorSystem)
+  /// taken before the call.
+  pub fn await_cond(&mut self, condition: impl FnMut() -> bool, max: Duration) {
+    self.test_kit.await_cond(condition, max);
   }
 
   /// Runs `assertion` until it stops failing, corresponding to `awaitAssert`.
