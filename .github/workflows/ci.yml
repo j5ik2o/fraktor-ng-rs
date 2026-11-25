@@ -81,6 +81,46 @@ jobs:
             cargo run --quiet --release --locked --manifest-path tools/syn-check/Cargo.toml -- --format json "${dir%/}"
           done
 
+  # Every crates/*/specs/*.qnt is typechecked and its runs are executed, so a
+  # spec that drifts from the code fails here. The glob is re-read on every run:
+  # a new crate with specs needs no change to this job. Design: docs/design/quint-in-ci.md.
+  quint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: npm ci
+        run: npm ci
+      - name: quint typecheck, test, and a short run
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          specs=(crates/*/specs/*.qnt)
+          if [ ${#specs[@]} -eq 0 ]; then
+            echo '::error::No Quint spec matched crates/*/specs/*.qnt'
+            exit 1
+          fi
+          for spec in "${specs[@]}"; do
+            echo "::group::$spec"
+            ./node_modules/.bin/quint typecheck "$spec"
+            ./node_modules/.bin/quint test "$spec"
+            # The short run checks `val invariant` over random traces; --verbosity=2
+            # prints the counterexample when it is violated. 20 steps and 10000
+            # traces (quint's default) cost about one second for three specs here.
+            # A spec without that definition is still typechecked and tested.
+            if grep -qE '^[[:space:]]*val invariant[[:space:]]*=' "$spec"; then
+              ./node_modules/.bin/quint run --invariant=invariant \
+                --max-steps=20 --max-samples=10000 --verbosity=2 "$spec"
+            else
+              echo "no 'val invariant' definition: skipped the short run"
+            fi
+            echo '::endgroup::'
+          done
+
   # The Windows IP Helper path of `SystemHostDnsConfiguration` (#160) is built
   # and its real-host test runs only on Windows.
   windows:
