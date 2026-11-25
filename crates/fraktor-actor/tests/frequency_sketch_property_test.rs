@@ -344,8 +344,11 @@ fn constructors_accept_exactly_the_valid_settings() {
     // Building a valid sketch allocates its counters, so each sketch is built
     // only where the original rejects its settings or its width is small; the
     // rest are checked through the error alone. The fast sketch takes neither
-    // the counter size nor the depth, so it is judged by its own error.
-    let small = i64::from(width_multiplier) * i64::from(reference_ceiling_power_of_two(capacity)) <= 1 << 16;
+    // the counter size nor the depth, so it is judged by its own error. The
+    // width is the product truncated to `i32`, as the constructors take it: a
+    // negative product can truncate to a large positive width.
+    let width = (i64::from(width_multiplier) * i64::from(reference_ceiling_power_of_two(capacity))) as i32;
+    let small = (1..=1 << 16).contains(&width);
     let expected = reference_settings_error(capacity, width_multiplier, Some(counter_bits), Some(depth));
     if expected.is_some() || small {
       let actual = FrequencySketch::<str>::new(capacity, settings).err();
