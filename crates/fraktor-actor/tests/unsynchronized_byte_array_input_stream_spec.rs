@@ -36,8 +36,9 @@
 // error types listed below (E0432 and E0599, recorded in
 // docs/baseline/pekko-v2.0.0-migration/batch-2.md).
 
-// Cases not ported. Both are recorded in the ledger as approved not-built cases
-// (`cases.not_built` of this node, approved on 2026-11-25), not as exclusions:
+// Cases not ported. How to treat them is undecided. They are neither excluded nor
+// recorded as not built, so the ledger keeps this node red with 14 cases and 12
+// ported (docs/baseline/pekko-v2.0.0-migration/batch-2.md):
 //   * "reject negative skip": `skip` takes a `usize`, which cannot be negative.
 //   * "not copy the backing array": the original writes to the array after
 //     building the stream and reads the new byte back. Safe Rust cannot write
