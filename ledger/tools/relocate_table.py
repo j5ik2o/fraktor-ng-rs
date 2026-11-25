@@ -4,6 +4,7 @@
 `relocate_nodes.py` の入力（根拠表）と、旧 id の参照の検索・置き換えをここに置く。
 PyYAML を使わない（`apply` を PyYAML なしで動かす経路を壊さない）。
 """
+import dataclasses
 import datetime
 import re
 import subprocess
@@ -33,7 +34,7 @@ class Row:
     reason: str
     deleted_in: str
     confirmed_at: str
-    # 根拠表の `# tag:` が指す原典のタグ（delete 行の verified_against）。move 行だけの表では空。
+    # 根拠表の `# tag:` が指す原典のタグ（行の位置によらず同じ値）。`# tag:` の無い表では空。
     tag: str = ""
 
     @property
@@ -53,7 +54,11 @@ def _valid_date(text: str) -> bool:
 
 
 def read_table(path: str | Path) -> list[Row]:
-    """根拠表（TSV）を読み、1 行 1 件のレコードにする。書式の違反は ValueError。"""
+    """根拠表（TSV）を読み、1 行 1 件のレコードにする。書式の違反は ValueError。
+
+    `# tag: <タグ>` は表のどこに書いてもよい（行より後ろでもよい）。ただし、行に付くのは
+    ファイル全体で確定した 1 つのタグである（2 つの違うタグがあれば ValueError）。
+    """
     rows: list[Row] = []
     header_seen = False
     tag = None
@@ -75,7 +80,10 @@ def read_table(path: str | Path) -> list[Row]:
             continue
         if len(fields) != len(HEADER):
             raise ValueError(f"{path}:{number}: 欄の数が {len(HEADER)} でない: {line!r}")
-        rows.append(Row(*fields, tag=tag or ""))
+        rows.append(Row(*fields))
+    if tag is not None:
+        # コメントを行の後ろに書いた表でも取りこぼさないよう、タグは全行を読み終えてから付ける。
+        rows = [dataclasses.replace(row, tag=tag) for row in rows]
     if not rows:
         raise ValueError(f"{path}: 行が無い")
     for row in rows:

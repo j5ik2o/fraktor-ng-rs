@@ -97,16 +97,19 @@ def count_key(lines: list[str], node_id: str, key: str) -> int:
 def rename_id(lines: list[str], old_id: str, new_id: str) -> list[str]:
     """`nodes` の中の `- id: old_id` を `- id: new_id` に変える（1 行だけ）。
 
-    ノードの最上位の範囲の中の `- id:` 行だけを対象にし、`retired` の id や本文は触れない。
-    old_id が一意に見つからなければ ValueError（黙って何もしないで成功しない）。
+    探すのは `nodes` の欄の `- id:` 行だけである。`retired` の id や本文は触れない
+    （`retired` にしか無い id を渡したら、その行を改名せずに ValueError）。old_id が `nodes` の
+    中で一意に見つからなければ ValueError（黙って何もしないで成功しない）。
     """
+    sections = line_sections(lines)
     matches = [i for i, line in enumerate(lines)
-               if line.startswith("- id: ") and line.split(":", 1)[1].strip() == old_id]
+               if sections[i] == "nodes" and line.startswith("- id: ")
+               and line.split(":", 1)[1].strip() == old_id]
     if not matches:
         raise ValueError(f"{old_id}: nodes に無い")
     if len(matches) > 1:
         # 先頭だけを改名すると、残りが同じ旧 id のまま台帳に残る。保存する前に拒否する。
-        raise ValueError(f"{old_id}: - id: が {len(matches)} 個ある（一意でない）")
+        raise ValueError(f"{old_id}: nodes に - id: が {len(matches)} 個ある（一意でない）")
     if node_span(lines, new_id) is not None:
         raise ValueError(f"{new_id}: nodes に既にある")
     index = matches[0]

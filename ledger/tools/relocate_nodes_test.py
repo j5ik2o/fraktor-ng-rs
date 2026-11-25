@@ -24,6 +24,7 @@ TOOLS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
 
 import pekko_baseline  # noqa: E402
+import ledger_lines  # noqa: E402
 import relocate_table  # noqa: E402
 
 TAG = pekko_baseline.load().tag
@@ -293,6 +294,52 @@ def test_read_table_rejects_bad_input():
         print("7. 根拠表の書式違反を拒否する")
 
 
+def test_rename_id_leaves_the_retired_section_alone():
+    """`retired` にしか無い id は改名せず ValueError。両方にある id は `nodes` の行だけを改名する。"""
+    only_retired = ["nodes:\n", "- id: m/Kept.scala\n", "retired:\n", "- id: m/Old.scala\n"]
+    try:
+        ledger_lines.rename_id(only_retired, "m/Old.scala", "m/New.scala")
+    except ValueError as error:
+        assert "nodes に無い" in str(error), error
+    else:
+        raise AssertionError("retired にしか無い id を改名した")
+    both = ["nodes:\n", "- id: m/Old.scala\n", "retired:\n", "- id: m/Old.scala\n"]
+    renamed = ledger_lines.rename_id(both, "m/Old.scala", "m/New.scala")
+    assert renamed == ["nodes:\n", "- id: m/New.scala\n", "retired:\n", "- id: m/Old.scala\n"], renamed
+    print("5c. retired の id は改名しない")
+
+
+def test_read_table_reads_a_tag_written_after_the_rows():
+    """`# tag:` を行より後ろに書いた表でも、全行にそのタグを付ける（空にしない）。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = make_root(Path(temporary))
+        path = make_table(root)
+        text = path.read_text(encoding="utf-8").replace(f"# tag: {TAG}\n", "")
+        path.write_text(text + f"# tag: {TAG}\n", encoding="utf-8")
+        rows = relocate_table.read_table(path)
+        assert [row.tag for row in rows] == [TAG, TAG], rows
+        deleted = next(row for row in rows if row.kind == "delete")
+        assert deleted.tag in deleted.delete_reason, deleted.delete_reason
+        # apply しても、空の理由・空の verified_against は台帳に入らない。
+        proc = tool(root, "apply")
+        assert proc.returncode == 0, (proc.stdout, proc.stderr)
+        after = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        assert f"    reason: {deleted.delete_reason}" in after, after
+        assert f"  verified_against: {TAG}" in after, after
+        assert "原典  で削除" not in after, after
+        proc = tool(root, "check")
+        assert proc.returncode == 0, (proc.stdout, proc.stderr)
+        # 2 つの違うタグは、位置にかかわらず受け付けない。
+        path.write_text(text + f"# tag: {TAG}\n# tag: v0.0.0\n", encoding="utf-8")
+        try:
+            relocate_table.read_table(path)
+        except ValueError as error:
+            assert "違う" in str(error), error
+        else:
+            raise AssertionError("違う 2 つのタグを受け付けた")
+        print("2c. 行より後ろの # tag: も読む")
+
+
 def test_apply_works_without_pyyaml():
     """PyYAML を解決できない起動（python3 -S）でも apply が動く。"""
     with tempfile.TemporaryDirectory() as temporary:
@@ -320,6 +367,8 @@ def main() -> int:
         test_apply_refuses_when_the_new_id_already_exists,
         test_apply_refuses_a_duplicate_old_id,
         test_apply_is_idempotent,
+        test_rename_id_leaves_the_retired_section_alone,
+        test_read_table_reads_a_tag_written_after_the_rows,
         test_read_table_rejects_bad_input,
         test_apply_works_without_pyyaml,
     ]
