@@ -76,3 +76,8 @@
 
 - `batch-1.md`：`toString` を上書きした例外では型名が「出ない」を「出ないことがある」に直した。
 - `batch-1.md`：表示から型名を外す負の対照の件数を、`dd536e3` での「unit テスト 2 件と spec 1 件」に直した（手元でも同じ結果を確かめた）。
+
+## 第2まとまりの補助の確認の追記
+
+- `ByteStringInputStream::skip` の rustdoc で、`skip(-1)` の `compile_fail` の例の隣に、同じ import と初期化で引数だけを正の値（`skip(1)`）にした例を足した。こちらはコンパイルでき、実行もできる。これで、`compile_fail` の例が失敗する理由が負の値の引数だけであることを、doctest そのものが示す。除外した「reject negative skip」の代わりの確認であり、台帳の件数には含めない（`batch-2.md` の「除外した 2 ケース」）。
+
