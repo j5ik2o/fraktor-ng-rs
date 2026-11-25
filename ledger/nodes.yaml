@@ -2484,7 +2484,7 @@ nodes:
     module: actor-tests
     class: DoubleLinkedListSpec
     test_cases_approx: 12
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -2495,14 +2495,15 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 12
+    ported: 12
+    passing: 12
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/double_linked_list_spec.rs
+  goal: G0issue176
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/util/DurationSpec.scala
   name: actor-tests:DurationSpec
   kind: test

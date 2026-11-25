@@ -36,6 +36,7 @@ actor-tests/src/test/scala/org/apache/pekko/util/ByteIteratorSpec.scala	no-repor
 actor-tests/src/test/scala/org/apache/pekko/util/ByteStringBuilderScala213PlusSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/ByteStringBuilderSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/ByteStringInputStreamSpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/util/DoubleLinkedListSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/FrequencyListSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/RecencyListSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/SegmentedRecencyListSpec.scala	no-report
