@@ -63,6 +63,8 @@ def read_table(path: str | Path) -> list[Row]:
         if line.startswith("#"):
             matched = re.match(r"#\s*tag:\s*(\S+)\s*$", line)
             if matched:
+                if tag is not None and tag != matched.group(1):
+                    raise ValueError(f"{path}:{number}: # tag: が {tag!r} と {matched.group(1)!r} で違う")
                 tag = matched.group(1)
             continue
         fields = line.split("\t")

@@ -29,6 +29,7 @@ import sys
 from pathlib import Path
 
 from ledger_lines import _yaml_scalar, count_key, node_span, rename_id, set_nested_key, _set_top_level_key
+from pekko_baseline import BaselineError
 from relocate_table import Row, find_references, read_table, replace_references
 
 REPO = Path(__file__).resolve().parents[2]
@@ -287,7 +288,7 @@ def main() -> int:
     args = ap.parse_args()
     try:
         return args.func(args)
-    except ValueError as error:
+    except (ValueError, BaselineError) as error:
         print(error, file=sys.stderr)
         return 1
 
