@@ -1936,6 +1936,21 @@ def test_scala_count_uses_one_lexer_for_names_comments_and_unknown_forms():
     print("24d. names, comments, .in and strings go through one lexer")
 
 
+def test_scala_count_stops_on_a_declaration_that_is_not_at_the_line_start():
+    """行頭以外の宣言（セミコロンの後、括弧つきの受け手の .in、同じ行の 2 件目）でも数えない。
+
+    コメントの中や普通の文字列の中の `in {` や `.in` は数えない（件数は変わらない）。
+    """
+    known = '    "known" in {\n    }\n'
+    assert _scala_count(_suite('    "known" in {}; "hidden".in { () }\n')) is None
+    assert _scala_count(_suite(known + '    ("hidden").in { () }\n')) is None
+    assert _scala_count(_suite('    "known" in {}; "second" in {}\n')) is None
+    assert _scala_count(_suite(known + '    ("hidden") in { () }\n')) is None
+    assert _scala_count(_suite(known + '    val s = "x.in { } and \\"y\\" in {"\n')) == 1
+    assert _scala_count(_suite(known + '    // "c".in { }; ("d") in {\n    /* "e" in { } */\n')) == 1
+    print("24e. declarations past the line start stop the count")
+
+
 def test_stale_result_is_removed_when_write_fails():
     """判定結果を書けないとき、前回の already_green 結果を残さず OSError を伝える。
 
@@ -2080,6 +2095,7 @@ def main() -> int:
         test_unknown_named_block_alongside_it_should_is_not_green,
         test_wordspec_outer_heading_is_not_counted_as_a_case,
         test_scala_count_uses_one_lexer_for_names_comments_and_unknown_forms,
+        test_scala_count_stops_on_a_declaration_that_is_not_at_the_line_start,
         test_heading_whose_block_has_no_known_case_is_not_counted,
         test_stale_result_is_removed_when_write_fails,
         test_main_exits_nonzero_when_result_cannot_be_written,
