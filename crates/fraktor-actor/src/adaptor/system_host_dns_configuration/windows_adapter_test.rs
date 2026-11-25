@@ -58,14 +58,16 @@ fn a_repeated_dns_server_is_kept_once() {
   );
 }
 
-// `WSAAddressToStringA` writes a port that is not 0, and the `dns://` URI then
-// keeps it.
+// `WSAAddressToStringA` writes a port that is not 0, bracketing an IPv6
+// address, and the `dns://` URI keeps it. `addressesToList` brackets the IPv4
+// text too, as it has a `:`, and `[192.0.2.1:5353]` is not a valid URI host,
+// so the original drops it.
 #[test]
-fn a_dns_server_port_other_than_0_is_kept() {
-  let adapters = [up(&["192.0.2.1:5353", "[2001:db8::1]:5353"])];
+fn a_dns_server_port_other_than_0_is_kept_for_ipv6_only() {
+  let adapters = [up(&["192.0.2.1:5353", "[2001:db8::1]:5353", "192.0.2.2:0"])];
   assert_eq!(
     WindowsAdapter::name_servers(Some(&adapters)),
-    Some(vec![addr("192.0.2.1:5353"), addr("[2001:db8::1]:5353")])
+    Some(vec![addr("[2001:db8::1]:5353"), addr("192.0.2.2:53")])
   );
 }
 

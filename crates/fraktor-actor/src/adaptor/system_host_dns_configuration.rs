@@ -8,9 +8,11 @@ use std::{
   path::{Path, PathBuf},
 };
 
+use self::windows_adapter::WindowsAdapter;
 use super::UnsupportedHostDnsPlatformError;
 use crate::kernel::io::dns::{DnsSettings, HostDnsConfiguration, ResolvConf, ResolvConfParser};
 
+mod ip_helper;
 #[cfg(test)]
 #[path = "system_host_dns_configuration_test.rs"]
 mod tests;
@@ -28,78 +30,99 @@ const MAX_NAMESERVER_LINES: usize = 5;
 // The original's `DnsFallbackPort`, used when the `dns://` URI has no port.
 const FALLBACK_PORT: u16 = 53;
 
-/// Reads the host's DNS configuration from its `resolv.conf`.
+/// Reads the host's DNS configuration from the operating system.
 ///
-/// Mirrors the two host lookups of the original `class DnsSettings` on a Unix
-/// host:
+/// Mirrors the two host lookups of the original `class DnsSettings`:
 ///
 /// - [`name_servers`](HostDnsConfiguration::name_servers) follows
 ///   `getDefaultNameServers`. Its JNDI lookup of `dns://` gets the name servers
-///   from the JDK's Unix `ResolverConfigurationImpl`, which reads the
-///   `nameserver` lines of `/etc/resolv.conf`; each becomes a `dns://` URI whose
-///   missing port is 53. The reflection fallback reads the same class, so it is
-///   not repeated.
+///   from the JDK's `ResolverConfigurationImpl`; each becomes a `dns://` URI
+///   whose missing port is 53. The reflection fallback reads the same class, so
+///   it is not repeated. On Unix the JDK reads the `nameserver` lines of
+///   `/etc/resolv.conf`. On Windows it asks the IP Helper
+///   (`GetAdaptersAddresses`) for the DNS servers of each adapter that is up,
+///   skipping an IPv6 server with a scope ID.
 /// - [`resolv_conf`](HostDnsConfiguration::resolv_conf) follows the `lazy val
-///   resolvConf`, which parses `/etc/resolv.conf` with `ResolvConfParser`.
+///   resolvConf`, which parses `/etc/resolv.conf` with `ResolvConfParser`, and
+///   is `None` on Windows, where the original skips it.
 ///
-/// Only hosts that keep their resolver configuration in `/etc/resolv.conf` are
-/// supported. On Windows the original skips `resolv.conf` and the JDK reads the
-/// name servers from the registry; this port does not read the registry, so
-/// [`new`](Self::new) fails there with [`UnsupportedHostDnsPlatformError`] and
-/// the default name servers are not found automatically (issue #160). Set the
-/// `nameservers` setting explicitly, or pass your own [`HostDnsConfiguration`],
-/// instead.
-///
-/// The file is only read, and is read again on each call.
+/// The host's configuration is only read, and is read again on each call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SystemHostDnsConfiguration {
-  resolv_conf_path: PathBuf,
+  source: HostDnsSource,
+}
+
+// Where the host keeps its DNS configuration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum HostDnsSource {
+  // A `resolv.conf` file, `/etc/resolv.conf` outside tests.
+  ResolvConf(PathBuf),
+  // The Windows IP Helper.
+  IpHelper,
 }
 
 impl SystemHostDnsConfiguration {
-  /// Creates a configuration that reads `/etc/resolv.conf`.
+  /// Creates a configuration that reads the host it runs on: the IP Helper on
+  /// Windows, `/etc/resolv.conf` elsewhere.
   ///
-  /// Returns [`UnsupportedHostDnsPlatformError`] on Windows, whose name servers
-  /// are not in `resolv.conf`.
+  /// It does not fail on any platform this crate builds for; the `Result` and
+  /// [`UnsupportedHostDnsPlatformError`] are kept so that callers written when
+  /// Windows was rejected still compile.
   pub fn new() -> Result<Self, UnsupportedHostDnsPlatformError> {
-    Self::for_platform(cfg!(windows))
+    Ok(Self::for_platform(cfg!(windows)))
   }
 
   // Decides for a Windows host or not, so both outcomes can be tested on any
   // host.
-  pub(crate) fn for_platform(windows: bool) -> Result<Self, UnsupportedHostDnsPlatformError> {
+  pub(crate) fn for_platform(windows: bool) -> Self {
     if windows {
-      return Err(UnsupportedHostDnsPlatformError::new());
+      Self::ip_helper()
+    } else {
+      Self::reading(ETC_RESOLV_CONF)
     }
-    Ok(Self::reading(ETC_RESOLV_CONF))
   }
 
   // Reads `path` in place of `/etc/resolv.conf`, so tests can use a file they
   // control.
   pub(crate) fn reading(path: impl AsRef<Path>) -> Self {
-    Self { resolv_conf_path: path.as_ref().to_path_buf() }
+    Self { source: HostDnsSource::ResolvConf(path.as_ref().to_path_buf()) }
+  }
+
+  // Reads the Windows IP Helper.
+  pub(crate) fn ip_helper() -> Self {
+    Self { source: HostDnsSource::IpHelper }
   }
 }
 
 impl HostDnsConfiguration for SystemHostDnsConfiguration {
-  /// Returns the usable `nameserver` entries, or `None` when there are none.
+  /// Returns the usable name servers, or `None` when there are none.
   ///
-  /// A file that cannot be read has no entries, as in the JDK, which swallows
-  /// the `IOException`. The bytes are decoded leniently, as `FileReader` does.
-  /// An entry the original keeps but the kernel's
+  /// From `resolv.conf`, these are the usable `nameserver` entries. A file
+  /// that cannot be read has no entries, as in the JDK, which swallows the
+  /// `IOException`. The bytes are decoded leniently, as `FileReader` does. An
+  /// entry the original keeps but the kernel's
   /// [`DnsSettings::parse_nameserver_address`] does not accept, a host name or
   /// an IPv6 zone index, is dropped as the original drops an unusable one.
+  ///
+  /// From the IP Helper, these are the DNS servers of the adapters that are
+  /// up, and `None` also when the IP Helper fails.
   fn name_servers(&self) -> Option<Vec<SocketAddr>> {
-    read_name_servers(BufReader::new(File::open(&self.resolv_conf_path).ok()?))
+    match &self.source {
+      | HostDnsSource::ResolvConf(path) => read_name_servers(BufReader::new(File::open(path).ok()?)),
+      | HostDnsSource::IpHelper => WindowsAdapter::name_servers(ip_helper::read_adapters().as_deref()),
+    }
   }
 
   /// Returns the parsed file, or `None` when it is missing, unreadable, not
-  /// UTF-8, or fails to parse.
+  /// UTF-8, or fails to parse, and always `None` on Windows.
   ///
   /// The original logs the read or parse failure before returning `None`; this
   /// port has no actor system here to log to, so the failure is not reported.
   fn resolv_conf(&self) -> Option<ResolvConf> {
-    let bytes = fs::read(&self.resolv_conf_path).ok()?;
+    let HostDnsSource::ResolvConf(path) = &self.source else {
+      return None;
+    };
+    let bytes = fs::read(path).ok()?;
     let text = String::from_utf8(bytes).ok()?;
     ResolvConfParser::parse_lines(java_lines(&text)).ok()
   }

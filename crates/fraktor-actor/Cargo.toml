@@ -8,5 +8,13 @@ publish = false
 getrandom = "0.3"
 spin = { version = "0.9", default-features = false, features = ["spin_mutex"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Networking_WinSock",
+] }
+
 [dev-dependencies]
 fraktor-testkit = { path = "../fraktor-testkit" }

@@ -68,9 +68,13 @@ impl Drop for TempDir {
 
 // `create` (not `create_all`) fails when the path already exists.
 fn private_directory_builder() -> DirBuilder {
-  let mut builder = DirBuilder::new();
+  let builder = DirBuilder::new();
   #[cfg(unix)]
-  std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+  let builder = {
+    let mut builder = builder;
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder
+  };
   builder
 }
 
