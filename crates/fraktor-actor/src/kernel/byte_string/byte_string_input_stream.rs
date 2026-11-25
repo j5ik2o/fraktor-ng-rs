@@ -121,7 +121,7 @@ impl ByteStringInputStream {
   ///
   /// Corresponds to Java's `InputStream.readNBytes(len)`.
   pub fn read_n_bytes(&mut self, length: usize) -> Vec<u8> {
-    let mut bytes = alloc::vec![0_u8; length.min(self.available())];
+    let mut bytes = alloc::vec![0_u8; self.bytes.remaining_up_to(length)];
     self.bytes.copy_into(&mut bytes);
     bytes
   }
@@ -142,7 +142,8 @@ impl ByteStringInputStream {
   /// Corresponds to Java's `InputStream.available()`. Pekko's
   /// `UnsynchronizedByteArrayInputStream` returns every byte left; this stream
   /// does so for a concatenation of several arrays too, where Pekko's
-  /// `java.io.SequenceInputStream` reports only the current part.
+  /// `java.io.SequenceInputStream` reports only the current part. A count that
+  /// a `usize` cannot hold is reported as `usize::MAX`.
   #[must_use]
   pub fn available(&self) -> usize {
     self.bytes.remaining()

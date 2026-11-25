@@ -45,8 +45,21 @@ impl ByteIterator {
   }
 
   /// Returns how many bytes are left to read.
+  ///
+  /// Saturates at `usize::MAX` when the arrays left hold more bytes than a
+  /// `usize` can count, which concatenating shared arrays can reach on a
+  /// 32-bit target.
   pub(crate) fn remaining(&self) -> usize {
-    self.arrays.get(self.current..).map_or(0, |rest| rest.iter().map(|array| array.len()).sum::<usize>()) - self.offset
+    self.remaining_up_to(usize::MAX)
+  }
+
+  /// Returns how many bytes are left to read, counting at most `limit`.
+  ///
+  /// Stops reading the array lengths once `limit` is reached, so a short read
+  /// does not walk every array left.
+  pub(crate) fn remaining_up_to(&self, limit: usize) -> usize {
+    let lengths = self.arrays.get(self.current..).unwrap_or_default().iter().map(|array| array.len());
+    remaining_of(lengths, self.offset, limit)
   }
 
   /// Consumes the iterator up to the first byte equal to `elem`, and returns
@@ -168,4 +181,23 @@ impl Iterator for ByteIterator {
     self.advance(1);
     Some(byte)
   }
+}
+
+// The bytes left in arrays of `lengths`, the first of which is read up to
+// `offset`, counting at most `limit` without overflowing.
+fn remaining_of(mut lengths: impl Iterator<Item = usize>, offset: usize, limit: usize) -> usize {
+  if limit == 0 {
+    return 0;
+  }
+  let mut total = match lengths.next() {
+    | Some(first) => first - offset,
+    | None => return 0,
+  };
+  while total < limit {
+    match lengths.next() {
+      | Some(length) => total = total.saturating_add(length),
+      | None => break,
+    }
+  }
+  total.min(limit)
 }
