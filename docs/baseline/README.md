@@ -84,6 +84,9 @@ uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger \
   付け替え、移動（ケースのみ）の 1 件は後継のケースを移植するときに記録する。旧 id と新 id の
   対応、削除コミット、確認日は根拠表 `v2.0.0-port-targets.tsv` にある
 
+v2.0.0 で原典に新しく入ったテストで、台帳にノードが無いものは `v2.0.0-new-docs-tests.md` が
+記録を持つ（`docs/src/test` の 10 ファイル。`docs` モジュールなので、すべて `do_not_port`）。
+
 ## 基準を変えるとき
 
 1. `tools/pekko-source/pekko-baseline.env` の現行タグ・commit・タグ object・決定日を書き換え、
