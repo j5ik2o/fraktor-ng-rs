@@ -14,7 +14,7 @@
 
 ### 判断
 
-2026-11-25、起動元から案 A の承認を受けた（`ByteStringInputStream` に足す。既存のシグネチャは保つ。符号付きのアダプターと共有の可変バッファは足さない）。丸ごと表せない 2 ケースを作らない区分にすることも、起動元経由で承認された（Orca 質問 `msg_3d3a2ef9adf0`）。台帳に書く承認者と日付は人間の決定を写すので、起動元から文言を受けてから記入する。
+2026-11-25、起動元から案 A の承認を受けた（`ByteStringInputStream` に足す。既存のシグネチャは保つ。符号付きのアダプターと共有の可変バッファは足さない）。丸ごと表せない 2 ケースを作らない区分にすることも、起動元経由で承認された（Orca 質問 `msg_3d3a2ef9adf0`）。台帳には起動元から受けた文言を写した。approved_by は「副元帥（オーナーが認めた作らない区分のケース単位適用、Orca msg_3d3a2ef9adf0）」、approved_at は 2026-11-25 である。オーナー本人がこの 2 件を個別に承認した記録ではない。
 
 ### 移植した 12 ケース
 
@@ -80,7 +80,7 @@
 | reject negative skip | `UnsynchronizedByteArrayInputStreamSpec.scala` L66–69（`a5cf13f26c`）、実装 `skip` の `n < 0` の検査 | `skip` は `usize` を受けるので、負の値を表せない。型が拒否を担う | `support_skip_with_large_value` が `skip(50)` の残量で頭打ちになることと、末尾での `skip(usize::MAX) == 0` を確かめる。`support_skip` は `skip(1)`。randomized の op 7 は `skip(0) == 0` を確かめる |
 | not copy the backing array | 同 L165–170、実装のコンストラクタが配列を `this.data` に持つこと | 原典は、ストリームを作った後で配列を書き換え、新しい値を読む。安全な Rust では、ストリームが借りている間は配列を書き換えられない。port の stream は `ByteString` の配列を `Arc` で持ち、`from_array` はコピーする | port の公開契約に「コピーしない」はない。`ByteString::from_array` の rustdoc は、範囲のバイトのコピーから作ると定めている（Pekko の `ByteString.fromArray` も同じくコピーする）。このため、同じスライスを読む代わりの検証は足さない |
 
-台帳には `cases.not_built` の 2 件として記録する（#165 の形式）。承認の 2 欄は、起動元から文言を受けるまで null のままにする（fail closed）。
+台帳には `cases.not_built` の 2 件として記録した（#165 の形式）。ノードは 14/12/12、`verified_against: v2.0.0` で、`rollup.py --goal G0issue147` は混在の勘定（12 + 作らない 2 = 14）で完了と判定する。
 
 ### 負の対照
 

@@ -5168,15 +5168,26 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: 3
-    ported: 3
-    passing: 3
+    total: 14
+    ported: 12
+    passing: 12
     excluded: []
+    not_built:
+    - name: reject negative skip
+      reason: "v2.0.0 の UnsynchronizedByteArrayInputStreamSpec.scala L66-69（a5cf13f26c #3541）。skip(-1) の IllegalArgumentException を確かめる。port の skip は usize を受けるので負の値を表せず、型が拒否を担う"
+      alternative: "skip(n: usize)。残量での頭打ちと末尾での skip(usize::MAX) == 0 は crates/fraktor-actor/tests/unsynchronized_byte_array_input_stream_spec.rs の support_skip_with_large_value、skip(0) == 0 は同じファイルの randomized のケースの op 7 が確かめる"
+      approved_by: 副元帥（オーナーが認めた作らない区分のケース単位適用、Orca msg_3d3a2ef9adf0）
+      approved_at: 2026-11-25
+    - name: not copy the backing array
+      reason: "v2.0.0 の同ファイル L165-170（a5cf13f26c #3541）。ストリームを作った後に元の配列を書き換え、新しい値を読む。安全な Rust ではストリームが借りている配列を書き換えられず、port の公開契約（ByteString::from_array はコピーから作る）にコピーしないことは含まれない"
+      alternative: "ByteString::from_array(data, offset, length).as_input_stream() は作った時点のバイトを読む。範囲の切り詰めは同じファイルの clamp_offset_and_length_to_the_array_bounds が確かめる"
+      approved_by: 副元帥（オーナーが認めた作らない区分のケース単位適用、Orca msg_3d3a2ef9adf0）
+      approved_at: 2026-11-25
   rust:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/unsynchronized_byte_array_input_stream_spec.rs
   goal: G0issue147
-  verified_against: v1.7.1
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/util/VersionSpec.scala
   name: actor-tests:VersionSpec
   kind: test
