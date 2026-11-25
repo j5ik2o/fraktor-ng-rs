@@ -10,6 +10,10 @@ use crate::adaptor::ErrorMessage;
 use crate::adaptor::StatusReplyAck;
 use crate::kernel::message::Message;
 
+#[cfg(test)]
+#[path = "status_reply_test.rs"]
+mod tests;
+
 /// A classic actor reply carrying either a value or a recoverable error.
 ///
 /// The value uses classic actor message type erasure. An error keeps its
