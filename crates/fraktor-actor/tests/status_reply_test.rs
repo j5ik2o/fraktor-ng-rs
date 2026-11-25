@@ -1,3 +1,8 @@
+//! Checked against Pekko v2.0.0 (SHA 9fbd2283b1cf701c90a1223bf621942c191db61f): the upstream test
+//! file changes only by ec27d6dd8c #2724, 00b0a99278 #2081; the cases and their inputs are
+//! unchanged.
+//! The record is docs/baseline/pekko-v2.0.0-migration/batch-3.md.
+//!
 //! Port of the six cases in Pekko v1.7.1's Java classic StatusReplyTest.
 //!
 //! Upstream: `actor-tests/src/test/java/org/apache/pekko/pattern/StatusReplyTest.java`.

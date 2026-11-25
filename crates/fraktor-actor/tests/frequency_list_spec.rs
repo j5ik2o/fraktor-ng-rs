@@ -1,3 +1,8 @@
+// Checked against Pekko v2.0.0 (SHA 9fbd2283b1cf701c90a1223bf621942c191db61f): the upstream test
+// file changes only by ab12a8f5ec #2766, 870d4499cc #2235; the cases and their inputs are
+// unchanged.
+// The record is docs/baseline/pekko-v2.0.0-migration/batch-3.md.
+//
 // Ported from Pekko v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff):
 //   actor-tests/src/test/scala/org/apache/pekko/util/FrequencyListSpec.scala
 //

@@ -1,3 +1,7 @@
+// Checked against Pekko v2.0.0 (SHA 9fbd2283b1cf701c90a1223bf621942c191db61f): the upstream test
+// file changes only by 870d4499cc #2235; the cases and their inputs are unchanged.
+// The record is docs/baseline/pekko-v2.0.0-migration/batch-3.md.
+//
 // Ports the five cases of Pekko's `RestartStrategySpec`
 // (`actor-tests/src/test/scala/org/apache/pekko/actor/RestartStrategySpec.scala`
 // at 9a54d1294c3ac7821bbed3c940769c3d5027d1ff) onto the port's supervisor
