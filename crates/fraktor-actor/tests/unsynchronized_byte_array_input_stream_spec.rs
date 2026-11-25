@@ -13,13 +13,14 @@
 // The original builds the stream as
 // `new UnsynchronizedByteArrayInputStream("abc".getBytes(UTF_8))`. Pekko's
 // `ByteString1C.asInputStream` builds exactly that stream over its bytes
-// (ByteString.scala L308), so the port builds it as
+// (`actor/src/main/scala/org/apache/pekko/util/ByteString.scala` L484 in v2.0.0),
+// so the port builds it as
 // `ByteString::from_string("abc").as_input_stream()`, which encodes "abc" as
 // UTF-8 and returns the port's `ByteStringInputStream`.
 //
 // - `markSupported()` is `mark_supported()`.
 // - `mark(readAheadLimit)` is `mark(read_ahead_limit)`. The original ignores the
-//   limit (its comment on L34); the port ignores it too.
+//   limit (its comment on L45); the port ignores it too.
 // - `reset()` is `reset()`. Java's `reset()` throws an `IOException` when the
 //   stream does not support marks; the port's returns that failure as an
 //   `Err`. This stream supports marks, so the test expects `Ok`.
@@ -29,12 +30,14 @@
 //   `None` where Java returns `-1` at the end of the stream. `'a'` is `b'a'`.
 // - `close()` is dropping the stream, which holds no other resource.
 //
-// The test calls `mark_supported`, `mark`, `reset` and `skip` on the production
-// `ByteStringInputStream`. Until they exist the file does not compile: that
-// compile error is the intended red for this node.
+// When this file was first ported, `mark_supported`, `mark`, `reset` and `skip`
+// did not exist yet, and the compile error was the red for the three v1.7.1
+// cases. For the v2.0.0 cases the red was the missing bulk-read methods and
+// error types listed below (E0432 and E0599, recorded in
+// docs/baseline/pekko-v2.0.0-migration/batch-2.md).
 
-// Cases not ported (whole-case exclusions need a human approval that is not
-// recorded yet, so they are left out rather than excluded):
+// Cases not ported. Both are recorded in the ledger as approved not-built cases
+// (`cases.not_built` of this node, approved on 2026-11-25), not as exclusions:
 //   * "reject negative skip": `skip` takes a `usize`, which cannot be negative.
 //   * "not copy the backing array": the original writes to the array after
 //     building the stream and reads the new byte back. Safe Rust cannot write
