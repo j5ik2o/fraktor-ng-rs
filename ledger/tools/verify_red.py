@@ -44,7 +44,7 @@ import subprocess
 import sys
 
 import excluded_approvals
-from scala_headings import SCALA_CASE, count_scala_headings
+from scala_headings import count_scala_cases
 import pekko_baseline
 
 LEDGER = "ledger/nodes.yaml"
@@ -63,11 +63,8 @@ JAVA_TEST_DECL = re.compile(
     r"(?:static\s+)?(?:final\s+)?void\s+\w+\s*\(",
     re.MULTILINE,
 )
-# Scala のケース書式（SCALA_CASE）と WordSpec の見出しは scala_headings.py が持つ。
-# 既知の書式で説明できない名前付きブロック（`"name" must {`、`"name" should {` など）。
-# `it should "..."` で始まる行も、文字列リテラルで始まる名前付きブロックとして数える
-# （SCALA_CASE 側でケースとして数えるため、突き合わせの両側で同じ行を数える）。
-SCALA_NAMED_PREFIX = re.compile(r'^\s*(?:it\s+should\s+)?"[^"]+"\s+(?=\S)', re.MULTILINE)
+# Scala のケース書式、WordSpec の見出し、未知の宣言の候補と、それらを読む字句処理は
+# scala_headings.py が持つ。
 def parse_previous_response() -> dict:
     path = os.environ.get("TAKT_PREVIOUS_RESPONSE_FILE", "")
     info = {}
@@ -255,10 +252,8 @@ def count_original_cases(node_id: str) -> int | None:
             return None
         total = java
     elif path.endswith(".scala"):
-        scala_cases = len(SCALA_CASE.findall(text))
-        named = len(SCALA_NAMED_PREFIX.findall(text))
-        headings = count_scala_headings(text)
-        if headings is None or named != scala_cases + headings:
+        scala_cases = count_scala_cases(text)
+        if scala_cases is None:
             return None
         total = scala_cases
     else:
