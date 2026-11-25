@@ -141,12 +141,13 @@ fn typed_error_reply_carries_the_original_exception() {
 // include exception type in toString for non text-error
 //
 // Added in v2.0.0 (upstream 6287b9de07, #3271). Pekko's `toString` renders a
-// non-text error as `Error(<exception>)`, and a JVM exception's `toString`
-// starts with its class name, so the rendering names the error's type whatever
-// the error prints. The port's reply has no `Display`, because a success
-// carries a type-erased `Message` that has no text; its `Debug` is the reply's
-// rendering. The error here prints only its message from both `Debug` and
-// `Display`, so the type name can come only from the reply.
+// non-text error as `Error(<exception>)` and leaves the type to the exception's
+// own `toString`; `Throwable.toString` starts with the class name, as the
+// original's `TestException` does, but an exception may override it. The port
+// names the type itself: the reply's `Debug` (it has no `Display`, because a
+// success carries a type-erased `Message` that has no text) adds the error's
+// type name in front of the error's own `Debug`. The error here prints only
+// its message, so the type name can come only from the reply.
 #[test]
 fn include_exception_type_in_to_string_for_non_text_error() {
   let rendered = format!("{:?}", StatusReply::error(UnnamedTestException("boho!")));

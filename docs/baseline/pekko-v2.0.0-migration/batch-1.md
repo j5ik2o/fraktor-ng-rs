@@ -14,7 +14,7 @@
 | ノード（`actor-tests/src/test/...`） | v1.7.1 → v2.0.0 のケース数 | 上流のコミット | 結果 |
 |:---|:---:|:---|:---|
 | `java/.../actor/AbstractFSMActorTest.java` | 1 → 1 | `ec27d6dd8c` #2724、`96b716b6fb` #3191、`4ae53394ac` #3295 | 差分なし（JUnit 5 化と Java 構文） |
-| `java/.../actor/AbstractFSMWithStashActorTest.java` | 1 → 1 | `90b02d6068` #3475（1.x 側は `32f6cb2c01` #3477。`AbstractFSM.scala` の変更だけが同じ patch-id） | 差分なし |
+| `java/.../actor/AbstractFSMWithStashActorTest.java` | 1 → 1 | `90b02d6068` #3475（1.x 側は `32f6cb2c01` #3477。比較対象のうち `AbstractFSM.scala` の変更が同じ patch-id） | 差分なし |
 | `scala/.../util/VersionSpec.scala` | 8 → 8（アサーション 1 行増） | `640e790be5` #3154 | 最初から緑 |
 | `scala/.../event/EventStreamSpec.scala` | 17 → 18 | `25f8b12436` #3658 | 最初から緑 |
 | `scala/.../event/MarkerLoggingSpec.scala` | 2 → 4 | `c0e9406bfd` #3263 | 赤 → 製品を直して緑 |
@@ -29,7 +29,7 @@
 
 ### AbstractFSMActorTest と AbstractFSMWithStashActorTest（G0issue162）
 
-- テスト：v2.0.0 の変更は JUnit 5 化（`@RegisterExtension`、`PekkoJUnitJupiterActorSystemResource`）、`String.format` から `formatted`、`@SuppressWarnings` だけである。ケースと観測は変わらない。stash 版のテストは、同じ修正をそれぞれの系統に入れたコミットが追加した（1.x は `32f6cb2c01` #3477、2.0 は `90b02d6068` #3475）。`git patch-id --stable` が一致するのは `AbstractFSM.scala` の変更だけである（両方 `5e5df93d037d`）。コミット全体は `4769252bc6cf` と `94748091843a` で、テストのファイルも `ed281470c285` と `694536f1f2de` で違う。テストの差は JUnit 4（`JUnitSuite`、`@ClassRule`）と JUnit 5（`@RegisterExtension`）の枠と `@SuppressWarnings` だけで、ケース 1 件と観測は同じである。#3477 には、#3475 にある Java のコンパイル検査のファイル `actor-tests/.../JavaSubclassCompilationCheck.java` が含まれない。
+- テスト：v2.0.0 の変更は JUnit 5 化（`@RegisterExtension`、`PekkoJUnitJupiterActorSystemResource`）、`String.format` から `formatted`、`@SuppressWarnings` だけである。ケースと観測は変わらない。stash 版のテストは、同じ修正をそれぞれの系統に入れたコミットが追加した（1.x は `32f6cb2c01` #3477、2.0 は `90b02d6068` #3475）。今回の比較対象（`AbstractFSM.scala` と、このテストのファイル）の中で `git patch-id --stable` が一致するのは、`AbstractFSM.scala` の変更である（両方 `5e5df93d037d`）。比較対象の外では、`PersistentActor.scala` などほかに 5 ファイルが一致する。コミット全体は `4769252bc6cf` と `94748091843a` で、テストのファイルも `ed281470c285` と `694536f1f2de` で違う。テストの差は JUnit 4（`JUnitSuite`、`@ClassRule`）と JUnit 5（`@RegisterExtension`）の枠と `@SuppressWarnings` だけで、ケース 1 件と観測は同じである。#3477 には、#3475 にある Java のコンパイル検査のファイル `actor-tests/.../JavaSubclassCompilationCheck.java` が含まれない。
 - 実装：`AbstractFSM.scala` の変更は、Java の関数型の名前の置き換え（`FI` の削除 `8e21fd0269`、`japi.Pair` `7209bc8fd7`）と非推奨の `setTimer` の削除（`2323878ae1`）である。`Stash.scala` は `prepend` の型と typo だけ。`DeathWatch.scala` は `@unused` だけ。移植した 2 ケースの観測に掛かる変更はない。
 - 後続の FSM suite に引き継ぐ要件（今回の 2 ケースには掛からない）：
   - `63d22b60fe` #3096：`SubscribeTransitionCallBack` と `Listen` で登録した listener を、FSM が `watchWith` で見張る。listener が止まると自動で外す。すでに watch している相手なら警告を出し、自動では外さない。`FSMTransitionSpec` を移植するときは観測の対象になる。
@@ -86,7 +86,7 @@
 
 設計の判断は 2026-11-25 に起動元から受けた（案 A：`Result` を受ける生成関数を 2 つ足す。既存のシグネチャと挙動は保つ。panic は捕まえない）。
 
-- `6287b9de07` #3271「include exception type in toString for non text-error」：Pekko の `toString` は、テキスト以外のエラーを `Error(<例外>)` と表す。JVM の例外の `toString` はクラス名で始まるので、エラーが何を出力しても表示に型名が入る。port の `StatusReply` には `Display` がない（成功の値は型を消した `Message` で、テキストを持たない）。表示には `Debug` が当たる。最初の移植では、derive した `Debug` がエラー自身の `Debug` を出すだけだった。テストのエラー（derive の `Debug`）がたまたま型名を出していたため、テストは最初から緑で、返信が型名を付ける契約は確かめていなかった（PR #167 のレビュー指摘）。修正では、`Debug` と `Display` がメッセージだけを出すエラーでテストを書き直した。赤は `StatusReply { result: Err(boho!) }` で、型名が出ない。そのうえで `StatusReply::error` が `core::any::type_name::<E>()` を記録し、`Debug` を手で実装して `Success(<値>)`、`Error(<テキスト>)`、`Error(<型>: <エラー>)` と表すようにした。型名は安定した文字列としては保証しない。`error` の引数は `impl Error` から型引数 `E` に変えたが、呼び出し側から見て受け付ける値は同じである。テキストのエラーの表示 `Error(boho!)` も、同じテストで確かめる。
+- `6287b9de07` #3271「include exception type in toString for non text-error」：Pekko の `toString` は、テキスト以外のエラーを `Error(<例外>)` と表し、型名は例外自身の `toString` に任せる。標準の `Throwable.toString` はクラス名で始まり、原典のテストの `TestException` もそうである。ただし、`toString` を上書きした例外では型名が出ない。Pekko が型名を付けることを保証しているわけではない。port は、Rust のエラーに型名を出す決まりがないので、返信の側で型名を付ける。これは原典のテストが観測する要件（`TestException` の型名が入ること）を満たすための port 側の設計である。port の `StatusReply` には `Display` がない（成功の値は型を消した `Message` で、テキストを持たない）。表示には `Debug` が当たる。最初の移植では、derive した `Debug` がエラー自身の `Debug` を出すだけだった。テストのエラー（derive の `Debug`）がたまたま型名を出していたため、テストは最初から緑で、返信が型名を付ける契約は確かめていなかった（PR #167 のレビュー指摘）。修正では、`Debug` と `Display` がメッセージだけを出すエラーでテストを書き直した。赤は `StatusReply { result: Err(boho!) }` で、型名が出ない。そのうえで `StatusReply::error` が `core::any::type_name::<E>()` を記録し、`Debug` を手で実装して `Success(<値>)`、`Error(<テキスト>)`、`Error(<型>: <エラーの Debug>)` と表すようにした。再レビューで、最初の修正（`fc33b60`）がエラーの `Display` を出していたことがわかった。そのため、`Debug` で値を伏せて `Display` で値を出すエラーでは、伏せた値が表示に出ていた。`error` と `from_result_keep_error` の両方の経路について、型名と伏せ字が入り、`Display` の値が入らないことを確かめる unit テストを先に足した。修正前は `Error(...::Redacted: example-sensitive-value)` と出て失敗した。そのうえで、型付きのエラーはエラー自身の `Debug` を通して出すように直した。テキストのエラー（`ErrorMessage`）は、従来どおり `Error(<テキスト>)` と出す。型名は安定した文字列としては保証しない。`error` の引数は `impl Error` から型引数 `E` に変えたが、呼び出し側から見て受け付ける値は同じである。テキストのエラーの表示 `Error(boho!)` も、同じテストで確かめる。
 - `f1a36ba76b` #2796（`fromTry`、`fromTryKeepException`、5 ケース）と `037b88ad29` #2812（`fromCallable`、`fromCallableKeepException`、5 ケース）：
   - 赤：終了値 101、E0599 が 10 件（`from_result` が 6 件、`from_result_keep_error` が 4 件）。テストは `9e4a7d2`。
   - 緑：`bab92f1` で 20 passed。
@@ -136,8 +136,9 @@ CI の必須検査を手元ですべて実行し、終了値はすべて 0 だ�
 
 ### PR #167 のレビュー対応
 
-- Devin の指摘（`StatusReply` が型名を付ける契約を確かめていない）：`f339979` でテストを書き直して赤を確かめ、`fc33b60` で表示を直した（上の StatusReply の項）。表示と、型を保つ経路の回帰は、`adaptor/status_reply_test.rs` の unit テスト 3 件で確かめる。内容は、成功の表示と値の downcast、`error` と `from_result_keep_error` の型名の表示と元のエラーへの downcast、`error_message` と `from_result` の `Error(<テキスト>)` と `ErrorMessage` への downcast である。表示から型名を外す変異では、unit テスト 1 件と spec 1 件が失敗する。既存の spec の downcast と ask の経路（20 件）は、修正後も成功する。
+- Devin の指摘（`StatusReply` が型名を付ける契約を確かめていない）：`f339979` でテストを書き直して赤を確かめ、`fc33b60` で表示を直した（上の StatusReply の項）。表示と、型を保つ経路の回帰は、`adaptor/status_reply_test.rs` の unit テスト 4 件で確かめる（4 件目は、再レビューの指摘で足した、伏せ字の `Debug` を通すことの確認）。内容は、成功の表示と値の downcast、`error` と `from_result_keep_error` の型名の表示と元のエラーへの downcast、`error_message` と `from_result` の `Error(<テキスト>)` と `ErrorMessage` への downcast である。表示から型名を外す変異では、unit テスト 1 件と spec 1 件が失敗する。既存の spec の downcast と ask の経路（20 件）は、修正後も成功する。
 - 独立レビュー（e7c7973）：照合の記録 3 件を直した。FSM の patch-id の範囲、StatusReply の負の対照の内訳、リベース後の SHA と台帳 2 コミットである。
+- 独立再レビュー（cef99ae）：`Debug` がエラーの `Display` を出していた回帰を直した（上の StatusReply の項）。あわせて、patch-id の比較範囲と、型名を JVM の `toString` に任せる上流と、型名を port 側で付けることの違いを書き分けた。
 
 ## 台帳への反映（PR #166 の後）
 

@@ -19,12 +19,14 @@ mod tests;
 /// The value uses classic actor message type erasure. An error keeps its
 /// concrete type so a recipient can downcast it.
 ///
-/// Its `Debug` is the reply's rendering, as Pekko's `toString`: `Success(<value>)`,
-/// `Error(<text>)` for a text error, and `Error(<type>: <error>)` for any other
-/// error. The type is [`core::any::type_name`] of the error given to
-/// [`error`](Self::error), so the rendering names it even when the error's own
-/// `Debug` and `Display` do not. That name is the compiler's rendering and is
-/// not a stable string.
+/// Its `Debug` is the reply's rendering: `Success(<value>)`, `Error(<text>)` for
+/// a text error, and `Error(<type>: <error's Debug>)` for any other error.
+/// Pekko's `toString` renders `Error(<exception>)` and leaves the type to the
+/// exception's own `toString`, which on the JVM normally starts with the class
+/// name. The port names the type itself, as [`core::any::type_name`] of the
+/// error given to [`error`](Self::error), and renders the error only through
+/// its own `Debug`, so an error that hides its value from `Debug` stays hidden.
+/// The type name is the compiler's rendering and is not a stable string.
 pub struct StatusReply {
   result: Result<Message, Arc<dyn Error + Send + Sync>>,
   // The type name of the error, recorded where its concrete type is known.
@@ -143,8 +145,8 @@ impl fmt::Debug for StatusReply {
       | Ok(value) => write!(formatter, "Success({value:?})"),
       | Err(error) if error.downcast_ref::<ErrorMessage>().is_some() => write!(formatter, "Error({error})"),
       | Err(error) => match self.error_type {
-        | Some(error_type) => write!(formatter, "Error({error_type}: {error})"),
-        | None => write!(formatter, "Error({error})"),
+        | Some(error_type) => write!(formatter, "Error({error_type}: {error:?})"),
+        | None => write!(formatter, "Error({error:?})"),
       },
     }
   }

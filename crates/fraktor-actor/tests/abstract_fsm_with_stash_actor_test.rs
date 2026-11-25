@@ -2,8 +2,8 @@
 //   actor-tests/src/test/java/org/apache/pekko/actor/AbstractFSMWithStashActorTest.java
 // First ported from v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff).
 // The file was added on each line by a port of the same fix: 32f6cb2c01 #3477
-// on 1.x (JUnit 4) and 90b02d6068 #3475 on 2.0 (JUnit 5). The two commits'
-// changes to `AbstractFSM.scala` are the same patch; the test files differ only
+// on 1.x (JUnit 4) and 90b02d6068 #3475 on 2.0 (JUnit 5). Of the files compared
+// here, the changes to `AbstractFSM.scala` are the same patch; the test files differ only
 // in the JUnit 4 and JUnit 5 scaffolding, and the one case and what it observes
 // are the same.
 //
