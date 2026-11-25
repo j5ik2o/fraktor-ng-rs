@@ -193,9 +193,9 @@ impl ByteStringInputStream {
   ///
   /// Corresponds to Java's `InputStream.skip(n)`, for streams that support
   /// marks and for those that do not. Pekko's
-  /// `UnsynchronizedByteArrayInputStream` moves its position by the whole `n`
-  /// even past the end, so a later skip there returns a negative count; this
-  /// stream stops at the end and returns `0`.
+  /// `UnsynchronizedByteArrayInputStream` also stops at the end since v2.0.0;
+  /// in v1.7.1 it moved its position by the whole `n` even past the end, so a
+  /// later skip there returned a negative count.
   pub fn skip(&mut self, count: usize) -> usize {
     self.bytes.skip_bytes(count)
   }
