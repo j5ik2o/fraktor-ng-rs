@@ -93,12 +93,15 @@
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test double_linked_list_spec` | 0 | 12 passed、0 failed（原典 12 件） |
 | `cargo test -p fraktor-actor --lib double_linked_list` | 0 | 7 passed、0 failed |
-| `cargo test --workspace` | 0 | 下の「CI と同じ検査」を参照 |
+| `cargo test --workspace` | 0 | 77 結果、922 passed、0 failed、0 ignored |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
 | `cargo fmt --check` | 0 | 差分なし |
-| syn-check（CI と同じく `crates/*` ごと、Release/locked） | 0 | violations 0、parse failures 0 |
+| syn-check（CI と同じく `crates/*` ごと、Release/locked） | 0 | fraktor-actor 270 ファイル、fraktor-testkit 46 ファイル、violations 0、parse failures 0 |
 | `npm run check:aislop` | 0 | accepted と一致 |
-| CI の python テストと Pekko baseline の検査 | 0 | すべて成功 |
+| `cargo check -p fraktor-actor --lib` と `git diff --check` | 0 | 成功、指摘なし |
+| CI の python テスト 12 本と Pekko baseline の検査 4 本（`report_ledger_1to1.py check` を含む） | 0 | すべて成功 |
+
+`report_ledger_1to1.py check` の検査 5 は、`verified_against: v2.0.0` を付けて報告書に載っていないノードを `docs/baseline/v2.0.0-undocumented-nodes.tsv` に求める。`list-undocumented` で一覧を作り直し、このノードの 1 行（`no-report`）が増えた。
 
 負の対照（1 つずつ一時的に入れ、毎回元に戻した。最終の差分には含めない）：
 
@@ -114,7 +117,7 @@
 
 | コマンド | 結果 |
 |:---|:---|
-| `rollup.py --goal G0issue176` | 1 件で green、「完了: 全ノードが green か do_not_port」 |
+| `rollup.py --goal G0issue176` | 1 件で `{'green': 1}`、「完了: 全ノードが green か do_not_port か not_built」 |
 | `check_needs.py --goal G0issue176` | needs 閉性 OK |
-| `rollup.py --goal G0a`〜`G0f` | 各ゴール「完了: 全ノードが green か do_not_port」 |
+| `rollup.py --goal G0a`〜`G0f` | 各ゴール「完了: 全ノードが green か do_not_port か not_built」 |
 | `check_needs.py --goal G0a`〜`G0f` | 各ゴール「needs 閉性 OK」 |
