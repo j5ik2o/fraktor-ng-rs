@@ -43,6 +43,18 @@ def has_state(node: dict) -> bool:
     return False
 
 
+def load_existing(path: str | None) -> tuple[dict, object]:
+    """既存の台帳の現役のノード（id ごと）と、最上位の retired（無ければ None）を返す。
+
+    退役したノードは再生成でも落とさずに残し、その id を現役のノードに戻さない。
+    """
+    if not path:
+        return {}, None
+    with open(path, encoding="utf-8") as f:
+        existing = yaml.safe_load(f) or {}
+    return {node["id"]: node for node in existing.get("nodes", [])}, existing.get("retired")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--baseline", required=True)
@@ -51,15 +63,7 @@ def main() -> int:
     ap.add_argument("--existing", default=None, help="既存の nodes.yaml（状態保持モード）")
     args = ap.parse_args()
 
-    existing_by_id = {}
-    # 退役したノード（最上位の retired）。再生成でも落とさずに残し、その id を現役のノードに戻さない。
-    retired = None
-    if args.existing:
-        with open(args.existing, encoding="utf-8") as f:
-            existing = yaml.safe_load(f) or {}
-        for node in existing.get("nodes", []):
-            existing_by_id[node["id"]] = node
-        retired = existing.get("retired")
+    existing_by_id, retired = load_existing(args.existing)
     retired_ids = {r.get("id") for r in retired if isinstance(r, dict)} if isinstance(retired, list) else set()
 
     with open(args.baseline, encoding="utf-8") as f:
