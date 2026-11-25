@@ -57,9 +57,7 @@
 //     `ByteString::from_array(data, offset, length).as_input_stream()`, which
 //     clamps the range to the array as the constructor does.
 
-use fraktor_actor::kernel::byte_string::{
-  ByteString, ByteStringInputStream, EndOfStreamError, IndexOutOfBoundsError,
-};
+use fraktor_actor::kernel::byte_string::{ByteString, ByteStringInputStream, EndOfStreamError, IndexOutOfBoundsError};
 
 // The original's `new UnsynchronizedByteArrayInputStream("abc".getBytes(UTF_8))`.
 fn abc_stream() -> ByteStringInputStream {
@@ -270,7 +268,10 @@ fn behave_like_java_io_byte_array_input_stream_under_randomized_operation_sequen
     let mut data = vec![0_u8; rnd.next_int(48) as usize];
     rnd.next_bytes(&mut data);
     let (mut stream, mut reference) = if rnd.next_boolean() {
-      (ByteString::from_array(&data, 0, data.len()).as_input_stream(), ByteArrayInputStreamModel::new(&data, 0, data.len()))
+      (
+        ByteString::from_array(&data, 0, data.len()).as_input_stream(),
+        ByteArrayInputStreamModel::new(&data, 0, data.len()),
+      )
     } else {
       let off = rnd.next_int(data.len() as i32 + 1) as usize;
       let len = rnd.next_int((data.len() - off) as i32 + 1) as usize;
@@ -327,7 +328,11 @@ fn behave_like_java_io_byte_array_input_stream_under_randomized_operation_sequen
           let len = rnd.next_int(a.len() as i32 + 2) - 1;
           if off >= 0 && len >= 0 {
             let (off, len) = (off as usize, len as usize);
-            assert_eq!(stream.read_n_bytes_into(&mut a, off, len), reference.read_n_bytes_into(&mut b, off, len), "{clue}");
+            assert_eq!(
+              stream.read_n_bytes_into(&mut a, off, len),
+              reference.read_n_bytes_into(&mut b, off, len),
+              "{clue}"
+            );
           }
           assert_eq!(a, b, "{clue}");
         },
@@ -394,7 +399,7 @@ impl JavaRandom {
   // `nextInt(bound)` for a positive `bound`.
   fn next_int(&mut self, bound: i32) -> i32 {
     assert!(bound > 0);
-    if bound & -bound == bound {
+    if (bound as u32).is_power_of_two() {
       return ((i64::from(bound) * i64::from(self.next(31))) >> 31) as i32;
     }
     loop {
