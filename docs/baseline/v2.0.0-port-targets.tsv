@@ -1,0 +1,26 @@
+# 原典 v2.0.0 の移動（8 件）と原典で削除（14 件）の根拠表。1 行 1 件。
+# kind: move（old_id から new_id へ）または delete（new_id は -）。
+# deleted_in: 旧パスを削除した v2.0.0 の commit（move では改名として扱う commit）。confirmed_at: 確認日。
+kind	old_id	new_id	reason	deleted_in	confirmed_at
+move	actor-testkit-typed/src/test/java/org/apache/pekko/actor/testkit/typed/javadsl/ActorTestKitJUnit5Test.java	actor-testkit-typed/src/test/java/org/apache/pekko/actor/testkit/typed/javadsl/ActorTestKitJUnitJupiterTest.java	JUnit 4 から JUnit 5 への移行に伴う改名（git の改名検出 R077。ケース名は同じ）	ec27d6dd8cf9c0f80ee3ffebd37b4cdd6d7e5c07	2026-11-25
+move	actor-testkit-typed/src/test/java/jdocs/org/apache/pekko/actor/testkit/typed/javadsl/JUnit5IntegrationExampleTest.java	actor-testkit-typed/src/test/java/jdocs/org/apache/pekko/actor/testkit/typed/javadsl/JUnitJupiterIntegrationExampleTest.java	JUnit5 から JUnitJupiter への言い換え（R079。移動先は別 commit 72949bbd77 が先に追加し、内容はほぼ同一）	2a0faf2cdabfc0936e066407cebfa68d9155562e	2026-11-25
+move	actor-typed-tests/src/test/scala/org/apache/pekko/actor/typed/internal/adpater/PropsAdapterSpec.scala	actor-typed-tests/src/test/scala/org/apache/pekko/actor/typed/internal/adapter/PropsAdapterSpec.scala	パッケージ名の typo 修正（adpater から adapter。改名検出は A+D。v2.0.0 でケースは 1 から 6 に増えた）	0830f58d28e9bdeec56f781f52b90d69817db0c6	2026-11-25
+move	remote/src/test/scala-jdk9-only/org/apache/pekko/remote/artery/jfr/JFRRemotingFlightRecorderSpec.scala	remote/src/test/scala/org/apache/pekko/remote/artery/jfr/JFRRemotingFlightRecorderSpec.scala	jdk9 専用ディレクトリの廃止に伴う移動（R100、内容の変更なし）	6a995664eada6072eb8427792816288cca3b4acb	2026-11-25
+move	stream-tests/src/test/scala-jdk9-only/org/apache/pekko/stream/scaladsl/FlowPublisherSinkSpec.scala	stream-tests/src/test/scala/org/apache/pekko/stream/scaladsl/FlowPublisherSinkSpec.scala	jdk9 専用ディレクトリの廃止に伴う移動（R091）	6a995664eada6072eb8427792816288cca3b4acb	2026-11-25
+move	stream-tests/src/test/java-jdk9-only/org/apache/pekko/stream/javadsl/FlowUnfoldAsyncTest.java	stream-tests/src/test/java/org/apache/pekko/stream/javadsl/FlowUnfoldAsyncTest.java	jdk9 専用ディレクトリの廃止に伴う移動（R055。import と書式が変わり、ケースは同じ）	6a995664eada6072eb8427792816288cca3b4acb	2026-11-25
+move	stream-tests/src/test/java-jdk9-only/org/apache/pekko/stream/javadsl/JavaFlowSupportCompileTest.java	stream-tests/src/test/java/org/apache/pekko/stream/javadsl/JavaFlowSupportCompileTest.java	jdk9 専用ディレクトリの廃止に伴う移動（R049。中身は同じで、置き場所だけが変わった）	6a995664eada6072eb8427792816288cca3b4acb	2026-11-25
+move	stream-tests-tck/src/test/scala-jdk9-only/org/apache/pekko/stream/tck/IterablePublisherViaJavaFlowPublisherTest.scala	stream-tests-tck/src/test/scala/org/apache/pekko/stream/tck/IterablePublisherViaJavaFlowPublisherTest.scala	jdk9 専用ディレクトリの廃止に伴う移動（R094）	183fda795f5cefa69d0f4990aa449a4ba9708fd8	2026-11-25
+delete	actor-tests/src/test/scala/org/apache/pekko/io/InetAddressDnsResolverSpec.scala	-	非推奨コードの撤去（#1969）	2b5b3f8f43997197f59137006de1cdf84937dcd8	2026-11-25
+delete	actor-tests/src/test/java/org/apache/pekko/util/JavaConverterScala3InlineTest.java	-	pekko.util.FutureConverters の撤去（#2207）	875840d3b8bfc7493b363963ac1467d43e1c11dc	2026-11-25
+delete	actor-tests/src/test/scala/org/apache/pekko/event/jul/JavaLoggerSpec.scala	-	非推奨の JUL ロガーの撤去（#1945）	2323878ae12239c71fd54063e172d3d45cd58a07	2026-11-25
+delete	actor-tests/src/test/scala/org/apache/pekko/dispatch/SameThreadExecutionContextSpec.scala	-	不要になったスイートの削除（#3679）	c742a98ddf827d197c3031ddf281666084361e91	2026-11-25
+delete	actor-tests/src/test/scala/org/apache/pekko/util/Scala212CompatTest.scala	-	OptionConverter の整理（#2203）	04f5fcd1b794940dd5f2ca2bdd80ef43c904ef24	2026-11-25
+delete	actor-tests/src/test/scala/org/apache/pekko/actor/TypedActorSpec.scala	-	非推奨の TypedActor の撤去（#1969）	2b5b3f8f43997197f59137006de1cdf84937dcd8	2026-11-25
+delete	persistence/src/test/scala/org/apache/pekko/persistence/state/exception/DurableStateExceptionsSpec.scala	-	スイート自体の削除（#3352）	39682c8ca72e856a5653063239797ad3b913b4c7	2026-11-25
+delete	remote/src/test/scala/org/apache/pekko/remote/serialization/PrimitivesSerializationSpec.scala	-	非推奨コードの撤去（#1983）。actor-tests の同名ファイルは v1.7.1 から別に存在するスイートで、移動先ではない	5aad47eb6c84963bb71582b814016a01ec8d8023	2026-11-25
+delete	remote/src/test/scala/org/apache/pekko/remote/TypedActorRemoteDeploySpec.scala	-	非推奨の TypedActor の撤去（#1969）	2b5b3f8f43997197f59137006de1cdf84937dcd8	2026-11-25
+delete	stream-tests/src/test/scala/org/apache/pekko/stream/io/DeprecatedTlsSpec.scala	-	ssl-config 依存の撤去（#2127）	18545a67371721645c4c433cffb29c0acd69f6aa	2026-11-25
+delete	stream-tests/src/test/scala/org/apache/pekko/stream/impl/FanoutProcessorSpec.scala	-	fanout publisher の実行時実装の置き換え（#2874）。内部実装のスイート	f5c37ba2552fd637c09a3cf6498c92e113e705b1	2026-11-25
+delete	stream-tests/src/test/scala/org/apache/pekko/stream/scaladsl/LazilyAsyncSpec.scala	-	非推奨の lazilyAsync の撤去（#1996）	0dd219fab49867cacc5ad0114c0a8c608780c5bb	2026-11-25
+delete	stream-tests/src/test/scala/org/apache/pekko/stream/scaladsl/SetupSpec.scala	-	非推奨の Source.setup の撤去（#1996）	0dd219fab49867cacc5ad0114c0a8c608780c5bb	2026-11-25
+delete	stream-tests/src/test/scala/org/apache/pekko/stream/scaladsl/SinkForeachParallelSpec.scala	-	非推奨の Sink.foreachParallel の撤去（#1984）	19788583ee839eb12e1ccb9901bfe23ef1bd80c6	2026-11-25

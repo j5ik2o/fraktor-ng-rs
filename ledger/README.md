@@ -63,6 +63,34 @@ uv run python3 ledger/tools/reverify_against.py apply \
 再照合の結果は `docs/baseline/v2.0.0-reverification.md` が持つ（1 ノード 1 行の根拠）。
 再照合の判定日と根拠を台帳に持つ欄は規定されていないので、台帳には `verified_against` の値だけを書く。
 
+## 原典でパスが変わったノードと、原典で削除されたノード
+
+基準の切り替えで原典のパスが変わったノードは、`id` を現行の原典のパスへ付け替える（同じノードと
+して扱い、`status`・件数・`cases`・`goal` は持ち越す）。原典からスイートごと削除されたノードは
+`status: do_not_port`、`triage.kind: do_not_port`、`verified_against: <現行タグ>` にし、
+`triage.reason` に次を書く。
+
+> 原典 v2.0.0 で削除（削除コミット <SHA>・確認日 <YYYY-MM-DD>）
+
+`retired` は使わない。後継が無いので `retired.successor` と、後継の `cases.carried` が要求する
+`rust_test`・`evidence` を埋められず、埋めれば記録の捏造になる（語義からも外れる）。この遷移は
+人間の決定（原典で削除という事実の確認）に基づく。run が自分でノードを `do_not_port` へ倒すことは
+ない。
+
+置換は手で書かず、1 行 1 件の根拠表（`docs/baseline/v2.0.0-port-targets.tsv`。旧 id・新 id・理由・
+削除コミット・確認日）を読む `ledger/tools/relocate_nodes.py` で行う。台帳の行の書き換えは
+`ledger_lines.py` を通る。`apply` は PyYAML なしで動き、冪等である。`check` は根拠表と台帳の
+整合と、旧 id の文字列参照 0 件（`ledger`・`docs`・`.takt`・`scripts` を探す。根拠表と凍結した
+過去の基準は履歴として除く）を見る。CI でも `check` を実行する。
+
+```sh
+python3 ledger/tools/relocate_nodes.py apply --dry-run   # 何が変わるか（書かない）
+python3 ledger/tools/relocate_nodes.py apply             # 適用（冪等）
+uv run --with pyyaml python3 ledger/tools/relocate_nodes.py check
+```
+
+記録は `docs/baseline/v2.0.0-missing-unported.md` にある。
+
 ## needs の抽出と閉性判定
 
 各ノードの `needs.testkit` は、Pekko 原典ファイルが使う TestKit の能力 id のリストである。
