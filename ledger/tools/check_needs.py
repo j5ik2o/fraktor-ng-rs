@@ -16,6 +16,8 @@ import sys
 
 import yaml
 
+from rollup import is_done, load_nodes
+
 
 def load_capabilities(path: str) -> dict[str, dict]:
     with open(path, encoding="utf-8") as f:
@@ -24,13 +26,13 @@ def load_capabilities(path: str) -> dict[str, dict]:
 
 
 def green_goals(nodes: list[dict]) -> set[str]:
-    """所属ノードがすべて green か do_not_port のゴール（rollup の完了判定と同じ意味論）。"""
+    """所属ノードがすべて完了したゴール（rollup.is_done。rollup の完了判定と同じ意味論）。"""
     by_goal: dict[str, list[dict]] = collections.defaultdict(list)
     for n in nodes:
         if n.get("goal"):
             by_goal[n["goal"]].append(n)
     return {g for g, members in by_goal.items()
-            if all(m.get("status") in ("green", "do_not_port") for m in members)}
+            if all(is_done(m) for m in members)}
 
 
 def main() -> int:
@@ -40,8 +42,7 @@ def main() -> int:
     ap.add_argument("--goal", required=True)
     args = ap.parse_args()
 
-    with open(args.ledger, encoding="utf-8") as f:
-        nodes = (yaml.safe_load(f) or {}).get("nodes", [])
+    nodes = load_nodes(args.ledger)
     capabilities = load_capabilities(args.capabilities)
     done = green_goals(nodes) | {args.goal}
 

@@ -14,7 +14,7 @@
 - 種は `docs/baseline/pekko-v1.7.1/ledger.yaml`（モジュール粒度の事実層スナップショット）。
   あちらは凍結物であり、進捗を書き込む場所ではない。ここへ変換して取り込む
 - 粒度はテストクラスファイル（2026-11-11 承認）。ノードの一意キーはファイルパスである。
-  ノード状態は 未移植 / red / green / 移植しない
+  ノード状態は 未移植 / red / green / 移植しない / 作らない
 - 「移植しない」の変更は人間の判断でのみ行う。TAKT の manager / run が勝手に
   ノードを「移植しない」へ倒すことは許さない（理由の記録欄は台帳側に持つ）
 
@@ -90,6 +90,19 @@ uv run --with pyyaml python3 ledger/tools/check_needs.py \
   `uv run python3`（`--with pyyaml` なし）で起動し、`verify_red` を import する。除外の検査を
   行わない限り PyYAML なしで動く（verify_red の呼び出し側は `--with pyyaml` 付き）
 - スキーマの詳細は `docs/decisions/ledger-schema-draft.md` の `cases` を参照する
+
+## 作らない区分
+
+`status: not_built` と `cases.not_built` は「作らない区分」の記録である（2026-11-25 オーナー決定）。
+原典のテストが原典の言語のための補助そのものを検証していて、観測できる振る舞いを Rust の言語機能・
+標準ライブラリ・既存の API で満たせるため、対応する公開面を作らない。判定はケース単位で、1件ずつ
+理由（`reason`）と Rust の代替例（`alternative`）と承認（`approved_by`、`approved_at`）を書く。
+除外（`cases.excluded`）や移植しない（`do_not_port`）とは別に数える。
+
+- 定義、当てはめる条件、自動では入れないもの：`docs/decisions/ledger-schema-draft.md` の「作らない区分」
+- 集計：`rollup.py` が `not_built` のノード数、作らない率、ケースの 移植・除外・作らない の件数を出す。
+  合格率の分母からは除く。記録の欠けた `not_built` はゴールの完了に数えない
+- 最初の適用：`docs/goals/issue-145-partial-function-builders.md`（PFBuilderTest、MatchBuilderTest）
 
 ## 未決定
 
