@@ -1,13 +1,19 @@
 //! A mutable doubly linked list whose nodes are addressed by id.
 
 use alloc::collections::BTreeMap;
-use core::ops::{Index, IndexMut};
+use core::{
+  ops::{Index, IndexMut},
+  sync::atomic::{AtomicU64, Ordering},
+};
 
 use super::NodeId;
 
 #[cfg(test)]
 #[path = "double_linked_list_value_test.rs"]
 mod tests;
+
+// Numbers each list, so that the ids of one list never name a node of another.
+static NEXT_LIST: AtomicU64 = AtomicU64::new(0);
 
 /// A mutable, non-thread-safe doubly linked list.
 ///
@@ -39,6 +45,7 @@ pub struct DoubleLinkedList<A> {
   nodes: BTreeMap<NodeId, Node<A>>,
   first: Option<NodeId>,
   last: Option<NodeId>,
+  list: u64,
   next_id: u64,
 }
 
@@ -51,8 +58,9 @@ struct Node<A> {
 impl<A> DoubleLinkedList<A> {
   /// Creates an empty list.
   #[must_use]
-  pub const fn new() -> Self {
-    Self { nodes: BTreeMap::new(), first: None, last: None, next_id: 0 }
+  pub fn new() -> Self {
+    let list = NEXT_LIST.fetch_add(1, Ordering::Relaxed);
+    Self { nodes: BTreeMap::new(), first: None, last: None, list, next_id: 0 }
   }
 
   /// Returns whether the list has no nodes.
@@ -274,7 +282,7 @@ impl<A> DoubleLinkedList<A> {
   }
 
   fn allocate(&mut self, value: A) -> NodeId {
-    let node = NodeId::new(self.next_id);
+    let node = NodeId::new(self.list, self.next_id);
     self.next_id += 1;
     self.nodes.insert(node, Node { value, previous: None, next: None });
     node

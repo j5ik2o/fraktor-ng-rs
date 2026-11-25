@@ -52,7 +52,7 @@
 | 「同じノードが返った」の確かめ方 | ノードの値の等価（テストの `shouldBe b`） | `NodeId` の等価。テストは既存のノードの id と返った id を比べる |
 | まだリストに無いノードを新しいノードとして渡す | 作っておいたノード（`a` など）を渡し、返ったノードと比べる | 値を作るクロージャを渡し、返った id の値とリストの並びを確かめる |
 | `remove` の後 | 外したノードは残り、利用者がまた挿入できる | 値を返す。また挿入すると新しい id になる。外した id は再利用しない |
-| リストに無いノードを渡す | 古いリンクをたどり、リストが壊れうる | panic（`the node is in this list`） |
+| リストに無いノードを渡す | 古いリンクをたどり、リストが壊れうる | panic（`the node is in this list`）。`NodeId` はリストごとの番号を持つので、別のリストの id もここに当たる |
 | 計算量 | ノードを直接たどるので定数時間 | ノードを順序付きの map で引くので対数時間 |
 
 ## 先行テストと red の証拠
@@ -75,7 +75,7 @@
 
 ## 回帰のテスト（原典外、台帳の件数に含めない）
 
-`crates/fraktor-actor/src/kernel/double_linked_list/double_linked_list_value_test.rs` の 7 件。
+`crates/fraktor-actor/src/kernel/double_linked_list/double_linked_list_value_test.rs` の 9 件。
 
 | テスト | 確かめること |
 |:---|:---|
@@ -86,13 +86,15 @@
 | `the_new_value_is_made_only_when_a_node_is_inserted` | 既存のノードを返す 4 つの `OrElse` は、新しい値のクロージャを呼ばない（名前渡しの意味） |
 | `find_stops_at_the_end_of_the_list_and_inserts_there` | `find_*` がリストの端で止まり、そこに挿入する |
 | `index_mut_changes_the_value_in_place` | `list[id] = ..` と `get_mut` が値を書き換える |
+| `an_id_from_another_list_does_not_name_a_node_here` | 別のリストの id は、番号が同じでもこのリストのノードを指さない（`get`、`get_mut` が `None`） |
+| `removing_an_id_from_another_list_panics_and_keeps_this_list` | 別のリストの id で `remove` すると panic し、無関係な値を消さない |
 
 ## 最終の検証
 
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test double_linked_list_spec` | 0 | 12 passed、0 failed（原典 12 件） |
-| `cargo test -p fraktor-actor --lib double_linked_list` | 0 | 7 passed、0 failed |
+| `cargo test -p fraktor-actor --lib double_linked_list` | 0 | 9 passed、0 failed（レビュー対応後。対応前は 7 件） |
 | `cargo test --workspace` | 0 | 77 結果、922 passed、0 failed、0 ignored |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告なし |
 | `cargo fmt --check` | 0 | 差分なし |
@@ -121,3 +123,13 @@
 | `check_needs.py --goal G0issue176` | needs 閉性 OK |
 | `rollup.py --goal G0a`〜`G0f` | 各ゴール「完了: 全ノードが green か do_not_port か not_built」 |
 | `check_needs.py --goal G0a`〜`G0f` | 各ゴール「needs 閉性 OK」 |
+
+## PR #178 のレビュー対応
+
+基準 HEAD は `1ffe0b73d1a6fb627ed537c590009947b4c7a58a`。
+
+| 指摘 | 分類 | 対応 |
+|:---|:---|:---|
+| 別のリストの id で無関係な要素を誤削除する（Devin、`double_linked_list_value.rs:279`） | 直す | 各リストが 0 から採番し、`NodeId` の等価が番号だけで決まっていたため、別のリストの id が一致して通っていた。リストに全体で一意の番号（`static` の `AtomicU64`、executor の採番と同じ形）を持たせ、`NodeId` にリストの番号を含めた。別のリストの id は map で引けず、`get` は `None`、他の操作は panic する。先に足した回帰 2 件は修正前に失敗した（`assert_ne!` が成り立たず、`remove` が panic しない）。`DoubleLinkedList::new` は atomic を使うため `const fn` でなくなった（この PR で足した API で、利用者はまだいない） |
+| Devin のレビュー本文（上の 1 件の要約） | 直す | 上と同じ |
+| CodeRabbit の利用上限の通知、Codex のレビュー失敗と利用上限の通知 | 採らない | 指摘を含まない通知で、対応する変更は無い |

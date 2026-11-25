@@ -86,3 +86,25 @@ fn index_mut_changes_the_value_in_place() {
   *list.get_mut(a).expect("in the list") = "y";
   assert_eq!(values(&list), ["y"]);
 }
+
+#[test]
+fn an_id_from_another_list_does_not_name_a_node_here() {
+  let mut mine = DoubleLinkedList::new();
+  let mut other = DoubleLinkedList::new();
+  let foreign = other.append("other");
+  let a = mine.append("a");
+  assert_ne!(foreign, a);
+  assert_eq!(mine.get(foreign), None);
+  assert_eq!(mine.get_mut(foreign), None);
+  assert_eq!(values(&mine), ["a"]);
+}
+
+#[test]
+#[should_panic(expected = "the node is in this list")]
+fn removing_an_id_from_another_list_panics_and_keeps_this_list() {
+  let mut mine = DoubleLinkedList::new();
+  let mut other = DoubleLinkedList::new();
+  let foreign = other.append("other");
+  mine.append("a");
+  mine.remove(foreign);
+}
