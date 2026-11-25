@@ -26,13 +26,30 @@ rollup.py --goal を走らせる。ここでは takt も cargo も node も起�
  14. 要件10: 2列表（g0a 形式）と5列表（g0b〜g0f 形式）の両方で一致 0
  15. 実物の docs/goals/*.md 全6本で、1行目から ID が取れ、表 id 集合が現行台帳の
      所属と一致する（文字列をテストへ埋め込まない）。終了値の期待は台帳のノード
-     状態から求める（全ノードが green か do_not_port のときだけ 0）
+     状態から求める（全ノードが rollup.is_done を満たすときだけ 0）
  16. 失敗時も終了コードは 0 で、JSON に exit_code 非0 を載せる（takt の output: json 契約）
  17. `-t` 直渡し（order.md 無し）でも meta.json の task から完了判定できる
  18. order.md も meta.json も無ければ判定不能として失敗し COMPLETE にしない
  19. 台帳 YAML が不正でも終了コード 0 で JSON を出し exit_code 非0 と原因を返す
  20. `## 対象ノード` 節の後に別の表があっても、節外の表を id と解釈しない
  21. `## 対象ノード` 節内で対象ノード表の後に別の表が続いても、最初の表だけを読む
+ 28. green と記録の揃った not_built（作らない区分）の混在 exit_code 0
+ 29. not_built でも、ケースの記録（承認・代替例）が欠けていれば完了にしない
+ 30. not_built の承認記録が不正（実在しない暦日、時刻つき、文字列でない・空白だけの承認者）なら完了にしない
+ 31. not_built のケース名が重複していれば、件数が合っていても完了にしない
+ 32. not_built のケース名が空白だけなら完了にしない
+ 33. TAKT の triage が処理済みとする status が rollup.DONE_STATUSES と一致し、記録不足の
+     needs_human は対象ゴールのノードに限る
+ 34. not_built の passing が整数の 0 でない（1、null、false、欠落）なら完了にしない
+ 35. cases.not_built が配列でなくても集計は止まらず、そのノードの記録不足として出る。
+     ほかのゴールのその誤記で、対象ゴールの完了判定は止まらない
+ 36. ほかのゴールの not_built の記録不足は、対象ゴールの未完了一覧に入らない。対象ゴール
+     自身の記録不足は、未完了一覧に not_built と不足の内容つきで出る
+ 37. not_built の triage や cases がマッピングでなくても止まらない。対象ゴールなら未完了、
+     ほかのゴールは判定を続ける
+ 38. check_needs も、ほかのゴールの壊れた not_built の記録で止まらない
+ 39. 全件を作らないノードに承認済みの除外があれば未完了で、除外の有効件数にも数えない
+ 40. not_built の total が正の整数でない（true）、前後に空白のあるケース名で重複を隠すなら完了にしない
 """
 import json
 import os
@@ -43,6 +60,9 @@ from pathlib import Path
 
 GATE = Path(__file__).resolve().parent / "goal_complete_gate.py"
 ROLLUP = Path(__file__).resolve().parent / "rollup.py"
+APPROVALS = Path(__file__).resolve().parent / "excluded_approvals.py"
+TRIAGE = Path(__file__).resolve().parents[2] / ".takt" / "facets" / "instructions" / "fraktor-triage.md"
+PORT_NODE = Path(__file__).resolve().parents[2] / ".takt" / "workflows" / "fraktor-port-node.yaml"
 REPO = Path(__file__).resolve().parents[2]
 GOALS = REPO / "docs" / "goals"
 REAL_LEDGER = REPO / "ledger" / "nodes.yaml"
@@ -54,6 +74,12 @@ UUID = "11111111-2222-3333-4444-555555555555"
 def write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def copy_rollup(root: Path) -> None:
+    """rollup.py と、それが読む excluded_approvals.py を一時ディレクトリへ写す。"""
+    write(root / "ledger" / "tools" / "rollup.py", ROLLUP.read_text(encoding="utf-8"))
+    write(root / "ledger" / "tools" / "excluded_approvals.py", APPROVALS.read_text(encoding="utf-8"))
 
 
 def node(node_id: str, status: str, goal: str | None) -> str:
@@ -105,7 +131,7 @@ def make_run(root: Path, order_text: str, ledger: str,
     write(response, "dummy\n")
     write(run / "context" / "task" / "order.md", order_text)
     write(root / "ledger" / "nodes.yaml", ledger)
-    write(root / "ledger" / "tools" / "rollup.py", ROLLUP.read_text(encoding="utf-8"))
+    copy_rollup(root)
     for name, text in (goal_docs or {}).items():
         write(root / "docs" / "goals" / name, text)
     return response
@@ -125,7 +151,7 @@ def make_run_without_order(root: Path, task_text: str, ledger: str,
     write(response, "dummy\n")
     write(run / "meta.json", json.dumps({"task": task_text}, ensure_ascii=False))
     write(root / "ledger" / "nodes.yaml", ledger)
-    write(root / "ledger" / "tools" / "rollup.py", ROLLUP.read_text(encoding="utf-8"))
+    copy_rollup(root)
     for name, text in (goal_docs or {}).items():
         write(root / "docs" / "goals" / name, text)
     return response
@@ -191,6 +217,285 @@ def test_green_and_do_not_port_is_complete():
         result = run_gate(root, response)
         assert result["exit_code"] == 0, result
         print("3. green + do_not_port: exit_code =", result["exit_code"])
+
+
+NOT_BUILT_CASE = (
+    "    total: 1\n"
+    "    ported: 0\n"
+    "    passing: 0\n"
+    "    excluded: []\n"
+    "    not_built:\n"
+    "    - name: someCase\n"
+    "      reason: the original checks a Java helper\n"
+    "      alternative: a Rust match\n"
+)
+
+
+def not_built_node(node_id: str, goal: str, approval: str, cases: str = NOT_BUILT_CASE) -> str:
+    """作らない区分のノード。approval はケースの要素に足す承認の行。"""
+    return (
+        f"- id: {node_id}\n"
+        f"  kind: test\n"
+        f"  pekko:\n"
+        f"    module: stub\n"
+        f"  status: not_built\n"
+        f"  triage:\n"
+        f"    kind: not_built\n"
+        f"    reason: served by the language\n"
+        f"  cases:\n"
+        f"{cases}{approval}"
+        f"  goal: {goal}\n"
+    )
+
+
+APPROVAL = "      approved_by: someone\n      approved_at: 2026-01-01\n"
+
+
+def test_green_and_not_built_is_complete():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.java", "a/B.java"]
+        ledger = ledger_yaml([(ids[0], "green", "G0w")]) + not_built_node(ids[1], "G0w", APPROVAL)
+        response = make_run(root, order_with(["docs/goals/g0w-stub.md"]), ledger,
+                            one_goal_doc("G0w", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] == 0, result
+        print("28. green + not_built: exit_code =", result["exit_code"])
+
+
+def test_not_built_without_approval_is_not_complete():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.java"]
+        ledger = "nodes:\n" + not_built_node(ids[0], "G0v", "")
+        response = make_run(root, order_with(["docs/goals/g0v-stub.md"]), ledger,
+                            one_goal_doc("G0v", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] != 0, result
+        assert "a/A.java" in result.get("output", ""), result
+        print("29. not_built without approval: exit_code =", result["exit_code"])
+
+
+def assert_not_built_incomplete(label: str, approval: str, cases: str = NOT_BUILT_CASE,
+                                names_node: bool = True) -> None:
+    """関門が完了にしないことを確かめる。names_node なら未完了の一覧に id が出ることも確かめる。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.java"]
+        ledger = "nodes:\n" + not_built_node(ids[0], "G0u", approval, cases)
+        response = make_run(root, order_with(["docs/goals/g0u-stub.md"]), ledger,
+                            one_goal_doc("G0u", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] != 0, (label, result)
+        if names_node:
+            assert "a/A.java" in result.get("output", ""), (label, result)
+        print(f"{label}: exit_code =", result["exit_code"])
+
+
+def test_not_built_with_malformed_approval_is_not_complete():
+    """承認記録は除外と同じ is_approved_by_human で検査する（空でないだけでは通さない）。"""
+    assert_not_built_incomplete(
+        "30a. not_built with a nonexistent quoted date",
+        "      approved_by: someone\n      approved_at: '2026-02-30'\n")
+    assert_not_built_incomplete(
+        "30b. not_built with an unquoted nonexistent date",
+        "      approved_by: someone\n      approved_at: 2026-02-30\n",
+        # 関門自身の台帳の読み込み（PyYAML の既定）がこの日付で失敗し、判定不能で止まる。
+        names_node=False)
+    assert_not_built_incomplete(
+        "30c. not_built with a timestamp instead of a date",
+        "      approved_by: someone\n      approved_at: 2026-01-01T00:00:00Z\n")
+    assert_not_built_incomplete(
+        "30d. not_built with a list as the approver",
+        "      approved_by: [someone]\n      approved_at: 2026-01-01\n")
+    assert_not_built_incomplete(
+        "30e. not_built with a blank approver",
+        "      approved_by: '  '\n      approved_at: 2026-01-01\n")
+
+
+def test_not_built_with_duplicated_case_names_is_not_complete():
+    """件数が total と合っていても、同じケース名の重複で欠けたケースを埋めさせない。"""
+    record = ("    - name: someCase\n"
+              "      reason: the original checks a Java helper\n"
+              "      alternative: a Rust match\n"
+              "      approved_by: someone\n      approved_at: 2026-01-01\n")
+    cases = ("    total: 2\n    ported: 0\n    passing: 0\n    excluded: []\n"
+             "    not_built:\n" + record + record)
+    assert_not_built_incomplete("31. not_built with duplicated case names", "", cases)
+
+
+def test_not_built_with_a_blank_case_name_is_not_complete():
+    cases = NOT_BUILT_CASE.replace("name: someCase", "name: '  '")
+    assert_not_built_incomplete("32. not_built with a blank case name", APPROVAL, cases)
+
+
+def test_not_built_with_a_nonzero_or_missing_passing_is_not_complete():
+    """全件が作らない区分のノードは、ported と passing がどちらも整数の 0 である。"""
+    for label, line in (("34a. passing 1", "    passing: 1\n"),
+                        ("34b. passing null", "    passing: null\n"),
+                        ("34c. passing false", "    passing: false\n"),
+                        ("34d. passing missing", "")):
+        cases = NOT_BUILT_CASE.replace("    passing: 0\n", line)
+        assert_not_built_incomplete(f"{label}: not_built", APPROVAL, cases)
+
+
+def test_non_list_not_built_record_is_diagnosed_without_crashing():
+    """cases.not_built の配列でない誤記で集計が止まらず、そのノードの記録不足として出る。"""
+    cases = ("    total: 1\n    ported: 0\n    passing: 0\n    excluded: []\n"
+             "    not_built: 1\n")
+    assert_not_built_incomplete("35a. not_built record that is not a list", "", cases)
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.java"]
+        ledger = (ledger_yaml([(ids[0], "green", "G0t")])
+                  + not_built_node("b/B.java", "G0s", "", cases))
+        response = make_run(root, order_with(["docs/goals/g0t-stub.md"]), ledger,
+                            one_goal_doc("G0t", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] == 0, result
+        print("35b. another goal's non-list not_built record: exit_code =", result["exit_code"])
+
+
+def test_another_goals_not_built_shortfall_stays_out_of_the_goal_pending_list():
+    """ほかのゴールの記録不足は、対象ゴールの未完了一覧に入らない（triage はその一覧で判定する）。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.java"]
+        ledger = (ledger_yaml([(ids[0], "unported", "G0r")])
+                  + not_built_node("b/B.java", "G0q", ""))
+        response = make_run(root, order_with(["docs/goals/g0r-stub.md"]), ledger,
+                            one_goal_doc("G0r", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] != 0, result
+        pending = result["output"].split("未完了", 1)[1]
+        assert "a/A.java (unported)" in pending, result
+        assert "b/B.java" not in pending, result
+        own = (ledger_yaml([(ids[0], "unported", "G0r")])
+               + not_built_node("b/B.java", "G0r", ""))
+        response = make_run(root, order_with(["docs/goals/g0r-stub.md"]), own,
+                            one_goal_doc("G0r", ids + ["b/B.java"]))
+        result = run_gate(root, response)
+        pending = result["output"].split("未完了", 1)[1]
+        assert "b/B.java (not_built、作らない区分の記録が不足" in pending, result
+        print("36. another goal's shortfall stays out, the goal's own is listed: exit_code =",
+              result["exit_code"])
+
+
+def raw_not_built_node(node_id: str, goal: str, triage: str, cases: str) -> str:
+    """triage と cases の YAML をそのまま差し込んだ not_built のノード（壊れた記録の再現用）。"""
+    return (
+        f"- id: {node_id}\n"
+        f"  kind: test\n"
+        f"  pekko:\n"
+        f"    module: stub\n"
+        f"  status: not_built\n"
+        f"{triage}{cases}"
+        f"  goal: {goal}\n"
+    )
+
+
+GOOD_TRIAGE = "  triage:\n    kind: not_built\n    reason: served by the language\n"
+GOOD_CASES = "  cases:\n" + NOT_BUILT_CASE + APPROVAL
+
+
+def test_non_mapping_triage_or_cases_is_diagnosed_and_other_goals_continue():
+    """triage や cases がマッピングでなくても止まらない。対象なら未完了、ほかのゴールは判定を続ける。"""
+    for label, triage, cases in (("37a. triage that is not a mapping", "  triage: not_built\n", GOOD_CASES),
+                                 ("37b. cases that is not a mapping", GOOD_TRIAGE, "  cases: 1\n")):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            broken = raw_not_built_node("b/B.java", "G0p", triage, cases)
+            response = make_run(root, order_with(["docs/goals/g0p-stub.md"]), "nodes:\n" + broken,
+                                one_goal_doc("G0p", ["b/B.java"]))
+            result = run_gate(root, response)
+            assert result["exit_code"] == 1, (label, result)
+            pending = result["output"].split("未完了", 1)[1]
+            assert "b/B.java (not_built、作らない区分の記録が不足" in pending, (label, result)
+            ledger = ledger_yaml([("a/A.java", "green", "G0o")]) + broken
+            response = make_run(root, order_with(["docs/goals/g0o-stub.md"]), ledger,
+                                one_goal_doc("G0o", ["a/A.java"]))
+            result = run_gate(root, response)
+            assert result["exit_code"] == 0, (label, result)
+            print(f"{label}: own goal incomplete, another goal exit_code =", result["exit_code"])
+
+
+def test_check_needs_continues_past_another_goals_broken_not_built():
+    """check_needs は、ほかのゴールの壊れた not_built の記録で止まらない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        copy_rollup(root)
+        write(root / "ledger" / "tools" / "check_needs.py",
+              (ROLLUP.parent / "check_needs.py").read_text(encoding="utf-8"))
+        write(root / "ledger" / "capabilities.yaml", "capabilities: []\n")
+        ledger = ("nodes:\n"
+                  "- id: a/A.java\n  kind: test\n  pekko:\n    module: stub\n"
+                  "  status: green\n  needs:\n    testkit: []\n  goal: G0n\n"
+                  + raw_not_built_node("b/B.java", "G0m", "  triage: not_built\n", "  cases: 1\n"))
+        write(root / "ledger" / "nodes.yaml", ledger)
+        proc = subprocess.run(
+            [sys.executable, "ledger/tools/check_needs.py", "--ledger", "ledger/nodes.yaml",
+             "--capabilities", "ledger/capabilities.yaml", "--goal", "G0n"],
+            cwd=str(root), capture_output=True, text=True, check=False)
+        assert proc.returncode == 0, (proc.stdout, proc.stderr)
+        print("38. check_needs past another goal's broken not_built: exit", proc.returncode)
+
+
+def test_not_built_node_with_an_exclusion_is_not_complete_or_double_counted():
+    """全件を作らないノードに承認済みの除外を残すと未完了で、除外の有効件数にも数えない。"""
+    excluded = ("    excluded:\n"
+                "    - name: someCase\n      reason: also excluded\n"
+                "      approved_by: someone\n      approved_at: 2026-01-01\n")
+    cases = NOT_BUILT_CASE.replace("    excluded: []\n", excluded)
+    assert_not_built_incomplete("39a. not_built with an approved exclusion of the same case",
+                                APPROVAL, cases)
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ledger = "nodes:\n" + not_built_node("a/A.java", "G0l", APPROVAL, cases)
+        response = make_run(root, order_with(["docs/goals/g0l-stub.md"]), ledger,
+                            one_goal_doc("G0l", ["a/A.java"]))
+        result = run_gate(root, response)
+        assert "除外=0（記録 1） 作らない=0（記録 1）" in result["output"], result
+        print("39b. the double record is counted only as recorded")
+
+
+def test_not_built_with_a_non_integer_total_or_padded_duplicate_name_is_not_complete():
+    """total は正の整数で、ケース名の前後の空白で重複の判定をすり抜けさせない。"""
+    assert_not_built_incomplete("40a. not_built with total: true", APPROVAL,
+                                NOT_BUILT_CASE.replace("    total: 1\n", "    total: true\n"))
+    record = ("    - name: {name}\n"
+              "      reason: the original checks a Java helper\n"
+              "      alternative: a Rust match\n"
+              "      approved_by: someone\n      approved_at: 2026-01-01\n")
+    cases = ("    total: 2\n    ported: 0\n    passing: 0\n    excluded: []\n"
+             "    not_built:\n" + record.format(name="someCase")
+             + record.format(name="'someCase '"))
+    assert_not_built_incomplete("40b. not_built with a duplicated name padded by a space", "", cases)
+
+
+def test_takt_triage_treats_the_same_statuses_as_done():
+    """TAKT の triage が処理済みとする status は、rollup の DONE_STATUSES と同じである。
+
+    rollup が完了に数える status を triage が対象に選ぶと、作らない区分のノードを
+    移植し直す。triage の指示文と、子ワークフローの goal_complete の条件の両方に、
+    DONE_STATUSES の全 status と、記録の不足した not_built を needs_human にする規則がある。
+    """
+    import yaml
+
+    import rollup
+
+    triage = TRIAGE.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(PORT_NODE.read_text(encoding="utf-8"))
+    step = next(s for s in workflow["steps"] if s["name"] == "triage")
+    complete = [r["condition"] for r in step["rules"] if r.get("return") == "goal_complete"]
+    human = [r["condition"] for r in step["rules"] if r.get("return") == "needs_human"]
+    assert len(complete) == 1, complete
+    for status in rollup.DONE_STATUSES:
+        assert f"`{status}`" in triage, (status, "fraktor-triage.md")
+        assert status in complete[0], (status, complete[0])
+    assert "rollup.py" in triage, "fraktor-triage.md"
+    assert any("not_built" in condition and "対象ゴール" in condition for condition in human), human
+    assert "対象ゴールに属する" in triage, "fraktor-triage.md"
+    print("33. TAKT triage statuses match rollup.DONE_STATUSES:", rollup.DONE_STATUSES)
 
 
 def test_goal_without_members_is_not_complete():
@@ -353,9 +658,10 @@ def test_real_goal_documents_match_current_ledger():
     完了状態と終了値が一致することだけを確かめる（完了を前提にしない）。
     """
     import re
-    import yaml
 
-    ledger_nodes = (yaml.safe_load(REAL_LEDGER.read_text(encoding="utf-8")) or {}).get("nodes", [])
+    import rollup
+
+    ledger_nodes = rollup.load_nodes(str(REAL_LEDGER))
     docs = sorted(GOALS.glob("*.md"))
     assert docs, f"no goal documents under {GOALS}"
     for doc_path in docs:
@@ -368,9 +674,7 @@ def test_real_goal_documents_match_current_ledger():
             (root / "ledger").mkdir(parents=True)
             (root / "ledger" / "nodes.yaml").write_text(
                 REAL_LEDGER.read_text(encoding="utf-8"), encoding="utf-8")
-            (root / "ledger" / "tools").mkdir(parents=True)
-            (root / "ledger" / "tools" / "rollup.py").write_text(
-                ROLLUP.read_text(encoding="utf-8"), encoding="utf-8")
+            copy_rollup(root)
             (root / "context" / "task").mkdir(parents=True)
             (root / "context" / "task" / "order.md").write_text(
                 order_with([f"docs/goals/{doc_path.name}"]), encoding="utf-8")
@@ -388,7 +692,7 @@ def test_real_goal_documents_match_current_ledger():
             assert members, (doc_path.name, "no ledger member for goal", goal_id)
 
             member_nodes = [n for n in ledger_nodes if n.get("goal") == goal_id]
-            complete = all(n.get("status") in ("green", "do_not_port") for n in member_nodes)
+            complete = all(rollup.is_done(n) for n in member_nodes)
             expected = 0 if complete else 1
             result = run_gate(root, response)
             assert result["exit_code"] == expected, (doc_path.name, complete, result)
@@ -419,7 +723,7 @@ def test_without_order_md_and_without_meta_fails():
         response = run / "context" / "system-commands" / UUID / "response.txt"
         write(response, "dummy\n")
         write(root / "ledger" / "nodes.yaml", ledger)
-        write(root / "ledger" / "tools" / "rollup.py", ROLLUP.read_text(encoding="utf-8"))
+        copy_rollup(root)
         result = run_gate(root, response)
         assert result["exit_code"] != 0, result
         print("18. neither order.md nor meta.json: exit_code =", result["exit_code"])
@@ -576,6 +880,19 @@ def main() -> int:
         test_all_green_is_complete,
         test_green_and_do_not_port_is_complete,
         test_goal_without_members_is_not_complete,
+        test_green_and_not_built_is_complete,
+        test_not_built_without_approval_is_not_complete,
+        test_not_built_with_malformed_approval_is_not_complete,
+        test_not_built_with_duplicated_case_names_is_not_complete,
+        test_not_built_with_a_blank_case_name_is_not_complete,
+        test_takt_triage_treats_the_same_statuses_as_done,
+        test_not_built_with_a_nonzero_or_missing_passing_is_not_complete,
+        test_non_list_not_built_record_is_diagnosed_without_crashing,
+        test_another_goals_not_built_shortfall_stays_out_of_the_goal_pending_list,
+        test_non_mapping_triage_or_cases_is_diagnosed_and_other_goals_continue,
+        test_check_needs_continues_past_another_goals_broken_not_built,
+        test_not_built_node_with_an_exclusion_is_not_complete_or_double_counted,
+        test_not_built_with_a_non_integer_total_or_padded_duplicate_name_is_not_complete,
         test_order_without_goal_path_fails,
         test_order_with_multiple_goal_paths_fails,
         test_missing_goal_document_fails,
