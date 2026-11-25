@@ -52,7 +52,11 @@ def replace_needs(lines: list[str], by_node: dict[str, dict[str, list[str]]]) ->
     current_id: str | None = None
     in_needs = False
     saw_needs = False
-    for line in lines:
+    for index, line in enumerate(lines):
+        if line.startswith("retired:"):
+            # 退役したノード（最上位の retired）は照合と集計の対象外で、needs も書き換えない。
+            out.extend(lines[index:])
+            break
         if line.startswith("- id: "):
             current_id = line.split(":", 1)[1].strip()
             in_needs = False
