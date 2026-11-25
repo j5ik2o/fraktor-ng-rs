@@ -244,4 +244,8 @@
 - 後継のノードは、引き継いだケースを `cases.carried` に記録する。要素は `name`（Pekko 側のケース名）、`from`（退役したノードの id）、`source`（現行の原典のパスと行）、`rust_test`、`verified_against`（そのケースを照合したタグ）、`evidence`（確かめた実行）である。ノード最上位の `verified_against` は suite 全体の照合を表すので、部分移植のノード（status が unported か red）には書かない
 - 部分移植の後継は、`ported` と `passing` を引き継いだ件数にし、`total` は原典のケース数にする（`total > ported`）。suite 全体は green にしない。退役したノードは集計から外れるので、ケースは二重に数えない
 - `rollup.py` の `lineage_problems` が検査する。退役したノードについては、同じ id が `nodes` に無いこと、3 つの欄、後継が現行のノードで、その `cases.carried` に自分からの要素があることを見る。`cases.carried` の要素は、欄が揃い、`from` が退役したノードで、名前が重複しないこと。部分移植の後継は、上の件数の規則を満たすこと。不足は一覧に出し、そのノードが属するゴールの完了に数えない。属するノードがすべて退役したゴールは、`rollup.py --goal` が退役を理由に 1 を返す（完了と判定しない）
+- 検査の細則（PR #169 のレビューで足した）：`retired` は配列で（`{}` などは不正）、id は空でない文字列で一意である。`retired.at` は書式に加えて実在する暦日であること（`2026-02-30` や時刻つきは拒否）。`cases.carried` の各要素は、`from` の退役記録の `successor` がそのノード自身であること（指定された後継のほかに同じケースを置くと二重に数えるので拒否）、`verified_against` が基準ファイルの知るタグであること、ケース名は前後の空白を除いて重複しないこと。欄の型が違っても例外では止めず、診断にする
+- 退役側だけの不正も、その `successor` のノードに理由を付けるので、後継が属するゴールは完了と判定しない。無関係なゴールは止めずに判定する。ゴールを指定しない `rollup.py` と `pekko_baseline.py check-ledger`（CI の通常の入口）は、不正があれば 0 以外で終わる
+- ゴールの関門（`goal_complete_gate.py`）は、現行のノードに属するものが無く、属するノードがすべて退役したゴールでは、退役したノードの id で文書の対象表と照合する。照合を通った後、rollup が退役を理由に完了と判定しない（1）
+- 台帳を扱うほかの道具：`convert_baseline.py --existing` は再生成で `retired` を残し、退役した id を現役のノードに戻さない。`extract_needs.py` は `retired` 以降を書き換えない
 - 例：`actor-tests/src/test/scala-2.13+/org/apache/pekko/actor/ActorSystemScala213PlusSpec.scala` は退役し、後継は `actor-tests/src/test/scala/org/apache/pekko/actor/ActorSystemSpec.scala` である。後継は unported で、`cases` は 20/1/1、`cases.carried` に 1 件を持つ
