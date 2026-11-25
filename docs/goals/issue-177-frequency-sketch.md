@@ -10,6 +10,8 @@
 
 台帳は原典22件、移植22件、成功22件、除外0件、作らない0件。`needs` は空のままで、TestKit の機能は使わない。台帳の `test_cases_approx: 16` は変換時の概数で、変えていない。引き継ぎの時点では 23件（15＋8）とされていたが、原典を数え直すと「FrequencySketch must」は14件だった。
 
+設計は [issue-177-frequency-sketch-design.md](issue-177-frequency-sketch-design.md) に記録した（設計の独立レビュー用）。PBT と Quint は原典外で、台帳の件数には含めない。
+
 ## 実行経路
 
 TAKT は使わず、担当が直接進めた。前の担当がテストを先に書き、台帳を red にした（`dce451c`、`cargo test -p fraktor-actor --test frequency_sketch_spec` は E0432 で失敗）。実装を足して green にした。
@@ -64,7 +66,7 @@ JVM の実物と同じ値になることを単体テストで確かめた。期�
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test frequency_sketch_spec` | 0 | 22件成功 |
 | `cargo test -p fraktor-actor --lib frequency_sketch` | 0 | 18件成功 |
-| `cargo test --workspace` | 0 | 941件成功、失敗0 |
+| `cargo test --workspace` | 0 | 947件成功、失敗0 |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告0 |
 | `cargo fmt --check` | 0 | 差分なし |
 | syn-check（`crates/` の2クレート） | 0 | 違反0、抑制0 |
@@ -74,5 +76,10 @@ JVM の実物と同じ値になることを単体テストで確かめた。期�
 | `pekko_baseline.py check-ledger`、`check-refs`、`relocate_nodes.py check` | 0 | OK |
 | `rollup.py --goal G0issue177` | 0 | `{'green': 1}`、「完了: 全ノードが green か do_not_port か not_built」 |
 | `check_needs.py --goal G0issue177` | 0 | needs 閉性 OK |
+| `cargo test -p fraktor-actor --release --test frequency_sketch_property_test` | 0 | 4件成功（PBT の P1〜P7。原典外） |
+| `quint typecheck docs/goals/specs/frequency_sketch.qnt`、`..._test.qnt` | 0 | 成功 |
+| `quint test --main=narrow --match='^(incrementCountersToMaxValue\|resetHalvesAndAdjustsForOddCounters)$' ..._test.qnt` | 0 | 2 passing（各 10,000 test） |
+| `quint run --main=narrow/fast/wide/noReset/noRows --invariant=inv --max-samples=10000 --max-steps=40 --seed=0x1 ..._test.qnt` | 0 | すべて `[ok] No violation found` |
+| `quint run --main=bugNoOddAdjust/bugNoSaturation/bugStaleSize --invariant=inv ..._test.qnt` | 1 | すべて `[violation]`（負の対照） |
 
 `verified_against: v2.0.0` を付けたので、`report_ledger_1to1.py list-undocumented` で `docs/baseline/v2.0.0-undocumented-nodes.tsv` を作り直した（1行増えて50件、`no-report`）。作り直す前は `report_ledger_1to1_test.py` が検査5で落ちた。
