@@ -182,12 +182,67 @@ def test_check_needs_does_not_count_a_goal_with_a_lineage_problem_as_a_provider(
     print("4. check_needs does not count a goal with a lineage problem as a provider")
 
 
+PLAIN_PROVIDER = """nodes:
+- id: m/P.scala
+  kind: test
+  pekko:
+    module: m
+  status: green
+  needs:
+    testkit: []
+    premise_flags: []
+  goal: G0p
+- id: m/Q.scala
+  kind: test
+  pekko:
+    module: m
+  status: unported
+  needs:
+    testkit: ['cap']
+    premise_flags: []
+  goal: G0q
+retired: {retired}
+"""
+
+
+def test_check_needs_does_not_count_any_provider_when_retired_is_not_a_list() -> None:
+    """retired が配列でなければ rollup はどのゴールも完了にしないので、check_needs も供給元に数えない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        (root / "capabilities.yaml").write_text("capabilities:\n- id: cap\n  provided_by: G0p\n", encoding="utf-8")
+        for retired, expected in (("[]", 0), ("null", 0), ("1", 1), ("{}", 1)):
+            (root / "nodes.yaml").write_text(PLAIN_PROVIDER.replace("{retired}", retired), encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(TOOLS / "check_needs.py"), "--ledger", str(root / "nodes.yaml"),
+                 "--capabilities", str(root / "capabilities.yaml"), "--goal", "G0q"],
+                capture_output=True, text=True)
+            assert result.returncode == expected, (retired, result.stdout, result.stderr)
+    print("5. check_needs does not count a provider when retired is not a list")
+
+
+def test_check_ledger_diagnoses_an_unquoted_invalid_retired_date_without_crashing() -> None:
+    """CI の check-ledger も台帳専用のローダで読み、引用なしの 2026-02-30 を例外ではなく診断にする。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        text = ledger().replace("    at: 2026-11-25\n", "    at: 2026-02-30\n")
+        (root / "nodes.yaml").write_text(text, encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(TOOLS / "pekko_baseline.py"), "check-ledger", "--ledger", str(root / "nodes.yaml")],
+            capture_output=True, text=True, cwd=REPO)
+        assert result.returncode == 1, (result.stdout, result.stderr)
+        assert "Traceback" not in result.stderr, result.stderr
+        assert "m/Old.scala" in result.stdout + result.stderr and "暦日" in result.stdout + result.stderr
+    print("6. check-ledger diagnoses an unquoted invalid retired date without crashing")
+
+
 def main() -> int:
     tests = [
         test_convert_baseline_keeps_retired_and_does_not_revive_the_retired_id,
         test_extract_needs_leaves_retired_nodes_untouched,
         test_check_ledger_fails_on_a_case_carried_twice,
         test_check_needs_does_not_count_a_goal_with_a_lineage_problem_as_a_provider,
+        test_check_needs_does_not_count_any_provider_when_retired_is_not_a_list,
+        test_check_ledger_diagnoses_an_unquoted_invalid_retired_date_without_crashing,
     ]
     failed = 0
     for test in tests:

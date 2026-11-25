@@ -750,6 +750,21 @@ def test_a_non_list_retired_fails_a_goal_check_even_when_the_goal_is_green():
     print("43o. a non-list retired fails the goal check")
 
 
+def test_a_green_successor_cannot_count_a_carried_case_again_as_an_exclusion():
+    """引き継いだケースと同じ名前の除外は、同じケースを 2 回数えるので拒否する（ゴールでも全体でも）。"""
+    approval = "      approved_by: someone\n      approved_at: 2026-01-01\n"
+    excluded = ("    excluded:\n" + "".join(f"    - name: other {i}\n      reason: r\n" + approval for i in range(18))
+                + "    - name: case\n      reason: r\n" + approval)
+    gate, whole = gate_and_whole("nodes:\n" + lineage_node("new/S.scala", "G0s", "green", 20, 1, excluded) + RETIRED_YAML,
+                                 "G0s", "new/S.scala")
+    assert gate != 0 and whole != 0, (gate, whole)
+    distinct = "    excluded:\n" + "".join(f"    - name: other {i}\n      reason: r\n" + approval for i in range(19))
+    gate, whole = gate_and_whole("nodes:\n" + lineage_node("new/S.scala", "G0s", "green", 20, 1, distinct) + RETIRED_YAML,
+                                 "G0s", "new/S.scala")
+    assert gate == 0 and whole == 0, (gate, whole)
+    print("43p. a carried case cannot be counted again as an exclusion; distinct exclusions still pass")
+
+
 def test_goal_whose_nodes_are_all_retired_is_not_complete():
     """属するノードがすべて退役したゴールは、完了と判定しない（退役を理由に出す）。"""
     with tempfile.TemporaryDirectory() as temporary:
@@ -1211,6 +1226,7 @@ def main() -> int:
         test_the_gate_reads_an_invalid_unquoted_retired_date_without_crashing,
         test_a_retired_record_with_a_bad_id_still_reaches_its_named_successor,
         test_a_non_list_retired_fails_a_goal_check_even_when_the_goal_is_green,
+        test_a_green_successor_cannot_count_a_carried_case_again_as_an_exclusion,
         test_takt_triage_treats_the_same_statuses_as_done,
         test_not_built_with_a_nonzero_or_missing_passing_is_not_complete,
         test_non_list_not_built_record_is_diagnosed_without_crashing,
