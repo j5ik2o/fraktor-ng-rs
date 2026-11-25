@@ -3514,6 +3514,7 @@ nodes:
     crate: null
     test_file: null
   goal: G0issue145
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/util/MessageBufferSpec.scala
   name: actor-tests:MessageBufferSpec
   kind: test
@@ -3652,6 +3653,7 @@ nodes:
     crate: null
     test_file: null
   goal: G0issue145
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/pattern/PatternSpec.scala
   name: actor-tests:PatternSpec
   kind: test

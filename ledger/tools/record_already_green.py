@@ -26,7 +26,8 @@ stdout に JSON で結果を出す。終了コードは常に 0 で、成否は 
 原典の拒否: {"recorded": false, "source_ok": false, "detail": "..."}
 
 原典（pekko_baseline.source_root）は classification によらず毎回検査する。変更のない現行の
-基準 commit でないか、verify_red が記録した原典と場所かタグが違えば source_ok: false を返し、
+基準 commit でないか、verify_red の結果が無い・出所（source_tag / source_commit /
+source_root）を欠く・出所が今の原典と一致しないときは source_ok: false を返し、
 workflow はこのとき ledger-update へ進まず ABORT する（ledger-update が green を書かない）。
 """
 import json
@@ -51,23 +52,35 @@ def load_result(path: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def check_source(result: dict) -> tuple[str | None, str | None]:
-    """原典を検査し、(基準タグ, 拒否の理由) を返す。
+PROVENANCE = ("source_tag", "source_commit", "source_root")
 
-    verify_red と同じ場所（pekko_baseline.source_root）を同じ検査に通す。verify_red が
-    記録した原典の場所と違う場所なら、別の原典で照合した結果なので拒否する。
+
+def check_source(result: dict) -> tuple[str | None, str | None]:
+    """原典と verify_red の結果の出所を検査し、(基準タグ, 拒否の理由) を返す。
+
+    verify_red と同じ場所（pekko_baseline.source_root）を同じ検査に通す。さらに、結果が
+    出所（source_tag / source_commit / source_root）を持ち、それが今の原典の場所・現行の
+    基準のタグと commit に一致することを求める。結果が無い、出所が欠けている・不正、
+    または一致しないときは拒否する（出所の無い旧形式の結果を、同じ場所に置き直した
+    現行の原典のタグで記録しない）。拒否の理由は verify_red のやり直しを促す。
     """
+    rerun = "re-run verify_red against the prepared source"
     root = pekko_baseline.source_root()
     try:
-        tag = pekko_baseline.source_tag(pekko_baseline.load(), root)
+        baseline = pekko_baseline.load()
+        tag = pekko_baseline.source_tag(baseline, root)
     except pekko_baseline.BaselineError as error:
         return None, f"the Pekko source is not an unmodified current baseline: {error}"
-    recorded_root = result.get("source_root")
-    if recorded_root is not None and os.path.realpath(recorded_root) != os.path.realpath(root):
-        return None, f"verify_red used {recorded_root}, but this step resolves {root.resolve()}"
-    recorded_tag = result.get("source_tag")
-    if recorded_tag is not None and recorded_tag != tag:
-        return None, f"verify_red verified against {recorded_tag}, but the source is now {tag}"
+    if not result:
+        return None, f"no verify_red result at {verify_red.ALREADY_GREEN_RESULT}; {rerun}"
+    bad = [k for k in PROVENANCE if not isinstance(result.get(k), str) or not result.get(k)]
+    if bad:
+        return None, f"verify_red result lacks provenance {bad}; {rerun}"
+    if os.path.realpath(result["source_root"]) != os.path.realpath(root):
+        return None, f"verify_red used {result['source_root']}, but this step resolves {root.resolve()}; {rerun}"
+    if (result["source_tag"], result["source_commit"]) != (tag, baseline.commit):
+        return None, (f"verify_red verified against {result['source_tag']} {result['source_commit']}, "
+                      f"but the current baseline is {tag} {baseline.commit}; {rerun}")
     return tag, None
 
 

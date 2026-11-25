@@ -702,17 +702,35 @@ def test_mark_green_preserves_human_reason():
         print("13a-2. mark_green preserves human reason:", node["triage"]["reason"])
 
 
+def _stamp_provenance(root: Path, baseline: Path) -> None:
+    """手で書いた判定結果に、用意した原典での verify_red が書く出所を足す。"""
+    result_path = root / ".takt" / "already-green-result.json"
+    if not result_path.exists():
+        return
+    values = dict(line.split("=", 1) for line in baseline.read_text(encoding="utf-8").splitlines())
+    data = json.loads(result_path.read_text(encoding="utf-8"))
+    data.update({"source_tag": values["PEKKO_BASELINE_TAG"],
+                 "source_commit": _git("rev-parse", "HEAD", cwd=root / "pekko"),
+                 "source_root": str((root / "pekko").resolve())})
+    result_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
 def _run_record_already_green(root: Path, *, current_source: bool = True, prepare: bool = True,
-                              original_root: Path | None = None) -> dict:
+                              original_root: Path | None = None, stamp: bool = True) -> dict:
     """record_already_green.py を cwd=root で実行し、stdout の JSON を返す。
 
     prepare=True なら root/pekko を基準の原典として用意し直す（current_source=False なら過去の
-    基準の原典）。False なら既に用意した root/baseline.env と原典をそのまま使う（原典を
+    基準の原典）。このとき stamp=True なら、手で書いた判定結果に用意した原典の出所を足す
+    （その原典で verify_red が走った状態にする。stamp=False は出所の無い旧形式の結果）。
+    prepare=False なら既に用意した root/baseline.env と原典、判定結果をそのまま使う（原典を
     変更してから記録させるテスト用）。original_root を渡すと PEKKO_ORIGINAL_ROOT にする。
     """
     env = {k: v for k, v in os.environ.items() if k != "PEKKO_ORIGINAL_ROOT"}
     if prepare:
-        env["PEKKO_BASELINE_FILE"] = str(prepare_baseline_source(root, current=current_source))
+        baseline = prepare_baseline_source(root, current=current_source)
+        env["PEKKO_BASELINE_FILE"] = str(baseline)
+        if stamp:
+            _stamp_provenance(root, baseline)
     else:
         env["PEKKO_BASELINE_FILE"] = str(root / "baseline.env")
     if original_root is not None:
@@ -870,6 +888,45 @@ def test_recorder_rejects_a_different_source_root_than_verify_red():
         assert "verify_red used" in record["detail"], record
         assert (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8") == before
         print("13k. different source root between verify_red and recorder → refused")
+
+
+def test_recorder_rejects_an_old_result_without_provenance():
+    """出所の無い旧形式の already_green 結果は、同じ場所の原典を現行の基準に置き直しても記録しない。
+
+    旧版の verify_red は出所を書かなかった。その結果が残ったまま pekko/ を現行の基準に
+    差し替えると、修正前は記録の時点の原典だけを見て、現行タグで green を書いていた。
+    """
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write(root / "ledger" / "nodes.yaml", ledger_yaml([case_block(NODE_ID, None, None, None)]))
+        old_result = {
+            "classification": "already_green", "node": NODE_ID,
+            "original_cases": 1, "passed": 1, "excluded": 0,
+            "reason": "already_green: 旧原典で数えたケース数 1 と通過ケース数 1 が一致",
+        }
+        write(root / ".takt" / "already-green-result.json", json.dumps(old_result, ensure_ascii=False))
+        before = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+        # 同じ root/pekko を、変更のない現行の基準の原典として用意し直す
+        record = _run_record_already_green(root, stamp=False)
+        assert record["source_ok"] is False and record["recorded"] is False, record
+        assert "lacks provenance" in record["detail"] and "re-run verify_red" in record["detail"], record
+        assert (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8") == before
+        # 出所の値が不正（空や型違い）でも同じく拒否する
+        for broken in ({"source_tag": "", "source_commit": "x", "source_root": "y"},
+                       {"source_tag": BASELINE_TAG, "source_commit": 1, "source_root": "y"}):
+            write(root / ".takt" / "already-green-result.json",
+                  json.dumps({**old_result, **broken}, ensure_ascii=False))
+            record = _run_record_already_green(root, prepare=False)
+            assert record["source_ok"] is False and record["recorded"] is False, (broken, record)
+        # 出所が別の commit（同じタグ名）を指す結果も拒否する
+        write(root / ".takt" / "already-green-result.json", json.dumps({
+            **old_result, "source_tag": BASELINE_TAG, "source_commit": "f" * 40,
+            "source_root": str((root / "pekko").resolve()),
+        }, ensure_ascii=False))
+        record = _run_record_already_green(root, prepare=False)
+        assert record["source_ok"] is False and "current baseline" in record["detail"], record
+        assert (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8") == before
+        print("13m. old result without provenance → recorder refuses and asks to re-run verify_red")
 
 
 def test_workflow_stops_before_ledger_update_when_the_source_is_rejected():
@@ -1077,7 +1134,7 @@ def test_rollup_and_check_needs_do_not_break():
         assert result["classification"] == "already_green", result
         # verify_red は台帳を書かない。green は equivalence-review 通過後の record-already-green が書く。
         assert node_entry(root)["status"] == "unported"
-        recorded = _run_record_already_green(root)
+        recorded = _run_record_already_green(root, prepare=False)
         assert recorded["recorded"] is True, recorded
         assert node_entry(root)["status"] == "green"
 
@@ -1817,6 +1874,7 @@ def main() -> int:
         test_untracked_file_in_original_is_rejected_by_verify_red,
         test_recorder_rejects_a_source_modified_after_verify_red,
         test_recorder_rejects_a_different_source_root_than_verify_red,
+        test_recorder_rejects_an_old_result_without_provenance,
         test_workflow_stops_before_ledger_update_when_the_source_is_rejected,
         test_record_already_green_preserves_human_reason,
         test_record_already_green_skips_when_not_already_green,

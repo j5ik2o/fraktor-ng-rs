@@ -75,18 +75,21 @@ prepare_node_modules() {
 
 prepare_node_modules
 
-# 原典に手が加わっていないか（追跡ファイルの変更、無視されない未追跡ファイル、
+# 原典に手が加わっていないかを調べる（追跡ファイルの変更、無視されない未追跡ファイル、
 # assume-unchanged / skip-worktree の印）。利用者の変更は消さずに報告する。
-# grep -q は途中で読むのをやめて git を SIGPIPE で落とし、pipefail で判定を誤るので使わない。
-local_changes() {
-  local changes hidden
-  changes=$(git -C "$target" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)
-  hidden=$(git -C "$target" ls-files -v | grep -E '^[a-zS] ' || true)
+# 終了コード: 0 変更なし、1 変更あり（stdout に先頭 5 件）、2 git の検査自体が失敗した。
+# 呼び出し側は if や || の中で使うので set -e が効かない。git の失敗は自分で拾う
+# （拾わないと、壊れた index で status が失敗しても「変更なし」と判定してしまう）。
+inspect_source() {
+  local changes listing hidden
+  changes=$(git -C "$target" status --porcelain=v1 --untracked-files=all --ignore-submodules=none) || return 2
+  listing=$(git -C "$target" ls-files -v) || return 2
+  hidden=$(printf '%s\n' "$listing" | grep -E '^[a-zS] ' || true)
   if [ -n "$changes" ] || [ -n "$hidden" ]; then
     printf '%s\n%s\n' "$changes" "$hidden" | grep -v '^$' | head -5
-    return 0
+    return 1
   fi
-  return 1
+  return 0
 }
 
 prepare() {
@@ -107,12 +110,19 @@ if [ -e "$target" ] || [ -L "$target" ]; then
      && [ "$(cd "$toplevel" && pwd -P)" = "$(cd "$target" && pwd -P)" ] \
      && head=$(git -C "$target" rev-parse --verify HEAD^{commit} 2>/dev/null); then
     if [ "$head" = "$expected" ]; then
-      if changes=$(local_changes); then
-        echo "pekko/: local changes on top of $tag; not removing them. Restore an unmodified checkout:" >&2
-        echo "$changes" >&2
-        exit 1
-      fi
-      exit 0
+      inspected=0
+      changes=$(inspect_source) || inspected=$?
+      case "$inspected" in
+        0) exit 0 ;;
+        1)
+          echo "pekko/: local changes on top of $tag; not removing them. Restore an unmodified checkout:" >&2
+          echo "$changes" >&2
+          ;;
+        *)
+          echo "pekko/: git could not inspect the checkout (broken index or repository?); not removing it" >&2
+          ;;
+      esac
+      exit 1
     fi
     echo "pekko/: HEAD is $head, expected $expected; not removing it" >&2
     exit 1

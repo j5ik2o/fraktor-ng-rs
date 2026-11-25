@@ -501,12 +501,15 @@ takt 0.74.0 は、1 ステップの knowledge を連結した文字列の先頭 
 2,000 字を超えるものが多い（`architecture` は約 12,000 字）ので、builtin を
 先に並べるとプロジェクトの規約は本文に 1 行も載らない。
 
-- knowledge `fraktor-porting-rules`（1,998 字）は、配列の先頭に置く。
+- knowledge `fraktor-porting-rules`（1,933 字）は、配列の先頭に置く。
   mini-core への引数（`plan_knowledge`、`development_knowledge`）と、
   equivalence-review の knowledge が該当する。equivalence-review は
   fragment の並びを上書きしている
-- `fraktor-porting-rules` は 2,000 字以内に保つ。超えると末尾の
-  「移植の作法」（テストファイルの凍結を含む）から本文に載らなくなる
+- `fraktor-porting-rules` は 2,000 字以内に保つ。超えると末尾から本文に載らなくなる。
+  落とせない「移植の作法」（テスト先行、テストファイルの凍結、弱体化の禁止）は冒頭に置く。
+  複数の PR の追記が合わさって超えることがある（#165 と #166 の合成で 2,274 字になった）。
+  `tools/takt-facets/knowledge_budget_test.py` が、マージ後の facet 全体の字数、必須の規約が
+  先頭 2,000 字にあること、使う全ステップで knowledge の先頭にあることを CI で確かめる
 - syn チェッカーのルールの要約 `fraktor-coding-rules` は、policy では本文に
   載らなかった。builtin の fragment（`development-core-plan`、
   `development-core-implement`、`development-core-write-tests`）と mini-core の

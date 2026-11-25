@@ -130,6 +130,22 @@ def test_source_tag_rejects_local_changes_and_keeps_them() -> None:
             assert {p.name: p.read_bytes() for p in pekko.iterdir() if p.is_file()} == before, label
 
 
+def test_source_tag_rejects_a_source_git_cannot_inspect() -> None:
+    """index が壊れて git status が失敗したら拒否する（変更なしと見なさない）。原典は残す。"""
+    with tempfile.TemporaryDirectory() as root:
+        pekko = Path(root) / "pekko"
+        head = make_repo(pekko, "current")
+        index = pekko / ".git" / "index"
+        index.write_bytes(b"not an index")
+        try:
+            pekko_baseline.source_tag(baseline(current_commit=head), pekko)
+        except pekko_baseline.BaselineError as error:
+            assert "status" in str(error) or "ls-files" in str(error), error
+        else:
+            raise AssertionError("a source git cannot inspect must not resolve to the current tag")
+        assert index.read_bytes() == b"not an index" and (pekko / "marker.txt").exists()
+
+
 def test_source_root_follows_pekko_original_root() -> None:
     old = os.environ.pop("PEKKO_ORIGINAL_ROOT", None)
     try:
@@ -246,6 +262,7 @@ def main() -> int:
         test_load_rejects_malformed_files,
         test_source_tag_accepts_only_the_current_commit,
         test_source_tag_rejects_local_changes_and_keeps_them,
+        test_source_tag_rejects_a_source_git_cannot_inspect,
         test_source_root_follows_pekko_original_root,
         test_source_tag_rejects_missing_and_nested_directories,
         test_check_nodes_rules,

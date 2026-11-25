@@ -227,8 +227,11 @@
   原典を検査し、ledger-update は `pekko_baseline.py source-tag` の出力を書く。HEAD が現行の基準
   commit でないか、追跡ファイルの変更・無視されない未追跡ファイル・assume-unchanged /
   skip-worktree の印があれば失敗し、green を記録しない（旧原典や手を加えた原典で照合したノードに
-  現行タグを付けない）。`record_already_green.py` は、verify_red が記録した原典の場所やタグと
-  違うときも拒否する。拒否されたら workflow は ledger-update へ進まない
+  現行タグを付けない）。`record_already_green.py` は、verify_red の結果が出所
+  （`source_tag`、`source_commit`、`source_root`）を欠くとき、出所が不正なとき、出所が今の原典の
+  場所・現行のタグと commit に一致しないときも拒否し、verify_red のやり直しを求める（出所の無い
+  旧形式の結果を、置き直した現行の原典のタグで記録しない）。拒否されたら workflow は
+  ledger-update へ進まない
 - 行の位置はノードの最上位、`goal` の次である。欄が無いノードに書くときは、ノードの末尾に足す
 - 検査は `uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger --ledger ledger/nodes.yaml`
   で、違反があれば終了コード 1 になる。CI でも実行する

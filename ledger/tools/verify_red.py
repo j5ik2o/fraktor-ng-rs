@@ -329,29 +329,35 @@ def main() -> int:
     node = info.get("node")
     crate = info.get("crate")
     test_file = info.get("test_file")
-    if not (node and crate and test_file):
-        result = {"classification": "unclassifiable",
-                  "detail": "previous response lacks node/crate/test_file lines"}
-        try:
-            write_result(result)
-        except OSError as error:
-            print(json.dumps({**result, "result_write_failed": str(error)},
-                             ensure_ascii=False))
-            return 1
-        print(json.dumps(result))
-        return 0
 
     # 原典が変更のない現行の基準でなければ、ケース数も分類も信用できない。台帳を書かずに止める
     # （workflow は source_rejected を when(true) の ABORT で受ける）。原典には触れない。
     root = pekko_baseline.source_root()
     try:
-        tag = pekko_baseline.source_tag(pekko_baseline.load(), root)
+        baseline = pekko_baseline.load()
+        tag = pekko_baseline.source_tag(baseline, root)
     except pekko_baseline.BaselineError as error:
         result = {"classification": "source_rejected", "node": node, "detail": str(error)}
         try:
             write_result(result)
         except OSError as write_error:
             print(json.dumps({**result, "result_write_failed": str(write_error)},
+                             ensure_ascii=False))
+            return 1
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    # 出所。record-already-green はこの 3 つが揃い、記録時の原典と一致する結果だけを受け付ける
+    # （出所の無い古い結果や、別の原典で出した結果で green を書かない）。
+    provenance = {"source_tag": tag, "source_commit": baseline.commit,
+                  "source_root": str(root.resolve())}
+
+    if not (node and crate and test_file):
+        result = {"classification": "unclassifiable",
+                  "detail": "previous response lacks node/crate/test_file lines", **provenance}
+        try:
+            write_result(result)
+        except OSError as error:
+            print(json.dumps({**result, "result_write_failed": str(error)},
                              ensure_ascii=False))
             return 1
         print(json.dumps(result, ensure_ascii=False))
@@ -404,8 +410,7 @@ def main() -> int:
         "passed": passed,
         "excluded": excluded,
         "reason": reason,
-        "source_tag": tag,
-        "source_root": str(root.resolve()),
+        **provenance,
         "detail": out[-1500:],
     }
     try:

@@ -20,10 +20,13 @@
 `pekko/` が残った作業ツリーや、基準 commit の上に変更（追跡ファイルの変更、無視されない
 未追跡ファイル、assume-unchanged / skip-worktree の印）がある `pekko/` では、消さずに失敗する
 （旧原典や手を加えた原典のまま run を再開させない。利用者の変更は自動で消さない）。
+git の検査自体が失敗した（壊れた index など）ときも、変更なしとは見なさず、消さずに失敗する。
 
 原典を読むステップ（triage、port-test、verify_red、record-already-green、ledger-update）は、
 同じ場所（`PEKKO_ORIGINAL_ROOT`、無ければ `pekko/`）を同じ検査（`pekko_baseline.source_tag`）に
-通してから使う。record-already-green が拒否したら、ワークフローは ledger-update へ進まず止まる。
+通してから使う。verify_red は判定結果に出所（タグ、commit、原典の場所）を書き、record-already-green は
+出所が欠けた・不正な・今の原典と一致しない結果を拒否して verify_red のやり直しを求める。
+record-already-green が拒否したら、ワークフローは ledger-update へ進まず止まる。
 
 ## 過去の基準（履歴）
 

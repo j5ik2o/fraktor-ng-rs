@@ -21,6 +21,7 @@
                               （過去の基準が複数でも読める。CDPATH の影響を受けない）
   9. 変更のある原典           HEAD が基準 commit でも、追跡ファイルの変更・未追跡ファイル・
                               assume-unchanged / skip-worktree があれば、消さずに exit 0 以外
+                              （git の検査自体が失敗したときも、消さずに exit 0 以外）
 
 すべてのケースで、環境から HOME を除いて実行し、stdout には何も出さないことを確かめる。
 stdout は TAKT が KEY=VALUE として読むため（dist/core/runtime/runtime-environment.js の
@@ -766,6 +767,24 @@ def test_existing_pekko_with_local_changes_is_refused_and_kept() -> None:
             assert git("rev-parse", "HEAD", cwd=pekko) == expected, label
 
 
+def test_git_inspection_failure_fails_and_keeps_the_source() -> None:
+    """index が壊れて git status が失敗したら、変更なしと見なさず失敗し、原典を残す。"""
+    with tempfile.TemporaryDirectory() as root:
+        worktree, expected, env, tracked = _prepared(root)
+        pekko = worktree / "pekko"
+        index = pekko / ".git" / "index"
+        index.write_bytes(b"not an index")
+        probe = subprocess.run(["git", "-C", str(pekko), "status", "--porcelain"],
+                               env=clean_env(), capture_output=True, text=True)
+        assert probe.returncode != 0, "the corrupted index must make git status fail"
+        result = run_script(worktree, env)
+        assert result.returncode != 0, f"broken index: expected a non-zero exit, got 0; stderr={result.stderr!r}"
+        assert_silent_stdout(result, "broken index")
+        assert "could not inspect" in result.stderr, f"broken index: stderr must say why, got {result.stderr!r}"
+        assert index.read_bytes() == b"not an index", "broken index: the source must be kept as is"
+        assert tracked.exists(), "broken index: the checkout must not be removed"
+
+
 def test_cdpath_does_not_break_the_baseline_path() -> None:
     """CDPATH=. を export したシェルから相対パスで呼んでも、基準ファイルを読める。"""
     with tempfile.TemporaryDirectory() as root:
@@ -811,6 +830,7 @@ def test_two_historical_baselines_are_read_by_the_script() -> None:
 def main() -> int:
     tests = [
         test_existing_pekko_with_local_changes_is_refused_and_kept,
+        test_git_inspection_failure_fails_and_keeps_the_source,
         test_cdpath_does_not_break_the_baseline_path,
         test_two_historical_baselines_are_read_by_the_script,
         test_default_expected_commit_is_the_baseline_commit,
