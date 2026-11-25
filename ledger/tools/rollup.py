@@ -228,6 +228,10 @@ def main() -> int:
                 return 1
             print(f"ゴール {args.goal}: 属するノードが無い（未発行か ID の誤り）")
             return 1
+        if "retired" in lineage:
+            # retired の構造そのものが不正なら、どのゴールの承継も確かめられないので完了にしない。
+            print(f"ゴール {args.goal}: 台帳の retired が配列でないので、完了と判定しない")
+            return 1
         pending = [n for n in members if not is_done(n) or n.get("id") in lineage]
         print(
             f"ゴール {args.goal}: ノード {len(members)} 件、"

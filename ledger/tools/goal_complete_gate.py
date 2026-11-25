@@ -27,6 +27,8 @@ import sys
 
 import yaml
 
+from excluded_approvals import ledger_loader
+
 LEDGER = os.path.join("ledger", "nodes.yaml")
 ROLLUP = os.path.join("ledger", "tools", "rollup.py")
 GOAL_PATH = re.compile(r"(?<![\w.-])docs/goals/[A-Za-z0-9_-]+\.md(?![\w./-])")
@@ -152,8 +154,9 @@ def ledger_goal_ids(goal_id: str) -> tuple[list[str] | None, str]:
     """
     if not os.path.exists(LEDGER):
         return None, f"台帳が無い: {LEDGER}"
+    # rollup と同じ台帳専用のローダで読む（引用なしの不正な日付も文字列のまま届き、読み込みで止まらない）。
     with open(LEDGER, encoding="utf-8") as f:
-        doc = yaml.safe_load(f) or {}
+        doc = yaml.load(f, Loader=ledger_loader()) or {}
     nodes = doc.get("nodes", [])
     members = [n["id"] for n in nodes if n.get("goal") == goal_id]
     retired = doc.get("retired")
