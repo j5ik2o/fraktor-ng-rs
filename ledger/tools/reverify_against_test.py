@@ -15,9 +15,12 @@
 使い方:
     uv run --with pyyaml python3 ledger/tools/reverify_against_test.py
 """
+import contextlib
+import io
 import subprocess
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent
@@ -320,6 +323,65 @@ def test_apply_refuses_duplicate_ids_and_writes_nothing():
         print("8. --ids の重複は拒否する")
 
 
+def test_apply_refuses_a_duplicate_field():
+    """verified_against が二重にあるノードは拒否する（先頭だけ書き換えて実値を変えない穴を塞ぐ）。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        before = ledger().replace(
+            f"  verified_against: {PAST}\n- id: m/B.scala",
+            f"  verified_against: {PAST}\n  verified_against: {PAST}\n- id: m/B.scala",
+        )
+        path = write_ledger(root, before)
+        proc = apply(root, ["m/A.scala"])
+        assert proc.returncode == 1, (proc.stdout, proc.stderr)
+        assert "2 個" in proc.stderr, proc.stderr
+        assert path.read_text(encoding="utf-8") == before
+        # 素の YAML の読み手は後の欄を採るので、先頭だけ書き換えても実値は変わらない。
+        import yaml
+
+        assert yaml.safe_load(before)["nodes"][0]["verified_against"] == PAST
+        print("8b. verified_against が二重なら拒否する")
+
+
+def test_apply_refuses_when_a_line_outside_the_node_changes():
+    """わざとノードの外を変える道具に差し替えると、書き込まずに失敗する（外の行の防御）。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        before = ledger()
+        path = write_ledger(root, before)
+        ids = write_ids(root, ["m/A.scala"])
+        original = reverify_against.set_tag
+
+        def broken(lines, node_id, tag):
+            return ["# 対象の外を壊した\n"] + original(lines, node_id, tag)
+
+        reverify_against.set_tag = broken
+        stderr = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(stderr):
+                code = reverify_against.cmd_apply(types.SimpleNamespace(
+                    ledger=str(path), ids=str(ids), tag=None, dry_run=False))
+        finally:
+            reverify_against.set_tag = original
+        assert code == 1, code
+        assert "外の行が変わった" in stderr.getvalue(), stderr.getvalue()
+        assert path.read_text(encoding="utf-8") == before
+        print("8c. 対象ノードの外の行が変われば失敗する")
+
+
+def test_apply_writes_nothing_when_a_later_id_fails():
+    """1 件目は書き換えられるが 2 件目で失敗するとき、台帳を 1 バイトも書き換えない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        before = ledger()
+        path = write_ledger(root, before)
+        proc = apply(root, ["m/A.scala", "retired/Old.scala"])
+        assert proc.returncode == 1, (proc.stdout, proc.stderr)
+        assert "台帳は書き換えていない" in proc.stderr, proc.stderr
+        assert path.read_text(encoding="utf-8") == before
+        print("8d. 途中で失敗したら何も書かない")
+
+
 def test_dry_run_writes_nothing():
     """--dry-run は変更件数だけを出し、台帳を書き換えない。"""
     with tempfile.TemporaryDirectory() as temporary:
@@ -432,6 +494,9 @@ def main() -> int:
         test_apply_keeps_retired_first_and_comments,
         test_apply_is_idempotent_and_reports_no_change,
         test_apply_refuses_duplicate_ids_and_writes_nothing,
+        test_apply_refuses_a_duplicate_field,
+        test_apply_refuses_when_a_line_outside_the_node_changes,
+        test_apply_writes_nothing_when_a_later_id_fails,
         test_dry_run_writes_nothing,
         test_plan_lists_judged_nodes_with_another_tag,
         test_report_table_marks_missing_original,
