@@ -63,3 +63,15 @@ JVM の実物と同じ値になることを単体テストで確かめた。期�
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test frequency_sketch_spec` | 0 | 22件成功 |
 | `cargo test -p fraktor-actor --lib frequency_sketch` | 0 | 16件成功 |
+| `cargo test --workspace` | 0 | 941件成功、失敗0 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告0 |
+| `cargo fmt --check` | 0 | 差分なし |
+| syn-check（`crates/` の2クレート） | 0 | 違反0、抑制0 |
+| `npm run check:aislop` | 0 | 受け入れ済みの一覧と一致 |
+| `verify_green.py --crate fraktor-actor` | 0 | `all_pass: true` |
+| CI の python テスト 11 本（`goal_complete_gate_test.py` ほか） | 0 | すべて成功 |
+| `pekko_baseline.py check-ledger`、`check-refs`、`relocate_nodes.py check` | 0 | OK |
+| `rollup.py --goal G0issue177` | 0 | `{'green': 1}`、「完了: 全ノードが green か do_not_port か not_built」 |
+| `check_needs.py --goal G0issue177` | 0 | needs 閉性 OK |
+
+`verified_against: v2.0.0` を付けたので、`report_ledger_1to1.py list-undocumented` で `docs/baseline/v2.0.0-undocumented-nodes.tsv` を作り直した（1行増えて50件、`no-report`）。作り直す前は `report_ledger_1to1_test.py` が検査5で落ちた。
