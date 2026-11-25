@@ -13438,6 +13438,60 @@ nodes:
     test_file: null
   goal: null
   verified_against: v2.0.0
+- id: docs/src/test/java/jdocs/stream/operators/source/AsSubscriber.java
+  name: docs:AsSubscriber
+  kind: test
+  pekko:
+    module: docs
+    class: AsSubscriber
+    test_cases_approx: 0
+  status: do_not_port
+  triage:
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
+  needs:
+    testkit: []
+    premise_flags: []
+  depends_on_impl:
+    modules: []
+    coverage: approx
+  cases:
+    total: null
+    ported: null
+    passing: null
+    excluded: []
+  rust:
+    crate: null
+    test_file: null
+  goal: null
+  verified_against: v2.0.0
+- id: docs/src/test/scala/docs/stream/operators/source/AsSubscriber.scala
+  name: docs:AsSubscriber
+  kind: test
+  pekko:
+    module: docs
+    class: AsSubscriber
+    test_cases_approx: 0
+  status: do_not_port
+  triage:
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
+  needs:
+    testkit: []
+    premise_flags: []
+  depends_on_impl:
+    modules: []
+    coverage: approx
+  cases:
+    total: null
+    ported: null
+    passing: null
+    excluded: []
+  rust:
+    crate: null
+    test_file: null
+  goal: null
+  verified_against: v2.0.0
 - id: docs/src/test/scala/docs/pattern/BackoffSupervisorDocSpec.scala
   name: docs:BackoffSupervisorDocSpec
   kind: test
@@ -15268,6 +15322,60 @@ nodes:
     test_file: null
   goal: null
   verified_against: v2.0.0
+- id: docs/src/test/java/jdocs/stream/operators/source/FromPublisher.java
+  name: docs:FromPublisher
+  kind: test
+  pekko:
+    module: docs
+    class: FromPublisher
+    test_cases_approx: 0
+  status: do_not_port
+  triage:
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
+  needs:
+    testkit: []
+    premise_flags: []
+  depends_on_impl:
+    modules: []
+    coverage: approx
+  cases:
+    total: null
+    ported: null
+    passing: null
+    excluded: []
+  rust:
+    crate: null
+    test_file: null
+  goal: null
+  verified_against: v2.0.0
+- id: docs/src/test/scala/docs/stream/operators/source/FromPublisher.scala
+  name: docs:FromPublisher
+  kind: test
+  pekko:
+    module: docs
+    class: FromPublisher
+    test_cases_approx: 0
+  status: do_not_port
+  triage:
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
+  needs:
+    testkit: []
+    premise_flags: []
+  depends_on_impl:
+    modules: []
+    coverage: approx
+  cases:
+    total: null
+    ported: null
+    passing: null
+    excluded: []
+  rust:
+    crate: null
+    test_file: null
+  goal: null
+  verified_against: v2.0.0
 - id: docs/src/test/scala/docs/future/FutureDocSpec.scala
   name: docs:FutureDocSpec
   kind: test
@@ -15760,6 +15868,60 @@ nodes:
   depends_on_impl:
     modules:
     - actor
+    coverage: approx
+  cases:
+    total: null
+    ported: null
+    passing: null
+    excluded: []
+  rust:
+    crate: null
+    test_file: null
+  goal: null
+  verified_against: v2.0.0
+- id: docs/src/test/scala/docs/stream/operators/JavaCollectorDocExample.scala
+  name: docs:JavaCollectorDocExample
+  kind: test
+  pekko:
+    module: docs
+    class: JavaCollectorDocExample
+    test_cases_approx: 0
+  status: do_not_port
+  triage:
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
+  needs:
+    testkit: []
+    premise_flags: []
+  depends_on_impl:
+    modules: []
+    coverage: approx
+  cases:
+    total: null
+    ported: null
+    passing: null
+    excluded: []
+  rust:
+    crate: null
+    test_file: null
+  goal: null
+  verified_against: v2.0.0
+- id: docs/src/test/java/jdocs/stream/operators/JavaCollectorDocExamples.java
+  name: docs:JavaCollectorDocExamples
+  kind: test
+  pekko:
+    module: docs
+    class: JavaCollectorDocExamples
+    test_cases_approx: 0
+  status: do_not_port
+  triage:
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
+  needs:
+    testkit: []
+    premise_flags: []
+  depends_on_impl:
+    modules: []
     coverage: approx
   cases:
     total: null
@@ -16499,6 +16661,33 @@ nodes:
     test_file: null
   goal: null
   verified_against: v2.0.0
+- id: docs/src/test/scala/docs/persistence/state/PersistenceStatePluginDocSpec.scala
+  name: docs:PersistenceStatePluginDocSpec
+  kind: test
+  pekko:
+    module: docs
+    class: PersistenceStatePluginDocSpec
+    test_cases_approx: 2
+  status: do_not_port
+  triage:
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
+  needs:
+    testkit: []
+    premise_flags: []
+  depends_on_impl:
+    modules: []
+    coverage: approx
+  cases:
+    total: null
+    ported: null
+    passing: null
+    excluded: []
+  rust:
+    crate: null
+    test_file: null
+  goal: null
+  verified_against: v2.0.0
 - id: docs/src/test/java/jdocs/persistence/testkit/PersistenceTestKitPolicySampleTest.java
   name: docs:PersistenceTestKitPolicySampleTest
   kind: test
@@ -16590,6 +16779,60 @@ nodes:
     module: docs
     class: PropsEdgeCaseSpec
     test_cases_approx: 1
+  status: do_not_port
+  triage:
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
+  needs:
+    testkit: []
+    premise_flags: []
+  depends_on_impl:
+    modules: []
+    coverage: approx
+  cases:
+    total: null
+    ported: null
+    passing: null
+    excluded: []
+  rust:
+    crate: null
+    test_file: null
+  goal: null
+  verified_against: v2.0.0
+- id: docs/src/test/scala/docs/stream/operators/source/QueueMigrationDocSpec.scala
+  name: docs:QueueMigrationDocSpec
+  kind: test
+  pekko:
+    module: docs
+    class: QueueMigrationDocSpec
+    test_cases_approx: 4
+  status: do_not_port
+  triage:
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
+  needs:
+    testkit: []
+    premise_flags: []
+  depends_on_impl:
+    modules: []
+    coverage: approx
+  cases:
+    total: null
+    ported: null
+    passing: null
+    excluded: []
+  rust:
+    crate: null
+    test_file: null
+  goal: null
+  verified_against: v2.0.0
+- id: docs/src/test/java/jdocs/stream/operators/source/QueueMigrationDocTest.java
+  name: docs:QueueMigrationDocTest
+  kind: test
+  pekko:
+    module: docs
+    class: QueueMigrationDocTest
+    test_cases_approx: 4
   status: do_not_port
   triage:
     kind: do_not_port
@@ -17077,6 +17320,33 @@ nodes:
     modules:
     - actor
     - remote
+    coverage: approx
+  cases:
+    total: null
+    ported: null
+    passing: null
+    excluded: []
+  rust:
+    crate: null
+    test_file: null
+  goal: null
+  verified_against: v2.0.0
+- id: docs/src/test/scala/docs/remoting/SSLEngineProviderDocSpec.scala
+  name: docs:SSLEngineProviderDocSpec
+  kind: test
+  pekko:
+    module: docs
+    class: SSLEngineProviderDocSpec
+    test_cases_approx: 0
+  status: do_not_port
+  triage:
+    kind: do_not_port
+    reason: 論点 20 の決定（2026-11-13、オーナー）。docs モジュールは移植対象外とする
+  needs:
+    testkit: []
+    premise_flags: []
+  depends_on_impl:
+    modules: []
     coverage: approx
   cases:
     total: null
