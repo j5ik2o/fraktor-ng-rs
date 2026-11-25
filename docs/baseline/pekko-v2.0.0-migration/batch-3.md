@@ -57,10 +57,23 @@
 
 - 各 Rust テストの冒頭に、v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）と照合したことと上のコミットを書いた。v1.7.1 の出典の行は履歴として残した。
 - `testkit/.../PekkoSpec.scala` は fixture（ケース 0）で、Rust 側の `crates/fraktor-testkit/src/fraktorspec/fraktor_spec.rs` の冒頭には原典の版の記載がない。そのため、冒頭には何も足していない。差分は Scala 3 のワイルドカードと JavaConverters の置き換えだけである。
-- 台帳は 39 ノードを `verified_against: v2.0.0` にした。これで green のうち v1.7.1 のまま残るのは、第2まとまりで扱う `UnsynchronizedByteArrayInputStreamSpec`（#168 で v2.0.0 になる）と、v2.0.0 にファイルがない `ActorSystemScala213PlusSpec` の 2 件だけになる。
+- 台帳は 39 ノードを `verified_against: v2.0.0` にした。第2まとまり（#168）と合わせると、green の 49 ノードはすべて v2.0.0 で照合済みになる。
 
 ## ゴール文書の出典の更新（補足 13 件）
 
 項目256 の補足で再判定した記録済みの差異 13 件について、次のゴール文書の末尾に「Pekko v2.0.0 との照合（2026-11-25 追記）」を足した。v1.7.1 当時の本文は書き換えていない。行番号は v2.0.0 の blob で確かめた。
 
 `issue-108`、`issue-110`、`issue-113`、`issue-124`、`issue-126`、`issue-128`、`issue-130`、`issue-133`、`issue-136`（#159 の JDK 8 の留保は v2.0.0 で解消。v1.7.1 当時の記録は残し、v2.0.0 の JDK 17、21、25 を明記した）、`issue-142`、`issue-150`、`issue-154`、`issue-162`（FSM の listener の自動解除と `setTimer` の削除を、後続の suite の要件として書いた）。
+
+## ActorSystemScala213PlusSpec の退役と引き継ぎ
+
+- `actor-tests/src/test/scala-2.13+/org/apache/pekko/actor/ActorSystemScala213PlusSpec.scala` は v2.0.0 に無い（`batch-2.md` の訂正のとおり、削除ではなく、2.0 系統では最初から `ActorSystemSpec` にケースが入っていた）。このノードを、台帳の最上位の `retired` へ移した。欄は v1.7.1 で照合した当時のまま残し、`retired.at`、`reason`、`successor` を足した。凍結スナップショット `docs/baseline/pekko-v1.7.1/ledger.yaml` と Rust の回帰テストは、そのまま残した。
+- 後継の `actor-tests/src/test/scala/org/apache/pekko/actor/ActorSystemSpec.scala` には、引き継いだ 1 件を `cases.carried` に記録した。記録したのは、ケース名、退役したノードの id、v2.0.0 の原典の位置（L345–351、`d5ee8a63e3` #2486）、Rust のテスト、照合したタグ v2.0.0、実行の結果（1 passed）である。`cases` は 20/1/1 で status は unported のままにし、残りの 19 ケースが未移植だとわかるようにした。ノード最上位の `verified_against` は、unported には書けない（#166 の規則）ので書いていない。
+- 既存のスキーマでは、部分移植の根拠と退役を表せない。そのため、最小の欄（`retired`、`cases.carried`）と検査（`rollup.py` の `lineage_problems`、退役したゴールの扱い）を足した。規則は `docs/decisions/ledger-schema-draft.md` の「退役と引き継ぎ」にある。`goal_complete_gate_test.py` に 2 件を足し、実物のゴール文書の検査は、属するノードがすべて退役したゴール（G0issue99）を、退役したノードと表の id の一致と、関門が完了にしないことで確かめるようにした。
+- 集計：rollup の N は 1261 から 1260 に、green は 49 から 48 になった（退役したノードがクラス数から外れる）。ケースの移植数は変わらない（二重に数えない）。`check-ledger --pekko pekko` で「v2.0.0 の原典にファイルが無いノード」は 24 から 23 になり、残りはすべて unported である。
+
+## 第1まとまりの記録の訂正（#167 の最終レビュー）
+
+- `batch-1.md`：`toString` を上書きした例外では型名が「出ない」を「出ないことがある」に直した。
+- `batch-1.md`：表示から型名を外す負の対照の件数を、`dd536e3` での「unit テスト 2 件と spec 1 件」に直した（手元でも同じ結果を確かめた）。
+

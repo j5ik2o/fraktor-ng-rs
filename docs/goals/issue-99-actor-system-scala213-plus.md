@@ -34,3 +34,11 @@ Pekko v1.7.1 の classic ActorSystem のテストを1ケース移植する。原
 `verify_red.py` の結果は `unexpected_pass` のまま保存した。actor と testkit は、既存の `verify_green.py --crate <crate>` でテスト、Clippy、フォーマット、syn-check、aislop を確認した。台帳の `green` は、この検証、独立レビュー、原典の1ケースと Rust の1件の通過を根拠とする。
 
 対象テストは `cargo test -p fraktor-actor --test actor_system_scala213_plus_spec` で実行する。最終確認には actor と testkit の回帰、G0issue99 の `check_needs.py` と `rollup.py`、G0a〜G0f の `rollup.py`、PR 最終 HEAD の `Fraktor CI Gate` と `Check unresolved comments` を含める。
+
+## Pekko v2.0.0 との照合（2026-11-25 追記）
+
+- Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）には `actor-tests/src/test/scala-2.13+/org/apache/pekko/actor/ActorSystemScala213PlusSpec.scala` が無い。上流の #2486 は、1.x では `3be76d1be7` でこの scala-2.13+ のファイルを足し、2.0 では `d5ee8a63e3` で同じケースを `actor-tests/src/test/scala/org/apache/pekko/actor/ActorSystemSpec.scala` の L345–351 に入れた。共通祖先 `0ca804c7af` にこのファイルは無いので、削除ではない。ケースの本体は両方で同じである。
+- 台帳では、このゴールのノードを最上位の `retired` へ移し（退役）、ケースを `ActorSystemSpec` のノードの `cases.carried` に引き継いだ。`ActorSystemSpec` は、ほかの 19 ケースが未移植なので unported のまま（20/1/1）で、suite 全体を green にしない。退役したノードは集計の対象外なので、ケースは二重に数えない。
+- Rust のテスト `crates/fraktor-actor/tests/actor_system_scala213_plus_spec.rs` はそのまま残した（1 passed）。冒頭の出典に移動先を書いた。
+- このゴールは v1.7.1 で閉じた記録として残す。属するノードがすべて退役したので、`rollup.py --goal G0issue99` は完了と判定しない（退役を理由に 1 を返す）。上の表の id は退役したノードを指したままである。
+

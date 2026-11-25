@@ -244,3 +244,14 @@
 - 行の位置はノードの最上位、`goal` の次である。欄が無いノードに書くときは、ノードの末尾に足す
 - 検査は `uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger --ledger ledger/nodes.yaml`
   で、違反があれば終了コード 1 になる。CI でも実行する
+
+## 退役と引き継ぎ（`retired`、`cases.carried`、2026-11-25 追加）
+
+基準の切り替えで、原典のファイルが現行の基準に無くなり、ケースが別のファイルに移ったノードの扱いである。最初の例は `ActorSystemScala213PlusSpec`（v2.0.0 には無く、同じケースが `ActorSystemSpec` にある）。
+
+- 退役したノードは、`nodes` から台帳の最上位の `retired` へ移す。ノードの欄は照合した当時のまま残し、`retired` の下に `at`（暦日）、`reason`、`successor`（ケースを引き継いだ現行のノードの id）を足す。`retired` は集計（rollup の N、green、ケース数）と照合（`pekko_baseline.py check-ledger`）の対象外である。`goal` も残すので、閉じたゴールの文書の表は退役したノードを指したままになる
+- 後継のノードは、引き継いだケースを `cases.carried` に記録する。要素は `name`（Pekko 側のケース名）、`from`（退役したノードの id）、`source`（現行の原典のパスと行）、`rust_test`、`verified_against`（そのケースを照合したタグ）、`evidence`（確かめた実行）である。ノード最上位の `verified_against` は suite 全体の照合を表すので、部分移植のノード（status が unported か red）には書かない
+- 部分移植の後継は、`ported` と `passing` を引き継いだ件数にし、`total` は原典のケース数にする（`total > ported`）。suite 全体は green にしない。退役したノードは集計から外れるので、ケースは二重に数えない
+- `rollup.py` の `lineage_problems` が検査する。退役したノードについては、同じ id が `nodes` に無いこと、3 つの欄、後継が現行のノードで、その `cases.carried` に自分からの要素があることを見る。`cases.carried` の要素は、欄が揃い、`from` が退役したノードで、名前が重複しないこと。部分移植の後継は、上の件数の規則を満たすこと。不足は一覧に出し、そのノードが属するゴールの完了に数えない。属するノードがすべて退役したゴールは、`rollup.py --goal` が退役を理由に 1 を返す（完了と判定しない）
+- 例：`actor-tests/src/test/scala-2.13+/org/apache/pekko/actor/ActorSystemScala213PlusSpec.scala` は退役し、後継は `actor-tests/src/test/scala/org/apache/pekko/actor/ActorSystemSpec.scala` である。後継は unported で、`cases` は 20/1/1、`cases.carried` に 1 件を持つ
+
