@@ -6,21 +6,28 @@
 `retired`（退役したノード）には触れない。1 回の起動で、指定した id の行だけを書き換える。
 
 使い方:
-    # 現行タグで未照合の判定済みノードの id を出す（apply の入力を作る）
-    python3 ledger/tools/reverify_against.py plan --ledger ledger/nodes.yaml --tag v2.0.0
+    # 現行タグで未照合の判定済みノードの id を出す（apply の入力の候補になる）
+    python3 ledger/tools/reverify_against.py plan --ledger ledger/nodes.yaml
 
-    # 対象ノードの verified_against を現行タグへ揃える（--ids は 1 行 1 id のファイル）
-    python3 ledger/tools/reverify_against.py apply --ledger ledger/nodes.yaml --tag v2.0.0 \
-        --ids /tmp/ids.txt [--dry-run]
+    # 実際に原典と突き合わせて理由が成り立つと確かめたノードの id だけを書いたファイルを渡す
+    # （plan の出力をそのまま apply に流さない。確かめていないノードを現行タグにしない）
+    python3 ledger/tools/reverify_against.py apply --ledger ledger/nodes.yaml \
+        --ids /tmp/checked-ids.txt [--dry-run]
 
-    # 原典の有無と、過去の基準からの行数差を表にする（PyYAML を使う。CI では実行しない）
+    # 判定済みノードの原典の有無と、過去の基準からの行数差を表にする（PyYAML を使う）
     uv run --with pyyaml python3 ledger/tools/reverify_against.py report \
-        --ledger ledger/nodes.yaml --pekko pekko --tag v2.0.0 [--status do_not_port]
+        --ledger ledger/nodes.yaml --pekko pekko [--status do_not_port] [--unverified-only]
+
+照合済みタグは、基準ファイル（tools/pekko-source/pekko-baseline.env）の現行タグに揃える。
+`--tag` を省くと現行タグを使い、現行タグでない値を渡すと拒否する（過去のタグを書くと、照合済みの
+ノードが「現行タグで未照合」に戻り、台帳の検査は過去のタグを有効とするため気づけない）。
 
 規則（`docs/decisions/ledger-schema-draft.md` の verified_against）:
   - 照合済みタグを書けるのは判定済みの status（green / do_not_port / not_built）だけである。
     それ以外の status のノードは欄を持たないか null なので、apply は拒否する
   - 照合していないノードを現行タグに書き換えない。apply は id を明示した分だけを書き換える
+  - report は原典を `pekko_baseline.source_tag` で検査してから表を作る（未準備の `pekko/` や、
+    別の版をチェックアウトした原典では、ファイルの有無を数えずに失敗する）
   - PyYAML は report のときだけ遅延 import する（apply と plan は PyYAML なしで動く）
 """
 import argparse
@@ -37,6 +44,22 @@ JUDGED_STATUSES = ("green", "do_not_port", "not_built")
 FIELD = "verified_against"
 
 TOP_LEVEL_FIELD = re.compile(r"  ([A-Za-z_][\w-]*):\s*(.*)$")
+
+
+def _baseline():
+    import pekko_baseline
+
+    return pekko_baseline.load()
+
+
+def _resolve_tag(value: str | None) -> str:
+    """現行タグを返す。value が現行タグでなければ ValueError（過去のタグを書かせない）。"""
+    current = _baseline().tag
+    if value is None:
+        return current
+    if value != current:
+        raise ValueError(f"--tag {value!r} は現行の基準タグ {current!r} でない（照合済みタグは現行タグに揃える）")
+    return value
 
 
 def read_field(lines: list[str], key: str, span: tuple[int, int]) -> str | None:
@@ -106,15 +129,17 @@ def _read_ids(path: str) -> list[str]:
 
 
 def cmd_plan(args) -> int:
+    tag = _resolve_tag(args.tag)
     lines = Path(args.ledger).read_text(encoding="utf-8").splitlines(keepends=True)
-    pending = [node_id for node_id, tag in _judged(lines) if tag != args.tag]
+    pending = [node_id for node_id, current in _judged(lines) if current != tag]
     for node_id in pending:
         print(node_id)
-    print(f"{args.tag} で未照合の判定済みノード: {len(pending)} 件", file=sys.stderr)
+    print(f"{tag} で未照合の判定済みノード: {len(pending)} 件", file=sys.stderr)
     return 0
 
 
 def cmd_apply(args) -> int:
+    tag = _resolve_tag(args.tag)
     path = Path(args.ledger)
     original = path.read_text(encoding="utf-8").splitlines(keepends=True)
     ids = _read_ids(args.ids)
@@ -132,11 +157,11 @@ def cmd_apply(args) -> int:
     for node_id in ids:
         try:
             span = _span(lines, node_id)
-            if read_field(lines, FIELD, span) == args.tag:
+            if read_field(lines, FIELD, span) == tag:
                 same.append(node_id)
                 continue
             before_spans[node_id] = node_span(original, node_id)
-            lines = set_tag(lines, node_id, args.tag)
+            lines = set_tag(lines, node_id, tag)
         except ValueError as error:
             print(error, file=sys.stderr)
             print("台帳は書き換えていない", file=sys.stderr)
@@ -153,10 +178,10 @@ def cmd_apply(args) -> int:
         print("対象ノードの外の行が変わった。台帳は書き換えていない", file=sys.stderr)
         return 1
     if args.dry_run:
-        print(f"変更する: {len(changed)} 件、既に {args.tag}: {len(same)} 件（--dry-run なので書かない）")
+        print(f"変更する: {len(changed)} 件、既に {tag}: {len(same)} 件（--dry-run なので書かない）")
         return 0
     path.write_text("".join(lines), encoding="utf-8")
-    print(f"変更した: {len(changed)} 件、既に {args.tag}: {len(same)} 件")
+    print(f"変更した: {len(changed)} 件、既に {tag}: {len(same)} 件")
     return 0
 
 
@@ -177,17 +202,26 @@ def _numstat(pekko: str, tag: str, historical: str, node_id: str) -> str:
 
 
 def cmd_report(args) -> int:
+    import pekko_baseline
     import rollup
 
+    tag = _resolve_tag(args.tag)
+    baseline = _baseline()
+    try:
+        pekko_baseline.source_tag(baseline, args.pekko)
+    except pekko_baseline.BaselineError as error:
+        print(error, file=sys.stderr)
+        return 1
     nodes = rollup.load_nodes(args.ledger)
-    judged = [n for n in nodes if n.get("status") in JUDGED_STATUSES
-              and n.get(FIELD) != args.tag]
+    judged = [n for n in nodes if n.get("status") in JUDGED_STATUSES]
+    if args.unverified_only:
+        judged = [n for n in judged if n.get(FIELD) != tag]
     if args.status:
         wanted = set(args.status.split(","))
         judged = [n for n in judged if n.get("status") in wanted]
     pekko = Path(args.pekko)
-    print("| id | status | 原典 v" + args.tag.lstrip("v") + " のパス | 過去の基準からの行数差 |")
-    print("|:---|:---|:---|:---|")
+    print(f"| id | status | {FIELD} | 原典 {tag} のパス | 過去の基準からの行数差 |")
+    print("|:---|:---|:---|:---|:---|")
     missing = 0
     for node in judged:
         path = pekko / node["id"]
@@ -196,8 +230,8 @@ def cmd_report(args) -> int:
         else:
             exists = "なし"
             missing += 1
-        print(f"| `{node['id']}` | {node.get('status')} | {exists} | "
-              f"{_numstat(pekko, args.tag, args.historical, node['id'])} |")
+        print(f"| `{node['id']}` | {node.get('status')} | {node.get(FIELD)} | {exists} | "
+              f"{_numstat(pekko, tag, args.historical, node['id'])} |")
     print(f"\n対象 {len(judged)} 件、原典にファイルが無い {missing} 件", file=sys.stderr)
     return 0
 
@@ -207,32 +241,36 @@ def main() -> int:
     sub = ap.add_subparsers(dest="command", required=True)
     p = sub.add_parser("plan", help="現行タグで未照合の判定済みノードの id を出す")
     p.add_argument("--ledger", default="ledger/nodes.yaml")
-    p.add_argument("--tag", required=True)
+    p.add_argument("--tag", default=None, help=f"既定は基準ファイルの現行タグ（{FIELD} に書く値）")
     p.set_defaults(func=cmd_plan)
     p = sub.add_parser("apply", help="対象ノードの verified_against を現行タグへ揃える")
     p.add_argument("--ledger", default="ledger/nodes.yaml")
-    p.add_argument("--tag", required=True)
+    p.add_argument("--tag", default=None, help="既定は基準ファイルの現行タグ")
     p.add_argument("--ids", required=True, help="1 行 1 id のファイル（空行と # の行は無視する）")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_apply)
     p = sub.add_parser("report", help="原典の有無と行数差の表を出す（PyYAML を使う）")
     p.add_argument("--ledger", default="ledger/nodes.yaml")
     p.add_argument("--pekko", default="pekko")
-    p.add_argument("--tag", required=True)
+    p.add_argument("--tag", default=None, help="既定は基準ファイルの現行タグ")
     p.add_argument("--historical", default=None,
                    help="行数差を測る過去の基準タグ（既定は基準ファイルの過去のタグの先頭）")
     p.add_argument("--status", default=None, help="status をカンマ区切りで絞る")
+    p.add_argument("--unverified-only", action="store_true",
+                   help="現行タグで未照合のノードだけにする（既定は判定済みの全件）")
     p.set_defaults(func=cmd_report)
     args = ap.parse_args()
     if args.command == "report" and not args.historical:
-        import pekko_baseline
-
-        historical = sorted(pekko_baseline.load().historical)
+        historical = sorted(_baseline().historical)
         if not historical:
             print("過去の基準が基準ファイルに無い。--historical を渡す", file=sys.stderr)
             return 1
         args.historical = historical[0]
-    return args.func(args)
+    try:
+        return args.func(args)
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

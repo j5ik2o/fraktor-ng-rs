@@ -6,7 +6,10 @@
 - 欄が無いノードには、ノードの末尾（`goal` の後）に足す。`retired` が `nodes` より前にある台帳でも、
   退役したノードを書き換えない
 - 判定済みでない status（unported など）と、nodes に無い id は拒否し、台帳を書き換えない
+- 現行タグでない値（過去のタグ）は拒否し、台帳を書き換えない（照合済みのノードを未照合に戻さない）
 - plan は現行タグで未照合の判定済みノードだけを出す
+- report は原典を検査してから表を作る（未準備の `pekko/` では数えずに失敗する）。判定済みの
+  全件を既定で出し、`--unverified-only` で未照合だけに絞る
 - PyYAML なし（`python3 -S`）でも apply と plan が動く（report だけが PyYAML を使う）
 
 使い方:
@@ -23,9 +26,11 @@ sys.path.insert(0, str(TOOLS))
 import pekko_baseline  # noqa: E402
 import reverify_against  # noqa: E402
 
-# 過去の基準のタグは基準ファイルから取る（現役の経路に過去のタグを書かない。check-refs の規則）。
+# タグは基準ファイルから取る（現役の経路に過去のタグや現行タグを固定して書かない。check-refs の規則）。
 # このテストは、その値を入力の文字列として使うだけで、過去の原典を読まない。
-PAST = sorted(pekko_baseline.load().historical)[0]
+BASELINE = pekko_baseline.load()
+CURRENT = BASELINE.tag
+PAST = sorted(BASELINE.historical)[0]
 
 NODE = """- id: {id}
   name: m:{name}
@@ -98,14 +103,10 @@ def ledger(*, retired_first: bool = False, tag: str | None = None) -> str:
         + NODE.format(id="m/B.scala", name="B", status="unported", kind="pending", tag="")
     )
     head = "# 台帳の見出し（行頭の注記）\n\n"
+    retired = RETIRED.format(past=PAST)
     if retired_first:
-        return head + "retired:\n" + retired() + "\n" + "nodes:\n" + body
-    return head + "nodes:\n" + body + "\n" + "# 退役したノード\nretired:\n" + retired()
-
-
-def retired() -> str:
-    """退役したノード（過去の基準で照合した記録。書き換えないことを確かめる対象）。"""
-    return RETIRED.format(past=PAST)
+        return head + "retired:\n" + retired + "\n" + "nodes:\n" + body
+    return head + "nodes:\n" + body + "\n" + "# 退役したノード\nretired:\n" + retired
 
 
 def write_ledger(root: Path, text: str) -> Path:
@@ -120,13 +121,51 @@ def write_ids(root: Path, ids: list[str]) -> Path:
     return path
 
 
-def apply(root: Path, ids: list[str], *extra: str) -> subprocess.CompletedProcess:
+def tool(root: Path, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, str(TOOLS / "reverify_against.py"), "apply",
-         "--ledger", str(root / "nodes.yaml"), "--tag", "v2.0.0",
-         "--ids", str(write_ids(root, ids)), *extra],
-        capture_output=True, text=True, check=False,
+        [sys.executable, str(TOOLS / "reverify_against.py"), *args],
+        capture_output=True, text=True, check=False, env=env,
     )
+
+
+def apply(root: Path, ids: list[str], *extra: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    return tool(root, "apply", "--ledger", str(root / "nodes.yaml"),
+                "--ids", str(write_ids(root, ids)), *extra, env=env)
+
+
+def make_source(root: Path, files: dict[str, str]) -> tuple[Path, str]:
+    """`pekko/` の代わりになる git repo を作り、(パス, HEAD の commit) を返す。"""
+    pekko = root / "pekko"
+    pekko.mkdir()
+    for name, text in files.items():
+        path = pekko / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def git(*args: str) -> str:
+        proc = subprocess.run(
+            ["git", "-C", str(pekko), "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+            capture_output=True, text=True, check=False,
+        )
+        assert proc.returncode == 0, (args, proc.stderr)
+        return proc.stdout.strip()
+
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-q", "-m", "source")
+    return pekko, git("rev-parse", "--verify", "HEAD^{commit}")
+
+
+def write_baseline(root: Path, commit: str) -> Path:
+    """作業ツリーの原典を現行の基準にする、テスト用の基準ファイルを書く。"""
+    path = root / "baseline.env"
+    path.write_text(
+        f"PEKKO_BASELINE_TAG={CURRENT}\n"
+        f"PEKKO_BASELINE_COMMIT={commit}\n"
+        f"PEKKO_HISTORICAL_BASELINES={PAST}:{commit}\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def test_apply_changes_only_the_value():
@@ -140,7 +179,7 @@ def test_apply_changes_only_the_value():
         after = path.read_text(encoding="utf-8")
         expected = before.replace(
             f"  verified_against: {PAST}\n- id: m/B.scala",
-            "  verified_against: v2.0.0\n- id: m/B.scala", 1,
+            f"  verified_against: {CURRENT}\n- id: m/B.scala", 1,
         )
         assert after == expected, after
         assert after.count(f"verified_against: {PAST}") == 1, after
@@ -157,7 +196,8 @@ def test_apply_adds_the_field_after_goal():
         assert proc.returncode == 0, (proc.stdout, proc.stderr)
         after = path.read_text(encoding="utf-8")
         assert after == before.replace(
-            "  goal: null\n- id: m/B.scala", "  goal: null\n  verified_against: v2.0.0\n- id: m/B.scala",
+            "  goal: null\n- id: m/B.scala",
+            f"  goal: null\n  verified_against: {CURRENT}\n- id: m/B.scala",
         ), after
         print("2. 欄が無ければ goal の後に足す")
 
@@ -188,6 +228,19 @@ def test_apply_refuses_an_id_that_is_not_in_nodes():
         print("4. retired の id は拒否する")
 
 
+def test_apply_refuses_a_tag_that_is_not_current():
+    """過去のタグは拒否し、照合済みのノードを未照合に戻さない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        before = ledger(tag=CURRENT)
+        path = write_ledger(root, before)
+        proc = apply(root, ["m/A.scala"], "--tag", PAST)
+        assert proc.returncode == 1, (proc.stdout, proc.stderr)
+        assert "現行の基準タグ" in proc.stderr, proc.stderr
+        assert path.read_text(encoding="utf-8") == before
+        print("5. 現行タグでない --tag は拒否する")
+
+
 def test_apply_keeps_retired_first_and_comments():
     """`retired` が `nodes` より前にある台帳でも、注記と退役したノードをそのまま残す。"""
     with tempfile.TemporaryDirectory() as temporary:
@@ -201,25 +254,25 @@ def test_apply_keeps_retired_first_and_comments():
         assert after[:after.index("nodes:")] == before[:before.index("nodes:")], after[:200]
         # 変わるのは対象ノードの 1 行だけで、退役したノードの verified_against は過去のタグのまま。
         assert after == before.replace(
-            f"  verified_against: {PAST}\n- id: m/B.scala", "  verified_against: v2.0.0\n- id: m/B.scala",
+            f"  verified_against: {PAST}\n- id: m/B.scala",
+            f"  verified_against: {CURRENT}\n- id: m/B.scala",
         ), after
         assert f"verified_against: {PAST}" in after, after
-        print("5. retired が先頭でも注記と退役を残す")
+        print("6. retired が先頭でも注記と退役を残す")
 
 
 def test_apply_is_idempotent_and_reports_no_change():
     """既に現行タグのノードは書き換えず、変更 0 件として成功する。"""
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
-        before = ledger()
-        path = write_ledger(root, before)
+        path = write_ledger(root, ledger())
         assert apply(root, ["m/A.scala"]).returncode == 0
         once = path.read_text(encoding="utf-8")
         proc = apply(root, ["m/A.scala"])
         assert proc.returncode == 0, (proc.stdout, proc.stderr)
         assert "変更した: 0 件" in proc.stdout, proc.stdout
         assert path.read_text(encoding="utf-8") == once
-        print("6. 再実行しても変わらない")
+        print("7. 再実行しても変わらない")
 
 
 def test_apply_refuses_duplicate_ids_and_writes_nothing():
@@ -232,7 +285,7 @@ def test_apply_refuses_duplicate_ids_and_writes_nothing():
         assert proc.returncode == 1, (proc.stdout, proc.stderr)
         assert "重複" in proc.stderr, proc.stderr
         assert path.read_text(encoding="utf-8") == before
-        print("7. --ids の重複は拒否する")
+        print("8. --ids の重複は拒否する")
 
 
 def test_dry_run_writes_nothing():
@@ -245,7 +298,7 @@ def test_dry_run_writes_nothing():
         assert proc.returncode == 0, (proc.stdout, proc.stderr)
         assert "変更する: 1 件" in proc.stdout, proc.stdout
         assert path.read_text(encoding="utf-8") == before
-        print("8. --dry-run は書かない")
+        print("9. --dry-run は書かない")
 
 
 def test_plan_lists_judged_nodes_with_another_tag():
@@ -253,47 +306,63 @@ def test_plan_lists_judged_nodes_with_another_tag():
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         write_ledger(root, ledger(retired_first=True))
-        proc = subprocess.run(
-            [sys.executable, str(TOOLS / "reverify_against.py"), "plan",
-             "--ledger", str(root / "nodes.yaml"), "--tag", "v2.0.0"],
-            capture_output=True, text=True, check=False,
-        )
+        proc = tool(root, "plan", "--ledger", str(root / "nodes.yaml"))
         assert proc.returncode == 0, (proc.stdout, proc.stderr)
         assert proc.stdout.splitlines() == ["m/A.scala"], proc.stdout
-        print("9. plan は判定済みの未照合だけを出す")
+        print("10. plan は判定済みの未照合だけを出す")
 
 
 def test_report_table_marks_missing_original():
-    """report は原典の有無と行数差を表にし、原典にファイルが無い件数を stderr に出す。"""
-    import yaml  # noqa: F401  (report は PyYAML を使う)
+    """report は原典を検査したうえで、原典の有無と行数差を表にする。"""
+    for exists, expected_row in ((True, "| あり（1 行） |"), (False, "| なし |")):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_ledger(root, ledger())
+            files = {"m/A.scala": "object A\n"} if exists else {"m/Other.scala": "object O\n"}
+            pekko, commit = make_source(root, files)
+            env = {"PATH": "/usr/bin:/bin:/usr/local/bin", "PEKKO_BASELINE_FILE": str(write_baseline(root, commit))}
+            proc = tool(root, "report", "--ledger", str(root / "nodes.yaml"),
+                        "--pekko", str(pekko), "--historical", PAST, env=env)
+            assert proc.returncode == 0, (proc.stdout, proc.stderr)
+            row = [line for line in proc.stdout.splitlines() if line.startswith("| `m/A.scala`")]
+            assert row and expected_row in row[0], (expected_row, proc.stdout)
+            assert f"| {PAST} |" in row[0], row[0]
+            assert "| `m/B.scala` |" not in proc.stdout, proc.stdout
+            assert f"原典にファイルが無い {0 if exists else 1} 件" in proc.stderr, proc.stderr
+    print("11. report は原典の有無と行数差を出す（あるとき／無いとき）")
 
+
+def test_report_includes_already_verified_nodes():
+    """report は既定で判定済みの全件を出し、--unverified-only で未照合だけに絞る。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_ledger(root, ledger(tag=CURRENT))
+        pekko, commit = make_source(root, {"m/A.scala": "object A\n"})
+        env = {"PATH": "/usr/bin:/bin:/usr/local/bin", "PEKKO_BASELINE_FILE": str(write_baseline(root, commit))}
+        everything = tool(root, "report", "--ledger", str(root / "nodes.yaml"),
+                          "--pekko", str(pekko), "--historical", PAST, env=env)
+        assert everything.returncode == 0, (everything.stdout, everything.stderr)
+        assert "| `m/A.scala` | do_not_port |" in everything.stdout, everything.stdout
+        assert "対象 1 件、原典にファイルが無い 0 件" in everything.stderr, everything.stderr
+        only_unverified = tool(root, "report", "--ledger", str(root / "nodes.yaml"),
+                               "--pekko", str(pekko), "--historical", PAST, "--unverified-only", env=env)
+        assert only_unverified.returncode == 0, (only_unverified.stdout, only_unverified.stderr)
+        assert "| `m/A.scala` |" not in only_unverified.stdout, only_unverified.stdout
+        assert "対象 0 件" in only_unverified.stderr, only_unverified.stderr
+        print("12. report は照合済みも出し、--unverified-only で絞る")
+
+
+def test_report_refuses_an_unprepared_source():
+    """原典が無ければ、ファイルの有無を数えずに失敗する（全件「なし」と誤報しない）。"""
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         write_ledger(root, ledger())
-        pekko = root / "pekko"
-        (pekko / "m").mkdir(parents=True)
-        (pekko / "m" / "A.scala").write_text("object A\n", encoding="utf-8")
-        proc = subprocess.run(
-            [sys.executable, str(TOOLS / "reverify_against.py"), "report",
-             "--ledger", str(root / "nodes.yaml"), "--pekko", str(pekko),
-             "--tag", "v2.0.0", "--historical", PAST],
-            capture_output=True, text=True, check=False,
-        )
-        assert proc.returncode == 0, (proc.stdout, proc.stderr)
-        assert "| `m/A.scala` | do_not_port | あり（1 行） |" in proc.stdout, proc.stdout
-        assert "| `m/B.scala` | unported |" not in proc.stdout, proc.stdout
-        print("10. report は原典の有無と行数差を出す")
-        (pekko / "m" / "A.scala").unlink()
-        proc = subprocess.run(
-            [sys.executable, str(TOOLS / "reverify_against.py"), "report",
-             "--ledger", str(root / "nodes.yaml"), "--pekko", str(pekko),
-             "--tag", "v2.0.0", "--historical", PAST],
-            capture_output=True, text=True, check=False,
-        )
-        assert proc.returncode == 0, (proc.stdout, proc.stderr)
-        assert "| `m/A.scala` | do_not_port | なし |" in proc.stdout, proc.stdout
-        assert "原典にファイルが無い 1 件" in proc.stderr, proc.stderr
-        print("10b. report は原典に無いノードを数える")
+        proc = tool(root, "report", "--ledger", str(root / "nodes.yaml"),
+                    "--pekko", str(root / "pekko"), "--historical", PAST)
+        assert proc.returncode == 1, (proc.stdout, proc.stderr)
+        assert proc.stdout == "", proc.stdout
+        assert "pekko" in proc.stderr, proc.stderr
+        print("13. 原典が無ければ report は失敗する")
 
 
 def test_apply_and_plan_work_without_pyyaml():
@@ -310,13 +379,13 @@ def test_apply_and_plan_work_without_pyyaml():
         )
         proc = subprocess.run(
             [sys.executable, "-S", "-c", code, "apply",
-             "--ledger", str(path), "--tag", "v2.0.0", "--ids", str(root / "ids.txt")],
+             "--ledger", str(path), "--ids", str(root / "ids.txt")],
             capture_output=True, text=True, check=False,
         )
         assert proc.returncode == 0, (proc.stdout, proc.stderr)
         assert "変更した: 1 件" in proc.stdout, proc.stdout
-        assert "verified_against: v2.0.0" in path.read_text(encoding="utf-8")
-        print("11. PyYAML なしでも apply が動く")
+        assert f"verified_against: {CURRENT}" in path.read_text(encoding="utf-8")
+        print("14. PyYAML なしでも apply が動く")
 
 
 def main() -> int:
@@ -325,12 +394,15 @@ def main() -> int:
         test_apply_adds_the_field_after_goal,
         test_apply_refuses_a_status_that_is_not_judged,
         test_apply_refuses_an_id_that_is_not_in_nodes,
+        test_apply_refuses_a_tag_that_is_not_current,
         test_apply_keeps_retired_first_and_comments,
         test_apply_is_idempotent_and_reports_no_change,
         test_apply_refuses_duplicate_ids_and_writes_nothing,
         test_dry_run_writes_nothing,
         test_plan_lists_judged_nodes_with_another_tag,
         test_report_table_marks_missing_original,
+        test_report_includes_already_verified_nodes,
+        test_report_refuses_an_unprepared_source,
         test_apply_and_plan_work_without_pyyaml,
     ]
     assert reverify_against.FIELD == "verified_against"
