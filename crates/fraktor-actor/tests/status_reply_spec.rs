@@ -141,15 +141,39 @@ fn typed_error_reply_carries_the_original_exception() {
 // include exception type in toString for non text-error
 //
 // Added in v2.0.0 (upstream 6287b9de07, #3271). Pekko's `toString` renders a
-// non-text error as `Error(<exception>)`, whose text starts with the exception
-// class. The port's reply has no `Display`, because a success carries a
-// type-erased `Message` that has no text; its `Debug` is the reply's rendering,
-// and it names the error's type.
+// non-text error as `Error(<exception>)`, and a JVM exception's `toString`
+// starts with its class name, so the rendering names the error's type whatever
+// the error prints. The port's reply has no `Display`, because a success
+// carries a type-erased `Message` that has no text; its `Debug` is the reply's
+// rendering. The error here prints only its message from both `Debug` and
+// `Display`, so the type name can come only from the reply.
 #[test]
 fn include_exception_type_in_to_string_for_non_text_error() {
-  let rendered = format!("{:?}", StatusReply::error(TestException("boho!")));
-  assert!(rendered.contains("TestException"), "rendered [{rendered}]");
+  let rendered = format!("{:?}", StatusReply::error(UnnamedTestException("boho!")));
+  assert!(rendered.contains("UnnamedTestException"), "rendered [{rendered}]");
+  assert!(rendered.contains("boho!"), "rendered [{rendered}]");
+
+  // A text error is rendered as its text, as Pekko's `Error(<message>)`.
+  let rendered = format!("{:?}", StatusReply::error_message("boho!"));
+  assert_eq!(rendered, "Error(boho!)");
 }
+
+// An error whose `Debug` and `Display` print only the message, not the type.
+struct UnnamedTestException(&'static str);
+
+impl fmt::Debug for UnnamedTestException {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str(self.0)
+  }
+}
+
+impl fmt::Display for UnnamedTestException {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str(self.0)
+  }
+}
+
+impl Error for UnnamedTestException {}
 
 // flatten a Future[StatusReply]
 #[test]
