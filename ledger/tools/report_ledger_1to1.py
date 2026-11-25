@@ -1,24 +1,16 @@
 """項目 258 (d): 台帳の v2.0.0 の行と、報告書の表の行が 1 対 1 かを機械で確かめる。
 
-対象の報告書は REPORTS に明示する（1 報告書 1 行。増やすときは 1 行足す）。報告書の表は、
-見出し行に決まった列がある表だけを読む（ほかの表とコードブロックの中は読まない）。表の行が
-機械で読めない報告書があれば、飛ばさずに止まる（終了コード 1）。
+対象の報告書は REPORTS に明示する（1 報告書 1 行。増やすときは 1 行足す）。報告書の表は、見出し行に
+決まった列がある表だけを読む（ほかの表とコードブロックの中は読まない）。読めない表があれば飛ばさず
+止まる。規則は RULES の 5 つで、1 つの CI ステップが全部を見る。照合タグの列がある表は、セルの値
+（空欄は null）が台帳の値と一致することを見る（空欄と未照合の null は同じものとして比べる）。
 
-check は 5 つの規則を 1 つの CI ステップで全部見る（文言は RULES。要点だけ書く）:
-  1. 全 id が台帳にある。`verified_against` の列がある表は、そのセルの値（空欄は null）が
-     台帳の値と一致する（列が無い報告書は存在だけ。あとで台帳を正当に照合しても壊れない）
-  2. 同じ id が 2 つ以上の報告書に載っていない（1 つの報告書の中でも 2 行にしない）
-  3. 宣言する件数（見出しの「175 ノード」など）と、その表の実データ行数が一致する
-  4. 報告書にあるのに台帳に無い id が 0 件
-  5. 一覧 `docs/baseline/v2.0.0-undocumented-nodes.tsv` が「v2.0.0 で照合済みで、どの報告書にも
-     載らない id」と集合として一致する（報告書が入った id は消す運用。残りも欠けも失敗）
+list-undocumented は一覧を作り直す（冪等）。category は、`verified_against: v2.0.0` を付けた commit
+が原典を切り替えた commit 以前なら `before-baseline`、以降なら `no-report`（対象の報告書に載って
+いない。`pekko-v2.0.0-migration/` の記録は対象外）。git の履歴から決められない id は `unclassified`。
 
-list-undocumented は一覧を作り直す（冪等）。category は、そのノードの `verified_against: v2.0.0`
-を付けた commit が原典を切り替えた commit 以前なら `before-baseline`、以降なら（その照合を書いた
-報告書が無いので）`no-report`。git の履歴から決められない id は `unclassified`。
-
-使い方: `uv run --with pyyaml python3 ledger/tools/report_ledger_1to1.py check` と
-`... list-undocumented`（既定はこのリポジトリの台帳・報告書・一覧）。"""
+使い方: `uv run --with pyyaml python3 ledger/tools/report_ledger_1to1.py check` と `... list-undocumented`。
+"""
 from __future__ import annotations
 
 import argparse
@@ -35,7 +27,8 @@ REPO = Path(__file__).resolve().parents[2]
 DEFAULT_LEDGER = REPO / "ledger" / "nodes.yaml"
 DEFAULT_UNDOCUMENTED = REPO / "docs" / "baseline" / "v2.0.0-undocumented-nodes.tsv"
 
-# 報告書と一覧が扱う原典のタグ。この 3 報告書と 1 つの一覧は、この基準の記録である。
+# 報告書と一覧が扱う原典のタグ。次の切り替えでは、この道具と一覧を履歴として凍結し、
+# 過去のタグを書いてよい道具（pekko_baseline.HISTORY_TOOLS）に移す。
 TAG = "v2.0.0"
 TAG_FIELD = "verified_against"
 BASELINE_FILE = "tools/pekko-source/pekko-baseline.env"
@@ -86,7 +79,8 @@ class Row:
     report: str
     line: int
     id: str
-    tag: str | None = None
+    tag: str | None = None  # 空欄は None（台帳の未照合と同じ）
+    has_tag: bool = False  # 表に照合タグの列があるか
 
 
 @dataclass(frozen=True)
@@ -104,16 +98,14 @@ def load_ledger(path: Path) -> dict[str, dict]:
     for node in nodes:
         if not isinstance(node, dict) or not isinstance(node.get("id"), str):
             raise ReportUnreadable(f"{path}: id の無いノードがある")
-    return {node["id"]: node for node in nodes}
+    by_id = {node["id"]: node for node in nodes}
+    if len(by_id) != len(nodes):
+        raise ReportUnreadable(f"{path}: id が重複している")
+    return by_id
 
 
 def _cells(line: str) -> list[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
-
-
-def _is_separator(line: str) -> bool:
-    body = line.strip().strip("|")
-    return bool(body) and "-" in body and all(ch in " -:|" for ch in body)
 
 
 def _read_text(root: Path, name: str) -> str:
@@ -123,30 +115,42 @@ def _read_text(root: Path, name: str) -> str:
         raise ReportUnreadable(f"{name}: 読めない（{exc}）") from exc
 
 
+def _unfenced(text: str) -> list[tuple[int, str]]:
+    """コードブロック（``` と ~~~）の中を除いた（行番号, 行）の並び。"""
+    lines, fenced = [], False
+    for number, line in enumerate(text.splitlines(), 1):
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced:
+            lines.append((number, line))
+    return lines
+
+
+def _is_table_row(line: str) -> bool:
+    return "|" in line.strip() and not line.strip().startswith(("#", ">"))
+
+
 def _tables(text: str, report: str) -> list[tuple[int, list[str], list[tuple[int, list[str]]]]]:
     """Markdown の表を（見出しの行番号, 見出し, [(行番号, セル)]）の並びにする。
 
-    コードブロックの中の行（シェルの `| grep` など）は表として読まない。"""
-    lines = text.splitlines()
+    先頭と末尾の `|` は省けるので、`|` を含む行を表の続きとして読む。空白行で終わる。"""
+    lines = _unfenced(text)
     tables = []
     index = 0
-    fenced = False
     while index < len(lines):
-        if lines[index].lstrip().startswith("```"):
-            fenced = not fenced
-            index += 1
-            continue
-        if fenced or not lines[index].lstrip().startswith("|"):
+        if not lines[index][1].lstrip().startswith("|"):
             index += 1
             continue
         start = index
-        while index < len(lines) and lines[index].lstrip().startswith("|"):
+        while index < len(lines) and _is_table_row(lines[index][1]):
             index += 1
-        block = lines[start:index]
-        if len(block) < 2 or not _is_separator(block[1]):
-            raise ReportUnreadable(f"{report}:{start + 1}: 見出しと区切りの行が無い")
-        rows = [(start + 2 + offset, _cells(line)) for offset, line in enumerate(block[2:])]
-        tables.append((start + 1, _cells(block[0]), rows))
+        block = [line for _, line in lines[start:index]]
+        header_line = lines[start][0]
+        sep = block[1].strip().strip("|") if len(block) > 1 else ""
+        if not sep or "-" not in sep or not all(ch in " -:|" for ch in sep):
+            raise ReportUnreadable(f"{report}:{header_line}: 見出しと区切りの行が無い")
+        rows = [(lines[start + 2 + offset][0], _cells(line)) for offset, line in enumerate(block[2:])]
+        tables.append((header_line, _cells(block[0]), rows))
     return tables
 
 
@@ -163,7 +167,6 @@ def _normalize_tag(cell: str) -> str | None:
 
 
 def parse_report(report: Report, root: Path) -> list[Row]:
-    """報告書 1 件の表を読む。読めなければ ReportUnreadable。"""
     text = _read_text(root, report.path)
     rows: list[Row] = []
     matched = 0
@@ -189,6 +192,7 @@ def parse_report(report: Report, root: Path) -> list[Row]:
                 line=line,
                 id=_normalize_id(cells[id_columns[0]], report.path, line),
                 tag=_normalize_tag(cells[tag_column]) if tag_column is not None else None,
+                has_tag=tag_column is not None,
             ))
     if matched == 0:
         raise ReportUnreadable(
@@ -197,9 +201,8 @@ def parse_report(report: Report, root: Path) -> list[Row]:
 
 
 def declared_count(report: Report, root: Path) -> int:
-    """報告書が本文で宣言する件数。1 つに決まらなければ ReportUnreadable。"""
-    text = _read_text(root, report.path)
-    hits = [m.group(1) for m in re.finditer(report.declared, text, re.MULTILINE)]
+    body = "\n".join(line for _, line in _unfenced(_read_text(root, report.path)))
+    hits = [m.group(1) for m in re.finditer(report.declared, body, re.MULTILINE)]
     if len(hits) != 1:
         raise ReportUnreadable(f"{report.path}: 宣言件数の行が 1 つに決まらない（{len(hits)} 行）")
     return int(hits[0].replace(",", ""))
@@ -266,7 +269,7 @@ def violations(root: Path, ledger_path: Path, undocumented_path: Path) -> tuple[
             node = ledger.get(row.id)
             if node is None:
                 found.append(Violation(4, f"{place}: 台帳に無い id {row.id}"))
-            elif row.tag is not None and row.tag != node.get(TAG_FIELD):
+            elif row.has_tag and row.tag != node.get(TAG_FIELD):
                 found.append(Violation(
                     1, f"{place}: 表は {row.tag} だが台帳は {node.get(TAG_FIELD)}（{row.id}）"))
 
@@ -298,9 +301,8 @@ def cmd_check(args) -> int:
     except (ReportUnreadable, ListUnreadable) as exc:
         print(f"機械で読めない入力がある（飛ばさずに止まる）: {exc}", file=sys.stderr)
         return 1
-    print(f"報告書 {summary['reports']} 件 / 表の行 {summary['rows']} 行、"
-          f"台帳の {TAG} {summary['tagged']} 件、一覧 {summary['listed']} 件"
-          f"（未記載 {summary['undocumented']} 件）")
+    print(f"報告書 {summary['reports']} 件 / 表の行 {summary['rows']} 行、台帳の {TAG} "
+          f"{summary['tagged']} 件、一覧 {summary['listed']} 件（未記載 {summary['undocumented']} 件）")
     for rule in sorted(RULES):
         items = [violation.message for violation in found if violation.rule == rule]
         print(f"検査{rule} {RULES[rule]}: {'OK' if not items else f'違反 {len(items)} 件'}")
@@ -312,7 +314,6 @@ def cmd_check(args) -> int:
 
 
 def tag_lines(text: str) -> dict[str, int]:
-    """台帳のテキストから、ノードごとの `verified_against` 行の行番号を出す。"""
     lines: dict[str, int] = {}
     current = None
     for number, line in enumerate(text.splitlines(), 1):
@@ -401,8 +402,8 @@ def list_undocumented(root: Path, ledger_path: Path, undocumented_path: Path,
     path = Path(undocumented_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    counts = {category: list(categories.values()).count(category) for category in CATEGORIES}
-    detail = "、".join(f"{category} {counts[category]}" for category in CATEGORIES)
+    detail = "、".join(
+        f"{category} {list(categories.values()).count(category)}" for category in CATEGORIES)
     print(f"{path}: {len(expected)} 件（{detail}）", file=out)
     return categories
 
@@ -421,9 +422,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
     for name, func, help_text in (
-        ("check", cmd_check, "報告書・台帳・未記載の一覧が 1 対 1 か検査する（CI）"),
-        ("list-undocumented", cmd_list, "未記載の一覧を作り直す（冪等）"),
-    ):
+            ("check", cmd_check, "報告書・台帳・未記載の一覧が 1 対 1 か検査する（CI）"),
+            ("list-undocumented", cmd_list, "未記載の一覧を作り直す（冪等）")):
         command = sub.add_parser(name, help=help_text)
         command.add_argument("--root", default=str(REPO))
         command.add_argument("--ledger", default=str(DEFAULT_LEDGER))

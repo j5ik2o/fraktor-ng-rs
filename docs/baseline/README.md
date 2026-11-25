@@ -98,3 +98,5 @@ v2.0.0 で原典に新しく入ったテストで、台帳にノードが無い�
    区切る。空白で区切ると、シェルが 2 項目目をコマンドとして実行する）
 2. この README の表に決定を記録する
 3. `pekko_baseline.py check-refs` と `check-ledger` が通ることを確かめる
+4. 旧い基準の報告書・未記載の一覧と、それを検査する `ledger/tools/report_ledger_1to1.py`（回帰テストも）は、
+   その基準の記録として凍結し、過去のタグを書いてよい道具（`pekko_baseline.py` の `HISTORY_TOOLS`）に移す

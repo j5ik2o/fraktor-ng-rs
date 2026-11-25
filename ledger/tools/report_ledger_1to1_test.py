@@ -357,6 +357,53 @@ def test_the_undocumented_set_is_the_tagged_minus_the_reports():
         print("17. 未記載は「台帳で v2.0.0 かつ報告書に無い id」である")
 
 
+def test_the_ledger_rejects_a_duplicate_id():
+    """台帳の同じ id が 2 行あると、1 報告書 1 行の対応が崩れるので止める。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = build(Path(tmp), ledger=LEDGER + "- id: docs/src/test/A1.scala\n  status: green\n")
+        try:
+            tool.violations(paths["root"], paths["ledger"], paths["undocumented"])
+        except tool.ReportUnreadable as error:
+            assert "id が重複している" in str(error), error
+        else:
+            raise AssertionError("台帳の id の重複を読んだ")
+        print("18. 台帳の id が重複していれば止まる")
+
+
+def test_an_empty_tag_cell_is_compared_with_the_ledger():
+    """空欄は null として台帳と比べる（列が無い表とは区別する）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = build(Path(tmp), reverification=reverification(
+            rows=[row("docs/src/test/A1.scala"), row("docs/src/test/A2.scala"),
+                  row("actor-tests/src/test/B1.scala", status="not_built", tag="")],
+        ))
+        assert rules(paths) == {1}, rules(paths)
+        ledger = LEDGER + "- id: stream-tests/src/test/M2.scala\n  status: unported\n  verified_against: null\n"
+        paths = build(Path(tmp), ledger=ledger, missing_unported=missing_unported(
+            declared="0", rows=[]), reverification=reverification(
+            declared="4", rows=[row("docs/src/test/A1.scala"), row("docs/src/test/A2.scala"),
+                                row("actor-tests/src/test/B1.scala", status="not_built"),
+                                row("stream-tests/src/test/M2.scala", status="unported", tag="")]))
+        assert rules(paths) == set(), rules(paths)
+        print("19. 空欄の照合タグは null として台帳と比べる")
+
+
+def test_rows_without_a_leading_pipe_are_read_and_line_numbers_are_exact():
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = build(Path(tmp), new_docs_tests=new_docs_tests(
+            declared="2",
+            rows=["| 1 | A | `docs/src/test/D1.scala` | — | 0 |\n",
+                  "2 | A | `docs/src/test/NotInLedger.scala` | — | 0\n"],
+        ))
+        text = paths["undocumented"].parent / "v2.0.0-new-docs-tests.md"
+        rows = tool.parse_report(tool.REPORTS[2], paths["root"])
+        assert [r.id for r in rows] == ["docs/src/test/D1.scala", "docs/src/test/NotInLedger.scala"], rows
+        body = text.read_text(encoding="utf-8").splitlines()
+        assert body[rows[1].line - 1].startswith("2 |"), body[rows[1].line - 1]
+        assert rules(paths) == {4}, rules(paths)
+        print("20. 先頭の | を省いた行も読み、行番号はその行を指す")
+
+
 def _args(paths):
     return _Args(paths["root"], paths["ledger"], paths["undocumented"])
 
@@ -387,6 +434,9 @@ def main() -> int:
         test_list_undocumented_uses_the_given_categories_and_rejects_others,
         test_the_list_must_have_the_header_and_known_categories,
         test_the_undocumented_set_is_the_tagged_minus_the_reports,
+        test_the_ledger_rejects_a_duplicate_id,
+        test_an_empty_tag_cell_is_compared_with_the_ledger,
+        test_rows_without_a_leading_pipe_are_read_and_line_numbers_are_exact,
     ]
     failures = 0
     for test in tests:
