@@ -41,7 +41,8 @@ impl CounterMatrix {
     let reset_mask =
       (1..=slots as u32).fold(counter_reset_mask, |mask, count| mask | counter_reset_mask.wrapping_shl(count * bits));
     Self {
-      rows: vec![vec![0; row_width]; depth.rows()],
+      // Built row by row: `vec![row; n]` builds `row` even when `n` is zero.
+      rows: (0..depth.rows()).map(|_| vec![0; row_width]).collect(),
       row_sizes: vec![0; depth.rows()],
       updated_size: 0,
       reset_size,

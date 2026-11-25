@@ -1,5 +1,5 @@
 // Property-based tests of the frequency sketches (the design of #177,
-// docs/goals/issue-177-frequency-sketch-design.md §3, P1 to P7).
+// docs/design/issue-177-frequency-sketch.md §3, P1 to P7).
 //
 // These are not ports of Pekko cases and are not counted in the ledger. The
 // inputs come from a fixed-seed SplitMix64, so a failure repeats; every
@@ -341,16 +341,21 @@ fn constructors_accept_exactly_the_valid_settings() {
     let counter_bits = random.pick(&[-1, 0, 1, 2, 3, 4, 8, 16, 32, 63, 64, 128]);
     let depth = random.pick(&[i32::MIN, -1, 0, 1, 4, 8]);
     let settings = FrequencySketchSettings { width_multiplier, reset_multiplier: 10.0, depth, counter_bits };
-    // Building a valid sketch allocates its counters, so only small widths
-    // are built; the rest are checked through the error alone.
-    let expected = reference_settings_error(capacity, width_multiplier, Some(counter_bits), Some(depth));
+    // Building a valid sketch allocates its counters, so each sketch is built
+    // only where the original rejects its settings or its width is small; the
+    // rest are checked through the error alone. The fast sketch takes neither
+    // the counter size nor the depth, so it is judged by its own error.
     let small = i64::from(width_multiplier) * i64::from(reference_ceiling_power_of_two(capacity)) <= 1 << 16;
+    let expected = reference_settings_error(capacity, width_multiplier, Some(counter_bits), Some(depth));
     if expected.is_some() || small {
       let actual = FrequencySketch::<str>::new(capacity, settings).err();
       assert_eq!(actual, expected, "capacity={capacity} {settings:?}");
+    }
+    let fast_expected = reference_settings_error(capacity, width_multiplier, None, None);
+    if fast_expected.is_some() || small {
       let fast_settings = FastFrequencySketchSettings { width_multiplier, reset_multiplier: 10.0 };
       let fast = FastFrequencySketch::<str>::new(capacity, fast_settings).err();
-      assert_eq!(fast, reference_settings_error(capacity, width_multiplier, None, None), "capacity={capacity}");
+      assert_eq!(fast, fast_expected, "capacity={capacity}");
     }
   }
 }

@@ -2,7 +2,7 @@
 
 [Issue #177](https://github.com/j5ik2o/fraktor-ng-rs/issues/177) と [PR #205](https://github.com/j5ik2o/fraktor-ng-rs/pull/205) の設計の記録である。Pekko v2.0.0（`9fbd2283`）の classic `FrequencySketchSpec` を移植し、`kernel::frequency_sketch` に `FrequencySketch` と `FastFrequencySketch` を足した。
 
-2026-11-25 のオーナーの決定で、実装の独立レビューを廃止し、設計の独立レビューに置き換えた。この PR は実装が先に済んでいたので、出来上がった時点（HEAD `148eaec`）の設計をあとから書いた。実装に関わっていない担当が、この文書を読んで設計をレビューする。#176 の前例は [PR #178](https://github.com/j5ik2o/fraktor-ng-rs/pull/178) の設計である。原典との対応と検証の記録は [ゴール文書](issue-177-frequency-sketch.md) にある。
+2026-11-25 のオーナーの決定で、実装の独立レビューを廃止し、設計の独立レビューに置き換えた。この PR は実装が先に済んでいたので、出来上がった時点（HEAD `148eaec`）の設計をあとから書いた。実装に関わっていない担当が、この文書を読んで設計をレビューする。#176 の前例は [PR #178](https://github.com/j5ik2o/fraktor-ng-rs/pull/178) の設計である。原典との対応と検証の記録は [ゴール文書](../goals/issue-177-frequency-sketch.md) にある。
 
 ## 1. 何をどう変えたか
 
@@ -28,6 +28,7 @@ kernel に、TinyLFU のための count-min sketch を 2 つ足した。Pekko v2
 | `.../frequency_sketch/*_test.rs` | 原典外の単体テスト（JVM の値に固定） |
 | `crates/fraktor-actor/tests/frequency_sketch_spec.rs` | 原典 22 ケース |
 | `crates/fraktor-actor/tests/frequency_sketch_property_test.rs` | PBT（§3 の P1〜P7）。原典外で、台帳の件数に含めない |
+| `crates/fraktor-actor/tests/frequency_sketch_allocation_test.rs` | 深さ 0 の構築が行を確保しないことの確認（最大の確保要求を記録する global allocator を持つ単独のバイナリ）。原典外で、台帳の件数に含めない |
 | `docs/design/specs/frequency_sketch.qnt`、`frequency_sketch_test.qnt` | Quint のモデルとインスタンス（§4） |
 | `ledger/nodes.yaml` | 対象ノードを green（22/22/22、`verified_against: v2.0.0`）に |
 | `docs/baseline/v2.0.0-undocumented-nodes.tsv` | 移植した仕様を `no-report` として 1 行追加 |
@@ -111,7 +112,8 @@ PBT は、固定 seed の SplitMix64 で設定と入力を選び、ランダム�
 - `check_run` を 300 seed 流す。設定は、容量 1〜200（4 分の 1 は 1〜3）、倍率 1/2/4/8/16、リセット倍率 0／負／0.5／1／2／10／NaN／1e12、カウンタ 2/4/8/16/32/64 ビット、深さ 0/1/2/3/4/5/8。3 分の 1 は `FastFrequencySketch`。
 - 値は最大 40 件の文字列の組から選び、50／300／2000 手を流す。1 手ごとに P1〜P4 を確かめる。
 - P5 は 3000 件のランダムな文字列、P6 は境界 11 件と 20,000 件の `i32`、P7 は 20,000 件の設定で確かめる。
-- 結果（2026-11-26）：`cargo test -p fraktor-actor --release --test frequency_sketch_property_test` は 4 passed（44.14 秒）。
+- P7 は、構築すると行列を確保するので、原典が拒む設定か、幅が `2^16` 以下の設定だけを実際に構築する。2 つのスケッチは、それぞれ自分の誤りで判定する。`FastFrequencySketch` はカウンタの大きさも深さも受け取らないので、一般版の誤り（`UnsupportedCounterBits` など）を条件にすると、有効な幅 `2^29` か `2^30` の Fast を何度も構築する（固定 seed で 79 件、1 件あたり 1〜2 GiB）。PR #205 の CI は、この確保でランナーが止まった。
+- 結果（2026-11-26、上の修正の後）：`cargo test -p fraktor-actor --release --test frequency_sketch_property_test` は 4 passed（9.98 秒）。
 
 ## 4. 状態遷移と Quint
 
@@ -166,7 +168,7 @@ PBT は、固定 seed の SplitMix64 で設定と入力を選び、ランダム�
 | 容量 `2^30`、`2^30 + 1`、`i32::MAX` | 幅が `2^30` か、`i32::MIN` への丸めで 0 になる（`WidthNotPositive { 0 }`） | P7、単体テスト（`2^30 + 1`） |
 | 幅の倍率 `0`、負、`i32::MIN`、`i32::MAX` | 幅 0（`WidthNotPositive`）、2 の冪でない幅、64 ビットの積のあふれ（`WidthOverflow`） | P7、単体テスト |
 | `counterBits` の各値（2、4、8、16、32、64）と不正値（-1、0、1、3、128） | 1 語のカウンタ数、飽和の最大値、読み出しの切り詰めが変わる。不正値は `UnsupportedCounterBits` | P7、単体テスト 5 通り、Quint の 2 ビットと 8 ビット |
-| 深さ 0 | 行が無く、`frequency` は `i32::MAX`、`size` は 0 | P1、P2、P7、Quint の `noRows` |
+| 深さ 0 | 行が無く、`frequency` は `i32::MAX`、`size` は 0。行のバッファも確保しない（`vec![row; 0]` でも `row` は一度作られるので、行は 1 行ずつ作る） | P1、P2、P7、Quint の `noRows`、`frequency_sketch_allocation_test.rs` |
 | 深さが負 | `NegativeDepth`。原典は `NegativeArraySizeException` | P7、単体テスト |
 | 深さが非常に大きい（`i32::MAX` など） | 行列の確保で失敗しうる（原典の配列確保と同じ）。PBT は 8 までにした | 範囲の外（この文書に記載） |
 | リセット倍率 `0`、負、NaN | リセットの大きさが 0 か負になり、リセットが走らない | P1、P4、Quint の `noReset` |
