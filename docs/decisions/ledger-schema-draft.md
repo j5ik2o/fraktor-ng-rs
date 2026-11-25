@@ -245,4 +245,3 @@
 - 部分移植の後継は、`ported` と `passing` を引き継いだ件数にし、`total` は原典のケース数にする（`total > ported`）。suite 全体は green にしない。退役したノードは集計から外れるので、ケースは二重に数えない
 - `rollup.py` の `lineage_problems` が検査する。退役したノードについては、同じ id が `nodes` に無いこと、3 つの欄、後継が現行のノードで、その `cases.carried` に自分からの要素があることを見る。`cases.carried` の要素は、欄が揃い、`from` が退役したノードで、名前が重複しないこと。部分移植の後継は、上の件数の規則を満たすこと。不足は一覧に出し、そのノードが属するゴールの完了に数えない。属するノードがすべて退役したゴールは、`rollup.py --goal` が退役を理由に 1 を返す（完了と判定しない）
 - 例：`actor-tests/src/test/scala-2.13+/org/apache/pekko/actor/ActorSystemScala213PlusSpec.scala` は退役し、後継は `actor-tests/src/test/scala/org/apache/pekko/actor/ActorSystemSpec.scala` である。後継は unported で、`cases` は 20/1/1、`cases.carried` に 1 件を持つ
-

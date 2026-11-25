@@ -41,4 +41,3 @@ Pekko v1.7.1 の classic ActorSystem のテストを1ケース移植する。原
 - 台帳では、このゴールのノードを最上位の `retired` へ移し（退役）、ケースを `ActorSystemSpec` のノードの `cases.carried` に引き継いだ。`ActorSystemSpec` は、ほかの 19 ケースが未移植なので unported のまま（20/1/1）で、suite 全体を green にしない。退役したノードは集計の対象外なので、ケースは二重に数えない。
 - Rust のテスト `crates/fraktor-actor/tests/actor_system_scala213_plus_spec.rs` はそのまま残した（1 passed）。冒頭の出典に移動先を書いた。
 - このゴールは v1.7.1 で閉じた記録として残す。属するノードがすべて退役したので、`rollup.py --goal G0issue99` は完了と判定しない（退役を理由に 1 を返す）。上の表の id は退役したノードを指したままである。
-
