@@ -41,3 +41,18 @@ fn a_recipe_has_no_dispatcher_name_until_one_is_set() {
 
   assert_eq!(props.dispatcher(), None);
 }
+
+#[test]
+fn an_empty_recipe_records_no_dispatcher_name() {
+  let props = Props::empty();
+
+  assert_eq!(props.dispatcher(), None);
+}
+
+#[test]
+fn an_empty_recipe_can_be_cloned_like_any_other() {
+  let props = Props::empty();
+  let clone = props.clone();
+
+  assert_eq!(clone.dispatcher(), None);
+}
