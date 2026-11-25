@@ -81,9 +81,12 @@ jobs:
             cargo run --quiet --release --locked --manifest-path tools/syn-check/Cargo.toml -- --format json "${dir%/}"
           done
 
-  # Every crates/*/specs/*.qnt is typechecked and its runs are executed, so a
-  # spec that drifts from the code fails here. The glob is re-read on every run:
-  # a new crate with specs needs no change to this job. Design: docs/design/quint-in-ci.md.
+  # Every crates/*/specs/*.qnt is typechecked, its runs are executed and its
+  # `invariant` is simulated. This checks the specs themselves; whether the Rust
+  # code keeps a spec's properties is checked by the Rust property tests that
+  # name the spec (e.g. test_kit_value_test.rs for receive_while.qnt). The glob is
+  # re-read on every run: a new crate with specs needs no change to this job.
+  # Design: docs/design/quint-in-ci.md.
   quint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -95,6 +98,33 @@ jobs:
           cache: npm
       - name: npm ci
         run: npm ci
+      # quint's default backend is a Rust evaluator that quint downloads on first
+      # use through the unauthenticated GitHub releases API, and only from the
+      # first page of that listing. The evaluator is cached here, and fetched with
+      # the job token on a cache miss, so quint finds it and never calls the API.
+      - name: Rust evaluator version
+        id: evaluator
+        run: |
+          version=$(node -p "require('@informalsystems/quint/dist/src/rust/binaryManager.js').QUINT_EVALUATOR_VERSION")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "dir=$HOME/.quint/rust-evaluator-$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v5
+        id: evaluator_cache
+        with:
+          path: ${{ steps.evaluator.outputs.dir }}
+          key: quint-evaluator-${{ runner.os }}-${{ runner.arch }}-${{ steps.evaluator.outputs.version }}
+      - name: fetch the Rust evaluator
+        if: steps.evaluator_cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.evaluator.outputs.version }}
+          DIR: ${{ steps.evaluator.outputs.dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$DIR"
+          gh release download "evaluator/$VERSION" --repo informalsystems/quint \
+            --pattern quint_evaluator-x86_64-unknown-linux-gnu.tar.gz --output - | tar -xz -C "$DIR"
+          test -x "$DIR/quint_evaluator"
       - name: quint typecheck, test, and a short run
         run: |
           set -euo pipefail
@@ -108,16 +138,13 @@ jobs:
             echo "::group::$spec"
             ./node_modules/.bin/quint typecheck "$spec"
             ./node_modules/.bin/quint test "$spec"
-            # The short run checks `val invariant` over random traces; --verbosity=2
-            # prints the counterexample when it is violated. 20 steps and 10000
-            # traces (quint's default) cost about one second for three specs here.
-            # A spec without that definition is still typechecked and tested.
-            if grep -qE '^[[:space:]]*val invariant[[:space:]]*=' "$spec"; then
-              ./node_modules/.bin/quint run --invariant=invariant \
-                --max-steps=20 --max-samples=10000 --verbosity=2 "$spec"
-            else
-              echo "no 'val invariant' definition: skipped the short run"
-            fi
+            # Every spec here must define `invariant`: the run is not skipped, so a
+            # spec without it fails with "Name 'invariant' not found" instead of
+            # passing unchecked. --verbosity=2 prints the counterexample. 20 steps
+            # and 10000 traces (quint's default) cost about one second for three
+            # specs.
+            ./node_modules/.bin/quint run --invariant=invariant \
+              --max-steps=20 --max-samples=10000 --verbosity=2 "$spec"
             echo '::endgroup::'
           done
 
