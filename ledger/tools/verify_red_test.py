@@ -786,6 +786,46 @@ def test_record_already_green_writes_green_and_reason():
         print("13d. record-already-green writes green + cases + reason:", node["status"])
 
 
+def test_record_already_green_keeps_a_column_zero_comment_inside_the_node():
+    """ノードの中の列 0 の注記（cases.total と ported の間）でも、記録が同じノードにそろい、台帳が壊れない。
+
+    退役の節がある台帳と無い台帳の両方で、status・件数の 3 欄・照合タグが対象のノードに入り、
+    ほかのノードと退役の節は変わらないことを確かめる。
+    """
+    import yaml
+    other = case_block("actor-tests/src/test/java/org/apache/pekko/actor/Other.java", 1, 1, 1, status="green")
+    target = case_block(NODE_ID, None, None, None).replace(
+        "    total: null\n", "    total: null\n# case counts\n\n", 1)
+    assert "# case counts" in target
+    retired = ("# 退役したノード\nretired:\n- id: old/A.java\n  kind: test\n  status: green\n"
+               "  retired:\n    at: 2026-11-25\n    reason: moved\n    successor: x\n")
+    for label, tail in (("without retired", ""), ("with retired", retired)):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = ledger_yaml([other, target]) + tail
+            write(root / "ledger" / "nodes.yaml", original)
+            before = yaml.safe_load(original)
+            write(root / ".takt" / "already-green-result.json", json.dumps({
+                "classification": "already_green", "node": NODE_ID,
+                "original_cases": 2, "passed": 2, "excluded": 0,
+                "reason": "already_green: 原典 Pekko のケース数 2 と通過ケース数 2 が一致",
+            }, ensure_ascii=False))
+            result = _run_record_already_green(root)
+            assert result["recorded"] is True, (label, result)
+            text = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+            after = yaml.safe_load(text)
+            node = next(n for n in after["nodes"] if n["id"] == NODE_ID)
+            assert node["status"] == "green", (label, node)
+            assert (node["cases"]["total"], node["cases"]["ported"], node["cases"]["passing"]) == (2, 2, 2), (label, node)
+            assert node["verified_against"] == BASELINE_TAG, (label, node)
+            assert after["nodes"][0] == before["nodes"][0], label
+            assert after.get("retired") == before.get("retired"), label
+            assert "# case counts" in text, label
+            if tail:
+                assert text.endswith(tail), label
+            print(f"13e. record-already-green with a comment inside the node ({label}): valid and complete")
+
+
 def test_record_already_green_refuses_a_source_that_is_not_the_current_baseline():
     """pekko/ が過去の基準の原典なら green を書かない（旧原典の照合に現行タグを付けない）。"""
     with tempfile.TemporaryDirectory() as temporary:
@@ -1889,6 +1929,7 @@ def main() -> int:
         test_mark_green_stops_at_the_retired_section,
         test_mark_green_preserves_human_reason,
         test_record_already_green_writes_green_and_reason,
+        test_record_already_green_keeps_a_column_zero_comment_inside_the_node,
         test_record_already_green_refuses_a_source_that_is_not_the_current_baseline,
         test_modified_tracked_original_is_rejected_by_verify_red,
         test_untracked_file_in_original_is_rejected_by_verify_red,
