@@ -28,7 +28,7 @@ kernel に、TinyLFU のための count-min sketch を 2 つ足した。Pekko v2
 | `.../frequency_sketch/*_test.rs` | 原典外の単体テスト（JVM の値に固定） |
 | `crates/fraktor-actor/tests/frequency_sketch_spec.rs` | 原典 22 ケース |
 | `crates/fraktor-actor/tests/frequency_sketch_property_test.rs` | PBT（§3 の P1〜P7）。原典外で、台帳の件数に含めない |
-| `docs/goals/specs/frequency_sketch.qnt`、`frequency_sketch_test.qnt` | Quint のモデルとインスタンス（§4） |
+| `docs/design/specs/frequency_sketch.qnt`、`frequency_sketch_test.qnt` | Quint のモデルとインスタンス（§4） |
 | `ledger/nodes.yaml` | 対象ノードを green（22/22/22、`verified_against: v2.0.0`）に |
 | `docs/baseline/v2.0.0-undocumented-nodes.tsv` | 移植した仕様を `no-report` として 1 行追加 |
 
@@ -117,7 +117,7 @@ PBT は、固定 seed の SplitMix64 で設定と入力を選び、ランダム�
 
 **Quint は要る。** `FrequencySketch` は状態を持つデータ構造で、更新（加算、飽和、リセット）が状態を変える。I2 の「行の大きさがカウンタの和に等しい」と I4 の「リセットで奇数を先に引く」は、遷移の列の全体で成り立つ必要があり、固定のテストでは取りこぼしうる。実際、リセットの奇数補正を落とす変異は PBT の P1〜P4 では落ちない（P4 の半減の範囲は満たしたまま、行の大きさだけがずれる）。この誤りは Quint の `rowSizeIsCounterSum` で落ちる。並行は無いので、仕様は 1 スレッドの遷移だけを扱う。
 
-仕様は `docs/goals/specs/frequency_sketch.qnt`（本体）と `docs/goals/specs/frequency_sketch_test.qnt`（インスタンスと負の対照）。
+仕様は `docs/design/specs/frequency_sketch.qnt`（本体）と `docs/design/specs/frequency_sketch_test.qnt`（インスタンスと負の対照）。
 
 - 状態：`counters`（行ごとのカウンタを語ごとに並べた `List[List[int]]`）、`rowSizes`、`updatedSize`、`place`（値から各行の位置への写像）、`ghost`（真の回数。リセットで半減）、`everSaturated`（飽和したカウンタが現れたか）。
 - 遷移：`init` と `increment(v)` だけ。`init` は `place` を非決定的に選ぶので、衝突も幅を超える位置もすべて探索する。ハッシュの値そのものはモデルにせず、P5／P6 と単体テストで JVM に固定する。
@@ -132,8 +132,8 @@ PBT は、固定 seed の SplitMix64 で設定と入力を選び、ランダム�
 
 | コマンド | 結果 |
 |:---|:---|
-| `quint typecheck docs/goals/specs/frequency_sketch.qnt`、`..._test.qnt` | 成功 |
-| `quint test --main=narrow --match='^(incrementCountersToMaxValue\|resetHalvesAndAdjustsForOddCounters)$' docs/goals/specs/frequency_sketch_test.qnt` | 2 passing（各 10,000 test、4.2 秒） |
+| `quint typecheck docs/design/specs/frequency_sketch.qnt`、`..._test.qnt` | 成功 |
+| `quint test --main=narrow --match='^(incrementCountersToMaxValue\|resetHalvesAndAdjustsForOddCounters)$' docs/design/specs/frequency_sketch_test.qnt` | 2 passing（各 10,000 test、4.2 秒） |
 | `quint run --main=narrow --invariant=inv --max-samples=10000 --max-steps=40 --seed=0x1` | `[ok] No violation found`（10,000 トレース、37.4 秒） |
 | `quint run --main=fast ...` | `[ok]`（75.1 秒） |
 | `quint run --main=wide ...` | `[ok]`（109.6 秒） |
