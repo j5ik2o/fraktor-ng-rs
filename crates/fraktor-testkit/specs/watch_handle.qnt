@@ -1,28 +1,28 @@
 // Coroner WatchHandle (crates/fraktor-testkit/src/coroner/watch_handle.rs and
 // src/coroner.rs).
 //
-// Two threads share one outcome. The test thread cancels; the Coroner thread
-// starts, waits, and expires if no cancel came, then writes the report and
-// finishes. The first of cancel and expire decides the outcome.
+// The test thread cancels (any number of times: the handle is Clone). A cancel
+// first decides the outcome under the lock (Cancelled unless already decided),
+// then waits for the Coroner thread to finish, or gives up after the
+// start-and-stop duration. The Coroner thread starts, waits, expires if the
+// outcome is still Pending (decided in the same lock), tries to write the
+// report (the output may fail part way), and finishes.
 module watch_handle {
   type Outcome = Pending | Cancelled | Expired
+  type Report = NotTried | Written | Failed
+  type CancelCall = NoCall | Requested | ReturnedFinished | ReturnedTimedOut
 
   var outcome: Outcome
-  // The first decided outcome, kept to check that it never changes.
   var decided: Outcome
   var started: bool
-  var reportWritten: bool
+  var report: Report
   var finished: bool
-  // Whether the test thread's cancel has returned, and what result() said after.
-  var cancelReturned: bool
+  var cancelCall: CancelCall
+  var cancels: int
 
   action init = all {
-    outcome' = Pending,
-    decided' = Pending,
-    started' = false,
-    reportWritten' = false,
-    finished' = false,
-    cancelReturned' = false,
+    outcome' = Pending, decided' = Pending, started' = false, report' = NotTried,
+    finished' = false, cancelCall' = NoCall, cancels' = 0,
   }
 
   pure def decide(current: Outcome, wanted: Outcome): Outcome =
@@ -35,23 +35,37 @@ module watch_handle {
   action start = all {
     not(started),
     started' = true,
-    outcome' = outcome,
-    decided' = decided,
-    reportWritten' = reportWritten,
-    finished' = finished,
-    cancelReturned' = cancelReturned,
+    outcome' = outcome, decided' = decided, report' = report, finished' = finished,
+    cancelCall' = cancelCall, cancels' = cancels,
   }
 
-  // cancel: outcome.get_or_insert(true), then wait for finished (or the
-  // start-and-stop timeout, so cancel may return before finished).
-  action cancel = all {
-    not(cancelReturned),
+  // outcome.get_or_insert(true) and notify, under the lock.
+  action cancelRequest = all {
+    cancelCall != Requested,
+    cancels < 3,
     outcome' = decide(outcome, Cancelled),
     decided' = decide(decided, Cancelled),
-    cancelReturned' = true,
-    started' = started,
-    reportWritten' = reportWritten,
-    finished' = finished,
+    cancelCall' = Requested,
+    cancels' = cancels + 1,
+    started' = started, report' = report, finished' = finished,
+  }
+
+  // wait_timeout_while(!finished): returns once finished ...
+  action cancelReturnFinished = all {
+    cancelCall == Requested,
+    finished,
+    cancelCall' = ReturnedFinished,
+    outcome' = outcome, decided' = decided, started' = started, report' = report,
+    finished' = finished, cancels' = cancels,
+  }
+
+  // ... or when the start-and-stop duration passes first.
+  action cancelReturnTimedOut = all {
+    cancelCall == Requested,
+    not(finished),
+    cancelCall' = ReturnedTimedOut,
+    outcome' = outcome, decided' = decided, started' = started, report' = report,
+    finished' = finished, cancels' = cancels,
   }
 
   // expire_unless_cancelled: only a Pending outcome becomes Expired.
@@ -61,55 +75,63 @@ module watch_handle {
     outcome == Pending,
     outcome' = Expired,
     decided' = decide(decided, Expired),
-    started' = started,
-    reportWritten' = reportWritten,
-    finished' = finished,
-    cancelReturned' = cancelReturned,
+    started' = started, report' = report, finished' = finished,
+    cancelCall' = cancelCall, cancels' = cancels,
   }
 
-  action writeReport = all {
+  action writeReport(result: Report): bool = all {
     outcome == Expired,
-    not(reportWritten),
+    report == NotTried,
     not(finished),
-    reportWritten' = true,
-    outcome' = outcome,
-    decided' = decided,
-    started' = started,
-    finished' = finished,
-    cancelReturned' = cancelReturned,
+    report' = result,
+    outcome' = outcome, decided' = decided, started' = started, finished' = finished,
+    cancelCall' = cancelCall, cancels' = cancels,
   }
 
-  // The thread finishes once it saw a cancel, or after it wrote the report.
+  // The thread finishes once it saw a cancel, or after it tried the report.
   action finish = all {
     started,
     not(finished),
-    outcome == Cancelled or reportWritten,
+    outcome == Cancelled or report != NotTried,
     finished' = true,
-    outcome' = outcome,
-    decided' = decided,
-    started' = started,
-    reportWritten' = reportWritten,
-    cancelReturned' = cancelReturned,
+    outcome' = outcome, decided' = decided, started' = started, report' = report,
+    cancelCall' = cancelCall, cancels' = cancels,
   }
 
-  action step = any { start, cancel, expire, writeReport, finish }
+  action step = any {
+    start, cancelRequest, cancelReturnFinished, cancelReturnTimedOut, expire,
+    writeReport(Written), writeReport(Failed), finish,
+  }
 
   val outcomeNeverChanges = decided == Pending or outcome == decided
-  val reportOnlyWhenExpired = reportWritten implies outcome == Expired
-  val cancelledWritesNothing = outcome == Cancelled implies not(reportWritten)
-  val finishedConsistent = finished implies (reportWritten iff outcome == Expired)
-  val resultAfterCancelIsDecided = cancelReturned implies outcome != Pending
+  val reportOnlyWhenExpired = report != NotTried implies outcome == Expired
+  val cancelledWritesNothing = outcome == Cancelled implies report == NotTried
+  val finishedConsistent = finished implies (report != NotTried iff outcome == Expired)
+  val cancelDecides = cancels > 0 implies outcome != Pending
+  val cancelWaitsForFinish = cancelCall == ReturnedFinished implies finished
   val invariant = outcomeNeverChanges and reportOnlyWhenExpired and cancelledWritesNothing
-    and finishedConsistent and resultAfterCancelIsDecided
+    and finishedConsistent and cancelDecides and cancelWaitsForFinish
 
   run cancelBeforeExpiryTest =
-    init.then(start).then(cancel).then(finish)
-      .expect(outcome == Cancelled and not(reportWritten) and finished)
+    init.then(start).then(cancelRequest).then(finish).then(cancelReturnFinished)
+      .expect(outcome == Cancelled and report == NotTried and finished)
 
   run expiryBeforeCancelTest =
-    init.then(start).then(expire).then(writeReport).then(finish).then(cancel)
-      .expect(outcome == Expired and reportWritten and finished and cancelReturned)
+    init.then(start).then(expire).then(writeReport(Written)).then(finish)
+      .then(cancelRequest).then(cancelReturnFinished)
+      .expect(outcome == Expired and report == Written and finished)
+
+  run cancelCannotReturnFinishedBeforeFinishTest =
+    init.then(start).then(expire).then(cancelRequest).then(cancelReturnFinished).fail()
+
+  run failedOutputStillFinishesTest =
+    init.then(start).then(expire).then(writeReport(Failed)).then(finish)
+      .expect(outcome == Expired and report == Failed and finished)
 
   run noExpiryAfterCancelTest =
-    init.then(start).then(cancel).then(expire).fail()
+    init.then(start).then(cancelRequest).then(expire).fail()
+
+  run repeatedCancelKeepsTheOutcomeTest =
+    init.then(start).then(cancelRequest).then(cancelReturnTimedOut).then(cancelRequest)
+      .expect(outcome == Cancelled and cancels == 2)
 }

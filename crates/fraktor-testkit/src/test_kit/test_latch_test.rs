@@ -241,3 +241,32 @@ fn is_open_follows_the_counter_model_for_every_bounded_sequence() {
     }
   }
 }
+
+struct CountDownLate {
+  latch: TestLatch,
+}
+
+impl Actor for CountDownLate {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {
+    thread::sleep(Duration::from_millis(100));
+    self.latch.count_down();
+  }
+}
+
+// A delivery that runs past the deadline and opens the latch at its end must
+// not count as opened in time: Pekko's `CountDownLatch.await` would already
+// have timed out.
+#[test]
+fn ready_fails_when_the_latch_opens_only_after_the_deadline() {
+  let mut system = system();
+  let latch = latch(1, &system);
+  let factory_latch = latch.clone();
+  let actor = system.actor_of(Props::new(move || CountDownLate { latch: factory_latch.clone() }));
+  actor.tell("open late", actor.clone());
+
+  let failure = catch_unwind(AssertUnwindSafe(|| latch.ready(&system, Duration::from_millis(20))))
+    .expect_err("ready returned although the latch opened after the deadline");
+
+  assert!(failure_text(failure).contains("Timeout of 20ms"));
+  assert!(latch.is_open());
+}

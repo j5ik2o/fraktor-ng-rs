@@ -492,13 +492,15 @@ fn bounded_queues(max_length: usize, values: usize) -> Vec<Vec<usize>> {
 // of up to 4 messages from 0..4, with even messages accepted, and every limit
 // from none to 4, the call returns the longest accepted prefix cut at the
 // limit, the rest of the queue stays queued in order, and the last message is
-// the last one picked. Checked over the whole bounded domain.
+// the last one picked, or with a limit of 0 the one from before the call.
+// Checked over the whole bounded domain.
 #[test]
 fn receive_while_takes_the_accepted_prefix_and_keeps_the_rest_for_every_bounded_queue() {
   let mut kit = test_kit();
   let limits = [None, Some(0), Some(1), Some(2), Some(3), Some(4)];
   for queue in bounded_queues(4, 4) {
     for limit in limits {
+      let before = kit.last_message().and_then(|last| last.downcast_ref::<usize>().copied());
       send_all(&kit, &queue);
       let mut call = ReceiveWhile::new().max(Duration::from_millis(1));
       if let Some(limit) = limit {
@@ -511,7 +513,8 @@ fn receive_while_takes_the_accepted_prefix_and_keeps_the_rest_for_every_bounded_
       let expected = accepted.min(limit.unwrap_or(usize::MAX));
       assert_eq!(picked, queue[..expected], "queue {queue:?}, limit {limit:?}");
       let last = kit.last_message().and_then(|last| last.downcast_ref::<usize>().copied());
-      assert_eq!(last, picked.last().copied(), "queue {queue:?}, limit {limit:?}");
+      let expected_last = if limit == Some(0) { before } else { picked.last().copied() };
+      assert_eq!(last, expected_last, "queue {queue:?}, limit {limit:?}");
       let rest: Vec<usize> = kit
         .receive_n(queue.len() - expected, Duration::from_secs(1))
         .iter()
@@ -520,4 +523,20 @@ fn receive_while_takes_the_accepted_prefix_and_keeps_the_rest_for_every_bounded_
       assert_eq!(rest, queue[expected..], "queue {queue:?}, limit {limit:?}");
     }
   }
+}
+
+// Pekko's `receiveWhile` returns before its first `receiveOne` when `messages`
+// is 0, so `lastMessage` keeps the value it had before the call.
+#[test]
+fn receive_while_with_a_limit_of_zero_keeps_the_previous_last_message() {
+  let mut kit = test_kit();
+  send_all(&kit, &[5, 6]);
+  assert_eq!(kit.expect_msg_type::<usize>(), 5);
+
+  let received: Vec<usize> = kit.receive_while(ReceiveWhile::new().max(Duration::from_millis(50)).messages(0), small);
+
+  assert!(received.is_empty());
+  let last = kit.last_message().and_then(|last| last.downcast_ref::<usize>().copied());
+  assert_eq!(last, Some(5));
+  assert_eq!(kit.expect_msg_type::<usize>(), 6);
 }

@@ -30,12 +30,44 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// and wait on the original. Pekko waits with `Await.ready(latch, max)` while
 /// the actors run on their dispatchers; the port's actors run when the test
 /// thread drives the system, so [`TestLatch::ready`] takes the system and
-/// keeps delivering its messages while it waits.
+/// keeps delivering its messages while it waits. For the same reason `ready`
+/// is called from the test thread: an actor or a supervisor decision cannot
+/// wait on a latch, because the system it would have to drive is the one
+/// running it.
+///
+/// `reset` differs from Pekko's. Pekko replaces the inner `CountDownLatch`, so
+/// a `ready` that started before the reset keeps waiting on the old latch: it
+/// returns if that latch had opened, and later count-downs do not reach it.
+/// The port keeps one shared count, so a `ready` in progress sees the reset:
+/// it misses an opening that a reset closed again before the next check, and
+/// returns once the count reaches zero after the reset.
 #[derive(Clone)]
 pub struct TestLatch {
-  remaining: Arc<Mutex<usize>>,
+  state: Arc<Mutex<LatchState>>,
   count: usize,
   settings: TestKitSettings,
+}
+
+/// The count and the moment it reached zero, kept under one lock.
+struct LatchState {
+  remaining: usize,
+  opened_at: Option<Instant>,
+}
+
+impl LatchState {
+  fn new(count: usize) -> Self {
+    let opened_at = if count == 0 { Some(Instant::now()) } else { None };
+    Self { remaining: count, opened_at }
+  }
+
+  fn set(&mut self, remaining: usize) {
+    self.remaining = remaining;
+    if remaining == 0 {
+      self.opened_at.get_or_insert_with(Instant::now);
+    } else {
+      self.opened_at = None;
+    }
+  }
 }
 
 impl TestLatch {
@@ -49,28 +81,29 @@ impl TestLatch {
   /// extension; the port takes the settings, which is where a spec built with
   /// a time factor keeps it (`FraktorSpec::test_kit_settings`).
   pub fn new(count: usize, settings: TestKitSettings) -> Self {
-    Self { remaining: Arc::new(Mutex::new(count)), count, settings }
+    Self { state: Arc::new(Mutex::new(LatchState::new(count))), count, settings }
   }
 
   /// Counts the latch down by one. Counting down an open latch does nothing.
   pub fn count_down(&self) {
-    let mut remaining = self.lock();
-    *remaining = remaining.saturating_sub(1);
+    let mut state = self.lock();
+    let remaining = state.remaining.saturating_sub(1);
+    state.set(remaining);
   }
 
   /// Returns whether the latch has been counted down to zero.
   pub fn is_open(&self) -> bool {
-    *self.lock() == 0
+    self.lock().remaining == 0
   }
 
   /// Opens the latch at once.
   pub fn open(&self) {
-    *self.lock() = 0;
+    self.lock().set(0);
   }
 
   /// Closes the latch again with the count it was created with.
   pub fn reset(&self) {
-    *self.lock() = self.count;
+    self.lock().set(self.count);
   }
 
   /// Waits until the latch is open, delivering the messages of `system` while
@@ -78,9 +111,10 @@ impl TestLatch {
   ///
   /// Mirrors `TestLatch.ready`: `max` is dilated by the time factor, and the
   /// wait fails with `Timeout of <max> with time factor of <factor>` when the
-  /// latch is still closed at the deadline. The latch is checked before the
-  /// first delivery, so an open latch returns at once, also on a terminated
-  /// system.
+  /// latch did not open by the deadline. The latch is checked before the first
+  /// delivery, so an open latch returns at once, also on a terminated system.
+  /// A delivery can run past the deadline; a latch it opens after the deadline
+  /// counts as a timeout, because the latch records when it opened.
   ///
   /// # Panics
   ///
@@ -89,18 +123,23 @@ impl TestLatch {
     let system = system.downgrade();
     let deadline = Instant::now() + self.settings.dilated(max);
     loop {
-      if self.is_open() {
+      let opened_at = self.lock().opened_at;
+      if opened_at.is_some_and(|opened_at| opened_at <= deadline) {
         return;
       }
       let left = deadline.saturating_duration_since(Instant::now());
-      assert!(left > Duration::ZERO, "Timeout of {max:?} with time factor of {}", self.settings.test_time_factor());
+      assert!(
+        opened_at.is_none() && left > Duration::ZERO,
+        "Timeout of {max:?} with time factor of {}",
+        self.settings.test_time_factor()
+      );
       if !system.run_one() {
         system.await_envelope(left.min(POLL_INTERVAL));
       }
     }
   }
 
-  fn lock(&self) -> MutexGuard<'_, usize> {
-    self.remaining.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+  fn lock(&self) -> MutexGuard<'_, LatchState> {
+    self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
   }
 }

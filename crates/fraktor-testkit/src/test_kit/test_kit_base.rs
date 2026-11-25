@@ -210,9 +210,15 @@ impl TestKitBase {
   /// for the next wait; no message within `idle`; `messages` picked messages;
   /// or the deadline. The deadline is the dilated `max`, or without one the
   /// time left in the enclosing `within`, or the dilated single-expect default
-  /// outside one. Afterwards the last message is the last one picked, or none,
-  /// and the call counts as a no-message wait for `within`, as in Pekko, so a
+  /// outside one. Afterwards the last message is the last one picked, or none;
+  /// with a `messages` limit of 0 the call takes nothing and, as Pekko's
+  /// returns before its first `receiveOne`, keeps the last message it found.
+  /// The call counts as a no-message wait for `within`, as in Pekko, so a
   /// scope does not fail because the call used its time up.
+  ///
+  /// As in Pekko, a `pick` that runs past the deadline does not stop the call
+  /// from taking messages that are already queued: a wait with no time left
+  /// still takes a queued message, as `pollFirst` does in Pekko's `receiveOne`.
   ///
   /// Pekko's `receiveOne` inside `receiveWhile` does not shorten its wait to
   /// the `within` deadline; the port's `receive_one` does, so a `max` longer
@@ -229,7 +235,9 @@ impl TestKitBase {
     let stop = Instant::now() + max;
     let mut picked = Vec::new();
     let mut last_picked = None;
+    let mut waited = false;
     while picked.len() < limits.message_limit() {
+      waited = true;
       let mut wait = stop.saturating_duration_since(Instant::now());
       if let Some(idle) = limits.idle_limit() {
         wait = wait.min(idle);
@@ -248,7 +256,9 @@ impl TestKitBase {
         },
       }
     }
-    self.last_message = last_picked;
+    if waited {
+      self.last_message = last_picked;
+    }
     self.last_was_no_msg = true;
     picked
   }

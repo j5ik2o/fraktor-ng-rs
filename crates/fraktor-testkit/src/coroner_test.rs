@@ -18,11 +18,17 @@ use super::watch;
 #[derive(Clone, Default)]
 struct Captured {
   bytes: Arc<Mutex<Vec<u8>>>,
+  flushed: Arc<Mutex<bool>>,
 }
 
 impl Captured {
   fn text(&self) -> String {
     String::from_utf8(self.bytes.lock().unwrap().clone()).unwrap()
+  }
+
+  // The Coroner thread flushes once it has written everything it will write.
+  fn flushed(&self) -> bool {
+    *self.flushed.lock().unwrap()
   }
 }
 
@@ -33,6 +39,7 @@ impl Write for Captured {
   }
 
   fn flush(&mut self) -> io::Result<()> {
+    *self.flushed.lock().unwrap() = true;
     Ok(())
   }
 }
@@ -135,9 +142,11 @@ fn result_of_a_running_watch_is_false_when_max_passes_first() {
 // `finishedConsistent`): whichever of cancel and expiry comes first, a watch
 // whose result is `true` (cancelled) wrote nothing, and one whose result is
 // `false` (expired) wrote the full report. The race is driven over every pair
-// of watch duration and cancel delay from 0 to 6 ms.
+// of watch duration and cancel delay from 0 to 6 ms, and the test fails
+// unless both sides of the race ran at least once.
 #[test]
 fn the_outcome_and_the_output_agree_whichever_of_cancel_and_expiry_comes_first() {
+  let mut sides = [0usize; 2];
   for duration in 0..=6 {
     for delay in 0..=6 {
       let out = Captured::default();
@@ -148,11 +157,24 @@ fn the_outcome_and_the_output_agree_whichever_of_cancel_and_expiry_comes_first()
 
       let cancelled = coroner.result(Duration::from_secs(1));
       let report = out.text();
+      sides[usize::from(cancelled)] += 1;
       if cancelled {
         assert_eq!(report, "", "duration {duration}ms, delay {delay}ms");
       } else {
+        assert!(out.flushed(), "duration {duration}ms, delay {delay}ms: cancel returned before the report was done");
+        assert!(report.starts_with("Coroner not cancelled after"), "duration {duration}ms, delay {delay}ms: {report}");
         assert!(report.contains("Coroner's Report: Race"), "duration {duration}ms, delay {delay}ms: {report}");
+        assert!(
+          report.contains("Stack of the reporting thread \"Coroner\":"),
+          "duration {duration}ms, delay {delay}ms"
+        );
       }
     }
   }
+  assert!(
+    sides[0] > 0 && sides[1] > 0,
+    "both sides of the race must run: expired {}, cancelled {}",
+    sides[0],
+    sides[1]
+  );
 }
