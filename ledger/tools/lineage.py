@@ -113,29 +113,39 @@ def retired_side_problems(by_id: dict, retired: list, problems: dict) -> tuple[d
     return retired_by_id, successors_by_retired
 
 
+# 引き継ぎを持てる status。部分移植は unported か red、完了は件数のそろった green だけである。
+CARRIED_STATUSES = ("unported", "red", "green")
+
+
 def carried_count_problems(n: dict, cases: dict, carried: list) -> list[str]:
-    """引き継ぎを持つノードの件数の不足を返す。green は total = ported + 有効で一意な承認済みの除外、
-    passing = ported、ported >= 引き継いだ件数、
+    """引き継ぎを持つノードの status と件数の不足を返す。
+
+    status は unported・red（部分移植）か green に限る（do_not_port などで完了や能力の供給にしない）。
+    どの status でも、引き継いだケースを除外にも入れることは許さない（同じケースを 2 回数えない）。
+    green は total = ported + 有効で一意な承認済みの除外、passing = ported、ported >= 引き継いだ件数。
     部分移植は ported = passing = 引き継いだ件数かつ total > ported。
     """
     own: list[str] = []
-    if n.get("status") == "green":
-        total, ported, passing = cases.get("total"), cases.get("ported"), cases.get("passing")
-        excluded = cases.get("excluded")
-        excluded = [] if excluded is None else excluded
+    status = n.get("status")
+    if status not in CARRIED_STATUSES:
+        own.append(f"引き継ぎを持つノードの status が {status!r}（unported・red・green のどれでもない）")
+    excluded = cases.get("excluded")
+    excluded = [] if excluded is None else excluded
+    names = [e.get("name").strip() for e in excluded if isinstance(e, dict) and is_text(e.get("name"))] \
+        if isinstance(excluded, list) else []
+    carried_names = {c["name"].strip() for c in carried if isinstance(c, dict) and is_text(c.get("name"))}
+    if carried_names & set(names):
+        own.append("引き継いだケースが cases.excluded にもある（同じケースを移植と除外の両方に数える）")
+    total, ported, passing = cases.get("total"), cases.get("ported"), cases.get("passing")
+    if status == "green":
         # 有効で一意な承認済みの除外だけを数える（同じケースの繰り返しで total を埋めない）。
-        names = [e.get("name").strip() for e in excluded if isinstance(e, dict) and is_text(e.get("name"))] \
-            if isinstance(excluded, list) else []
-        carried_names = {c["name"].strip() for c in carried if isinstance(c, dict) and is_text(c.get("name"))}
         approved = (isinstance(excluded, list) and len(names) == len(excluded) == len(set(names))
-                    and all(is_text(e.get("reason")) and is_approved_by_human(e) for e in excluded)
-                    and not carried_names & set(names))
+                    and all(is_text(e.get("reason")) and is_approved_by_human(e) for e in excluded))
         if not (approved and all(type(v) is int for v in (total, ported, passing))
                 and passing == ported and ported >= len(carried) and total == ported + len(excluded)):
             own.append("引き継ぎを持つ green のノードが total = ported + 有効で一意な承認済みの除外、"
                        "passing = ported、ported >= 引き継いだ件数を満たさない")
-    if n.get("status") != "green":
-        total, ported, passing = cases.get("total"), cases.get("ported"), cases.get("passing")
+    else:
         if not (type(ported) is int and type(passing) is int and ported == passing == len(carried)):
             own.append("部分移植のノードの ported と passing が引き継いだ件数と違う")
         if not (type(total) is int and type(ported) is int and total > ported):

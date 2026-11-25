@@ -148,9 +148,9 @@ def table_ids_from_document(text: str) -> tuple[list[str] | None, str]:
 def ledger_goal_ids(goal_id: str) -> tuple[list[str] | None, str]:
     """台帳で `goal == goal_id` の node id を返す。
 
-    現行のノードに属するものが無く、属するノードがすべて退役した（最上位の `retired` にある）
-    ゴールなら、退役したノードの id を返す。文書の対象表との照合を通し、rollup が退役を理由に
-    完了と判定しない結果を返せるようにするためである。
+    最上位の `retired` にある退役したノードで同じ goal を持つものの id も返す。ゴール文書の対象表は
+    退役した id を指し続けるので、現役と退役の両方で照合する。完了の判定は rollup に委ねる
+    （属するノードがすべて退役したゴールは、rollup が退役を理由に完了と判定しない）。
     """
     if not os.path.exists(LEDGER):
         return None, f"台帳が無い: {LEDGER}"
@@ -160,9 +160,10 @@ def ledger_goal_ids(goal_id: str) -> tuple[list[str] | None, str]:
     nodes = doc.get("nodes", [])
     members = [n["id"] for n in nodes if n.get("goal") == goal_id]
     retired = doc.get("retired")
-    if not members and isinstance(retired, list):
-        members = [r["id"] for r in retired
-                   if isinstance(r, dict) and r.get("goal") == goal_id and isinstance(r.get("id"), str)]
+    if isinstance(retired, list):
+        # 退役したノードの goal と、ゴール文書の対象表の id は退役後も残る。現役と退役の両方で照合する。
+        members += [r["id"] for r in retired
+                    if isinstance(r, dict) and r.get("goal") == goal_id and isinstance(r.get("id"), str)]
     return members, ""
 
 

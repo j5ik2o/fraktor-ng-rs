@@ -691,7 +691,7 @@ def test_mark_green_stops_at_the_retired_section():
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         retired = ("# 退役したノード\nretired:\n- id: old/A.scala\n  kind: test\n  status: green\n"
-                   "  verified_against: v1.7.1\n  retired:\n    at: 2026-11-25\n    reason: moved\n"
+                   "  verified_against: v2.0.0\n  retired:\n    at: 2026-11-25\n    reason: moved\n"
                    "    successor: a/A.scala\n")
         write(root / "ledger" / "nodes.yaml", ledger_yaml([case_block(NODE_ID, None, None, None)]) + retired)
         assert _run_mark_green(root, NODE_ID, 2, 2, "already_green: x") is True
