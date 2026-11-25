@@ -86,6 +86,9 @@ jobs:
       - uses: actions/checkout@v6
       - uses: Swatinem/rust-cache@v2
       - name: cargo test (host DNS configuration)
-        run: cargo test -p fraktor-actor --lib adaptor::system_host_dns_configuration
+        run: |
+          cargo test -p fraktor-actor --lib adaptor::system_host_dns_configuration
+          cargo test -p fraktor-actor --lib adaptor::windows_adapter
+          cargo test -p fraktor-actor --lib adaptor::windows_ip_helper
       - name: cargo clippy
         run: cargo clippy -p fraktor-actor --all-targets -- -D warnings

@@ -24,6 +24,10 @@ use windows_sys::Win32::{
 
 use super::windows_adapter::WindowsAdapter;
 
+#[cfg(all(test, windows))]
+#[path = "windows_ip_helper_test.rs"]
+mod tests;
+
 // The JDK's first buffer size, its growth on `ERROR_BUFFER_OVERFLOW`, and its
 // number of retries.
 #[cfg(windows)]

@@ -394,9 +394,9 @@ uv run --with pyyaml python3 ledger/tools/goal_complete_gate_test.py
 | 空 | アダプターなし（`ERROR_NO_DATA`）、DNS サーバーなし、稼働中のものなし、はどれも `None` |
 | 失敗 | アダプターを読めない（`GetAdaptersAddresses` の失敗）は `None` |
 
-`system_host_dns_configuration_test.rs` は、`for_platform(true)` が IP Helper を読む構成で `resolv_conf()` が `None` になること、`new()` が `Ok(for_platform(cfg!(windows)))` であることに直した（#156 の `windows_is_reported_as_unsupported` は置き換えた）。実機の Windows では `#[cfg(windows)]` のテストが、IP Helper が答えること（`read_adapters()` が `Some`）と、返る name server に scope ID がないことを確かめる。実機の値そのものはネットワークによるので比べない。
+`system_host_dns_configuration_test.rs` は、`for_platform(true)` が IP Helper を読む構成で `resolv_conf()` が `None` になること、`new()` が `Ok(for_platform(cfg!(windows)))` であることに直した（#156 の `windows_is_reported_as_unsupported` は置き換えた）。実機の Windows では `#[cfg(windows)]` のテストが、IP Helper が答えること（`read_adapters()` が `Some`）と、返る name server に scope ID がないことを確かめる。実機の値そのものはネットワークによるので比べない。この実機のテストは、DNS サーバーがない host でも通るので、取得の結果を確かめるものではない（PR #175 の Devin の指摘）。そのため、OS の構造体から `SocketAddr` と `WindowsAdapter` への変換は、`windows_ip_helper_test.rs` の Windows だけの単体テスト5件で別に確かめる。既知の IPv4・IPv6 を入れた `SOCKADDR_IN`・`SOCKADDR_IN6`、`IP_ADAPTER_ADDRESSES_LH` と DNS サーバーの連結リストをテストの中で組み立てて渡す。ネットワークのバイト順、port と scope ID、ほかの family と null、アダプターと DNS サーバーの順序と稼働状態、空のリストを確かめる。
 
-CI に Windows のジョブ（`windows-latest`）を足し、`cargo test -p fraktor-actor --lib adaptor::system_host_dns_configuration` と `cargo clippy -p fraktor-actor --all-targets -- -D warnings` を走らせる。ジョブは `ci.yml` の中にあるので、`Main PR CI` の `Fraktor CI Gate`（`needs.ci.result`）の対象になる。Windows のジョブで見つかった既存の問題（テストの補助関数の `unused_mut`。`mode` を Unix でだけ呼ぶため）も直した。
+CI に Windows のジョブ（`windows-latest`）を足し、`cargo test -p fraktor-actor --lib` を `adaptor::system_host_dns_configuration`、`adaptor::windows_adapter`、`adaptor::windows_ip_helper` の3つの絞り込みで実行し、続けて `cargo clippy -p fraktor-actor --all-targets -- -D warnings` を走らせる。モジュールを `adaptor` の直下に移した後は、最初の絞り込みだけでは `windows_adapter` のテストが外れていた（PR #175 の CodeRabbit の指摘で気づいた）。ジョブは `ci.yml` の中にあるので、`Main PR CI` の `Fraktor CI Gate`（`needs.ci.result`）の対象になる。Windows のジョブで見つかった既存の問題（テストの補助関数の `unused_mut`。`mode` を Unix でだけ呼ぶため）も直した。
 
 ### 製品編集前の実測（red）
 
@@ -408,9 +408,11 @@ CI に Windows のジョブ（`windows-latest`）を足し、`cargo test -p frak
 
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
-| `cargo test -p fraktor-actor --lib system_host_dns_configuration` | 0 | 52 passed（`windows_adapter` の9件を含む。`#[cfg(windows)]` の1件は macOS では数えない） |
+| `cargo test -p fraktor-actor --lib adaptor::system_host_dns_configuration` | 0 | 43 passed（`#[cfg(windows)]` の1件は macOS では数えない） |
+| `cargo test -p fraktor-actor --lib adaptor::windows_adapter` | 0 | 9 passed |
+| `cargo test -p fraktor-actor --lib adaptor::windows_ip_helper` | 0 | macOS では 0 件（5件とも `#[cfg(windows)]`。CI の Windows ジョブで実行する） |
 | `cargo clippy -p fraktor-actor --all-targets -- -D warnings`（macOS） | 0 | 警告なし |
 | `cargo clippy --target x86_64-pc-windows-msvc -p fraktor-actor --all-targets -- -D warnings`（macOS からの検査） | 0 | 警告なし。`windows-sys` の型とフィールドの名前がコンパイルで合うことも確かめた |
-| syn-check（`crates/fraktor-actor`、`crates/fraktor-testkit`） | 0 | 両方 `clean: true`、違反0、抑制0。新しい2つのモジュールは `adaptor` の直下に置いた（`system_host_dns_configuration` の子にすると、`module-wiring` が葉でないモジュールからの再エクスポートとして拒む） |
+| syn-check（`crates/fraktor-actor`、`crates/fraktor-testkit`） | 0 | 両方 `clean: true`、違反0、抑制0。新しいモジュールは `adaptor` の直下に置いた（`system_host_dns_configuration` の子にすると、`module-wiring` が葉でないモジュールからの再エクスポートとして拒む） |
 
 Windows の実機での実行は、CI の Windows ジョブで確かめる。手元の macOS では、OS の呼び出しの部分（`windows_ip_helper::read_adapters` の Windows 版）は検査だけで、実行していない。
