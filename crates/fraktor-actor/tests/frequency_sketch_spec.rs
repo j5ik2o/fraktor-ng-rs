@@ -2,7 +2,7 @@
 //   actor-tests/src/test/scala/org/apache/pekko/util/FrequencySketchSpec.scala
 //   actor-tests/src/test/scala/org/apache/pekko/util/ZipfianGenerator.scala (the helper)
 //
-// The original's fifteen cases under "FrequencySketch must" and eight under
+// The original's fourteen cases under "FrequencySketch must" and eight under
 // "FastFrequencySketch must" are kept as one test each, named after the case
 // with a `frequency_sketch_` or `fast_frequency_sketch_` prefix, and with the
 // original name as a comment. Every increment and check runs in the original
@@ -340,8 +340,7 @@ fn frequency_sketch_allow_counter_size_to_be_configured_as_8_bits() {
 // "allow counter size to be configured as 16 bits"
 #[test]
 fn frequency_sketch_allow_counter_size_to_be_configured_as_16_bits() {
-  let mut sketch =
-    sketch(FrequencySketchSettings { counter_bits: 16, reset_multiplier: 1000.0, ..Default::default() });
+  let mut sketch = sketch(FrequencySketchSettings { counter_bits: 16, reset_multiplier: 1000.0, ..Default::default() });
 
   // check increments
   sketch.increment("foo");
@@ -432,12 +431,10 @@ fn frequency_sketch_allow_counter_size_to_be_configured_as_64_bits() {
 fn frequency_sketch_allow_depth_to_be_configured() {
   // different depths uses different number of hash functions
   // force a frequency sketch with just a single counter and hash function, which will always collide
-  let mut sketch = FrequencySketch::<str>::new(1, FrequencySketchSettings {
-    width_multiplier: 1,
-    counter_bits: 64,
-    depth: 1,
-    ..Default::default()
-  })
+  let mut sketch = FrequencySketch::<str>::new(
+    1,
+    FrequencySketchSettings { width_multiplier: 1, counter_bits: 64, depth: 1, ..Default::default() },
+  )
   .expect("the settings are valid");
   sketch.increment("foo");
   sketch.increment("bar");
@@ -462,7 +459,7 @@ fn frequency_sketch_detect_width_overflow_that_would_have_been_missed_by_int_ari
   // the old Int multiplication silently overflows to a non-power-of-two or zero/negative value
   let width_int = width_multiplier.wrapping_mul(Bits::ceiling_power_of_two(capacity));
   assert!(width_int <= 0); // negative or zero due to Int overflow (old broken behavior)
-  // the new Long multiplication correctly identifies the overflow
+                           // the new Long multiplication correctly identifies the overflow
   let width_long = i64::from(width_multiplier) * i64::from(Bits::ceiling_power_of_two(capacity));
   assert!(width_long > i64::from(i32::MAX));
 }
@@ -600,9 +597,9 @@ fn fast_frequency_sketch_detect_width_overflow_that_would_have_been_missed_by_in
 // "reject capacity that would cause width to overflow Int with custom widthMultiplier"
 #[test]
 fn fast_frequency_sketch_reject_capacity_that_would_cause_width_to_overflow_int_with_custom_width_multiplier() {
-  let result = FastFrequencySketch::<str>::new(100, FastFrequencySketchSettings {
-    width_multiplier: i32::MAX,
-    ..Default::default()
-  });
+  let result = FastFrequencySketch::<str>::new(
+    100,
+    FastFrequencySketchSettings { width_multiplier: i32::MAX, ..Default::default() },
+  );
   assert!(matches!(result, Err(FrequencySketchError::WidthOverflow { .. })));
 }

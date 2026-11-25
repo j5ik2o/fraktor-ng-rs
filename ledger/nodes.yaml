@@ -2904,7 +2904,7 @@ nodes:
     module: actor-tests
     class: FrequencySketchSpec
     test_cases_approx: 16
-  status: red
+  status: green
   triage:
     kind: pending
     reason: null
@@ -2915,14 +2915,16 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 22
+    ported: 22
+    passing: 22
     excluded: []
+    not_built: []
   rust:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/frequency_sketch_spec.rs
   goal: G0issue177
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/FunctionRefSpec.scala
   name: actor-tests:FunctionRefSpec
   kind: test
