@@ -71,7 +71,7 @@ I8 の中身（`g` は操作の前の並び、`h` は渡した id、`v` は新�
 | `find_next_or_else_insert(h, is_before, check, new)` | `h` から次が `is_before` を満たす間だけ進み、止まったノードで `get_next_or_else_insert` | 同じ |
 | `find_previous_or_else_insert(h, is_after, check, new)` | 前の向きで同じ | 同じ |
 
-`new` は戻り値が `v` のときだけ 1 回呼ばれ、それ以外では呼ばれない。`check`、`is_before`、`is_after` は値を読むだけで、リストを変えない（`&A` しか受け取れない）。
+`new` は戻り値が `v` のときだけ 1 回呼ばれ、それ以外では呼ばれない。`check`、`is_before`、`is_after` は `&A` しか受け取らないので、リストは変えられない。値そのものを内部可変性（`Cell` など）で書き換えないことは、呼び出し側の前提である。
 
 ## 3. PBT の性質
 
@@ -83,11 +83,11 @@ I8 の中身（`g` は操作の前の並び、`h` は渡した id、`v` は新�
 | P2 | 毎回の操作の後で、`is_empty`、`get_first`、`get_last` がモデルの先頭と末尾に一致し、各ノードの `get_previous`、`get_next`、`get` がモデルの隣と値に一致する | I1、I2 |
 | P3 | 各操作の戻り値（id と値）が、モデルの戻り値に等しい。`new` を呼んだ回数が、モデルが新しいノードを作った回数に等しい | I8 |
 | P4 | 返った id はすべて互いに異なる（同じリストの中でも、リストをまたいでも） | I5、I6 |
-| P5 | 外した id と別のリストの id について、`get` と `get_mut` は `None`。panic する操作に渡すと `the node is in this list` で panic し、その後の並び、値、リンクは P1 と P2 のとおり変わらない。利用者のクロージャ（`check`、`is_before`、`is_after`、`new`）が panic しても、並び、値、リンクは変わらない | I5、I7 |
+| P5 | 外した id と別のリストの id について、`get` と `get_mut` は `None`。panic する操作に渡すと `the node is in this list` で panic し、その後の並び、値、リンクは P1 と P2 のとおり変わらない。利用者のクロージャ（`check`、`is_before`、`is_after`、`new`）が panic しても、リストの構造（並び、リンク、`first` と `last`）は変わらない。値も変わらないのは、クロージャが内部可変性などで値を書き換えない限りである | I5、I7 |
 
 除外は付けない。panic する入力（外した id、別のリストの id、panic するクロージャ）も性質の対象に入れ、P5 で「panic して、並びを壊さない」ことを確かめる。
 
-panic の前後で並びが変わらないことは、コードを読むと成り立っている。どの操作も、渡した id を最初に `node`／`node_mut`／`unlink` の頭で引き、そこで panic するので、リンクを書き換える前に止まる。`find_*` は `shift_while` で引いた後に止まった先を引くが、どれも読むだけである。利用者のクロージャも、`allocate` とリンクの書き換えより前に評価される（`allocate(new_value())` は引数の `new_value()` を先に評価する）。P5 はこれを実行で確かめる。`new` が panic したときに次の番号を使ってしまわないかは、公開 API から見えない（番号は `NodeId` の中で非公開）。上の評価の順で使わないうえ、番号は再利用しないので、使ったとしても飛ぶだけで、I5 と I6 は保たれる。
+panic の前後で並びが変わらないことは、コードを読むと成り立っている。どの操作も、渡した id を最初に `node`／`node_mut`／`unlink` の頭で引き、そこで panic するので、リンクを書き換える前に止まる。`find_*` は `shift_while` で引いた後に止まった先を引くが、どれも読むだけである。利用者のクロージャも、`allocate` とリンクの書き換えより前に評価される（`allocate(new_value())` は引数の `new_value()` を先に評価する）。P5 はこれを実行で確かめる。値については、クロージャが `&A` から内部可変性で書き換えない限り変わらない（`&A` は書き換えを禁止しないので、これは呼び出し側の前提である）。`new` が panic したときに次の番号を使ってしまわないかは、公開 API から見えない（番号は `NodeId` の中で非公開）。上の評価の順で使わないうえ、番号は再利用しないので、使ったとしても飛ぶだけで、I5 と I6 は保たれる。
 
 **実装（案 1、依存なし。設計レビューの推奨に従った）。** `crates/fraktor-actor/tests/double_linked_list_model_test.rs`。
 
@@ -169,7 +169,7 @@ panic の前後で並びが変わらないことは、コードを読むと成�
 | 別のリストのハンドル | 番号が同じだと、無関係なノードを指す（修正前） | 回帰 `an_id_from_another_list_does_not_name_a_node_here`、`removing_an_id_from_another_list_panics_and_keeps_this_list`、Quint の `buggy` 負の対照、P5 |
 | 削除済みハンドル | 外したノードの古いリンクをたどる（原典）／別の新しいノードを指す（id を再利用した場合） | 回帰 `remove_returns_the_value_and_a_removed_node_is_no_longer_in_the_list`、`a_removed_id_is_not_reused_by_a_later_insert`、`moving_a_removed_node_panics`、Quint の `handlesNameExactlyTheGhostNodes`、P5 |
 | `new` が呼ばれるか | 既存のノードを返すのに値を作る | 回帰 `the_new_value_is_made_only_when_a_node_is_inserted`、P3 |
-| 利用者のクロージャが panic する | `check`、`is_before`、`is_after`、`new` の panic で、挿入やリンクの書き換えが途中で止まる | P5（`panicking_closure`。8 通りの操作で、どれも panic して並びが変わらないことを確かめる）。順序はコードの評価の順（§3）で守られる |
+| 利用者のクロージャが panic する | `check`、`is_before`、`is_after`、`new` の panic で、挿入やリンクの書き換えが途中で止まる | P5（`panicking_closure`。10 通りの操作で、どれも panic して並びが変わらないことを確かめる。`check` が `find_*` の中で panic する場合も含む）。順序はコードの評価の順（§3）で守られる |
 | 長い列 | 再帰は使わず、`forward_iter` と `shift_while` は反復なので、スタックは使わない。`find_*` 以外の操作は O(log n)。`find_*` は歩いた件数 k に対して O(k log n)。全走査は O(n log n)。原典はそれぞれ O(1)、O(k)、O(n) で、ノードを `BTreeMap` で引く分だけ log n 倍遅い | P1（`long_random_operations_match_the_model` で最長 300 件以上）。固定のテストは最大 6 件 |
 | `u64` の採番のあふれ | `next_id` と `NEXT_LIST` が一巡すると、id が衝突し、`allocate` が生きているノードを上書きしうる | `checked_add` で、debug でも release でも panic にした（I6、設計レビュー F5）。2^64 回は届かないので、テストは無い |
 | 並行してリストを作る | `NEXT_LIST` の採番が重なる | `try_update`（compare-and-swap）は atomic なので重ならない。テストは無い |
@@ -202,7 +202,7 @@ panic の前後で並びが変わらないことは、コードを読むと成�
 | F1：`getEndOrElseInsert` にゴースト側の独立した判定が無く、挿入する分岐のガードで遷移が止まり、`check` の反転（M8、M9）を検出できない | 直す | ゴースト側の判定を独立に計算し、リンク側と両方が満たす、両方が満たさない、食い違う、の 3 分岐にした。食い違いは `disagree` で `resultOk = false` を記録する。挿入する分岐のガードは長さの上限だけ。`findOrElseInsert` も同じ形にし、`findDisagrees` はこれに吸収した。M8、M9 は `[violation]` になる（§4） |
 | F2：ゴーストがリンク側の値を読むので、値の取り違え（M10）を検出できない。`remove` の戻り値の値も見ていない | 直す | ゴーストに値を持たせ（`{ h, v }`）、判定はゴーストの値で行う。新しいノードのゴーストの値は遷移に渡した値にする。`walksAreTheGhostOrder` で、リンクをたどって読んだ値の列とゴーストの値の列を比べる。`removeNode` はリンク側の戻り値とゴーストの値を比べる。M10 は `[violation]` になる |
 | F3：`removing_an_id_from_another_list_panics_and_keeps_this_list` は `#[should_panic]` で、「keeps this list」を確かめていない | 直す | kernel の回帰は名前を `removing_an_id_from_another_list_panics` に縮めた。「keeps this list」は `tests/double_linked_list_model_test.rs` の同名のテストで、`catch_unwind` の後の並びと値を確かめる。PBT の P5 でも全操作について確かめる |
-| F4：利用者のクロージャの panic が壊しうる入力に無く、評価の順を守るものが無い | 直す | P5 に「クロージャが panic しても並び、値、リンクが変わらない」を足し、PBT の `panicking_closure`（8 通り）で確かめる。§5 に行を足した。「次に返る id が変わらない」は公開 API から見えないので、性質にはせず、評価の順と再利用しないことで I5 と I6 が保たれる理由を §3 に書いた |
+| F4：利用者のクロージャの panic が壊しうる入力に無く、評価の順を守るものが無い | 直す | P5 に「クロージャが panic してもリストの構造が変わらない」を足し、PBT の `panicking_closure`（10 通り。`check` が `find_*` の中で panic する 2 通りを足した）で確かめる。値の不変は内部可変性を使わない前提つきである。§5 に行を足した。「次に返る id が変わらない」は公開 API から見えないので、性質にはせず、評価の順と再利用しないことで I5 と I6 が保たれる理由を §3 に書いた |
 | F5：`next_id` があふれると release で 0 に戻り、生きているノードを黙って上書きする。`NEXT_LIST` も同じ | 直す | `next_id` は `checked_add(1).expect(..)`、`NEXT_LIST` は `try_update(.., checked_add)` にし、debug と release の両方で panic にそろえた。rustdoc の `# Panics` と I6 を直した |
 | F6：将来 `Clone` を足すと I5 が破れる | 直す（記録） | §6 に、足すときに決めることを書いた |
 | F7：「1 回の操作は O(log n)」は `find_*` で成り立たない | 直す | §5 を「`find_*` は O(k log n)」に直し、原典との差と、置き換えるときの slab の検討を §5 と §6 に書いた |
