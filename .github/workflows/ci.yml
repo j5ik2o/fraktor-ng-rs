@@ -77,3 +77,15 @@ jobs:
           for dir in crates/*/; do
             cargo run --quiet --release --locked --manifest-path tools/syn-check/Cargo.toml -- --format json "${dir%/}"
           done
+
+  # The Windows IP Helper path of `SystemHostDnsConfiguration` (#160) is built
+  # and its real-host test runs only on Windows.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test (host DNS configuration)
+        run: cargo test -p fraktor-actor --lib adaptor::system_host_dns_configuration
+      - name: cargo clippy
+        run: cargo clippy -p fraktor-actor --all-targets -- -D warnings

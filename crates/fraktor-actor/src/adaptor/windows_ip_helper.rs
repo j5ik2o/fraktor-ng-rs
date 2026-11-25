@@ -1,30 +1,41 @@
 //! Reads the network adapters from the Windows IP Helper.
 
+#[cfg(windows)]
+use alloc::vec;
 use alloc::vec::Vec;
+#[cfg(windows)]
+use core::{
+  net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+  ptr,
+};
+
+#[cfg(windows)]
+use windows_sys::Win32::{
+  Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_NO_DATA, ERROR_SUCCESS},
+  NetworkManagement::{
+    IpHelper::{
+      GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_FRIENDLY_NAME, GAA_FLAG_SKIP_MULTICAST,
+      GAA_FLAG_SKIP_UNICAST, IP_ADAPTER_ADDRESSES_LH,
+    },
+    Ndis::IfOperStatusUp,
+  },
+  Networking::WinSock::{AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6},
+};
 
 use super::windows_adapter::WindowsAdapter;
+
+// The JDK's first buffer size, its growth on `ERROR_BUFFER_OVERFLOW`, and its
+// number of retries.
+#[cfg(windows)]
+const BUFF_SIZE: u32 = 15360;
+#[cfg(windows)]
+const MAX_TRIES: usize = 3;
 
 // The adapters `GetAdaptersAddresses` reports, or `None` when it fails, as the
 // JDK's `getAdapters` does in `ResolverConfigurationImpl.c`. Only the DNS
 // server addresses are asked for, and nothing on the host is changed.
 #[cfg(windows)]
 pub(super) fn read_adapters() -> Option<Vec<WindowsAdapter>> {
-  use alloc::vec;
-
-  use windows_sys::Win32::{
-    Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_NO_DATA, ERROR_SUCCESS},
-    NetworkManagement::IpHelper::{
-      GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_FRIENDLY_NAME, GAA_FLAG_SKIP_MULTICAST,
-      GAA_FLAG_SKIP_UNICAST, IP_ADAPTER_ADDRESSES_LH,
-    },
-    Networking::WinSock::AF_UNSPEC,
-  };
-
-  // The JDK's first buffer size, its growth on `ERROR_BUFFER_OVERFLOW`, and
-  // its number of retries.
-  const BUFF_SIZE: u32 = 15360;
-  const MAX_TRIES: usize = 3;
-
   let flags = GAA_FLAG_SKIP_UNICAST | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_FRIENDLY_NAME;
   let mut length = BUFF_SIZE;
   for _ in 0..=MAX_TRIES {
@@ -33,7 +44,7 @@ pub(super) fn read_adapters() -> Option<Vec<WindowsAdapter>> {
     let first = buffer.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
     // SAFETY: `first` points to a writable, aligned buffer of at least
     // `length` bytes, and `length` outlives the call.
-    let result = unsafe { GetAdaptersAddresses(u32::from(AF_UNSPEC), flags, core::ptr::null(), first, &mut length) };
+    let result = unsafe { GetAdaptersAddresses(u32::from(AF_UNSPEC), flags, ptr::null(), first, &mut length) };
     match result {
       // SAFETY: on success the buffer holds the list the call wrote, and the
       // buffer lives until `adapters` returns.
@@ -58,11 +69,7 @@ pub(super) fn read_adapters() -> Option<Vec<WindowsAdapter>> {
 // SAFETY: `adapter` is null or the start of a list `GetAdaptersAddresses`
 // wrote, which stays valid while this runs.
 #[cfg(windows)]
-unsafe fn adapters(
-  mut adapter: *const windows_sys::Win32::NetworkManagement::IpHelper::IP_ADAPTER_ADDRESSES_LH,
-) -> Vec<WindowsAdapter> {
-  use windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp;
-
+unsafe fn adapters(mut adapter: *const IP_ADAPTER_ADDRESSES_LH) -> Vec<WindowsAdapter> {
   let mut adapters = Vec::new();
   // SAFETY: each node and each DNS server node is part of the same list.
   while let Some(current) = unsafe { adapter.as_ref() } {
@@ -86,13 +93,7 @@ unsafe fn adapters(
 // SAFETY: `sockaddr` is null or points to a socket address of its family's
 // size, as `GetAdaptersAddresses` writes it.
 #[cfg(windows)]
-unsafe fn socket_address(
-  sockaddr: *const windows_sys::Win32::Networking::WinSock::SOCKADDR,
-) -> Option<core::net::SocketAddr> {
-  use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-
-  use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, SOCKADDR_IN, SOCKADDR_IN6};
-
+unsafe fn socket_address(sockaddr: *const SOCKADDR) -> Option<SocketAddr> {
   // SAFETY: the caller's contract; the family says which layout follows.
   let family = unsafe { sockaddr.as_ref() }?.sa_family;
   match family {

@@ -154,7 +154,7 @@ fn new_follows_the_platform_it_runs_on() {
 #[cfg(windows)]
 #[test]
 fn the_ip_helper_of_a_windows_host_is_read() {
-  assert!(super::ip_helper::read_adapters().is_some());
+  assert!(crate::adaptor::windows_ip_helper::read_adapters().is_some());
   let host = SystemHostDnsConfiguration::new().expect("Windows is supported");
   for server in host.name_servers().unwrap_or_default() {
     if let SocketAddr::V6(server) = server {

@@ -246,7 +246,7 @@ adaptor に `SystemHostDnsConfiguration`（`crates/fraktor-actor/src/adaptor/sys
 
 | 差異 | 理由 |
 |:---|:---|
-| Windows では既定の name server を自動で取得せず、`SystemHostDnsConfiguration::new()` が `UnsupportedHostDnsPlatformError` を返す。原典は Windows でも JDK 経由で（レジストリから）既定の name server を取得する。Windows で省くのは `resolvConf` だけである | 調整担当の決定（副元帥の回答 B）で、本 issue は resolv.conf の方式の対象 OS に限った。Windows の自動取得は [#160](https://github.com/j5ik2o/fraktor-ng-rs/issues/160) で追跡する。Windows では `nameservers` を明示するか、独自の `HostDnsConfiguration` を渡す。何も見つからない `None` ではなく、未対応と分かるエラーにした。原典のケースの除外は新設していない |
+| Windows では既定の name server を自動で取得せず、`SystemHostDnsConfiguration::new()` が `UnsupportedHostDnsPlatformError` を返す。原典は Windows でも JDK 経由で（レジストリから）既定の name server を取得する。Windows で省くのは `resolvConf` だけである | 調整担当の決定（副元帥の回答 B）で、本 issue は resolv.conf の方式の対象 OS に限った。Windows の自動取得は [#160](https://github.com/j5ik2o/fraktor-ng-rs/issues/160) で追跡する。Windows では `nameservers` を明示するか、独自の `HostDnsConfiguration` を渡す。何も見つからない `None` ではなく、未対応と分かるエラーにした。原典のケースの除外は新設していない。#160 で Windows も IP Helper から取得するようにし、この差は解消した（下の「後続：#160」） |
 | host 名の name server（例 `nameserver dns.example`）と、名前の scope ID つきの IPv6（例 `fe80::1%en0`）を捨てる。原典はどちらも `InetSocketAddress` にする。数値の scope ID（例 `fe80::1%2`）は原典と同じく保持する | #136 の `parse_nameserver_address` は IP リテラルだけを受け付け、名前解決をしない。名前解決は対象外。インターフェース名を番号に変えるには OS のインターフェース表が要る。数値の scope ID は、kernel のパーサーで読んだアドレスに adaptor で付ける（kernel と公開 API は変えない） |
 | resolv.conf の読み取りと解析の失敗をログに出さない。原典は `log.error` に出してから `None` にする | port の `HostDnsConfiguration` は `ExtendedActorSystem` を受け取らず、出し先のアクターシステムがない（上の「原典との差異」のとおり）。値は原典と同じ `None` |
 | 原典の name server は、JDK がプロセスで1つのキャッシュを持ち、最後に読んでから5分間は `/etc/resolv.conf` を読み直さない。そのため、ファイルを書き換えても5分以内に作った `DnsSettings` には古い name server が入る。本 adaptor は `name_servers()` を呼ぶたびに読み直すので、書き換えの後に作った `DnsSettingsValues` には新しい値が入る。search と ndots は、原典も生成ごとに読み直すので差はない | キャッシュはプロセスの状態で、テストで制御した入力の再現性を下げる。読み取り専用で、名前解決やキャッシュ本体は対象外。1回の `DnsSettingsValues::new` の中では name server を1回だけ読むので、生成1回の中の値は原典と変わらない |
@@ -336,3 +336,81 @@ uv run --with pyyaml python3 ledger/tools/goal_complete_gate_test.py
 - 出典の更新：OS の設定を JDK から読む経路は、反射から method handle に変わった（`246fae4fb8`、`DnsSettings.scala` L174–175 の `publicLookup` と `lookup`。だめなら `privateLookupIn`）。失敗のメッセージには、modular な JDK では `java.base/sun.net.dns` へのアクセスが要る旨が足された（L165）。上の「反射」は、v2.0.0 では「JDK 内部の ResolverConfiguration（method handle）」と読む。
 - 出典の更新：`random` の引数は `java.util.Random` から `java.util.random.RandomGenerator` に変わった（`f571b64f78` #3153、`IdGenerator.scala` L66）。`random(rand)` を移植しない判断は変わらない。
 - 記録済みの差異（型付きの入力値、検査の時期、`next_id` の `Result`、`CachePolicy.Ttl` の一部、OS との差異）は維持する。
+
+## 後続：#160 Windows の既定の name server を IP Helper から読む
+
+[Issue #160](https://github.com/j5ik2o/fraktor-ng-rs/issues/160) は、上の「後続：#156」で Windows を未対応にした差を埋める。#156 と同じく原典のテストに対応しないので、台帳のノードはなく、本ゴールの所属ノードと台帳は変えていない。着手判断は元帥（2026-11-25）。TAKT は使わず、Claude Opus 5.5 がブランチ `j5ik2o/issue-160-windows-dns`（起点 `471d9d5`）で直接実装した。
+
+- 原典: Pekko v2.0.0 の [DnsSettings.scala](https://github.com/apache/pekko/blob/9fbd2283b1cf701c90a1223bf621942c191db61f/actor/src/main/scala/org/apache/pekko/io/dns/DnsSettings.scala)（L109–112 の `resolvConf` は Windows で読まない。L199–269 の `getDefaultNameServers` は OS を問わず JNDI → JDK 内部の `ResolverConfiguration`）
+- 原典が呼ぶ JDK の契約: [Windows 版 `sun.net.dns.ResolverConfigurationImpl`](https://github.com/openjdk/jdk/blob/master/src/java.base/windows/classes/sun/net/dns/ResolverConfigurationImpl.java)（`addressesToList`）と [その native 実装](https://github.com/openjdk/jdk/blob/master/src/java.base/windows/native/libnet/ResolverConfigurationImpl.c)（`getAdapters`、`loadConfig`、`strappend`）。JNDI の `dns://` は Unix と同じく、この name server を `dns://<値>` の URL にする
+- 範囲は、name server の読み取りだけ。search の一覧（JDK は登録簿の `SearchList` とアダプターの `DnsSuffix` を読む）は、原典の `resolvConf` が Windows で `None` なので読まない。OS の設定は読むだけで、書き換えない
+
+### JDK の Windows 版の取得の意味
+
+`loadConfig` は `GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_SKIP_UNICAST | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_FRIENDLY_NAME, ...)` でアダプターの一覧を得る。バッファは 15360 バイトから始め、`ERROR_BUFFER_OVERFLOW` なら必要な大きさに 15360 を足して最大3回やり直す。`ERROR_NO_DATA` はアダプターなし（エラーではない）、ほかの失敗は例外になり、原典は name server を決められない。`OperStatus` が `IfOperStatusUp` のアダプターだけについて、DNS サーバーを順に読む。scope ID が 0 でない IPv6（link-local、site-local）は飛ばす。残りを `WSAAddressToStringA` で文字列にし（port が 0 なら port を書かない。0 でなければ書き、IPv6 は角括弧で囲む）、`strappend` でカンマ区切りの 1024 バイトのバッファに足す。入りきらない値は飛ばし、次の値を試す。Java 側の `addressesToList` は、`:` を含み `[` で始まらない値を角括弧で囲み、同じ値の2回目以降を捨てる。各値は、Unix と同じ `dns://` の URI として読まれる。
+
+### 実装
+
+| 部分 | 内容 |
+|:---|:---|
+| `SystemHostDnsConfiguration`（公開） | 中身を、読む先の列挙 `HostDnsSource`（非公開。`ResolvConf(PathBuf)` と `IpHelper`）にした。`new()` は Windows で `IpHelper`、それ以外で `/etc/resolv.conf` を読む。`resolv_conf()` は `IpHelper` で常に `None`。`name_servers()` は `IpHelper` で下の2つを組み合わせる |
+| `WindowsAdapter`（`adaptor/windows_adapter.rs`、`pub(crate)`） | IP Helper の1アダプター（稼働中か、DNS サーバーの `SocketAddr` の列）。`WindowsAdapter::name_servers(Option<&[Self]>)` が上の JDK の規則（稼働中だけ、scope ID の除外、文字列化、1024 バイトの上限、角括弧、重複の除去）を純粋な関数として実装し、各値を #156 の `server_address`（`dns://` の URI と kernel のパーサー。adaptor の中で使えるよう `pub(super)` にした）で読む。`None`（読めなかった）と、使える値が1つもないときは `None` |
+| `windows_ip_helper::read_adapters`（`adaptor/windows_ip_helper.rs`、Windows だけ） | OS を呼ぶ境界。`windows-sys` の `GetAdaptersAddresses` を JDK と同じフラグ、バッファの大きさ、やり直しの回数で呼び、連結リストを `WindowsAdapter` の列に写す。IPv4 と IPv6 以外の family は、`WSAAddressToStringA` が失敗して JDK が飛ばすので、写さない。Windows 以外では `None` を返す（呼ばれない） |
+
+依存は `windows-sys` 0.61 を Windows の target だけに足した（`Win32_Foundation`、`Win32_NetworkManagement_IpHelper`、`Win32_NetworkManagement_Ndis`、`Win32_Networking_WinSock`）。Windows 以外のビルドは何も増えない。kernel は変えていない（std も依存も入れていない）。
+
+候補の比較:
+
+| 候補 | 判断 |
+|:---|:---|
+| `windows-sys` で `GetAdaptersAddresses` を呼ぶ | 採用。JDK と同じ API を同じフラグで呼べ、scope ID と port を含む `SOCKADDR` をそのまま読める。Microsoft が保守する生の束縛で、Windows の target にだけ入る |
+| `ipconfig` クレート（hickory-resolver が使う） | 不採用。`Adapter::dns_servers()` が `IpAddr` しか返さず、JDK が使う scope ID と port が落ちる（0.3.4 の `src/adapter.rs` L97 で確認） |
+| 登録簿（`Tcpip\Parameters\Interfaces` の `NameServer`、`DhcpNameServer`） | 不採用。現行の JDK の経路（`loadConfig` は登録簿から search の一覧だけを読む）と違い、稼働中かどうかの判定もない |
+| `extern "system"` を手で書く | 不採用。`IP_ADAPTER_ADDRESSES_LH` の配置を手で写すと誤りやすい。依存が1つ減るだけ |
+
+公開 API は変えていない。`new()` の `Result<Self, UnsupportedHostDnsPlatformError>` とエラー型は残した（Windows で `Err` を扱っていた呼び出し元がそのままコンパイルできる）。どの OS でも `Err` は返らなくなったので、エラー型の `pub(crate)` の生成関数は消し、doc コメントにその旨を書いた。エラー型を将来どうするか（非推奨にする、`new()` を `Result` でなくす）は、公開 API を壊す判断なので、本 issue では行わない。
+
+### 原典・JDK との差異
+
+| 差異 | 理由 |
+|:---|:---|
+| JDK は name server と search の一覧を、最後に読んでから120秒か、アドレスの変化の通知まで、プロセスでキャッシュする。本 adaptor は `name_servers()` を呼ぶたびに IP Helper を読む | #156 の resolv.conf と同じ扱い（キャッシュはプロセスの状態で、制御した入力の再現性を下げる）。1回の `DnsSettingsValues::new` の中では1回だけ読む |
+| アドレスの文字列化は `WSAAddressToStringA` ではなく Rust の `Display` で行う | 値は直後に読み直すので、結果の `SocketAddr` は変わらない。1024 バイトの上限に数える長さは、正規形（RFC 5952）の IPv6 なら Windows と同じ |
+| IP Helper が失敗したときの OS のエラーを出さない | #156 と同じく、port がアクターシステムを受け取らない。値は原典と同じく name server なし（`UnableToDetermineDefaultNameservers`） |
+
+### テスト
+
+純粋な規則は `windows_adapter_test.rs` の単体テスト9件で、テストが作ったアダプターの列を渡して確かめる（どの OS でも走る）。
+
+| 観点 | テスト |
+|:---|:---|
+| 取得 | 稼働中のアダプターの DNS サーバーが、アダプターと一覧の順に、port 0 なら 53 で返る |
+| 稼働中だけ | 稼働中でないアダプターの DNS サーバーは飛ばす |
+| scope ID | scope ID のある IPv6 は飛ばし、ないものは残す |
+| 重複 | 同じ値の2回目以降は捨てる（アダプターをまたいでも） |
+| port | 0 でない port は IPv6 では残る。IPv4 は `[192.0.2.1:5353]` になり URI として不正なので、原典と同じく捨てる |
+| IPv4 射影 | `::ffff:192.0.2.1` は `192.0.2.1:53`（`InetAddress` と kernel のパーサーの `to_canonical`） |
+| 上限 | 39文字の IPv6 は25個まで入り、26個目からは飛ばし、後の短い IPv4 は入る |
+| 空 | アダプターなし（`ERROR_NO_DATA`）、DNS サーバーなし、稼働中のものなし、はどれも `None` |
+| 失敗 | アダプターを読めない（`GetAdaptersAddresses` の失敗）は `None` |
+
+`system_host_dns_configuration_test.rs` は、`for_platform(true)` が IP Helper を読む構成で `resolv_conf()` が `None` になること、`new()` が `Ok(for_platform(cfg!(windows)))` であることに直した（#156 の `windows_is_reported_as_unsupported` は置き換えた）。実機の Windows では `#[cfg(windows)]` のテストが、IP Helper が答えること（`read_adapters()` が `Some`）と、返る name server に scope ID がないことを確かめる。実機の値そのものはネットワークによるので比べない。
+
+CI に Windows のジョブ（`windows-latest`）を足し、`cargo test -p fraktor-actor --lib adaptor::system_host_dns_configuration` と `cargo clippy -p fraktor-actor --all-targets -- -D warnings` を走らせる。ジョブは `ci.yml` の中にあるので、`Main PR CI` の `Fraktor CI Gate`（`needs.ci.result`）の対象になる。Windows のジョブで見つかった既存の問題（テストの補助関数の `unused_mut`。`mode` を Unix でだけ呼ぶため）も直した。
+
+### 製品編集前の実測（red）
+
+テストだけを足したコミット `a0c3c30`（`WindowsAdapter` の型がなく、`for_platform` は `Result` のまま）で、`cargo test -p fraktor-actor --lib system_host_dns_configuration` は終了値101の compile-red だった（`E0432` が1件：`super::WindowsAdapter`。`E0599` が2件：`ip_helper` と `Result` の `resolv_conf`。`E0308` が2件）。already_green ではない。
+
+実装後に変異を7つ入れ、どれも `windows_adapter` のテストが失敗した：稼働中の絞り込みを外す（2件）、scope ID の除外を外す、重複の除去を外す、1024 バイトの上限を外す、入りきらない値で止める（飛ばさずに）、port 0 でも port を書く、`[` で始まる値も角括弧で囲む（各1件）。
+
+### 実装後の実測
+
+| コマンド | 終了値 | 結果 |
+|:---|---:|:---|
+| `cargo test -p fraktor-actor --lib system_host_dns_configuration` | 0 | 52 passed（`windows_adapter` の9件を含む。`#[cfg(windows)]` の1件は macOS では数えない） |
+| `cargo clippy -p fraktor-actor --all-targets -- -D warnings`（macOS） | 0 | 警告なし |
+| `cargo clippy --target x86_64-pc-windows-msvc -p fraktor-actor --all-targets -- -D warnings`（macOS からの検査） | 0 | 警告なし。`windows-sys` の型とフィールドの名前がコンパイルで合うことも確かめた |
+| syn-check（`crates/fraktor-actor`、`crates/fraktor-testkit`） | 0 | 両方 `clean: true`、違反0、抑制0。新しい2つのモジュールは `adaptor` の直下に置いた（`system_host_dns_configuration` の子にすると、`module-wiring` が葉でないモジュールからの再エクスポートとして拒む） |
+
+Windows の実機での実行は、CI の Windows ジョブで確かめる。手元の macOS では、OS の呼び出しの部分（`windows_ip_helper::read_adapters` の Windows 版）は検査だけで、実行していない。

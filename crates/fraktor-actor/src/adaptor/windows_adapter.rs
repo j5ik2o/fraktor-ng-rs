@@ -3,7 +3,7 @@
 use alloc::{format, string::String, vec::Vec};
 use core::net::SocketAddr;
 
-use super::server_address;
+use super::system_host_dns_configuration::server_address;
 
 #[cfg(test)]
 #[path = "windows_adapter_test.rs"]

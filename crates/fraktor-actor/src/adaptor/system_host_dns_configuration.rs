@@ -8,15 +8,12 @@ use std::{
   path::{Path, PathBuf},
 };
 
-use self::windows_adapter::WindowsAdapter;
-use super::UnsupportedHostDnsPlatformError;
+use super::{windows_adapter::WindowsAdapter, windows_ip_helper, UnsupportedHostDnsPlatformError};
 use crate::kernel::io::dns::{DnsSettings, HostDnsConfiguration, ResolvConf, ResolvConfParser};
 
-mod ip_helper;
 #[cfg(test)]
 #[path = "system_host_dns_configuration_test.rs"]
 mod tests;
-mod windows_adapter;
 
 // The file both the original's `resolvConf` and the JDK's Unix
 // `ResolverConfigurationImpl` read.
@@ -109,7 +106,7 @@ impl HostDnsConfiguration for SystemHostDnsConfiguration {
   fn name_servers(&self) -> Option<Vec<SocketAddr>> {
     match &self.source {
       | HostDnsSource::ResolvConf(path) => read_name_servers(BufReader::new(File::open(path).ok()?)),
-      | HostDnsSource::IpHelper => WindowsAdapter::name_servers(ip_helper::read_adapters().as_deref()),
+      | HostDnsSource::IpHelper => WindowsAdapter::name_servers(windows_ip_helper::read_adapters().as_deref()),
     }
   }
 
@@ -222,7 +219,7 @@ fn bracket_ipv6(value: &str) -> String {
 // host must be a bracketed IPv6 literal or contain no `:`, as a URI server
 // authority requires, and is then read by the kernel's name server address
 // parser, so only IP literals are kept.
-fn server_address(value: String) -> Option<SocketAddr> {
+pub(super) fn server_address(value: String) -> Option<SocketAddr> {
   let end = value.find(['/', '?', '#']).unwrap_or(value.len());
   let (authority, tail) = value.split_at(end);
   if !is_valid_uri_tail(tail) {
