@@ -733,7 +733,7 @@ def test_real_goal_documents_match_current_ledger():
             goal_id = m.group(1)
             members = sorted(n["id"] for n in ledger_nodes if n.get("goal") == goal_id)
             if not members:
-                # 属するノードがすべて退役したゴール（v1.7.1 で閉じた記録）。表の id は退役した
+                # 属するノードがすべて退役したゴール（前の基準で閉じた記録）。表の id は退役した
                 # ノードと一致し、関門は完了と判定しない（rollup は退役を理由に 1 を返す）。
                 retired = sorted(r["id"] for r in ledger_retired if r.get("goal") == goal_id)
                 assert retired, (doc_path.name, "no ledger member for goal", goal_id)
