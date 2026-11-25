@@ -1,0 +1,177 @@
+# ゴール G0issue145：classic の部分関数ビルダーの2スイートを作らない区分で記録する
+
+[Issue #145](https://github.com/j5ik2o/fraktor-ng-rs/issues/145) と [Issue #146](https://github.com/j5ik2o/fraktor-ng-rs/issues/146)（Orca 項目222）の対象は、Pekko v1.7.1 の次の2つの Java テストである。`Match` は `PFBuilder` で部分関数を組むので、2つのノードを1つのゴールにまとめた。
+
+- `PFBuilderTest`: [原典のテスト](https://github.com/apache/pekko/blob/9a54d1294c3ac7821bbed3c940769c3d5027d1ff/actor-tests/src/test/java/org/apache/pekko/japi/pf/PFBuilderTest.java)、[原典の実装](https://github.com/apache/pekko/blob/9a54d1294c3ac7821bbed3c940769c3d5027d1ff/actor/src/main/java/org/apache/pekko/japi/pf/PFBuilder.java)。1ケース
+- `MatchBuilderTest`: [原典のテスト](https://github.com/apache/pekko/blob/9a54d1294c3ac7821bbed3c940769c3d5027d1ff/actor-tests/src/test/java/org/apache/pekko/japi/MatchBuilderTest.java)、[原典の実装](https://github.com/apache/pekko/blob/9a54d1294c3ac7821bbed3c940769c3d5027d1ff/actor/src/main/java/org/apache/pekko/japi/pf/Match.java)。3ケース
+
+4ケースとも、台帳の「作らない区分」（`status: not_built`）で記録した。移植0件・除外0件・作らない4件である。区分の定義と当てはめる条件は [`ledger-schema-draft.md` の「作らない区分」](../decisions/ledger-schema-draft.md)にある。このゴールが、区分の最初の適用である。
+
+## 対象ノード
+
+| id | 原典 | 移植 | 除外 | 作らない |
+|:---|---:|---:|---:|---:|
+| `actor-tests/src/test/java/org/apache/pekko/japi/pf/PFBuilderTest.java` | 1 | 0 | 0 | 1 |
+| `actor-tests/src/test/java/org/apache/pekko/japi/MatchBuilderTest.java` | 3 | 0 | 0 | 3 |
+
+合計は原典4件・移植0件・除外0件・作らない4件。`needs` はどちらも空である。原典件数は `@Test` の数で、`verify_red.py` の `count_original_cases` も1件と3件と数えた。
+
+## 経緯と決定
+
+1. main `95f19d0` を基準に、原典4ケースを先に移植した（隔離枝 [`j5ik2o/issue-145-146-match-builder`](https://github.com/j5ik2o/fraktor-ng-rs/tree/j5ik2o/issue-145-146-match-builder)、HEAD [`20fffb6`](https://github.com/j5ik2o/fraktor-ng-rs/commit/20fffb68592028789b48735716d100ce54538538)）。製品差分は0で、2本とも `E0432 unresolved import fraktor_actor::kernel::partial_function` の compile-red だった（`cargo test -p fraktor-actor --test pf_builder_test` と `--test match_builder_test` は終了値101。`verify_red.py` は2ノードとも `expected_compile_error`、`excluded: 0`）。already_green ではない。製品に部分関数や `Match` に当たる型がない。
+2. 4ケースを移植するには、kernel に新しい公開モジュール（部分関数、そのビルダー、不成立の誤り）を足す必要があった。担当は公開する前に調整担当へ報告した。調べた範囲では、非公開のままでは検証できない。台帳のゲート（`verify_red.py`・`verify_green.py`）は `cargo test -p <crate> --test <stem>` で統合テストだけを走らせ、統合テストからは `pub` しか見えないためである。
+3. オーナーの決定（元帥の項目223、2026-11-25、副元帥経由）：「作らない区分を認める（理由を台帳に書いて対象外にする）」。Rust の言語機能で代わりが効く Java 向けの補助は、公開 API として作らない。
+4. 本 PR は、main `8c8d455` を起点にした別の枝で、台帳・文書・集計だけを変える。隔離枝から実装やコミットは取り込んでいない。製品の公開 API は足していない。隔離枝は先行テストと red の証拠として残す。
+
+実行経路は直接実装である。TAKT にはゴールもタスクも投入していない。担当は Claude Opus 5.5 の1名だけである。
+
+## ケースごとの評価
+
+どのケースも、原典の言語のための補助そのもの（Java のラムダの型推論、`Class` での型の判定、型消去の回避、述語の型付け）を検証している。観測している振る舞いは、「登録した順に case を試す」「当たった case の値を返す」「どれにも当たらなければ不成立になる」の3つで、いずれも Rust の `match`・`if let`・ガード・`Option` と、既存の `Message::downcast_ref` で得られる。実行時の契約、JVM の代替の設計、Java からの到達性だけの検査、文書のサンプルには当たらない。
+
+| 原典のケース | 原典が検証していること | 作らない理由 | Rust の代替 |
+|:---|:---|:---|:---|
+| `pfbuilder_matchAny_should_infer_declared_input_type_for_lambda` | `PFBuilder.<String, Integer>create()` で宣言した入力型を、`matchAny` のラムダが推論すること。`matchEquals("hello")` と `matchAny` の両方で、`"hello"` と `"42"` が定義域に入り、`apply("42")` が 42 を返すこと | ラムダの型推論は Java のビルダーの補助である。Rust では関数の引数型が入力型を固定し、`match` の腕は上から順に試される | 代替1 |
+| `shouldPassBasicMatchTest` | `Integer.class` の case が先に、`Number.class` の case が後に登録され、整数は先の case、倍精度値は後の case に当たり、文字列は `MatchError` になること | クラスで case を組むビルダーは、Java に値のパターンマッチがないための補助である。Rust では `downcast_ref` を順に試す `if let` の連鎖で同じ優先順位になり、不成立は `None` になる。`Number` のような上位型は、受け付ける数値型を腕に並べる | 代替2 |
+| `shouldHandleMatchOnGenericClass` | `matchUnchecked(GenericClass.class, ...)` で `GenericClass<String>` を受け、`val` の `"A"` を取り出すこと | `matchUnchecked` は、Java の型消去で `GenericClass<String>` を `Class` で表せないための補助である。Rust の型引数は実行時にも消えないので、検査つきの `downcast_ref::<GenericClass<String>>()` で取り出せる | 代替3 |
+| `shouldHandleMatchWithPredicateOnGenericClass` | `TypedPredicate` で `val` が空でないことを条件にし、空文字列の `GenericClass` が `MatchError` になること | 型の判定に述語を重ねる `TypedPredicate` は、ラムダの型付けの補助である。Rust では `match` のガードか `Option::filter` で書け、述語を満たさなければ `None` になる | 代替4 |
+
+### 代替の例
+
+次のコードは、main `8c8d455` の `fraktor-actor` を path 依存にした一時クレートの統合テストとして実行し、4件とも成功した（`cargo test --test alternatives` で `4 passed; 0 failed`）。各テストは、原典のケースの入力と期待値をそのまま使う。
+
+```rust
+use fraktor_actor::kernel::message::Message;
+
+// 代替1（PFBuilderTest）：入力型は引数の型で決まり、腕は上から順に試される。
+fn pf(s: &str) -> Option<i32> {
+  match s {
+    "hello" => Some(1),
+    s => s.parse().ok(),
+  }
+}
+
+#[test]
+fn pf_builder_alternative() {
+  assert!(pf("hello").is_some()); // isDefinedAt("hello")
+  assert!(pf("42").is_some()); // isDefinedAt("42")
+  assert_eq!(pf("42"), Some(42)); // apply("42") == 42
+}
+
+// 代替2（shouldPassBasicMatchTest）：先に書いた腕が優先され、どれにも当たらなければ None。
+fn basic(m: &Message) -> Option<f64> {
+  if let Some(i) = m.downcast_ref::<i32>() {
+    Some(f64::from(*i) * 10.0)
+  } else if let Some(d) = m.downcast_ref::<f64>() {
+    Some(*d * -10.0)
+  } else {
+    None
+  }
+}
+
+#[test]
+fn basic_match_alternative() {
+  assert_eq!(basic(&Message::new(4711_i32)), Some(47110.0));
+  assert_eq!(basic(&Message::new(4711.0_f64)), Some(-47110.0));
+  assert_eq!(basic(&Message::new("4711")), None); // MatchError
+}
+
+struct GenericClass<T> {
+  val: T,
+}
+
+// 代替3（shouldHandleMatchOnGenericClass）：型引数つきの型を検査つきで取り出す。
+#[test]
+fn generic_class_alternative() {
+  let m = Message::new(GenericClass { val: String::from("A") });
+  assert_eq!(m.downcast_ref::<GenericClass<String>>().map(|g| g.val.clone()), Some(String::from("A")));
+}
+
+// 代替4（shouldHandleMatchWithPredicateOnGenericClass）：述語は Option::filter（または match のガード）。
+#[test]
+fn generic_class_with_predicate_alternative() {
+  let m = Message::new(GenericClass { val: String::new() });
+  assert_eq!(m.downcast_ref::<GenericClass<String>>().filter(|g| !g.val.is_empty()).map(|g| g.val.clone()), None);
+}
+```
+
+原典の `Integer.valueOf` は数字でない文字列で例外を投げるが、原典のケースは `"hello"` を先の case で受けるので、その経路を観測しない。代替1は `parse().ok()` で `None` にしている。
+
+## 台帳と集計の変更
+
+- 区分の定義・当てはめる条件・自動では入れないもの・混在の扱いを、[`ledger-schema-draft.md` の「作らない区分」](../decisions/ledger-schema-draft.md)に書いた。`ledger/README.md` にも要約と参照を足した。
+- 2ノードを `status: not_built`、`triage.kind: not_built` にし、`triage.reason` に理由と本書の場所を書いた。`cases` は `total` に原典の件数、`ported` と `passing` に0、`cases.not_built` にケースごとの `name`・`reason`・`alternative`・`approved_by`・`approved_at` を書いた。`approved_by` と `approved_at` は、オーナーの決定（元帥の項目223）を写したもので、担当が承認したものではない。`rust` の欄は null のままである。`goal` は `G0issue145`。
+- `rollup.py` は、`not_built` のノード数、作らない率（B / N）、ケースの 移植・除外・作らない の件数を出す。除外と作らないの件数は、承認記録の有効な件数と、台帳に書かれた件数（括弧内）を分けて出す。合格率は G / (N − X − B) にした（作らない区分は「理由を台帳に書いて対象外にする」決定による）。
+- `rollup.py` は `not_built` のノードの記録を検査し、欠けていればゴールの完了に数えない。承認の2欄は除外と同じ `excluded_approvals.is_approved_by_human` で検査し（空白以外の文字列の承認者、時刻を含まない実在の暦日）、ケース名は空白以外の文字列でノード内で重複しないことを求める。台帳は除外の検査と同じ専用ローダで読む。
+- `check_needs.py` の「完了したゴール」は、`rollup.py` の同じ判定（`is_done`）と同じ読み込み（`load_nodes`）を使う。
+- TAKT の triage の指示（`fraktor-triage.md`）と子ワークフロー（`fraktor-port-node.yaml`）の triage の規則を、記録の揃った not_built を処理済みにし、記録の不足した not_built を needs_human にする形に揃えた。移植の規約（`fraktor-porting-rules.md`）にも、not_built は人間だけが決めることを書いた。ワークフローは実際には走らせていない。
+- 承認済みのグラフモデル提案書（`fable-graph-model-proposal.md`）に「追加の決定：作らない区分」を足し、論点 9（完了条件）と論点 16（合格率）の読み替えと、3章・5章の該当箇所への注記を書いた。
+- `goal_complete_gate_test.py` に11件を足した。green と記録の揃った not_built の混在は完了。承認の欄の欠落、実在しない暦日（引用あり・なし）、時刻つきの日付、文字列でない・空白だけの承認者、重複したケース名、空白だけのケース名、整数の 0 でない `passing`、配列でない `cases.not_built` は、どれも未完了（配列でない記録でも集計は止まらない）。ほかのゴールの記録不足は、対象ゴールの未完了一覧に入らない。TAKT の triage の指示と規則が `rollup.DONE_STATUSES` の全 status と、記録の不足した not_built の needs_human を持つこと。レビュー前の HEAD `97b765d` の `rollup.py` と TAKT の2ファイルでは、このうち3件と実物のゴール文書の検査が失敗することを確かめた（`28 passed, 4 failed`）。再レビュー後の追加分は、`1b88d94` の `rollup.py` と TAKT の2ファイルで4件が失敗することを確かめた（`31 passed, 4 failed`）。
+- `verify_red.py`・`verify_green.py` の勘定には手を入れていない。混在のノードはまだない。
+
+集計の変化（`rollup.py --ledger ledger/nodes.yaml` の全体の行）：
+
+| | main `8c8d455` | 本 PR |
+|:---|:---|:---|
+| ノード | N=1261、green 49、do_not_port 173、not_built 0 | N=1261、green 49、do_not_port 173、not_built 2 |
+| 合格率 | 49 / 1088 = 4.5% | 49 / 1086 = 4.5% |
+| 作らない率 | 0.0% | 0.2% |
+| ケース | 移植 260、除外 0、作らない 0 | 移植 260、除外 0（記録 0）、作らない 4（記録 4） |
+
+## 検証
+
+本書のコミットの HEAD で、担当が次を実行した。
+
+| コマンド | 終了値 | 結果 |
+|:---|---:|:---|
+| `rollup.py --goal G0issue145` | 0 | 2件、`{'not_built': 2}`、完了 |
+| `check_needs.py --goal G0issue145` | 0 | needs 閉性 OK |
+| `check_needs.py` と `rollup.py` を `G0a`〜`G0f` の各々で | 0 | 12コマンドすべて終了値0 |
+| `goal_complete_gate_test.py` | 0 | 39 passed, 0 failed |
+| `verify_red_test.py` | 0 | 48 passed, 0 failed |
+| `verify_green_test.py`、`verify_green_test_aislop.py`、`verify_green_test_crate.py` | 0 | 成功 |
+| `npm ci` → `npm run check:aislop` | 0 | warn 以上の指摘は受理済み一覧と一致 |
+| `cargo test --workspace` | 0 | 75 スイート、848 passed / 0 failed。製品とテストの Rust コードは変えていない。回帰の確認として実行 |
+| `cargo fmt --check` | 0 | 差分なし |
+
+## PR #165 のレビュー指摘への対応
+
+| 指摘 | 分類 | 対応 |
+|:---|:---|:---|
+| Cursor（r4687889476）、Devin（r4687894221）：TAKT の triage が not_built を処理済みにせず、子ワークフローも完了を返さない | 直す | triage の指示と子ワークフローの規則を `rollup.py` の判定に揃え、記録の不足した not_built を needs_human にした。食い違いを検出するテスト（33）を足した |
+| Cursor（r4687889500）：提案書の論点表が not_built 以前の完了条件と合格率のまま | 直す | 提案書に「追加の決定：作らない区分」と論点 9・16 の読み替え、3章・5章の注記を足した |
+| Devin（r4687893971）、Codex（r4687894519）：不正な承認記録でも完了になる | 直す | 承認の2欄を `is_approved_by_human` で検査し、台帳を除外と同じ専用ローダで読むようにした（引用なしの正しい日付は引き続き受理する）。テスト（30a〜30e）を足した |
+| Devin（r4687894084）：ケース名の重複で欠けたケースが隠れる | 直す | ケース名が空白以外の文字列で、ノード内で重複しないことを検査した。テスト（31、32）を足した |
+| Devin（r4687894370）：ケースの集計が未承認の記録も数える | 直す | 承認記録の有効な件数と、台帳に書かれた件数を分けて出すようにした |
+| CodeRabbit（r4688075677）：ほかのゴールの記録不足で、対象ゴールの triage が needs_human で止まる | 直す | triage の指示と子ワークフローの規則で、記録不足の判定を対象ゴールのノードに限り、`rollup.py --goal` のそのゴールの未完了一覧で判定するようにした。未完了一覧は not_built の不足の内容も出す。テスト（33、36）を足した |
+| CodeRabbit（r4688075690）：`passing` が欠落・null・1 でも完了になる | 直す | `ported` と `passing` がどちらも整数の 0 であることを求めた。テスト（34a〜34d）を足した |
+| CodeRabbit（r4688075696）：`cases.not_built` が配列でないと集計が `TypeError` で止まる | 直す | 集計は配列の記録だけを数え、配列でない記録は `not_built_problems` の診断に回す。テスト（35a、35b）を足した |
+
+## 独立レビュー（別系統のモデル）
+
+固定 HEAD `b20191f` を、Codex の GPT-6.2 Sol が読み取り専用で1回レビューした（`docs/decisions/takt-workflow-design.md` §2.6、[PR のコメント](https://github.com/j5ik2o/fraktor-ng-rs/pull/165#issuecomment-7147906343)）。4ケースを作らないとする個別判断は妥当で、台帳の不正な記録について P2 の指摘が3件あり、差し戻しになった。副元帥の承認で、同じ担当が1回だけ追加で直した。
+
+| 指摘 | 対応 |
+|:---|:---|
+| `triage` や `cases` がマッピングでないと `AttributeError` で止まり、ほかのゴール（G0f）の `rollup.py` と `check_needs.py` も止まる | マッピングでない記録を診断に回す。対象ゴールなら未完了、ほかのゴールは判定を続ける。テスト（37、38） |
+| 全件を作らないノードで、同じケースを承認済みの除外にも置くと完了になり、除外と作らないに二重に数える | 全件を作らないノードの `cases.excluded` を記録の不足にし、そのノードの除外を有効な件数に数えない。テスト（39） |
+| `total: true` が1件と等しいとされ、前後に空白のある名前で重複を隠せる | `total` は正の整数、ケース名は前後に空白を持たないことを求め、重複は空白を除いて比べる。テスト（40） |
+
+追加の4テストは、`b20191f` の `rollup.py` では失敗し（`35 passed, 4 failed`）、修正後は成功する（`39 passed`）。レビューの隔離コピーの再現入力（5種と、前提に使う3種）で修正の前後を比べた。修正前は、マッピングでない記録で G0issue145・G0f の `rollup.py` と G0f の `check_needs.py` が `AttributeError` で終わり、ほかの3種は G0issue145 が完了になって、合成した能力で G0issue145 を前提にする G0f の `check_needs.py` も充足になった。修正後は、5種とも G0issue145 が未完了（終了値1）、G0f の `rollup.py` と `check_needs.py` は終了値0、合成した前提の3種は G0f の `check_needs.py` が未充足（終了値1）になった。二重の記録の集計は、修正前の「除外=1（記録 1） 作らない=4（記録 4）」が「除外=0（記録 1） 作らない=3（記録 4）」になった。
+
+## 再現手順
+
+```text
+uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0issue145
+uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0issue145
+uv run --with pyyaml python3 ledger/tools/goal_complete_gate_test.py
+uv run --with pyyaml python3 ledger/tools/verify_red_test.py
+cargo test --workspace
+
+# 先行テストの red（隔離枝）
+git checkout 20fffb68592028789b48735716d100ce54538538
+cargo test -p fraktor-actor --test pf_builder_test -- --test-threads=1
+cargo test -p fraktor-actor --test match_builder_test -- --test-threads=1
+```
+
+代替の例を確かめるには、`fraktor-actor` を path 依存にした一時クレートの `tests/alternatives.rs` に上のコードを置き、`cargo test --test alternatives` を実行する。

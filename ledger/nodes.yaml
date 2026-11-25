@@ -3478,10 +3478,10 @@ nodes:
     module: actor-tests
     class: MatchBuilderTest
     test_cases_approx: 3
-  status: unported
+  status: not_built
   triage:
-    kind: pending
-    reason: null
+    kind: not_built
+    reason: "Java の Match（PFBuilder で組む部分関数）を検証するスイートで、観測できる振る舞いは順序つきの match、ガード、Option と既存の Message::downcast_ref で満たせるため、対応する公開面を作らない（docs/goals/issue-145-partial-function-builders.md）"
   needs:
     testkit: []
     premise_flags: []
@@ -3490,14 +3490,30 @@ nodes:
     - actor
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 3
+    ported: 0
+    passing: 0
     excluded: []
+    not_built:
+    - name: shouldPassBasicMatchTest
+      reason: "クラスごとの case を登録順に試し、どれにも当たらなければ MatchError を投げる、Java 向けのビルダーそのものの検査。Rust では downcast_ref を順に試す if let の連鎖で同じ優先順位になり、不成立は None で表せる"
+      alternative: "if let Some(i) = m.downcast_ref::<i32>() { Some(f64::from(*i) * 10.0) } else if let Some(d) = m.downcast_ref::<f64>() { Some(*d * -10.0) } else { None }。Number のような上位型は、受け付ける数値型を腕に並べて表す"
+      approved_by: j5ik2o（オーナー。元帥の項目223の回答「作らない区分を認める」、副元帥経由）
+      approved_at: 2026-11-25
+    - name: shouldHandleMatchOnGenericClass
+      reason: "matchUnchecked は Java の型消去で GenericClass<String> を Class で表せないための補助で、その補助の検査。Rust の型引数は消えないので、検査つきの downcast_ref で同じ値を取り出せる"
+      alternative: "m.downcast_ref::<GenericClass<String>>().map(|g| g.val.clone())"
+      approved_by: j5ik2o（オーナー。元帥の項目223の回答「作らない区分を認める」、副元帥経由）
+      approved_at: 2026-11-25
+    - name: shouldHandleMatchWithPredicateOnGenericClass
+      reason: "型の一致に述語を重ねる TypedPredicate の検査。Rust では match のガードか Option::filter で表せ、述語を満たさなければ None になる"
+      alternative: "m.downcast_ref::<GenericClass<String>>().filter(|g| !g.val.is_empty()).map(|g| g.val.clone())"
+      approved_by: j5ik2o（オーナー。元帥の項目223の回答「作らない区分を認める」、副元帥経由）
+      approved_at: 2026-11-25
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue145
 - id: actor-tests/src/test/scala/org/apache/pekko/util/MessageBufferSpec.scala
   name: actor-tests:MessageBufferSpec
   kind: test
@@ -3611,10 +3627,10 @@ nodes:
     module: actor-tests
     class: PFBuilderTest
     test_cases_approx: 1
-  status: unported
+  status: not_built
   triage:
-    kind: pending
-    reason: null
+    kind: not_built
+    reason: "Java の部分関数ビルダー PFBuilder を検証するスイートで、観測できる振る舞いは Rust の match と Option で満たせるため、対応する公開面を作らない（docs/goals/issue-145-partial-function-builders.md）"
   needs:
     testkit: []
     premise_flags: []
@@ -3622,14 +3638,20 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 1
+    ported: 0
+    passing: 0
     excluded: []
+    not_built:
+    - name: pfbuilder_matchAny_should_infer_declared_input_type_for_lambda
+      reason: "Java のラムダの入力型推論と、等値の case と任意入力の case を順に試すビルダーそのものの検査。Rust では関数の引数型が入力型を固定し、match の腕が上から順に試される"
+      alternative: "fn pf(s: &str) -> Option<i32> { match s { \"hello\" => Some(1), s => s.parse().ok() } }。定義域は pf(s).is_some()、適用は pf(\"42\") == Some(42)"
+      approved_by: j5ik2o（オーナー。元帥の項目223の回答「作らない区分を認める」、副元帥経由）
+      approved_at: 2026-11-25
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue145
 - id: actor-tests/src/test/scala/org/apache/pekko/pattern/PatternSpec.scala
   name: actor-tests:PatternSpec
   kind: test
