@@ -1,6 +1,8 @@
 //! Unit tests for [`ByteStringInputStream`](super::ByteStringInputStream).
 
-use super::super::{ByteString, MarkNotSupportedError};
+use alloc::vec::Vec;
+
+use super::super::{ByteString, EndOfStreamError, IndexOutOfBoundsError, MarkNotSupportedError};
 
 #[test]
 fn single_byte_reads_cross_concatenated_arrays_in_order() {
@@ -184,4 +186,75 @@ fn separately_added_arrays_build_one_array_whose_stream_resets_to_the_mark() {
   assert_eq!(input.read(), Some(2));
   assert_eq!(input.read(), Some(3));
   assert_eq!(input.read(), None);
+}
+
+fn concatenated() -> super::ByteStringInputStream {
+  ByteString::from_string("ab").concat(&ByteString::from_string("cde")).as_input_stream()
+}
+
+#[test]
+fn available_counts_the_bytes_left_in_every_array() {
+  let mut input = concatenated();
+  assert_eq!(input.available(), 5);
+  assert_eq!(input.read(), Some(b'a'));
+  assert_eq!(input.read(), Some(b'b'));
+  assert_eq!(input.available(), 3);
+  assert_eq!(input.skip(3), 3);
+  assert_eq!(input.available(), 0);
+}
+
+#[test]
+fn bulk_reads_cross_concatenated_arrays() {
+  let mut input = concatenated();
+  assert_eq!(input.read(), Some(b'a'));
+  assert_eq!(input.read_n_bytes(2), b"bc".to_vec());
+  assert_eq!(input.read_all_bytes(), b"de".to_vec());
+  assert_eq!(input.read_all_bytes(), Vec::<u8>::new());
+
+  let mut input = concatenated();
+  let mut buffer = [0_u8; 6];
+  assert_eq!(input.read_n_bytes_into(&mut buffer, 1, 4), Ok(4));
+  assert_eq!(&buffer[1..5], b"abcd");
+  assert_eq!(input.read_range(&mut buffer, 0, 6), Ok(Some(1)));
+  assert_eq!(buffer[0], b'e');
+  let mut out = Vec::new();
+  assert_eq!(input.transfer_to(&mut out), 0);
+}
+
+#[test]
+fn skip_n_bytes_crosses_arrays_and_stops_at_the_end_when_short() {
+  let mut input = concatenated();
+  assert_eq!(input.skip_n_bytes(3), Ok(()));
+  assert_eq!(input.read(), Some(b'd'));
+  assert_eq!(input.skip_n_bytes(2), Err(EndOfStreamError));
+  assert_eq!(input.available(), 0);
+}
+
+#[test]
+fn a_range_outside_the_buffer_is_refused_without_moving_the_stream() {
+  let mut input = concatenated();
+  let mut buffer = [0_u8; 2];
+  assert_eq!(input.read_range(&mut buffer, 3, 0), Err(IndexOutOfBoundsError));
+  assert_eq!(input.read_range(&mut buffer, 1, usize::MAX), Err(IndexOutOfBoundsError));
+  assert_eq!(input.read_n_bytes_into(&mut buffer, 0, 3), Err(IndexOutOfBoundsError));
+  assert_eq!(input.available(), 5);
+}
+
+// Stands in, together with the `compile_fail` example on `skip`, for the
+// excluded case "reject negative skip" of Pekko v2.0.0's
+// UnsynchronizedByteArrayInputStreamSpec (L66-70). Not counted in the ledger.
+#[test]
+fn skip_at_its_boundaries_zero_exactly_the_rest_and_past_the_rest() {
+  let mut input = ByteString::from_string("abc").as_input_stream();
+  assert_eq!(input.skip(0), 0);
+  assert_eq!(input.available(), 3);
+  assert_eq!(input.skip(3), 3);
+  assert_eq!(input.available(), 0);
+  assert_eq!(input.read(), None);
+
+  let mut input = concatenated();
+  assert_eq!(input.skip(6), 5);
+  assert_eq!(input.available(), 0);
+  assert_eq!(input.skip(1), 0);
+  assert_eq!(input.skip(usize::MAX), 0);
 }

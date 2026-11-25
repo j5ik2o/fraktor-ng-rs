@@ -93,3 +93,20 @@ fn a_read_with_too_few_bytes_left_returns_none_and_consumes_nothing() {
   assert_eq!(iterator.get_long(ByteOrder::LittleEndian), None);
   assert_eq!(iterator.collect::<Vec<u8>>(), vec![0x01, 0x02, 0x03]);
 }
+
+#[test]
+fn remaining_saturates_instead_of_wrapping_when_the_lengths_exceed_usize() {
+  assert_eq!(super::remaining_of([usize::MAX, 1].into_iter(), 0, usize::MAX), usize::MAX);
+  assert_eq!(super::remaining_of([usize::MAX, usize::MAX].into_iter(), 1, usize::MAX), usize::MAX);
+  assert_eq!(super::remaining_of([3, 4].into_iter(), 1, usize::MAX), 6);
+}
+
+#[test]
+fn remaining_stops_counting_at_the_limit() {
+  // The lengths after the limit is reached are never read.
+  let lengths = [2, 2].into_iter().chain(core::iter::from_fn(|| panic!("read past the limit")));
+  assert_eq!(super::remaining_of(lengths, 0, 3), 3);
+  assert_eq!(super::remaining_of(core::iter::from_fn(|| panic!("read for a zero limit")), 0, 0), 0);
+  assert_eq!(over(&[&[1, 2], &[3]]).remaining_up_to(10), 3);
+  assert_eq!(over(&[&[1, 2], &[3]]).remaining_up_to(2), 2);
+}

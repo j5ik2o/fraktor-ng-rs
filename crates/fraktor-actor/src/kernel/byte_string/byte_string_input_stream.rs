@@ -1,6 +1,8 @@
 //! A stream that reads the bytes of a byte string.
 
-use super::MarkNotSupportedError;
+use alloc::vec::Vec;
+
+use super::{EndOfStreamError, IndexOutOfBoundsError, MarkNotSupportedError};
 use crate::kernel::byte_iterator::ByteIterator;
 
 #[cfg(test)]
@@ -66,6 +68,87 @@ impl ByteStringInputStream {
     }
   }
 
+  /// Reads up to `length` bytes into `buffer[offset..offset + length]` and
+  /// returns how many it read, or returns `None` at the end of the stream.
+  ///
+  /// Corresponds to Java's `InputStream.read(buffer, off, len)`. A zero
+  /// `length` reads `Some(0)` without looking for the end of the stream, as
+  /// [`read_into`](Self::read_into) does for an empty buffer.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`IndexOutOfBoundsError`] when the range does not lie inside
+  /// `buffer`, where Java throws an `IndexOutOfBoundsException`. The stream
+  /// does not move.
+  pub fn read_range(
+    &mut self,
+    buffer: &mut [u8],
+    offset: usize,
+    length: usize,
+  ) -> Result<Option<usize>, IndexOutOfBoundsError> {
+    let end = offset.checked_add(length).filter(|end| *end <= buffer.len()).ok_or(IndexOutOfBoundsError)?;
+    Ok(self.read_into(&mut buffer[offset..end]))
+  }
+
+  /// Reads up to `length` bytes into `buffer[offset..offset + length]` and
+  /// returns how many it read: `0` at the end of the stream.
+  ///
+  /// Corresponds to Java's `InputStream.readNBytes(buffer, off, len)`, which
+  /// reads until `length` bytes or the end of the stream.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`IndexOutOfBoundsError`] when the range does not lie inside
+  /// `buffer`. The stream does not move.
+  pub fn read_n_bytes_into(
+    &mut self,
+    buffer: &mut [u8],
+    offset: usize,
+    length: usize,
+  ) -> Result<usize, IndexOutOfBoundsError> {
+    Ok(self.read_range(buffer, offset, length)?.unwrap_or(0))
+  }
+
+  /// Reads every byte that is left.
+  ///
+  /// Corresponds to Java's `InputStream.readAllBytes()`.
+  pub fn read_all_bytes(&mut self) -> Vec<u8> {
+    self.read_n_bytes(usize::MAX)
+  }
+
+  /// Reads up to `length` bytes: `length`, or the bytes left when fewer are
+  /// left.
+  ///
+  /// Corresponds to Java's `InputStream.readNBytes(len)`.
+  pub fn read_n_bytes(&mut self, length: usize) -> Vec<u8> {
+    let mut bytes = alloc::vec![0_u8; self.bytes.remaining_up_to(length)];
+    self.bytes.copy_into(&mut bytes);
+    bytes
+  }
+
+  /// Appends every byte that is left to `out`, and returns how many it
+  /// appended.
+  ///
+  /// Corresponds to Java's `InputStream.transferTo(out)`. The kernel has no
+  /// `std::io::Write`, so the output is a byte vector.
+  pub fn transfer_to(&mut self, out: &mut Vec<u8>) -> usize {
+    let bytes = self.read_all_bytes();
+    out.extend_from_slice(&bytes);
+    bytes.len()
+  }
+
+  /// Returns how many bytes are left to read.
+  ///
+  /// Corresponds to Java's `InputStream.available()`. Pekko's
+  /// `UnsynchronizedByteArrayInputStream` returns every byte left; this stream
+  /// does so for a concatenation of several arrays too, where Pekko's
+  /// `java.io.SequenceInputStream` reports only the current part. A count that
+  /// a `usize` cannot hold is reported as `usize::MAX`.
+  #[must_use]
+  pub fn available(&self) -> usize {
+    self.bytes.remaining()
+  }
+
   /// Returns whether the stream supports [`mark`](Self::mark) and
   /// [`reset`](Self::reset): `true` for a byte string of at most one array,
   /// `false` for a concatenation of several.
@@ -111,10 +194,38 @@ impl ByteStringInputStream {
   ///
   /// Corresponds to Java's `InputStream.skip(n)`, for streams that support
   /// marks and for those that do not. Pekko's
-  /// `UnsynchronizedByteArrayInputStream` moves its position by the whole `n`
-  /// even past the end, so a later skip there returns a negative count; this
-  /// stream stops at the end and returns `0`.
+  /// `UnsynchronizedByteArrayInputStream` also stops at the end since v2.0.0;
+  /// in v1.7.1 it moved its position by the whole `n` even past the end, so a
+  /// later skip there returned a negative count.
+  ///
+  /// `count` is a `usize`, so a negative count does not compile. This stands in
+  /// for the excluded case "reject negative skip" of Pekko v2.0.0's
+  /// `UnsynchronizedByteArrayInputStreamSpec` (L66-70), where `skip(-1)` throws
+  /// `IllegalArgumentException`; it is not counted as one of the node's cases.
+  ///
+  /// ```compile_fail
+  /// use fraktor_actor::kernel::byte_string::ByteString;
+  ///
+  /// let mut stream = ByteString::from_string("abc").as_input_stream();
+  /// stream.skip(-1);
+  /// ```
   pub fn skip(&mut self, count: usize) -> usize {
     self.bytes.skip_bytes(count)
+  }
+
+  /// Moves past exactly `count` bytes without reading them.
+  ///
+  /// Corresponds to Java's `InputStream.skipNBytes(n)`.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`EndOfStreamError`] when fewer than `count` bytes are left,
+  /// where Java throws an `EOFException`. The stream is then at its end.
+  pub fn skip_n_bytes(&mut self, count: usize) -> Result<(), EndOfStreamError> {
+    if self.skip(count) == count {
+      Ok(())
+    } else {
+      Err(EndOfStreamError)
+    }
   }
 }
