@@ -258,4 +258,3 @@ fn skip_at_its_boundaries_zero_exactly_the_rest_and_past_the_rest() {
   assert_eq!(input.skip(1), 0);
   assert_eq!(input.skip(usize::MAX), 0);
 }
-
