@@ -75,6 +75,59 @@ SCALA_CASE = re.compile(
 # `it should "..."` で始まる行も、文字列リテラルで始まる名前付きブロックとして数える
 # （SCALA_CASE 側でケースとして数えるため、突き合わせの両側で同じ行を数える）。
 SCALA_NAMED_PREFIX = re.compile(r'^\s*(?:it\s+should\s+)?"[^"]+"\s+(?=\S)', re.MULTILINE)
+# WordSpec の見出し（`"name" must {` など）。ケースではなく、下のケースをまとめるブロックである。
+# 見出しとして認めるのは、波括弧で閉じたブロックの中に既知の書式のケースが 1 件以上あるときだけ
+# （空の見出しや、未知の書式だけを持つ見出しは、件数を確かめられないので数えられない扱いにする）。
+SCALA_HEADING = re.compile(
+    r'^\s*"[^"]*"\s+(?:must|should|can|when|which)\s*\{', re.MULTILINE)
+
+
+def _block_end(text: str, open_brace: int) -> int | None:
+    """text[open_brace] の `{` に対応する `}` の位置を返す。文字列とコメントの中の括弧は数えない。"""
+    depth, i, n = 0, open_brace, len(text)
+    while i < n:
+        if text.startswith('"""', i):
+            end = text.find('"""', i + 3)
+            if end < 0:
+                return None
+            i = end + 3
+            continue
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n and text[j] != '"' and text[j] != "\n":
+                j += 2 if text[j] == "\\" else 1
+            i = j + 1
+            continue
+        if text.startswith("//", i):
+            end = text.find("\n", i)
+            i = n if end < 0 else end
+            continue
+        if text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            if end < 0:
+                return None
+            i = end + 2
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
+def count_scala_headings(text: str) -> int | None:
+    """WordSpec の見出しの数を返す。既知のケースを持たない見出しがあれば None。"""
+    count = 0
+    for m in SCALA_HEADING.finditer(text):
+        end = _block_end(text, m.end() - 1)
+        if end is None or not SCALA_CASE.search(text, m.end(), end):
+            return None
+        count += 1
+    return count
 
 
 def parse_previous_response() -> dict:
@@ -244,9 +297,10 @@ def count_original_cases(node_id: str) -> int | None:
     Java の @Test と、Scala の `it should "..." in {` / `"..." in {` / `"..." taggedAs ... in {`
     を数える。既知の書式で全件を説明できるかを、ファイル全体の構文本数と突き合わせて確かめる:
     Java は @Test の数と、@Test に続く void メソッド宣言の数が一致すること。
-    Scala は先頭が文字列リテラルで始まる行の数が、上の書式で数えたケース数に一致すること
-    （`"name" must {`、`"name" should {` などはケース書式ではないため、そのファイルは
-    数えられないと判断する）。
+    Scala は先頭が文字列リテラルで始まる行の数が、上の書式で数えたケース数と WordSpec の
+    見出し（`"name" must {`、`"name" should {` など）の数の和に一致すること。見出しは、その
+    ブロックの中に既知の書式のケースが 1 件以上あるときだけ認め、ケースには数えない（空の見出しや、
+    未知の書式だけを持つ見出しがあれば、そのファイルは数えられないと判断する）。
     0 件は「ケースが無い」であり、移植の正しさを確かめられないため None とする。
     """
     path = os.path.join(pekko_baseline.source_root(), node_id)
@@ -265,7 +319,8 @@ def count_original_cases(node_id: str) -> int | None:
     elif path.endswith(".scala"):
         scala_cases = len(SCALA_CASE.findall(text))
         named = len(SCALA_NAMED_PREFIX.findall(text))
-        if named != scala_cases:
+        headings = count_scala_headings(text)
+        if headings is None or named != scala_cases + headings:
             return None
         total = scala_cases
     else:
