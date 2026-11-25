@@ -72,6 +72,13 @@ uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger \
   --ledger ledger/nodes.yaml --pekko pekko --list-unverified
 ```
 
+未照合のノードをどう減らすかは、2 つの記録が持つ。
+
+- `v2.0.0-reverification.md`：判定済み 175 ノードの v2.0.0 再照合（1 ノード 1 行の根拠。台帳の
+  `verified_against` を v2.0.0 に揃えた）
+- `v2.0.0-missing-unported.md`：v2.0.0 の原典にファイルが無い unported 23 ノード（移動 9・
+  原典で削除 14。台帳に記録する形式が規定されていないため、台帳は変えていない）
+
 ## 基準を変えるとき
 
 1. `tools/pekko-source/pekko-baseline.env` の現行タグ・commit・タグ object・決定日を書き換え、

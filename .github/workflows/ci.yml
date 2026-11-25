@@ -54,6 +54,7 @@ jobs:
           uv run --with pyyaml python3 ledger/tools/verify_green_test_crate.py
           uv run --with pyyaml python3 ledger/tools/pekko_baseline_test.py
           uv run --with pyyaml python3 ledger/tools/retired_lineage_test.py
+          uv run --with pyyaml python3 ledger/tools/reverify_against_test.py
           uv run --with pyyaml python3 tools/pekko-source/prepare_pekko_source_test.py
           uv run --with pyyaml python3 tools/takt-facets/knowledge_budget_test.py
       - name: Pekko baseline

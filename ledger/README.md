@@ -45,7 +45,23 @@ uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger --ledge
 # 現行タグで未照合のノードの一覧と、現行の原典にファイルが無いノードの件数
 uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger \
   --ledger ledger/nodes.yaml --pekko pekko --list-unverified
+
+# 再照合の候補（現行タグで未照合の判定済みノード）の id を出す。これは候補であって、
+# 照合済みの一覧ではない
+uv run python3 ledger/tools/reverify_against.py plan --ledger ledger/nodes.yaml
+
+# 実際に原典と突き合わせて理由が成り立つと確かめたノードの id だけを書いたファイルを渡す
+# （plan の出力をそのまま流さない。確かめていないノードを現行タグにしない）
+uv run python3 ledger/tools/reverify_against.py apply \
+  --ledger ledger/nodes.yaml --ids /tmp/checked-ids.txt --dry-run
 ```
+
+`apply` と `plan` の `--tag` を省くと、基準ファイルの現行タグになる。過去のタグを渡すと拒否する
+（照合済みのノードが「現行タグで未照合」に戻り、台帳の検査は過去のタグを有効とするため
+気づけない）。
+
+再照合の結果は `docs/baseline/v2.0.0-reverification.md` が持つ（1 ノード 1 行の根拠）。
+再照合の判定日と根拠を台帳に持つ欄は規定されていないので、台帳には `verified_against` の値だけを書く。
 
 ## needs の抽出と閉性判定
 
