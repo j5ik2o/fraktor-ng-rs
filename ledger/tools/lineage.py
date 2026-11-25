@@ -74,6 +74,9 @@ def retired_side_problems(by_id: dict, retired: list, problems: dict) -> tuple[d
         rid = r.get("id") if isinstance(r, dict) else None
         if not is_case_name(rid):
             problems[f"retired[{index}]"].append("退役したノードの id が空でない文字列でない")
+            successor_id = mapping(r.get("retired")).get("successor") if isinstance(r, dict) else None
+            if is_text(successor_id) and successor_id in by_id:
+                problems[successor_id].append(f"引き継ぎ元の退役記録 retired[{index}] の id が不正")
             continue
         own: list[str] = []
         if rid in retired_by_id:
