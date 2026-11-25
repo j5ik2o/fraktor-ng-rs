@@ -6,6 +6,8 @@
 
 同じ系統の [#124 RecencyList](issue-124-recency-list.md)、[#126 SegmentedRecencyList](issue-126-segmented-recency-list.md)、[#128 FrequencyList](issue-128-frequency-list.md) の続き。当初は [#177 FrequencySketchSpec](https://github.com/j5ik2o/fraktor-ng-rs/issues/177) と同じ PR の予定だったが、2026-11-25 に分担を変え、#177 は別の担当が単独の PR で扱う。
 
+設計（不変条件、PBT の性質、Quint の仕様と検査の結果、壊しうる入力、影響）は [issue-176-double-linked-list-design.md](issue-176-double-linked-list-design.md)、Quint の仕様は `docs/goals/specs/double_linked_list.qnt` にある。
+
 ## 対象ノード
 
 | id | Rust の統合テスト | 原典のケース数 | 状態 |
