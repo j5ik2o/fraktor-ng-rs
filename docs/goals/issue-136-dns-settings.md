@@ -238,3 +238,11 @@ public class Probe {
   }
 }
 ```
+
+## Pekko v2.0.0 との照合（2026-11-25 追記）
+
+基準を Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）に切り替えた後に照合した。v1.7.1 は v2.0.0 の祖先ではないので、共通祖先 `0ca804c7af` から両方の系統を比べた。上の本文は v1.7.1 で照合したときの記録なので、そのまま残す。ここでは v2.0.0 の位置と判定だけを書く。台帳の `verified_against` は v2.0.0 にした（第3まとまり、`docs/baseline/pekko-v2.0.0-migration/batch-3.md`。第1・第2まとまりで扱ったノードは、それぞれの記録にある）。
+
+- テスト `NameserverAddressParserSpec` と `ResolvConfParserSpec` は v1.7.1 と v2.0.0 で blob が同じである。`parseNameserverAddress` と正規表現（`DnsSettings.scala` L173、L181）、ndots の `toInt`（`ResolvConfParser.scala` L69）は変わらない。`parseFile` は `Files.lines` を閉じるようになった（`14dc8a676c`）が、結果は同じである。
+- #159 の JDK の範囲：上の「JDK 8 だけがこの 2 範囲を拒否する」という記述は、v1.7.1 当時の記録として残す。v2.0.0 のビルドは Scala 2.13.18 と 3.3.9（`project/Dependencies.scala` L45–48。2.12 は `f2b677dfa0` で削除）で、nightly の CI の JDK は 17、21、25（`.github/workflows/nightly-builds.yml` L120）である。v2.0.0 の対象の JDK はどれも 37 範囲すべてを受け付けるので、JDK 8 の留保は v2.0.0 では解消した。移植の表（JDK 11 以降の 37 範囲）は、そのまま v2.0.0 の原典の受理範囲になる。コードの変更はない。
+- 記録済みの差異（数値 IP だけを受け付けること、`Result` で返すこと、`parseFile` を移植しないこと、ndots の `i32`、専用型にしないこと）は維持する。

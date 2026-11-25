@@ -87,3 +87,11 @@ needs と各 rollup は、既定 uv キャッシュへの一時ファイル作�
 ## 採証の出典と確認限界
 
 初回 red は正規 checkout の保存採証（`.takt/issue-108-evidence/stage1-testprobe-target.log`、`stage1-testprobe-summary.md`）を参照し、この作業ツリーでは再実行していない。最終の実測は作業ツリーで実行し、`stage2-fix-target.log`、`stage2-fix-actor.log`、`stage2-fix-testkit.log`、`stage2-fix-contract.log`、`stage2-fix-fmt.log`、`stage2-fix-clippy.log`、`stage2-fix-syn-check-actor.log`、`stage2-fix-syn-check-testkit.log`、`stage2-fix-check-needs.log`、`stage2-fix-rollup-<goal>.log` と各 `.exit` に対応する。実行コマンドと終了値の一覧は `stage2-fix-commands.json` に記録した。ログは `.takt/.gitignore` により追跡対象外である。
+
+## Pekko v2.0.0 との照合（2026-11-25 追記）
+
+基準を Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）に切り替えた後に照合した。v1.7.1 は v2.0.0 の祖先ではないので、共通祖先 `0ca804c7af` から両方の系統を比べた。上の本文は v1.7.1 で照合したときの記録なので、そのまま残す。ここでは v2.0.0 の位置と判定だけを書く。台帳の `verified_against` は v2.0.0 にした（第3まとまり、`docs/baseline/pekko-v2.0.0-migration/batch-3.md`。第1・第2まとまりで扱ったノードは、それぞれの記録にある）。
+
+- テストは `c0e9406bfd` #3263 で 2 ケース増えた（2 → 4）。移植と赤・緑の記録は `docs/baseline/pekko-v2.0.0-migration/batch-1.md` にある。
+- info の Mute（`TestEvent.Mute(EventFilter.info())`）を省く扱いは、増えた 2 ケースにも同じ理由で当てた。Mute は購読者への配送を変えない出力の抑制なので、省いても観測は変わらない。除外ではない。
+- 原因の表現（`Debug` と `Display` に分けて持つ）、ロガーとフィルターの構造：維持。`Logging.scala` の変更は `ReentrantGuard` から `ReentrantLock` への置き換え（`7fb098985b`）と構文だけである。

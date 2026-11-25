@@ -64,3 +64,10 @@ Pekko v1.7.1 commit `9a54d1294c3ac7821bbed3c940769c3d5027d1ff` の `ListenerSpec
 | `python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0issue113` | 0 | `ゴール G0issue113: needs 閉性 OK` |
 | `python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0issue113` | 0 | 対象ノード 1 件 green、`完了: 全ノードが green か do_not_port` |
 | `python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0a`〜`G0f` | 0 | 各ゴール `完了: 全ノードが green か do_not_port` |
+
+## Pekko v2.0.0 との照合（2026-11-25 追記）
+
+基準を Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）に切り替えた後に照合した。v1.7.1 は v2.0.0 の祖先ではないので、共通祖先 `0ca804c7af` から両方の系統を比べた。上の本文は v1.7.1 で照合したときの記録なので、そのまま残す。ここでは v2.0.0 の位置と判定だけを書く。台帳の `verified_against` は v2.0.0 にした（第3まとまり、`docs/baseline/pekko-v2.0.0-migration/batch-3.md`。第1・第2まとまりで扱ったノードは、それぞれの記録にある）。
+
+- テスト `ListenerSpec.scala` は v1.7.1 と v2.0.0 で blob が同じである。実装 `routing/Listeners.scala` の変更は `@DoNotInherit`（`2214215b7b`）だけである。
+- 記録済みの差異 5 件（待ち合わせ、集合の順、受信の順、sender、API 名）は、すべて維持する。

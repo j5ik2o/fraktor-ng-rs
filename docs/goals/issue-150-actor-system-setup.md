@@ -153,3 +153,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0issue150
 uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0issue150
 ```
+
+## Pekko v2.0.0 との照合（2026-11-25 追記）
+
+基準を Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）に切り替えた後に照合した。v1.7.1 は v2.0.0 の祖先ではないので、共通祖先 `0ca804c7af` から両方の系統を比べた。上の本文は v1.7.1 で照合したときの記録なので、そのまま残す。ここでは v2.0.0 の位置と判定だけを書く。台帳の `verified_against` は v2.0.0 にした（第3まとまり、`docs/baseline/pekko-v2.0.0-migration/batch-3.md`。第1・第2まとまりで扱ったノードは、それぞれの記録にある）。
+
+- テストの変更は、`ActorSystemSetupSpec` が import の並びだけ、`ActorSystemSetupTest.java` が JUnit 5 化と javafmt だけである。ケースと入力は同じである。
+- 出典の更新：`ActorSystem.apply(name, setup)` は L278–285 から L277–284 に、provider の選択は L410–414 から L411–415 に移った。中身は同じである。
+- 出典の更新：Java の `JavaSetup` は L25–31 から L23–29 に、`assertEquals(javaSetting, …)` は L40 から L38 に移った（JUnit 5 化による）。
+- `get` は `setups.get(clazz).asInstanceOf[Option[T]]` になった（`a3a8cf32d3`）が、結果は同じである。記録済みの差異は、すべて維持する。

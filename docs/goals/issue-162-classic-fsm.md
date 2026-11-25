@@ -205,3 +205,11 @@ executor を変えずに済む。ただし送り直したメッセージは受�
 | 同じ配送の再 stash が Pekko と違い、rustdoc の説明も不正確 | 直す | Pekko は現在の配送と stash の末尾を比べる。配送ごとに番号を付けて同じ比較にした。`unstash_all` の後の再 stash は通る。公開 API の形は変えていない |
 | 存在しない状態への `goto` の説明（レビューの照合で判明） | 直す | Pekko の `makeTransition` は `terminate` で失敗を記録するだけで、アクターを止めない。port もアクターを止めず状態を保つ形に揃え、差異表を正した |
 | `git diff --check` がゴール文書の末尾の空行を検出 | 直す | 末尾の空行を削除した |
+
+## Pekko v2.0.0 との照合（2026-11-25 追記）
+
+基準を Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）に切り替えた後に照合した。v1.7.1 は v2.0.0 の祖先ではないので、共通祖先 `0ca804c7af` から両方の系統を比べた。上の本文は v1.7.1 で照合したときの記録なので、そのまま残す。ここでは v2.0.0 の位置と判定だけを書く。台帳の `verified_against` は v2.0.0 にした（第3まとまり、`docs/baseline/pekko-v2.0.0-migration/batch-3.md`。第1・第2まとまりで扱ったノードは、それぞれの記録にある）。
+
+- テストの変更は JUnit 5 化と Java の構文だけで、2 ケースの観測は変わらない。照合の記録は `docs/baseline/pekko-v2.0.0-migration/batch-1.md` にある。
+- 後続の suite の要件：`63d22b60fe` #3096 で、`SubscribeTransitionCallBack` と `Listen` で登録した listener を FSM が `watchWith` で見張り、止まると自動で外すようになった（すでに watch している相手なら警告を出し、自動では外さない）。`FSMTransitionSpec` を移植するときは、これが観測の対象になる。`2323878ae1` で非推奨の `setTimer` が消えたので、`FSMTimingSpec` は v2.0.0 のケースを数え直してから移植する。
+- 記録済みの差異（処理されないイベント、存在しない状態への `goto`、停止時の stash、先頭へ戻す範囲、`DeadLetter` の受け手、stash の容量、同じメッセージの再 stash、`Terminated` の積み直し）は維持する。

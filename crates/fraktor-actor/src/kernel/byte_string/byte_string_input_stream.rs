@@ -209,6 +209,16 @@ impl ByteStringInputStream {
   /// let mut stream = ByteString::from_string("abc").as_input_stream();
   /// stream.skip(-1);
   /// ```
+  ///
+  /// The same code with a positive count compiles and runs, so the example above
+  /// fails only because the count is negative:
+  ///
+  /// ```
+  /// use fraktor_actor::kernel::byte_string::ByteString;
+  ///
+  /// let mut stream = ByteString::from_string("abc").as_input_stream();
+  /// stream.skip(1);
+  /// ```
   pub fn skip(&mut self, count: usize) -> usize {
     self.bytes.skip_bytes(count)
   }
