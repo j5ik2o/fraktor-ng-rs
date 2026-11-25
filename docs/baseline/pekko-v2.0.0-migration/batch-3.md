@@ -5,7 +5,7 @@
 ## 照合の方法
 
 - 各ノードのテストファイルについて、両方の系統のコミット（`git log <共通祖先>..<タグ> -- <path>`）と、その `git patch-id --stable` を出した。そのうえで、`git diff -M -w v1.7.1 v2.0.0 -- <path>` から import、package、空行を除いた差分を読んだ。道具は `tools/node_diff.sh`（作業用。repo には入れていない）で、出力は 39 ノード分ある。
-- 「同じ blob」と書いたノードは、`git rev-parse v1.7.1:<path>` と `v2.0.0:<path>` が一致することを確かめた（12 ノード）。
+- 「同じ blob」と書いたノードは、`git rev-parse v1.7.1:<path>` と `v2.0.0:<path>` が一致することを確かめた（15 ノード）。そのうち 12 ノードは、共通祖先の後に 2.0 系統でテストファイルを変えたコミットがない。残りの 3 ノード（`ByteStringInputStreamSpec` の `30a0046944`、`DomainNameSpec` の `8391a2212e`、`PekkoVersionSpec` の `f86d79ba3c`）は、同じパッチが両方の系統に入っている。最初に「12 ノード」と書いたのは、2.0 系統にコミットのないものだけを数えたためで、PR #169 のレビューの指摘で直した。
 - ケースの印（`" in {"`、`@Test` など）の数は、39 ノードすべてで v1.7.1 と v2.0.0 が同じだった。台帳の `cases` は変えていない。
 - 差分の中身は、import の並びと書き方（`870d4499cc` #2235、`9dfca01566` #3348）、JUnit 5 化（`ec27d6dd8c` #2724）、javafmt（`00b0a99278` #2081）、`assertInstanceOf`（`4d942a0ca7` #3088）、`@nowarn` の削除（`08ea94bb4b` #2001）、Scala 3 の `?` ワイルドカード（`29dc5e8df3` #3048）、`StandardCharsets` と `Seq` 型（`8353a4f16c` #3301、`fef71efd85` #3539）、テストの時計の共通化と `RecencyList(clock)` の生成関数（`ab12a8f5ec` #2766）だけだった。ケースの入力と期待値を変えるものはない。
 - 実装側は、項目256の報告書と補足（記録済みの差異 13 件の再判定）に加えて、移植済みの観測に掛かりうるコミットを読んだ。`fea9938cfa` #3622（dispatcher の拒否時の再帰的な報告を防ぐ）、`42a4596780` #3022（巨大な `withinTimeRange` の桁あふれ対策。ケースは 500ms と 1s を使う）、`8c48393cd3` #2208（内部の ExecutionContext の削除）は、どれも移植したケースの観測を変えない。
@@ -57,7 +57,7 @@
 
 - 各 Rust テストの冒頭に、v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）と照合したことと上のコミットを書いた。v1.7.1 の出典の行は履歴として残した。
 - `testkit/.../PekkoSpec.scala` は fixture（ケース 0）で、Rust 側の `crates/fraktor-testkit/src/fraktorspec/fraktor_spec.rs` の冒頭には原典の版の記載がない。そのため、冒頭には何も足していない。差分は Scala 3 のワイルドカードと JavaConverters の置き換えだけである。
-- 台帳は 39 ノードを `verified_against: v2.0.0` にした。これで green のうち v1.7.1 のまま残るのは、第2まとまりで扱う `UnsynchronizedByteArrayInputStreamSpec`（#168 で v2.0.0 になる）と、v2.0.0 にファイルがない `ActorSystemScala213PlusSpec` の 2 件だけになる。
+- 台帳は 39 ノードを `verified_against: v2.0.0` にした。#168 の `UnsynchronizedByteArrayInputStreamSpec` と合わせて、green のノードで v1.7.1 のまま残るのは `ActorSystemScala213PlusSpec` の 1 件だけになる（下の「保留：ActorSystemScala213PlusSpec」）。
 
 ## ゴール文書の出典の更新（補足 13 件）
 
@@ -74,3 +74,9 @@
 
 - `ByteStringInputStream::skip` の rustdoc で、`skip(-1)` の `compile_fail` の例の隣に、同じ import と初期化で引数だけを正の値（`skip(1)`）にした例を足した。こちらはコンパイルでき、実行もできる。これで、`compile_fail` の例が失敗する理由が負の値の引数だけであることを、doctest そのものが示す。除外した「reject negative skip」の代わりの確認であり、台帳の件数には含めない（`batch-2.md` の「除外した 2 ケース」）。
 - `unsynchronized_byte_array_input_stream_spec.rs` の冒頭の注記で、代わりの確認を「first」「second」で指していたが、直後の列挙の順と逆だった（#168 の独立レビューの軽微な指摘）。ケース名で指すように直した。
+
+## 保留：ActorSystemScala213PlusSpec
+
+- 台帳のノード `actor-tests/src/test/scala-2.13+/org/apache/pekko/actor/ActorSystemScala213PlusSpec.scala` は、main の状態のまま（green、`verified_against: v1.7.1`、1/1/1）にした。この PR では変えていない。
+- 事実：v2.0.0 にこのファイルはない。上流 #2486 は、1.x では `3be76d1be7` でこの scala-2.13+ のファイルを足し、2.0 では `d5ee8a63e3` で同じケース「Scala's Using automatically terminates ActorSystem」を `actor-tests/src/test/scala/org/apache/pekko/actor/ActorSystemSpec.scala` の L345–351 に入れた（`batch-2.md` の訂正）。Rust のテスト `crates/fraktor-actor/tests/actor_system_scala213_plus_spec.rs` は 1 passed で、冒頭に移動先が書いてある。
+- 保留の理由：退役と、後継への 1 ケースの引き継ぎを台帳で表す欄（`retired`、`cases.carried`）と、その検査は、レビューの往復が長引いたため、この PR から外した（調整担当の決定、2026-11-25）。その変更は、枝 `j5ik2o/pekko-2-ported-migration-3-lineage`（`e0aac72`）に保全してある。決まるまで、この 1 ケースは v2.0.0 で照合済みに数えない。`ActorSystemSpec` のノードは unported のままである。
