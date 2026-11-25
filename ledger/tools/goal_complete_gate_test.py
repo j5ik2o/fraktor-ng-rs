@@ -539,6 +539,25 @@ def test_mixed_green_node_is_not_complete_without_approval_or_with_a_wrong_sum()
     print("42e. an unapproved mixed record is counted only as recorded")
 
 
+def test_mixed_green_node_is_not_complete_with_an_unapproved_or_duplicated_exclusion():
+    """混在のノードの除外は verify_red と同じ規則で検査する（未承認や同名の重複があれば未完了）。"""
+    unapproved = "    excluded:\n    - name: caseX\n      reason: excluded\n"
+    duplicated = ("    excluded:\n"
+                  "    - name: caseX\n      reason: excluded\n" + APPROVAL +
+                  "    - name: caseX\n      reason: excluded again\n" + APPROVAL)
+    cases = [
+        ("45a. mixed with an unapproved exclusion",
+         mixed_node("a/M.scala", "G0q", 3, 2, 2, [("caseA", APPROVAL)], excluded=unapproved)),
+        ("45b. mixed whose sum is met only by a duplicated exclusion",
+         mixed_node("a/M.scala", "G0q", 5, 2, 2, [("caseA", APPROVAL)], excluded=duplicated)),
+    ]
+    for label, node in cases:
+        result = run_mixed("G0q", node)
+        assert result["exit_code"] != 0, (label, result)
+        assert "a/M.scala" in result.get("output", ""), (label, result)
+        print(f"{label}: exit_code =", result["exit_code"])
+
+
 def test_takt_triage_treats_the_same_statuses_as_done():
     """TAKT の triage が処理済みとする status は、rollup の DONE_STATUSES と同じである。
 
@@ -962,6 +981,7 @@ def main() -> int:
         test_not_built_with_a_non_integer_total_or_padded_duplicate_name_is_not_complete,
         test_mixed_green_node_with_approved_not_built_cases_is_complete_and_counted,
         test_mixed_green_node_is_not_complete_without_approval_or_with_a_wrong_sum,
+        test_mixed_green_node_is_not_complete_with_an_unapproved_or_duplicated_exclusion,
         test_order_without_goal_path_fails,
         test_order_with_multiple_goal_paths_fails,
         test_missing_goal_document_fails,

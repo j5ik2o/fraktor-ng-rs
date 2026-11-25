@@ -1236,6 +1236,25 @@ def test_approved_not_built_cases_count_toward_already_green():
         print("19b. approved not_built counted: original 3 = passed 1 + not_built 2")
 
 
+def test_duplicated_approved_exclusion_does_not_fill_the_sum():
+    """同名の承認済み除外を 2 行置いて和を満たしても、件数を返さず already_green にしない。"""
+    approval = f"      approved_by: {APPROVED_BY}\n      approved_at: 2026-11-25\n"
+    duplicated = ("    excluded:\n"
+                  "    - name: case x\n      reason: excluded\n" + approval +
+                  "    - name: case x\n      reason: excluded again\n" + approval)
+    node = _mixed_node(approval).replace("    excluded: []\n", duplicated)
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root, nodes_yaml=ledger_yaml([node]),
+            cargo_body=CARGO_STUB_OK, passed=1, original_cases=5, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["excluded"] is None, result
+        assert result["classification"] == "unexpected_pass", result
+        print("19d. duplicated exclusion → not counted:", result["classification"])
+
+
 def test_unapproved_not_built_cases_do_not_make_already_green():
     """作らないの要素に承認が無ければ件数を返さず、already_green にしない（fail closed）。"""
     with tempfile.TemporaryDirectory() as temporary:
@@ -1982,6 +2001,7 @@ def main() -> int:
         test_excluded_without_full_pass_is_not_green,
         test_approved_not_built_cases_count_toward_already_green,
         test_unapproved_not_built_cases_do_not_make_already_green,
+        test_duplicated_approved_exclusion_does_not_fill_the_sum,
         test_excluded_approval_table,
         test_empty_excluded_is_still_counted_as_zero,
         test_count_excluded_rereads_ledger_at_call_time,
