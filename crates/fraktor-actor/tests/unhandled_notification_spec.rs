@@ -283,39 +283,76 @@ fn unhandled_keeps_the_pushed_behavior() {
   spec.terminate();
 }
 
+/// Where a [`Stasher`] calls `unhandled` relative to `stash`.
+#[derive(Clone, Copy)]
+enum Order {
+  /// `stash`, then `unhandled`: the stash must survive the report (P6).
+  StashFirst,
+  /// `unhandled`, then `sender` and `stash`: the message being handled and
+  /// its sender must survive the report (P7).
+  UnhandledFirst,
+}
+
 /// Stashes every number and reports it as unhandled; `"release"` returns the
 /// stash, and the numbers are then recorded instead.
-struct StashThenReport {
+///
+/// A number that comes back before `"release"` is recorded and not stashed
+/// again. Without this bound, an `unhandled` that returned the stash would
+/// loop forever (and the memory would grow until the process is killed);
+/// with it, such a fault ends as an assertion failure.
+struct Stasher {
   trace: Trace,
+  order: Order,
+  stashed: Vec<i32>,
   released: bool,
 }
 
-impl Actor for StashThenReport {
+impl Stasher {
+  fn props(trace: &Trace, order: Order) -> Props {
+    let trace = Arc::clone(trace);
+    Props::new(move || Stasher { trace: Arc::clone(&trace), order, stashed: Vec::new(), released: false })
+  }
+
+  fn record(&self, entry: String) {
+    self.trace.lock().unwrap().push(entry);
+  }
+}
+
+impl Actor for Stasher {
   fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
     if message == "release" {
       self.released = true;
       context.unstash_all();
-    } else if self.released {
-      self.trace.lock().unwrap().push(format!("replayed:{}", number_of(&message)));
+      return;
+    }
+    let number = number_of(&message);
+    if self.released {
+      self.record(format!("replayed:{number}"));
+    } else if self.stashed.contains(&number) {
+      self.record(format!("came back before release:{number}"));
     } else {
-      context.stash();
-      context.unhandled(message);
+      self.stashed.push(number);
+      match self.order {
+        | Order::StashFirst => {
+          context.stash();
+          context.unhandled(message);
+        },
+        | Order::UnhandledFirst => {
+          context.unhandled(message);
+          self.record(format!("sender after unhandled:{}", context.sender().path()));
+          context.stash();
+        },
+      }
     }
   }
 }
 
-/// I3: `unhandled` after `stash` leaves the stash as it was. `unstash_all`
-/// returns every stashed message, in order.
-#[test]
-fn unhandled_keeps_the_stash() {
-  let mut spec = FraktorSpec::new("UnhandledNotificationSpecI3Stash");
-  let mut subscriber = subscribe_to_unhandled(&mut spec);
+/// Sends `1`, `2`, `3` and `"release"` from `sender` to a [`Stasher`] and
+/// checks the three reports.
+fn run_stasher(spec: &mut FraktorSpec, order: Order, sender: &ActorRef) -> Vec<String> {
+  let mut subscriber = subscribe_to_unhandled(spec);
   let trace = Trace::default();
-  let actor = spec.system_mut().actor_of(Props::new({
-    let trace = Arc::clone(&trace);
-    move || StashThenReport { trace: Arc::clone(&trace), released: false }
-  }));
-  let sender = spec.system().dead_letters();
+  let actor = spec.system_mut().actor_of(Stasher::props(&trace, order));
 
   for number in 1..=3 {
     actor.tell(number, sender.clone());
@@ -323,12 +360,40 @@ fn unhandled_keeps_the_stash() {
   actor.tell("release", sender.clone());
   spec.system_mut().run_until_idle();
 
-  assert_eq!(*trace.lock().unwrap(), ["replayed:1", "replayed:2", "replayed:3"]);
   for number in 1..=3 {
-    assert_next_unhandled(&mut subscriber, &Input::Number(number), &sender, &actor);
+    assert_next_unhandled(&mut subscriber, &Input::Number(number), sender, &actor);
   }
   subscriber.expect_no_message(Duration::ZERO);
+  let entries = trace.lock().unwrap().clone();
+  entries
+}
 
+/// P6 (I3): `unhandled` after `stash` leaves the stash as it was.
+/// `unstash_all` returns every stashed message, in order, and none comes
+/// back earlier.
+#[test]
+fn unhandled_keeps_the_stash() {
+  let mut spec = FraktorSpec::new("UnhandledNotificationSpecI3Stash");
+  let sender = spec.system().dead_letters();
+
+  let trace = run_stasher(&mut spec, Order::StashFirst, &sender);
+
+  assert_eq!(trace, ["replayed:1", "replayed:2", "replayed:3"]);
+  spec.terminate();
+}
+
+/// P7 (I3): `unhandled` leaves the message being handled and its sender. A
+/// `stash` called after it still stashes the current message, and `sender`
+/// still names the sender of the delivery.
+#[test]
+fn unhandled_keeps_the_current_message_and_sender() {
+  let mut spec = FraktorSpec::new("UnhandledNotificationSpecI3Current");
+  let sender = spec.test_actor();
+
+  let trace = run_stasher(&mut spec, Order::UnhandledFirst, &sender);
+
+  let after = format!("sender after unhandled:{}", sender.path());
+  assert_eq!(trace, [after.as_str(), after.as_str(), after.as_str(), "replayed:1", "replayed:2", "replayed:3"]);
   spec.terminate();
 }
 

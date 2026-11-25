@@ -74,7 +74,7 @@ port の失敗モデルは panic の文字列を監督の判断材料にする�
 |:---|:---|
 | I1 | `Props::empty()` のアクターは、届いたメッセージ 1 件につき `U` をちょうど 1 件出す（落とさない、重ねない） |
 | I2 | `U.message` は届いたメッセージと同じ値・同じ型。`U.sender` はその配信の sender。`U.recipient` は受け取ったアクター |
-| I3 | `unhandled` はアクターの状態を変えない。呼んだ後も behavior stack、現在のメッセージ、stash、FSM の状態は同じで、次のメッセージは同じように届く。behavior stack と stash はテストで確かめる（P5、P6）。FSM の状態は `Fsm` の値が持ち、`ActorContext` からは届かないので、`unhandled` が変えられないことは型で決まる |
+| I3 | `unhandled` はアクターの状態を変えない。呼んだ後も behavior stack、現在のメッセージ、stash、FSM の状態は同じで、次のメッセージは同じように届く。behavior stack、stash、現在のメッセージとその sender はテストで確かめる（P5、P6、P7）。FSM の状態は `Fsm` の値が持ち、`ActorContext` からは届かないので、`unhandled` が変えられないことは型で決まる |
 | I4 | event sink があるとき、`U` 1 件につき `Warning` を 1 件出す。文面は `unhandled message from <sender の path>: <message の Debug>`。sink が無ければ何も出さない（panic しない） |
 | I5 | event stream に購読者がいなくても、sink が無くても、`unhandled` は panic しない |
 
@@ -95,7 +95,8 @@ port の失敗モデルは panic の文字列を監督の判断材料にする�
 | P3 | event sink があるとき、`U` 1 件につき `Warning` が 1 件、送った順に出る。source は受け取ったアクターの path、文面は `unhandled message from <sender の path>: <message の Debug>` と完全に一致する | 27 組 | `unhandled_is_reported_as_a_warning_to_the_event_sink` |
 | P4 | `unhandled` を繰り返しても、I3 のとおりアクターは生き続け、届いた順に 1 件ずつ報告する。同じ sender から同じメッセージを続けて 2 件送ると、`U` は 2 件（重ねない、まとめない） | 27 組の後に、dead letters から `0` を 2 件 | P1、P2 のテスト（`assert_every_pair_is_reported_once`） |
 | P5 | `push_behavior` で積んだ behaviour の中で `unhandled` を呼んでも、その behaviour が次のメッセージも受け取る（I3 の behavior stack） | `0`（積む）、`1`、`2` | `unhandled_keeps_the_pushed_behavior` |
-| P6 | `stash` の後に `unhandled` を呼んでも、`unstash_all` で stash した全件が同じ順で戻る（I3 の stash） | `1`、`2`、`3` を stash し、`"release"` で戻す | `unhandled_keeps_the_stash` |
+| P6 | `stash` の後に `unhandled` を呼んでも、`unstash_all` で stash した全件が同じ順で戻り、`"release"` より前には戻らない（I3 の stash） | `1`、`2`、`3` を stash し、`"release"` で戻す | `unhandled_keeps_the_stash` |
+| P7 | `unhandled` の後でも、現在のメッセージと sender は残る。続けて呼んだ `sender()` は配信の sender を返し、`stash` は現在のメッセージを stash する（I3 の現在のメッセージ） | test actor から `1`、`2`、`3` を送り、各々 `unhandled` → `sender()` → `stash` の順に呼んで、`"release"` で戻す | `unhandled_keeps_the_current_message_and_sender` |
 
 `Message` の Debug は `&'static str` を引用符つきで出し、知らない型には値を出さない（§2 の表）。
 P3 はこの表記まで含めて文面を完全に比べる。I5（sink も購読者も無いとき panic しない）は
@@ -104,16 +105,27 @@ P1〜P3 では sink の無い経路を通らない。
 
 「1 件につき 1 件」は、報告を 1 件取った直後に長さ 0 の `expect_no_message` を置いて確かめる。
 同じ配信で作られた 2 件目は、1 件目を受け取る前に probe の待ち行列に入っているので、待たずに見える。
-まとめて送るテスト（P4 の 2 件、P5、P6）は、全件を取ってから 1 回だけこの確かめを置く。
+まとめて送るテスト（P4 の 2 件、P5、P6、P7）は、全件を取ってから 1 回だけこの確かめを置く。
 
 変異で確かめた（2026-11-26、`unhandled_notification_spec` を流した）：
 
 | 変異 | 結果 |
 |:---|:---|
 | `unhandled` の最後に `pop_behavior` を足す（独立レビューの M8。以前は 5 件すべて通った） | P5 が `["base:0", "pushed:1", "base:2"]` で落ちる |
-| `unhandled` の中で `unstash_all` を呼ぶ | P6 が終わらない（戻したメッセージが再び stash と報告に回り続ける）。CI では時間切れで落ちる |
-| stream へ 2 回 publish する（M1） | P1、P2、P5、P6 が落ちる |
-| `UnhandledMessage` の sender と recipient を取り違える（M2） | P1、P2、P5、P6 が落ちる |
+| `unhandled` の中で `unstash_all` を呼ぶ（MU） | P6 が `["came back before release:1", …:2, …:3]` で、P7 も落ちる（すぐ終わる） |
+| `unhandled` の最後で現在のメッセージを消す（MC。再レビューで 7 件とも通った変異） | P7 が落ちる（`stash` が「Can't stash outside of message handling」で panic し、`replayed` が来ない） |
+| `unhandled` の最後で sender を self に書き換える（MS） | P7 が落ちる |
+| stream へ 2 回 publish する（M1） | P1、P2、P5、P6、P7 が落ちる |
+| `UnhandledMessage` の sender と recipient を取り違える（M2） | P1、P2、P5、P6、P7 が落ちる |
+
+P6 と P7 のアクター（`Stasher`）は、`"release"` より前に戻ってきた番号を記録だけして、もう一度 stash しない。
+この上限が無いと、MU では戻したメッセージが再び stash と報告に回り続け、テストが終わらない。CI の
+`check` ジョブには `timeout-minutes` が無い（既定の 360 分）ので、時間切れでは落ちない。probe に報告が
+積まれ続けてメモリが増え、プロセスが強制終了されて落ちる（再レビューの実測：4 GB に制限した Linux の
+コンテナで 172 秒、終了コード 137。失敗したアサーションはログに出ない）。上限を付けたので、MU は
+アサーションの失敗としてすぐ落ち、どの不変条件が壊れたかがログに出る。上限は正しい実装の振る舞いを
+変えない（正しい実装では、どの番号も `"release"` より前には戻らない）。`ci.yml` に `timeout-minutes` を
+足すかどうかはこの PR の範囲の外で、オーナーが決める。
 
 ## 5. 壊しうる入力
 
@@ -125,6 +137,7 @@ P1〜P3 では sink の無い経路を通らない。
 | 同じメッセージを続けて送る | 2 件の `U`（重ねない） | P4 |
 | 積んだ behaviour の中から呼ぶ | behaviour は残り、次のメッセージも受け取る | P5 |
 | `stash` の後に呼ぶ | stash は残り、`unstash_all` で全件戻る | P6 |
+| 呼んだ後に `sender()` と `stash` を呼ぶ | 配信の sender が返り、現在のメッセージが stash される | P7 |
 | 購読者のいない stream、sink の無いシステム | 何も起きず panic しない | `unhandled_without_subscribers_or_a_sink_does_not_panic` |
 | `unhandled` をメッセージの外（`pre_start` など）で呼ぶ | sender はその時点の sender（通常は dead letters）。panic しない | なし（契約は `sender()` のとおり。呼び出し経路を作らない） |
 | `Terminated` を渡す | `U` を出し、アクターは生き続ける（原典は `DeathPactException` で落ちる）。§2 の範囲外 | なし（[Issue #219](https://github.com/j5ik2o/fraktor-ng-rs/issues/219)） |
@@ -196,7 +209,7 @@ error: could not compile `fraktor-actor` (lib test) due to 2 previous errors
 
 | コマンド | 結果 |
 |:---|:---|
-| `cargo test -p fraktor-actor --test unhandled_notification_spec` | 7 passed |
+| `cargo test -p fraktor-actor --test unhandled_notification_spec` | 8 passed |
 | `cargo test --workspace` | すべて pass |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功 |
 | `cargo fmt --check` | 成功 |
@@ -219,3 +232,11 @@ error: could not compile `fraktor-actor` (lib test) due to 2 previous errors
 | F3 I3 のテストが無い | 直した | P5、P6 を足した（§3 の I3、§4）。M8 が P5 で落ちることを確かめた |
 | F4 「同じ文面」が正確でない | 直した | §2 に、前置きが同じことと、違い 3 点の表を書いた。§7 も合わせた |
 | F5 sink への変換が 1 か所だという前提が書かれていない | 直した | §7 に、変換は `publish_unhandled` だけで testkit は足さないこと、`set_event_sink` の公開 API としての影響を書いた。`set_event_sink` の doc コメントを足した |
+
+再レビューは 2026-11-26、`bf3903b` で行った（判定：承認）。軽い指摘 2 件を処理した。
+
+| 指摘 | 決定 | 変わった箇所 |
+|:---|:---|:---|
+| R1 §4 の「CI では時間切れで落ちる」は誤り | 直した（文書とテスト） | §4 の MU の行と、その下の段落。P6 のアクターに「`"release"` より前に戻った番号はもう一度 stash しない」上限を付け、MU がアサーションの失敗としてすぐ落ちるようにした |
+| R2 I3 の「現在のメッセージ」を確かめるテストが無い | 直した | P7 を足した（§3 の I3、§4、§5）。MC と MS が P7 で落ちることを確かめた |
+| R3 台帳の注記は YAML のコメントなので、台帳を作り直すと消える | 採らない（再レビューも「直さなくてよい」） | なし。追跡の本体は #219 で、#219 の本文が `DeathWatchSpec` のケースを名指ししている |
