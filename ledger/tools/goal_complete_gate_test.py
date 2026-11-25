@@ -558,6 +558,28 @@ def test_mixed_green_node_is_not_complete_with_an_unapproved_or_duplicated_exclu
         print(f"{label}: exit_code =", result["exit_code"])
 
 
+def test_mixed_green_node_refuses_a_non_list_exclusion_and_counts_only_valid_ones():
+    """混在の除外は、欠落・null・空配列だけを空として扱い、false や {} は未完了にする。
+
+    ケースの勘定の有効な除外の件数も同じ検査を通し、同名の重複は有効に数えない
+    （括弧内の記録件数は台帳に書かれた生の件数で、診断用である）。
+    """
+    for label, excluded in [("46a. excluded: {}", "    excluded: {}\n"), ("46b. excluded: false", "    excluded: false\n")]:
+        result = run_mixed("G0p", mixed_node("a/M.scala", "G0p", 3, 2, 2, [("caseA", APPROVAL)], excluded=excluded))
+        assert result["exit_code"] != 0, (label, result)
+        print(f"{label}: exit_code =", result["exit_code"])
+    for label, excluded in [("46c. excluded missing", ""), ("46d. excluded: null", "    excluded: null\n")]:
+        result = run_mixed("G0p", mixed_node("a/M.scala", "G0p", 3, 2, 2, [("caseA", APPROVAL)], excluded=excluded))
+        assert result["exit_code"] == 0, (label, result)
+        print(f"{label}: exit_code =", result["exit_code"])
+    duplicated = ("    excluded:\n"
+                  "    - name: caseX\n      reason: excluded\n" + APPROVAL +
+                  "    - name: caseX\n      reason: excluded again\n" + APPROVAL)
+    result = run_mixed("G0p", mixed_node("a/M.scala", "G0p", 5, 2, 2, [("caseA", APPROVAL)], excluded=duplicated))
+    assert "除外=0（記録 2）" in result["output"], result
+    print("46e. a duplicated exclusion is not counted as valid")
+
+
 def test_takt_triage_treats_the_same_statuses_as_done():
     """TAKT の triage が処理済みとする status は、rollup の DONE_STATUSES と同じである。
 
@@ -982,6 +1004,7 @@ def main() -> int:
         test_mixed_green_node_with_approved_not_built_cases_is_complete_and_counted,
         test_mixed_green_node_is_not_complete_without_approval_or_with_a_wrong_sum,
         test_mixed_green_node_is_not_complete_with_an_unapproved_or_duplicated_exclusion,
+        test_mixed_green_node_refuses_a_non_list_exclusion_and_counts_only_valid_ones,
         test_order_without_goal_path_fails,
         test_order_with_multiple_goal_paths_fails,
         test_missing_goal_document_fails,

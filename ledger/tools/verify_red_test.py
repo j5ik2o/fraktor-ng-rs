@@ -1255,6 +1255,17 @@ def test_duplicated_approved_exclusion_does_not_fill_the_sum():
         print("19d. duplicated exclusion → not counted:", result["classification"])
 
 
+def test_excluded_that_is_not_a_list_is_refused_and_missing_or_null_is_empty():
+    """excluded が欠落・null・空配列なら 0 件、false や {} のような配列でない値なら件数を返さない。"""
+    node = case_block(NODE_ID, None, None, None)
+    assert _count_excluded_for_ledger(ledger_yaml([node.replace("    excluded: []\n", "")])) == 0
+    assert _count_excluded_for(" null") == 0
+    assert _count_excluded_for(" []") == 0
+    assert _count_excluded_for(" false") is None
+    assert _count_excluded_for(" {}") is None
+    print("19e. excluded: missing/null/[] is empty, false/{} is refused")
+
+
 def test_unapproved_not_built_cases_do_not_make_already_green():
     """作らないの要素に承認が無ければ件数を返さず、already_green にしない（fail closed）。"""
     with tempfile.TemporaryDirectory() as temporary:
@@ -1878,6 +1889,53 @@ def test_heading_whose_block_has_no_known_case_is_not_counted():
         print("24c. heading with only unknown case forms → None")
 
 
+def _scala_count(text: str):
+    """原典の Scala テキストを一時ディレクトリに置き、count_original_cases の結果を返す。"""
+    import importlib
+    sys.path.insert(0, str(TOOLS))
+    try:
+        module = importlib.import_module("verify_red")
+    finally:
+        sys.path.remove(str(TOOLS))
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write(root / "pekko" / SCALA_NODE_ID, text)
+        cwd = os.getcwd()
+        old = os.environ.get("PEKKO_ORIGINAL_ROOT")
+        try:
+            os.chdir(root)
+            os.environ["PEKKO_ORIGINAL_ROOT"] = str(root / "pekko")
+            return module.count_original_cases(SCALA_NODE_ID)
+        finally:
+            os.chdir(cwd)
+            if old is None:
+                os.environ.pop("PEKKO_ORIGINAL_ROOT", None)
+            else:
+                os.environ["PEKKO_ORIGINAL_ROOT"] = old
+
+
+def _suite(body: str) -> str:
+    return ("package org.apache.pekko.actor\n\nclass AddressSpec extends AnyWordSpec {\n"
+            '  "suite" must {\n' + body + "  }\n}\n")
+
+
+def test_scala_count_uses_one_lexer_for_names_comments_and_unknown_forms():
+    """見出し・ケース・未知の宣言を同じ字句処理で見分け、未対応の構文では数えない。
+
+    エスケープした引用符を含むケース名と `.in` の呼び出しは、黙って落とさずに None にする。
+    コメントの中のケースは数えない。文字列の中の波括弧も数えない。
+    """
+    known = '    "known" in {\n    }\n'
+    assert _scala_count(_suite(known)) == 1
+    assert _scala_count(_suite(known + '    "contains a \\"quoted\\" name" in {\n    }\n')) == 2
+    assert _scala_count(_suite(known + '    "hidden".in { () }\n')) is None
+    assert _scala_count(_suite(known + '    /*\n    "commented out" in {\n    }\n    */\n')) == 1
+    assert _scala_count(_suite(known + '    // "line comment" in {\n')) == 1
+    assert _scala_count(_suite('    "braces" in {\n      val s = "}}}"\n    }\n' + known)) == 2
+    assert _scala_count(_suite(known + '    "unknown" in new Fixture {}\n')) is None
+    print("24d. names, comments, .in and strings go through one lexer")
+
+
 def test_stale_result_is_removed_when_write_fails():
     """判定結果を書けないとき、前回の already_green 結果を残さず OSError を伝える。
 
@@ -2002,6 +2060,7 @@ def main() -> int:
         test_approved_not_built_cases_count_toward_already_green,
         test_unapproved_not_built_cases_do_not_make_already_green,
         test_duplicated_approved_exclusion_does_not_fill_the_sum,
+        test_excluded_that_is_not_a_list_is_refused_and_missing_or_null_is_empty,
         test_excluded_approval_table,
         test_empty_excluded_is_still_counted_as_zero,
         test_count_excluded_rereads_ledger_at_call_time,
@@ -2020,6 +2079,7 @@ def main() -> int:
         test_it_should_in_cases_are_counted,
         test_unknown_named_block_alongside_it_should_is_not_green,
         test_wordspec_outer_heading_is_not_counted_as_a_case,
+        test_scala_count_uses_one_lexer_for_names_comments_and_unknown_forms,
         test_heading_whose_block_has_no_known_case_is_not_counted,
         test_stale_result_is_removed_when_write_fails,
         test_main_exits_nonzero_when_result_cannot_be_written,
