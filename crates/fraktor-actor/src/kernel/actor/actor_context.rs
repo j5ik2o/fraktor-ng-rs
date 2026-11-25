@@ -67,9 +67,12 @@ impl<'a> ActorContext<'a> {
   /// as a `Warning` reading `unhandled message from <sender>: <message>`.
   ///
   /// Pekko's other branch, which throws `DeathPactException` for a
-  /// [`Terminated`](crate::kernel::actor::Terminated), is not ported: it needs
-  /// the exception type and the supervision policy that stops on it. A
-  /// `Terminated` given here is reported like any other message.
+  /// [`Terminated`](crate::kernel::actor::Terminated), is not ported yet: it
+  /// needs the exception type and the supervision policy that stops on it.
+  /// Until then a `Terminated` given here is reported like any other message
+  /// and the actor keeps running, so a port of `DeathWatchSpec`'s "fail a
+  /// monitor which does not handle Terminated()" cannot pass. Issue #219
+  /// (<https://github.com/j5ik2o/fraktor-ng-rs/issues/219>) changes this.
   pub fn unhandled<M: core::any::Any + Send + Sync>(&mut self, message: M) {
     let message = Message::new(message);
     let sender = self.sender();

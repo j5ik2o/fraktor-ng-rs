@@ -2164,6 +2164,10 @@ nodes:
   goal: null
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/DeathWatchSpec.scala
   name: actor-tests:DeathWatchSpec
+  # 前提（#207 の独立レビュー F1）: 「fail a monitor which does not handle Terminated()」は
+  # Actor.unhandled の Terminated 分岐（DeathPactException と既定の Stop）が要る。未移植で、
+  # 今の ActorContext::unhandled は Terminated も UnhandledMessage として報告し、Failed は来ない。
+  # 移植は https://github.com/j5ik2o/fraktor-ng-rs/issues/219 。待ちの失敗をケースの除外で済ませない。
   kind: test
   pekko:
     module: actor-tests
