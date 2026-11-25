@@ -49,3 +49,31 @@ fn a_text_error_renders_its_text_and_downcasts_to_error_message() {
     assert!(reply.get_error().expect("a failure").downcast_ref::<ErrorMessage>().is_some());
   }
 }
+
+// An error whose `Debug` hides its value and whose `Display` shows it.
+struct Redacted;
+
+impl fmt::Debug for Redacted {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str("<redacted>")
+  }
+}
+
+impl fmt::Display for Redacted {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str("example-sensitive-value")
+  }
+}
+
+impl Error for Redacted {}
+
+#[test]
+fn a_kept_error_renders_through_its_own_debug_and_never_its_display() {
+  let name = core::any::type_name::<Redacted>();
+  for reply in [StatusReply::error(Redacted), StatusReply::from_result_keep_error(Err::<(), _>(Redacted))] {
+    let rendered = format!("{reply:?}");
+    assert!(rendered.contains(name), "rendered [{rendered}]");
+    assert!(rendered.contains("<redacted>"), "rendered [{rendered}]");
+    assert!(!rendered.contains("example-sensitive-value"), "rendered [{rendered}]");
+  }
+}
