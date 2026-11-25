@@ -52,11 +52,20 @@ def replace_needs(lines: list[str], by_node: dict[str, dict[str, list[str]]]) ->
     current_id: str | None = None
     in_needs = False
     saw_needs = False
-    for index, line in enumerate(lines):
-        if line.startswith("retired:"):
-            # 退役したノード（最上位の retired）は照合と集計の対象外で、needs も書き換えない。
-            out.extend(lines[index:])
-            break
+    section = None
+    for line in lines:
+        top = re.match(r"([A-Za-z_][\w-]*)\s*:", line)
+        if top:
+            # 最上位の欄。needs を書き換えるのは nodes の中だけで、退役したノード（retired）などは
+            # 順序によらずそのまま残す。
+            section = top.group(1)
+            current_id = None
+            in_needs = False
+            out.append(line)
+            continue
+        if section != "nodes":
+            out.append(line)
+            continue
         if line.startswith("- id: "):
             current_id = line.split(":", 1)[1].strip()
             in_needs = False

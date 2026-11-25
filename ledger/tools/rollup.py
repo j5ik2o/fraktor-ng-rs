@@ -133,8 +133,13 @@ def case_counts(test_nodes: list[dict]) -> dict:
         if isinstance(excluded, list):
             counts["excluded_recorded"] += len(excluded)
             if n.get("status") != "not_built":
+                # 引き継いだケース（cases.carried）と同じ名前の除外は、移植と二重に数えるので有効に数えない。
+                carried = cases.get("carried")
+                carried_names = {c["name"].strip() for c in carried
+                                 if isinstance(c, dict) and is_text(c.get("name"))} if isinstance(carried, list) else set()
                 counts["excluded"] += sum(1 for e in excluded
-                                          if isinstance(e, dict) and is_approved_by_human(e))
+                                          if isinstance(e, dict) and is_approved_by_human(e)
+                                          and not (is_text(e.get("name")) and e["name"].strip() in carried_names))
         not_built = cases.get("not_built")
         if isinstance(not_built, list):
             counts["not_built_recorded"] += len(not_built)
