@@ -1210,13 +1210,13 @@ def test_excluded_without_full_pass_is_not_green():
         print("19. excluded but unaccounted → unexpected_pass:", result["classification"])
 
 
-def _mixed_node(approval: str) -> str:
+def _mixed_node(approval: str, node_id: str = NODE_ID) -> str:
     """一部のケースだけを作らない区分にしたノード（混在）。approval は各要素に足す承認の行。"""
     record = ("    - name: {name}\n"
               "      reason: the input cannot be expressed in Rust\n"
               "      alternative: a test of the expressible inputs\n" + approval)
     not_built = "    not_built:\n" + record.format(name="case b") + record.format(name="case c")
-    node = case_block(NODE_ID, None, None, None)
+    node = case_block(node_id, None, None, None)
     return node.replace("    excluded: []\n", "    excluded: []\n" + not_built)
 
 
@@ -1749,10 +1749,12 @@ def test_mixed_supported_and_unsupported_scala_cases_not_partial():
             original_text=text, node_id=SCALA_NODE_ID,
         )
         result = run_verify_red(scenario)
-        assert result["original_cases"] is None, result
+        # `"A suite" must {` は WordSpec の見出しとして認め、その下の "hidden" も数える（2 件）。
+        # 移植の 1 件だけでは足りないので green にしない。
+        assert result["original_cases"] == 2, result
         assert result["classification"] == "unexpected_pass", result
         assert node_entry(root, SCALA_NODE_ID)["status"] == "unported"
-        print("22. mixed formats not partially counted:", result["classification"])
+        print("22. a heading's nested case is counted, not skipped:", result["classification"])
 
 
 def test_it_should_in_cases_are_counted():
@@ -1802,9 +1804,59 @@ def test_unknown_named_block_alongside_it_should_is_not_green():
             original_text=text, node_id=SCALA_NODE_ID,
         )
         result = run_verify_red(scenario)
+        assert result["original_cases"] == 2, result
+        assert result["classification"] == "unexpected_pass", result
+        print("24. it should + a heading with a nested case → unexpected_pass:", result["classification"])
+
+
+WORDSPEC_ORIGINAL = (
+    "package org.apache.pekko.util\n\n"
+    "class UnsynchronizedByteArrayInputStreamSpec extends AnyWordSpec with Matchers {\n\n"
+    "  private def bytes(s: String): Array[Byte] = s.getBytes(StandardCharsets.UTF_8)\n\n"
+    '  "UnsynchronizedByteArrayInputStream" must {\n'
+    '    "support skip" in {\n      val stream = new UnsynchronizedByteArrayInputStream(bytes("abc"))\n    }\n'
+    '    "reject negative skip" in {\n      an[IllegalArgumentException] should be thrownBy stream.skip(-1)\n    }\n'
+    '    "not copy the backing array" in {\n      val arr = bytes("abc") // "{" in a comment\n    }\n'
+    "  }\n}\n"
+)
+
+
+def test_wordspec_outer_heading_is_not_counted_as_a_case():
+    """原典と同じ WordSpec の外側の `"..." must {` は見出しで、ケースに数えない（実原典の構造）。
+
+    外側の見出しの下に 3 件、そのうち作らない 2 件（承認済み）で、Rust 1 件の成功なら
+    3 = 1 + 2 で already_green になる。見出しを候補に数えると 4 対 3 で None になっていた。
+    """
+    approval = f"      approved_by: {APPROVED_BY}\n      approved_at: 2026-11-25\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root, nodes_yaml=ledger_yaml([_mixed_node(approval, SCALA_NODE_ID)]),
+            cargo_body=CARGO_STUB_OK, passed=1, original_cases=None, with_original=True,
+            original_text=WORDSPEC_ORIGINAL, node_id=SCALA_NODE_ID,
+        )
+        result = run_verify_red(scenario)
+        assert result["original_cases"] == 3, result
+        assert result["classification"] == "already_green", result
+        print("24b. WordSpec heading is not a case: original 3 = passed 1 + not_built 2")
+
+
+def test_heading_whose_block_has_no_known_case_is_not_counted():
+    """見出しの下に既知の書式のケースが無い（未知の書式だけ）なら、件数を確かめられず None。"""
+    text = WORDSPEC_ORIGINAL.replace('"support skip" in {', '"support skip" in new Fixture {') \
+        .replace('"reject negative skip" in {', '"reject negative skip" in new Fixture {') \
+        .replace('"not copy the backing array" in {', '"not copy the backing array" in new Fixture {')
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root, nodes_yaml=ledger_yaml([case_block(SCALA_NODE_ID, None, None, None)]),
+            cargo_body=CARGO_STUB_OK, passed=3, original_cases=None, with_original=True,
+            original_text=text, node_id=SCALA_NODE_ID,
+        )
+        result = run_verify_red(scenario)
         assert result["original_cases"] is None, result
         assert result["classification"] == "unexpected_pass", result
-        print("24. it should + unknown named block → unexpected_pass:", result["classification"])
+        print("24c. heading with only unknown case forms → None")
 
 
 def test_stale_result_is_removed_when_write_fails():
@@ -1947,6 +1999,8 @@ def main() -> int:
         test_mixed_supported_and_unsupported_scala_cases_not_partial,
         test_it_should_in_cases_are_counted,
         test_unknown_named_block_alongside_it_should_is_not_green,
+        test_wordspec_outer_heading_is_not_counted_as_a_case,
+        test_heading_whose_block_has_no_known_case_is_not_counted,
         test_stale_result_is_removed_when_write_fails,
         test_main_exits_nonzero_when_result_cannot_be_written,
     ]
