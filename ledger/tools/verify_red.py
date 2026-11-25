@@ -45,7 +45,7 @@ import sys
 
 import excluded_approvals
 from ledger_lines import (  # noqa: F401  (台帳の行単位の書き換え。以前からの名前を残す)
-    _insert_after_key, _is_empty_reason, _is_filler, _leaves_nodes, _set_top_level_key, _yaml_scalar)
+    _insert_after_key, _is_empty_reason, _is_filler, _set_top_level_key, _yaml_scalar, node_span)
 import pekko_baseline
 
 LEDGER = "ledger/nodes.yaml"
@@ -116,23 +116,19 @@ def mark_green(node_id: str, total: int, passed: int, reason: str, verified_agai
     if not os.path.exists(LEDGER):
         return False
     lines = open(LEDGER, encoding="utf-8").read().splitlines(keepends=True)
-    in_block = False
+    span = node_span(lines, node_id)
+    if span is None:
+        return False
     in_cases = False
     in_triage = False
     status_written = False
-    cases_written = False
+    counts_written: set[str] = set()
     reason_written = False
     reason_preserved = False
     reason_indent = "    "
-    for i, line in enumerate(lines):
-        if _leaves_nodes(line):
-            break
-        if line.startswith("- id: "):
-            in_block = line.split(":", 1)[1].strip() == node_id
-            in_cases = False
-            in_triage = False
-            continue
-        if not in_block or _is_filler(line):
+    for i in range(span[0] + 1, span[1]):
+        line = lines[i]
+        if _is_filler(line):
             # 空行と注記は、ノードの中の位置（cases や triage の中）を変えない。
             continue
         base_indent = len(line) - len(line.lstrip())
@@ -156,13 +152,15 @@ def mark_green(node_id: str, total: int, passed: int, reason: str, verified_agai
             if m:
                 value = total if m.group(2) == "total" else passed
                 lines[i] = f"{m.group(1)}{m.group(2)}: {value}\n"
-                cases_written = True
+                counts_written.add(m.group(2))
         elif in_triage and re.match(r"\s+reason:", line):
             reason_written = True
             if _is_empty_reason(line):
                 lines[i] = f"{reason_indent}reason: {_yaml_scalar(reason)}\n"
             else:
                 reason_preserved = True
+    # 件数の 3 欄がすべて書けたときだけ記録する（どれかの行が無ければ台帳を変えない）。
+    cases_written = counts_written == {"total", "ported", "passing"}
     if not verified_against or not (status_written and cases_written):
         return False
     if not reason_written:
@@ -178,10 +176,11 @@ def mark_green(node_id: str, total: int, passed: int, reason: str, verified_agai
 def _written_node_is_green(lines: list[str], node_id: str, total: int, passed: int, tag: str) -> bool:
     """書き込む前の台帳を読み直し、対象ノードに green・件数の 3 欄・照合タグがそろうかを確かめる。
 
-    PyYAML が無い起動（record_already_green は `uv run python3` で動く）では読み直せないので、
-    行単位の書き換えの結果をそのまま使う（True）。読めない YAML や欄の食い違いは False で、
-    台帳は書き換えない。
+    行単位の確かめ（_lines_show_green）は PyYAML の有無によらず行う。PyYAML がある起動では、
+    加えて YAML として読み直す。読めない YAML や欄の食い違いは False で、台帳は書き換えない。
     """
+    if not _lines_show_green(lines, node_id, total, passed, tag):
+        return False
     try:
         import yaml
     except ImportError:
@@ -196,20 +195,41 @@ def _written_node_is_green(lines: list[str], node_id: str, total: int, passed: i
             and (cases.get("total"), cases.get("ported"), cases.get("passing")) == (total, passed, passed))
 
 
+def _lines_show_green(lines: list[str], node_id: str, total: int, passed: int, tag: str) -> bool:
+    """行単位で、対象ノードに status green・cases の 3 欄の値・最上位の照合タグがそろうかを確かめる。"""
+    span = node_span(lines, node_id)
+    if span is None:
+        return False
+    body = lines[span[0] + 1:span[1]]
+    found = {"status": any(re.fullmatch(r"  status:\s*green\s*(#.*)?", l.rstrip("\n")) for l in body),
+             "tag": any(l.rstrip("\n") == f"  verified_against: {_yaml_scalar(tag)}" for l in body)}
+    expected = {"total": total, "ported": passed, "passing": passed}
+    in_cases = False
+    for l in body:
+        if _is_filler(l):
+            continue
+        if re.match(r"  cases:\s*$", l):
+            in_cases = True
+            continue
+        if len(l) - len(l.lstrip()) <= 2:
+            in_cases = False
+        m = re.fullmatch(r"    (total|ported|passing):\s*(\S+)\s*", l.rstrip("\n")) if in_cases else None
+        if m and m.group(2) == str(expected[m.group(1)]):
+            found[m.group(1)] = True
+    return all(found.get(k) for k in ("status", "tag", "total", "ported", "passing"))
+
+
 def _rewrite_node(node_id: str, transform) -> bool:
     """対象ノードのブロックで最初に transform が True を返した行を置換して書き戻す。"""
     if not os.path.exists(LEDGER):
         return False
     lines = open(LEDGER, encoding="utf-8").read().splitlines(keepends=True)
-    in_block = False
-    for i, line in enumerate(lines):
-        if _leaves_nodes(line):
-            break
-        if line.startswith("- id: "):
-            in_block = line.split(":", 1)[1].strip() == node_id
-            continue
-        if in_block and re.match(r"\s+status:\s*", line):
-            lines[i] = transform(i, line)
+    span = node_span(lines, node_id)
+    if span is None:
+        return False
+    for i in range(span[0] + 1, span[1]):
+        if re.match(r"\s+status:\s*", lines[i]):
+            lines[i] = transform(i, lines[i])
             open(LEDGER, "w", encoding="utf-8").write("".join(lines))
             return True
     return False

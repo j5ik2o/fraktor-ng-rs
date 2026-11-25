@@ -31,46 +31,55 @@ def _is_filler(line: str) -> bool:
     return not line.strip() or line.lstrip().startswith("#")
 
 
-def _leaves_nodes(line: str) -> bool:
-    """`nodes:` の外の最上位の欄の行か（`retired:` など）。
+def line_sections(lines: list[str]) -> list[str | None]:
+    """各行が属する最上位の欄の名前を返す（`nodes`、`retired` など。最初の欄より前は None）。
 
-    ノードは `- id:` で始まり、次の `- id:` かこの行で終わる。最上位の欄に入ったら、
-    以降の行（退役したノードなど）は現役のノードとして扱わない。列 0 の注記や空行は
-    境界にしない（ノードの中の注記を挟んでも、同じノードの欄を書き換えられる）。
+    最上位の欄は列 0 の `<名前>:` の行で始まり、次の最上位の欄の行まで続く。列 0 の注記や空行は
+    欄を変えない。最上位の欄の順序は問わない（`retired` が `nodes` より前でもよい）。
     """
-    return bool(TOP_LEVEL_KEY.match(line)) and not line.startswith("nodes:")
+    sections: list[str | None] = []
+    current = None
+    for line in lines:
+        top = TOP_LEVEL_KEY.match(line)
+        if top:
+            current = line.split(":", 1)[0].strip()
+        sections.append(current)
+    return sections
+
+
+def node_span(lines: list[str], node_id: str) -> tuple[int, int] | None:
+    """`nodes` の中で `- id: <node_id>` のノードが占める行の範囲 [start, end) を返す。無ければ None。
+
+    ノードは次の `- id:` か、次の最上位の欄の行で終わる。`nodes` の外（退役したノードなど）は探さない。
+    """
+    sections = line_sections(lines)
+    start = next((i for i, line in enumerate(lines)
+                  if sections[i] == "nodes" and line.startswith("- id: ")
+                  and line.split(":", 1)[1].strip() == node_id), None)
+    if start is None:
+        return None
+    end = next((j for j in range(start + 1, len(lines))
+                if lines[j].startswith("- id: ") or TOP_LEVEL_KEY.match(lines[j])), len(lines))
+    return start, end
 
 
 def _insert_after_key(lines: list[str], node_id: str, key: str, new_line: str) -> list[str]:
-    """対象ノードの key 行の直後に new_line を差し込む（key が無ければ先頭に追記しない）。"""
-    in_block = False
-    for i, line in enumerate(lines):
-        if _leaves_nodes(line):
-            break
-        if line.startswith("- id: "):
-            in_block = line.split(":", 1)[1].strip() == node_id
-            continue
-        if in_block and re.match(rf"\s+{re.escape(key)}\s*$", line):
+    """対象ノードの key 行の直後に new_line を差し込む（key が無ければ何もしない）。"""
+    span = node_span(lines, node_id)
+    if span is None:
+        return lines
+    for i in range(span[0] + 1, span[1]):
+        if re.match(rf"\s+{re.escape(key)}\s*$", lines[i]):
             return lines[: i + 1] + [new_line] + lines[i + 1 :]
     return lines
 
 
 def _set_top_level_key(lines: list[str], node_id: str, key: str, value: str) -> list[str]:
     """対象ノードの最上位の key 行を value に置き換える。無ければノードの末尾に足す。"""
-    start = end = None
-    for i, line in enumerate(lines):
-        if _leaves_nodes(line):
-            end = i if start is not None else None
-            break
-        if line.startswith("- id: "):
-            if start is not None:
-                end = i
-                break
-            if line.split(":", 1)[1].strip() == node_id:
-                start = i
-    if start is None:
+    span = node_span(lines, node_id)
+    if span is None:
         return lines
-    end = len(lines) if end is None else end
+    start, end = span
     new_line = f"  {key}: {_yaml_scalar(value)}\n"
     for i in range(start + 1, end):
         if re.match(rf"  {re.escape(key)}:", lines[i]):
