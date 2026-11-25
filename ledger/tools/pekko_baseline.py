@@ -213,6 +213,19 @@ def summarize(nodes: list[dict], baseline: Baseline) -> dict:
     return {"by_tag": by_tag, "unverified": unverified}
 
 
+def check_lineage(path: str, baseline: Baseline) -> list[str]:
+    """退役したノード（最上位の retired）と引き継ぎ（cases.carried）の記録の違反を返す。
+
+    規則は rollup.py の lineage_problems と同じで、引き継ぎの verified_against は基準ファイルの
+    知るタグに限る。CI の通常の入口（check-ledger）で、承継の二重計上や不正な退役記録を落とす。
+    """
+    import rollup
+
+    # 暦日を文字列のまま検査するため、rollup と同じ台帳専用のローダで読む。
+    problems = rollup.lineage_problems(rollup.load_nodes(path), rollup.load_retired(path), baseline.known_tags())
+    return [f"{node_id}: {'; '.join(items)}" for node_id, items in problems.items()]
+
+
 def _load_nodes(path: str) -> list[dict]:
     import yaml
 
@@ -235,7 +248,7 @@ def cmd_source_root(args) -> int:
 def cmd_check_ledger(args) -> int:
     baseline = load()
     nodes = _load_nodes(args.ledger)
-    errors = check_nodes(nodes, baseline)
+    errors = check_nodes(nodes, baseline) + check_lineage(args.ledger, baseline)
     summary = summarize(nodes, baseline)
     print(f"基準: 現行 {baseline.tag}（{baseline.commit}）、過去 {sorted(baseline.historical) or '-'}")
     print(f"判定済みノード（{'/'.join(JUDGED_STATUSES)}）の照合済みタグ:")

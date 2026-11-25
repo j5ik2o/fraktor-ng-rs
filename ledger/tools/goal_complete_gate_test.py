@@ -80,6 +80,10 @@ def copy_rollup(root: Path) -> None:
     """rollup.py と、それが読む excluded_approvals.py を一時ディレクトリへ写す。"""
     write(root / "ledger" / "tools" / "rollup.py", ROLLUP.read_text(encoding="utf-8"))
     write(root / "ledger" / "tools" / "excluded_approvals.py", APPROVALS.read_text(encoding="utf-8"))
+    # 引き継ぎのタグの検査に、基準ファイルとその読み手を使う。
+    write(root / "ledger" / "tools" / "pekko_baseline.py", (ROLLUP.parent / "pekko_baseline.py").read_text(encoding="utf-8"))
+    baseline = ROLLUP.parents[2] / "tools" / "pekko-source" / "pekko-baseline.env"
+    write(root / "tools" / "pekko-source" / "pekko-baseline.env", baseline.read_text(encoding="utf-8"))
 
 
 def node(node_id: str, status: str, goal: str | None) -> str:
