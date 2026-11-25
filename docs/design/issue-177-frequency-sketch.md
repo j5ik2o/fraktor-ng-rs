@@ -53,7 +53,7 @@ kernel に、TinyLFU のための count-min sketch を 2 つ足した。Pekko v2
 - 原典が幅 0 以下を受け付けて最初の更新で配列の範囲外になるのに対し、移植は作成時に `WidthNotPositive` を返す。2 の冪の検査は 0 と `i32::MIN` を通るので、その後ろに置いた。
 - 容量が `2^30` を超えると、`ceiling_power_of_two` は原典どおり `i32::MIN` になる。既定の倍率では 64 ビットの積が負になり、下位 32 ビットが 0 になる。原典のあふれの検査もこれを通すので、`WidthOverflow` ではなく `WidthNotPositive { width: 0 }` を返す。
 - 深さ 0 は原典どおり受け付ける。`frequency` は `i32::MAX`、`size` は 0。
-- 原典の `Hasher[A]` は暗黙引数なので、`FrequencySketchHasher<A>` の trait にし、`with_hasher` で渡せるようにした。既定はそれぞれ `StringHasher` と `StringHashCode`。
+- 原典の `Hasher[A]` は暗黙引数なので、`FrequencySketchHasher<A>` の trait にし、`with_hasher` で渡せるようにした。既定はそれぞれ `StringHasher` と `StringHashCode`。原典の `Hasher` は `sealed trait` で、利用者は実装できない。移植の trait は `sealed` にしていないので、利用者が実装できる拡張点になる（原典より開いている）。閉じるかどうかは、オーナーの判断を待つ（設計レビュー F6）。
 - 深さは `SketchDepth` という検証済みの型にした。`rows: usize` を設定から直接持ち回らず、負の検査と 0 の扱いを 1 箇所に閉じるためである。
 - クラス名は原典のまま（`FrequencySketch`、`FastFrequencySketch`）。製品名の改名の規則は Pekko という製品名が対象で、原典のクラス名は対象外である（#126・#136・#139 と同じ判断）。
 
@@ -80,16 +80,16 @@ kernel に、TinyLFU のための count-min sketch を 2 つ足した。Pekko v2
 | 番号 | 不変条件 |
 |:---|:---|
 | I1 | カウンタの範囲：どのカウンタも `0 <= c <= max(counterBits)`。加算は最大値のカウンタを増やさない（飽和） |
-| I2 | 行の大きさ：`row_sizes[r]` は、その行でこれまでに増えたカウンタの数（リセットの半減を反映した値）に等しい。リセットの直後は `row_sizes[r] == sum(counters[r])` である |
+| I2 | 行の大きさ：`row_sizes[r]` は、その行でこれまでに増えたカウンタの数（リセットの半減を反映した値）に等しい。つねに `row_sizes[r] == sum(counters[r])` である（加算は両方を 1 増やし、リセットは両方を `(x - odd) / 2` にする） |
 | I3 | 全体の大きさ：`updated_size` は、前回のリセット以降に「1 行でもカウンタが増えた」更新の数。`updated_size >= row_sizes[r]`（全行）。リセットの直後は `updated_size == max(row_sizes)`。深さ 0 なら常に 0 |
-| I4 | リセット：`reset_size >= 1` のとき、`updated_size` が `reset_size` に達した更新の直後に 1 回だけ走る。全カウンタを `>>> 1` し、行の大きさを「奇数カウンタの数」だけ先に引いてから `>>> 1` する。その後 `updated_size` を最大の行の大きさにする。`reset_size <= 0`（0、負、NaN の `as i64` は 0、負の積）のときは走らない |
+| I4 | リセット：`reset_size >= 1` のとき、`updated_size` が `reset_size` に達した更新の直後に 1 回だけ走る。全カウンタを `>>> 1` し、行の大きさを「奇数カウンタの数」だけ先に引いてから `>>> 1` する。その後 `updated_size` を最大の行の大きさにする。リセットの大きさは積の下位 32 ビットなので、負の倍率でも 1 以上になりうる（例：容量 1、倍率 `-4294967295.0` は 1 になり、数えた更新のたびに走る）。`reset_size <= 0`（0、NaN の `as i64` は 0、下位 32 ビットが 0 以下の積）のときは、`updated_size` が `i32` で一巡するまで（数えた更新が `2^31` 回に届くまで）走らない。どれも原典の `.toLong.toInt` と同じ |
 | I5 | 幅：`width = (width_multiplier * ceiling_power_of_two(capacity)) as i64`。`width > i32::MAX` は `WidthOverflow`。`width as i32`（下位 32 ビット）が 2 の冪でなければ `WidthNotPowerOfTwo`（0 と `i32::MIN` は 2 の冪として通す）。0 以下なら `WidthNotPositive`。`ceiling_power_of_two` は 32 ビットの折り返しで、`1 << -(leadingZeros(value - 1))`。1 以下は 1（ただし `i32::MIN` だけは引き算が `i32::MAX` に折り返して `i32::MIN` 自身）、`2^30` 超は `i32::MIN` |
 | I6 | 深さ：`depth >= 0`。0 を許し、`frequency` は `i32::MAX`、`size` は 0（I3） |
 | I7 | ハッシュ：`FrequencySketch` は `MurmurHash3.stringHash` の種 135283237、`rehash = finalizeHash(mixLast(hash, hash), 2)`、行の位置は `hash1 + row * hash2`。`FastFrequencySketch` は `String.hashCode`、hash-prospector の `rehash`、行ごとの `SEEDS`、位置は `((hash + seed) * seed + high32) as i32 & (width - 1)`。同じハッシュと設定なら、JVM と同じカウンタに落ちる |
 | I8 | 折り返し：数と計数は原典の `Int` と同じく `i32` で持ち、折り返す。`u64` の語のシフト量は 64 の剰余、`i32` のシフト量は 32 の剰余（JVM と同じ）。64 ビットから `i32` への変換は下位 32 ビット（`toInt`）。`f64` から `i64` は飽和し、NaN は 0。したがって 32／64 ビットのカウンタは `i32` に切り詰められ、`2^31` を超えると負になりうる（原典の `toInt` と同じ） |
-| I9 | 意味：`frequency(v)` は全行の `v` のカウンタの最小値。`size()` は I3 の `updated_size`。作成は不正な設定を `Err` で返し、成功した sketch の `increment` と `frequency` は panic しない（位置は必ず語の範囲に収まる） |
+| I9 | 意味：`frequency(v)` は全行の `v` のカウンタの最小値。`size()` は I3 の `updated_size`。作成は不正な設定を `Err` で返し、成功した sketch の `increment` と `frequency` は panic しない（位置は必ず語の範囲に収まる）。ただし、有効でも行列が巨大な設定（幅が大きい、深さが大きい）は、確保の失敗でプロセスが abort しうる（32 ビットの対象では capacity overflow の panic）。`Err` にするかは [#220](https://github.com/j5ik2o/fraktor-ng-rs/issues/220) で決める |
 
-I2 と I3 は Quint で、I5、I7 は原典のソースと単体テスト（JVM の値）で、I1、I6、I9 は PBT と Quint で確かめる。I8 の「32／64 ビットのカウンタは `2^31` で負になりうる」は、原典の `getCounter` が `Long` を `.toInt` するためである。この切り詰めを `2^31` 超えで実行する検査は無い（§5 の範囲の外）。
+I2 と I3 は Quint で確かめる。I3 の前半（数えるのは 1 行でもカウンタが増えた更新だけ）は、深さ 1 のインスタンス `single` の `oneRowSizeIsTheSize` と、PBT の P1 の完全一致で確かめる。I5、I7 は原典のソースと単体テスト（JVM の値）で、I1、I6、I9 は PBT と Quint で確かめる。I9 の「`frequency` は最小値」は Quint の `frequencyIsTheSmallestCounter` で確かめる。カウンタの位置（幅が 1 語より狭いときに、カウンタの添字を幅でマスクしないこと）は、Quint が位置を抽象化しているので捉えられず、単体テスト（JVM の値）で確かめる（§4、§5）。I8 の「32／64 ビットのカウンタは `2^31` で負になりうる」は、原典の `getCounter` が `Long` を `.toInt` するためである。この切り詰めを `2^31` 超えで実行する検査は無い（§5 の範囲の外）。
 
 ## 3. PBT の性質
 
@@ -103,7 +103,7 @@ PBT は、固定 seed の SplitMix64 で設定と入力を選び、ランダム�
 | P4 | リセットの手で、各値の `frequency` は `floor(f / 2) <= f' <= floor((f + 1) / 2)` を満たす（`f` はリセットの直前の値。更新の対象になったカウンタは先に 1 増えるので、上界は `+1`） | I4 |
 | P5 | 任意の文字列について、`StringHasher` と `StringHashCode` は原典の定義に等しい。空文字、ASCII、2・3 バイトの UTF-8、サロゲートペア、長い文字列を含む | I7 |
 | P6 | 任意の `i32` について、`Bits` の 3 関数は定義に等しい。`i32::MIN`、`i32::MAX`、`2^30` の前後を含む | I5 |
-| P7 | 2 つの構築子は、原典が受け付けて添字できる設定だけを受け付け、最初に失敗する検査の値を返す。容量と倍率の境界（`0`、負、`i32::MIN`、`2^30`、`2^30 + 1`、`i32::MAX`）、すべての `counterBits`、負の深さを含む | I5、I6、I9 |
+| P7 | 2 つの構築子は、原典が受け付けて添字できる設定だけを受け付け、最初に失敗する検査の値を返す。検査の順は、原典の順に、原典に無い `WidthNotPositive` を 2 の冪の検査の直後に足した順である（§1）。そのため、幅 0 と不正な `counterBits` が重なると、原典の `IllegalArgumentException`（`counterBits`）ではなく `WidthNotPositive` を返す。容量と倍率の境界（`0`、負、`i32::MIN`、`2^30`、`2^30 + 1`、`i32::MAX`）、すべての `counterBits`、負の深さを含む | I5、I6、I9 |
 
 除外は付けない。深さ 0、リセットの無効（0、負、NaN、1e12）、すべてのカウンタの大きさ、空文字、非 ASCII、サロゲートペア、長い文字列を、入力の抽選にすべて入れた。32／64 ビットのカウンタで `2^31` を超える値は、1 回の実行の更新が最大 2000 回なので PBT でも Quint でも届かず、単体テストも踏まない。I8 の切り詰めは原典の `toInt` を写したもので、この範囲の実行の検査は無い。
 
@@ -117,46 +117,58 @@ PBT は、固定 seed の SplitMix64 で設定と入力を選び、ランダム�
 
 ## 4. 状態遷移と Quint
 
-**Quint は要る。** `FrequencySketch` は状態を持つデータ構造で、更新（加算、飽和、リセット）が状態を変える。I2 の「行の大きさがカウンタの和に等しい」と I4 の「リセットで奇数を先に引く」は、遷移の列の全体で成り立つ必要があり、固定のテストでは取りこぼしうる。実際、リセットの奇数補正を落とす変異は PBT の P1〜P4 では落ちない（P4 の半減の範囲は満たしたまま、行の大きさだけがずれる）。この誤りは Quint の `rowSizeIsCounterSum` で落ちる。並行は無いので、仕様は 1 スレッドの遷移だけを扱う。
+**Quint は要る。** `FrequencySketch` は状態を持つデータ構造で、更新（加算、飽和、リセット）が状態を変える。I2 の「行の大きさがカウンタの和に等しい」と I4 の「リセットで奇数を先に引く」は、遷移の列の全体で成り立つ必要があり、固定のテストでは取りこぼしうる。実際、リセットの奇数補正を落とす変異は PBT の P1〜P4 では落ちない（P4 の半減の範囲は満たしたまま、行の大きさだけがずれる）。この誤りは Quint の `rowSizeIsCounterSum` で落ちる（原典のケースのうちリセットの 2 件と、JVM の値の単体テストも落とす）。リセットの後の大きさを最大の行ではなく 1 行目の大きさにする誤りは、PBT も原典のケースも落とさず、JVM の値の単体テストと Quint だけが落とす（下の表）。並行は無いので、仕様は 1 スレッドの遷移だけを扱う。
 
 仕様は `docs/design/specs/frequency_sketch.qnt`（本体）と `docs/design/specs/frequency_sketch_test.qnt`（インスタンスと負の対照）。
 
-- 状態：`counters`（行ごとのカウンタを語ごとに並べた `List[List[int]]`）、`rowSizes`、`updatedSize`、`place`（値から各行の位置への写像）、`ghost`（真の回数。リセットで半減）、`everSaturated`（飽和したカウンタが現れたか）。
+- 状態：`counters`（行ごとのカウンタを語ごとに並べた `List[List[int]]`）、`rowSizes`、`updatedSize`、`place`（値から各行の位置への写像）、`ghost`（真の回数。リセットで半減）、`saturated`（加算が最大値で出会ったカウンタの集合。行と行の中の添字の組）。
 - 遷移：`init` と `increment(v)` だけ。`init` は `place` を非決定的に選ぶので、衝突も幅を超える位置もすべて探索する。ハッシュの値そのものはモデルにせず、P5／P6 と単体テストで JVM に固定する。
-- 64 ビット語は展開して、カウンタの列として持つ。位置からカウンタを引く `cellOf` は、コードの `locate` と同じ（語は幅でマスクし、カウンタは下位ビットだけで選ぶ）である。
-- 不変条件：`positionsInRange`（位置が行に収まる）、`countersBounded`（I1）、`rowSizeIsCounterSum`（I2）、`rowSizesWithinSize`（I3）、`sizeBelowResetSize`（I4。有効なリセットより小さい）、`noRowsNoSize`（I6）、`noUnderestimateWhileUnsaturated`（飽和が無い間は、各カウンタがそこに載った値のゴーストの回数以上で、`frequency` がゴーストを下回らない）。まとめて `inv`。
-- インスタンス：`narrow`（2 ビット、幅 4、1 語 32 個。カウンタの添字が幅でマスクされないことと、早い飽和を通す）、`fast`（4 ビット、幅 16、1 語 16 個）、`wide`（8 ビット、幅 32、1 語 8 個。語の添字が効く）、`noReset`（リセットの大きさ 0）、`noRows`（深さ 0）。
-- 負の対照：`bugNoOddAdjust`（リセットの奇数補正を落とす）、`bugNoSaturation`（飽和を落とす）、`bugStaleSize`（リセットの後に `updatedSize` を更新しない）。それぞれ `inv` が落ちることを確かめる。
+- 64 ビット語は展開して、カウンタの列として持つ。位置からカウンタを引く `cellOf` は、コードの `locate` と同じ（語は幅でマスクし、カウンタは下位ビットだけで選ぶ）である。ただし、`place` を任意に選ぶので、`cellOf` を変えても置き方が違うだけの正しい count-min sketch になり、不変条件は落ちない（設計レビューの QM1。カウンタの添字を幅でマスクしても `[ok]`）。カウンタの位置そのものは、単体テストで JVM の値に固定する（§5）。
+- 不変条件：`positionsInRange`（位置が行に収まる）、`countersBounded`（I1）、`rowSizeIsCounterSum`（I2）、`rowSizesWithinSize`（I3）、`sizeBelowResetSize`（I4。有効なリセットより小さい）、`noRowsNoSize`（I6）、`oneRowSizeIsTheSize`（I3 の前半。深さ 1 なら `updatedSize == rowSizes[0]`。飽和した更新を数えると落ちる）、`frequencyIsTheSmallestCounter`（I9。`frequency` はどの行のカウンタも超えず、どれかに等しい）、`noUnderestimateWhileUnsaturated`（飽和したことの無いカウンタは、そこに載った値のゴーストの回数以上で、どのカウンタも飽和したことの無い値の `frequency` はゴーストを下回らない。飽和はカウンタごとに持つので、1 つが飽和しても、ほかのカウンタの検査は続く）。まとめて `inv`。
+- インスタンス：`narrow`（2 ビット、幅 4、1 語 32 個。カウンタの添字が幅でマスクされないことと、早い飽和を通す）、`fast`（4 ビット、幅 16、1 語 16 個）、`wide`（8 ビット、幅 32、1 語 8 個。語の添字が効く）、`single`（深さ 1、2 ビット、幅 4。`oneRowSizeIsTheSize` が効く）、`noReset`（リセットの大きさ 0）、`noRows`（深さ 0）。
+- 負の対照：`bugNoOddAdjust`（リセットの奇数補正を落とす）、`bugNoSaturation`（飽和を落とす）、`bugStaleSize`（リセットの後に `updatedSize` を更新しない）、`bugFirstRowSize`（リセットの後の大きさを最大の行ではなく 1 行目の大きさにする）、`bugCountSaturated`（飽和した更新も数える。深さ 1）、`bugMaxFrequency`（`frequency` が最大値を取る）。それぞれ `inv` が落ちることを確かめる。
 
 モデルにしていないもの：ハッシュの値（抽象化して任意の位置を許す）、`i32` の加算の折り返し（更新は最大 40 手なので届かない）、64 ビット語のビット演算そのもの（展開して同じ添字の計算だけを写す）、スレッド安全、`toDebugString`。
 
-### 検査の結果（2026-11-26、Quint 0.32.0）
+### 検査の結果（2026-11-26、Quint 0.32.0。設計レビュー F1〜F3、F8 の対応の後）
+
+`quint run` はどれも `--max-samples=10000 --max-steps=40 --seed=0x1` で、6 本を並べて流した（時間は並列のときの値）。
 
 | コマンド | 結果 |
 |:---|:---|
 | `quint typecheck docs/design/specs/frequency_sketch.qnt`、`..._test.qnt` | 成功 |
-| `quint test --main=narrow --match='^(incrementCountersToMaxValue\|resetHalvesAndAdjustsForOddCounters)$' docs/design/specs/frequency_sketch_test.qnt` | 2 passing（各 10,000 test、4.2 秒） |
-| `quint run --main=narrow --invariant=inv --max-samples=10000 --max-steps=40 --seed=0x1` | `[ok] No violation found`（10,000 トレース、37.4 秒） |
-| `quint run --main=fast ...` | `[ok]`（75.1 秒） |
-| `quint run --main=wide ...` | `[ok]`（109.6 秒） |
-| `quint run --main=noReset ...` | `[ok]`（35.6 秒） |
-| `quint run --main=noRows ...` | `[ok]`（7.7 秒） |
+| `quint test --main=narrow --match='^(incrementCountersToMaxValue\|resetHalvesAndAdjustsForOddCounters)$' docs/design/specs/frequency_sketch_test.qnt` | 2 passing（各 10,000 test、7.9 秒） |
+| `quint run --main=narrow --invariant=inv ...` | `[ok] No violation found`（10,000 トレース、183 秒） |
+| `quint run --main=fast ...` | `[ok]`（213 秒） |
+| `quint run --main=wide ...` | `[ok]`（245 秒） |
+| `quint run --main=single ...` | `[ok]`（111 秒） |
+| `quint run --main=noReset ...` | `[ok]`（178 秒） |
+| `quint run --main=noRows ...` | `[ok]`（22 秒） |
 | `quint run --main=bugNoOddAdjust --invariant=inv ...` | `[violation]` |
 | `quint run --main=bugNoSaturation --invariant=inv ...` | `[violation]` |
 | `quint run --main=bugStaleSize --invariant=inv ...` | `[violation]` |
+| `quint run --main=bugFirstRowSize --invariant=inv ...` | `[violation]` |
+| `quint run --main=bugCountSaturated --invariant=inv ...` | `[violation]` |
+| `quint run --main=bugMaxFrequency --invariant=inv ...` | `[violation]` |
 | `quint run --main=bugNoOddAdjust --invariant=rowSizeIsCounterSum ...` | `[violation]`（狙った不変条件で落ちる） |
 | `quint run --main=bugNoSaturation --invariant=countersBounded ...` | `[violation]`（同上） |
 | `quint run --main=bugStaleSize --invariant=sizeBelowResetSize ...` | `[violation]`（同上） |
+| `quint run --main=bugFirstRowSize --invariant=rowSizesWithinSize ...` | `[violation]`（同上） |
+| `quint run --main=bugCountSaturated --invariant=oneRowSizeIsTheSize ...` | `[violation]`（同上） |
+| `quint run --main=bugMaxFrequency --invariant=frequencyIsTheSmallestCounter ...` | `[violation]`（同上） |
 
-コードの負の対照（実装に 1 つずつ一時的に入れ、毎回元に戻した。`cargo test -p fraktor-actor --release --test frequency_sketch_property_test` を流した）：
+コードの負の対照（実装に 1 つずつ一時的に入れ、毎回元に戻した。`cargo test -p fraktor-actor --release` の `--lib frequency_sketch`（JVM の値の単体テスト）、`--test frequency_sketch_spec`（原典のケース）、`--test frequency_sketch_property_test`（PBT）を流した。上の 3 行の PBT と Quint の欄は実装の時点の値で、ほかの欄は設計レビュー F1、F3、F5 の対応で測った）：
 
-| 変異 | PBT | Quint |
-|:---|:---|:---|
-| リセットで奇数補正を落とす（`row_sizes - odd` を `row_sizes` に） | **4 passed（落ちない）** | `rowSizeIsCounterSum` が `[violation]` |
-| 飽和を落とす（最大値のカウンタにも足す） | P3 が失敗（`estimated 0 below 3`） | `countersBounded` が `[violation]` |
-| リセットの後に `updated_size` を更新しない | P1 が失敗（`size at or above the reset size`） | `sizeBelowResetSize` が `[violation]` |
+| 変異 | 単体テスト（JVM の値） | 原典のケース | PBT | Quint |
+|:---|:---|:---|:---|:---|
+| リセットで奇数補正を落とす（`row_sizes - odd` を `row_sizes` に） | 3 件が失敗 | 2 件が失敗（`frequency_sketch_reset_counters_when_reset_size_is_reached` と Fast 版） | **4 passed（落ちない）** | `rowSizeIsCounterSum` が `[violation]` |
+| 飽和を落とす（最大値のカウンタにも足す） | — | — | P3 が失敗（`estimated 0 below 3`） | `countersBounded` が `[violation]` |
+| リセットの後に `updated_size` を更新しない | — | — | P1 が失敗（`size at or above the reset size`） | `sizeBelowResetSize` が `[violation]` |
+| リセットの後の大きさを 1 行目の大きさにする（`max()` を `first()` に） | 3 件が失敗 | **22 passed（落ちない）** | **4 passed（落ちない）** | `bugFirstRowSize` の `inv` が `[violation]`（`rowSizesWithinSize`） |
+| カウンタの添字を幅でマスクする（`locate` の `slot`） | `a_width_narrower_than_a_word_places_counters_as_the_original` が失敗 | 落ちない（設計レビュー CM1） | 落ちない（同） | 捉えられない（位置の抽象化。QM1） |
+| リセットの大きさを切り詰めずに `i32` の範囲に飽和させる | `a_negative_reset_product_truncated_to_one_resets_every_update` が失敗 | 落ちない（設計レビュー CM7） | 落ちない（同） | モデルの外（`ResetSize` は定数） |
 
-1 行目が Quint を要る理由の実測である。PBT の P1〜P4 は、行の大きさの整合（I2）を直接は見ていないので、奇数補正の誤りを通す。Quint の `rowSizeIsCounterSum` がこれを落とす。
+「—」は、実装の時点では流していない欄である。リセットの後の大きさの行が、Quint を要る理由の実測である。PBT と原典のケースはこの誤りを通し、JVM の値の単体テスト（決まった 1 本の列）と Quint の `inv`（任意の置き方と列）だけが落とす。奇数補正の行は、PBT が通すが、原典のケースと単体テストも落とす。PBT の P1〜P4 は行の大きさの整合（I2）を直接は見ていないので、どちらの誤りも通す。
 
 **`quint test` には必ず `--match` を付ける。** Quint 0.32.0 では、`--match` が無いとテストを 0 件流して exit 0 で終わる（#176 の設計レビュー F8 と同じ）。`--match='.*'` のように広く取ると、`import ... .*` で取り込んだ定義も拾って失敗する。付けたときの件数（2 件）を確かめる。
 
@@ -164,28 +176,30 @@ PBT は、固定 seed の SplitMix64 で設定と入力を選び、ランダム�
 
 | 入力 | 何が起きうるか | 確かめているもの |
 |:---|:---|:---|
-| 容量 `0`、負、`i32::MIN` | `ceiling_power_of_two` が 1 か `i32::MIN` になり、幅が 0 以下になる | P7 |
+| 容量 `0`、負 | `ceiling_power_of_two` が 1 になり、幅は `width_multiplier`（既定で 4）で、構築は成功する。リセットの大きさは 0 以下なので無効（I4）。原典と同じで、拒むかどうかはオーナーの判断を待つ（設計レビュー F4） | P7 |
+| 容量 `i32::MIN` | `ceiling_power_of_two` が `i32::MIN` になり、幅が 0 以下になる（`WidthNotPositive`） | P7 |
 | 容量 `2^30`、`2^30 + 1`、`i32::MAX` | 幅が `2^30` か、`i32::MIN` への丸めで 0 になる（`WidthNotPositive { 0 }`） | P7、単体テスト（`2^30 + 1`） |
 | 幅の倍率 `0`、負、`i32::MIN`、`i32::MAX` | 幅 0（`WidthNotPositive`）、2 の冪でない幅、64 ビットの積のあふれ（`WidthOverflow`） | P7、単体テスト |
 | `counterBits` の各値（2、4、8、16、32、64）と不正値（-1、0、1、3、128） | 1 語のカウンタ数、飽和の最大値、読み出しの切り詰めが変わる。不正値は `UnsupportedCounterBits` | P7、単体テスト 5 通り、Quint の 2 ビットと 8 ビット |
 | 深さ 0 | 行が無く、`frequency` は `i32::MAX`、`size` は 0。行のバッファも確保しない（`vec![row; 0]` でも `row` は一度作られるので、行は 1 行ずつ作る） | P1、P2、P7、Quint の `noRows`、`frequency_sketch_allocation_test.rs` |
 | 深さが負 | `NegativeDepth`。原典は `NegativeArraySizeException` | P7、単体テスト |
-| 深さが非常に大きい（`i32::MAX` など） | 行列の確保で失敗しうる（原典の配列確保と同じ）。PBT は 8 までにした | 範囲の外（この文書に記載） |
-| リセット倍率 `0`、負、NaN | リセットの大きさが 0 か負になり、リセットが走らない | P1、P4、Quint の `noReset` |
+| 深さが非常に大きい（`i32::MAX` など）、幅が非常に大きい（例：容量 `2^28` と 64 ビットのカウンタで、幅 `2^30`、1 行 8 GiB） | 行列の確保で失敗し、プロセスが abort しうる（原典の配列確保と同じ）。PBT は深さ 8、構築する幅は `2^16` までにした | 範囲の外（この文書に記載）。`Err` にするかは [#220](https://github.com/j5ik2o/fraktor-ng-rs/issues/220) |
+| リセット倍率 `0`、負、NaN | 積の下位 32 ビットがリセットの大きさになる。0 以下ならリセットは走らない。負の倍率でも、下位 32 ビットが 1 以上なら走る（容量 1、倍率 `-4294967295.0` は 1 で、毎回走る） | P1、P4、Quint の `noReset`、単体テスト `a_negative_reset_product_truncated_to_one_resets_every_update`（JVM の値） |
 | リセット倍率 `1e12` | 積が `i32::MAX` に飽和し、`2^31 - 1` 回まで走らない | P1 |
 | リセットの直前と直後 | 奇数補正のずれ、`size` の取り違え、半減の境界 | P4、Quint（`resetHalvesAndAdjustsForOddCounters` と `inv`） |
 | 空文字 | `StringHasher` は長さ 0 で finalize し、`StringHashCode` は 0 | P5、単体テスト |
 | 非 ASCII、サロゲートペア | UTF-16 の符号単位を 2 つずつ混ぜる位置と、`char` ではなく符号単位で数える長さ | P5（😀、𝄞、é、ß、日、本） |
 | 長い文字列（200〜400 片） | 2 符号単位ずつのループと、余りの 1 符号単位の扱い | P5 |
 | 32／64 ビットのカウンタで `2^31` を超える | `toInt` の切り詰めで `frequency` が負になりうる（原典と同じ） | 単体テストも PBT も Quint も `2^31` に届かない。範囲の外と明記 |
-| 幅が 1 語より小さい | カウンタの添字を幅でマスクすると、別のカウンタに落ちる | P7（小さい幅を構築）、Quint の `narrow` |
+| 幅が 1 語より小さい | カウンタの添字を幅でマスクすると、別のカウンタに落ちる | 単体テスト `a_width_narrower_than_a_word_places_counters_as_the_original`（容量 1 と 4、2 ビットと 4 ビットのカウンタ。`frequency` と `size` を JVM の値に固定）。Quint の `narrow` は位置を抽象化するので、この誤りを捉えられない（§4） |
 | 同じ位置に落ちる値（衝突） | 頻度が実際より大きく出る（count-min sketch の性質） | Quint の `place`、P3（下回らないこと） |
 
 ## 6. 影響
 
 - **公開 API**：追加だけ。`kernel::frequency_sketch` に `FrequencySketch<A, H>`、`FastFrequencySketch<A, H>`、`FrequencySketchSettings`、`FastFrequencySketchSettings`、`FrequencySketchError`、`FrequencySketchHasher`、`StringHasher`、`StringHashCode`、`Bits`。既存の型、関数、モジュールの公開面は変えていない。
 - **原典にない `WidthNotPositive`**：原典は幅 0 以下を作成時に通し、最初の更新で配列の範囲外になる。Rust では作成時に `Result` で返す方が、失敗を早く、型で見えるようにできる。この PR の新しい型なので、既存の利用者への影響は無い。
-- **原典にない `with_hasher` と `FrequencySketchHasher`**：原典の `Hasher[A]`（暗黙引数）を trait にした。既定のハッシュで足りる利用者は `new` だけでよい。文字列以外の型を使うには、`FrequencySketchHasher` を実装して `with_hasher` に渡す。
+- **原典にない `with_hasher` と `FrequencySketchHasher`**：原典の `Hasher[A]`（暗黙引数）を trait にした。既定のハッシュで足りる利用者は `new` だけでよい。文字列以外の型を使うには、`FrequencySketchHasher` を実装して `with_hasher` に渡す。原典の `Hasher` は `sealed trait` なので、利用者が実装できるのは移植で開いた点である（§1。閉じるかはオーナーの判断を待つ）。
+- **`Bits` の `pub`**：原典の `Bits` は `FrequencySketch` の内側の object で、ほかと同じく内部 API である。原典の spec は `Bits` を使わない。移植で `pub` にしたのは、PBT の P6（`tests/` にあり、crate の外）が使うためである。`pub(crate)` にして P6 を単体テストへ移すかは、オーナーの判断を待つ（設計レビュー F6）。
 - **`SketchDepth`**：深さを検証済みの型にした（`148eaec`）。`rows: usize` を設定から直接持ち回らず、負の検査と 0 の扱いを 1 箇所に閉じるためである。`FrequencySketchError::NegativeDepth` はこの型の構築で返る。
 - **`A: ?Sized` と `PhantomData<fn(&A)>`**：値を持たず、`str` のような unsized な型もハッシュに渡せる。`PhantomData<fn(&A)>` は `Send`／`Sync` の自動導出に影響しない（`A` を所有しない）。
 - **no_std**：モジュールは `alloc::vec::Vec` と `core`（`core::marker`、`core::fmt`、`core::error::Error`）だけを使い、`std` を import しない。`fraktor-actor` の `extern crate alloc` の範囲に収まる（クレート全体は `#![no_std]` ではない）。

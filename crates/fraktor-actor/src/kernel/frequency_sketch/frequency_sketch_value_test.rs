@@ -30,6 +30,74 @@ fn the_size_follows_the_original_through_resets() {
   assert_eq!(trace(sketch(1000.0, 16)), [1000, 2000, 3000, 4000, 5000]);
 }
 
+fn narrow_sketch(capacity: i32, reset_multiplier: f64, counter_bits: i32) -> FrequencySketch<str> {
+  FrequencySketch::new(capacity, FrequencySketchSettings { reset_multiplier, counter_bits, ..Default::default() })
+    .expect("the settings are valid")
+}
+
+// The frequencies of `"0"` to `"39"`, each incremented `i % 3` times, and the size.
+fn counts(mut sketch: FrequencySketch<str>) -> (Vec<i32>, i32) {
+  for i in 0..40 {
+    for _ in 0..i % 3 {
+      sketch.increment(&i.to_string());
+    }
+  }
+  ((0..40).map(|i| sketch.frequency(&i.to_string())).collect(), sketch.size())
+}
+
+// Widths of 4 and 16 counters are narrower than one word of 32 (2-bit) or 16
+// (4-bit) counters. The original picks the counter in the word by the low bits
+// of the position, not masked by the width, so positions that differ only above
+// the width land in different counters of the same word. The expected values
+// were read from Pekko 2.0.0's `FrequencySketch` on the JVM, with width
+// multiplier 4 and depth 4.
+#[test]
+fn a_width_narrower_than_a_word_places_counters_as_the_original() {
+  assert_eq!(
+    counts(narrow_sketch(1, 1000.0, 2)),
+    (
+      [
+        0, 1, 2, 0, 1, 2, 0, 2, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 3, 0, 1, 3, 0, 1, 2, 0, 1, 3, 0,
+        1, 2, 0
+      ]
+      .to_vec(),
+      38
+    )
+  );
+  assert_eq!(
+    counts(narrow_sketch(1, 1000.0, 4)),
+    (
+      [
+        1, 2, 3, 0, 3, 3, 2, 2, 2, 0, 1, 2, 1, 2, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 1, 1, 4, 0, 2, 4, 0, 3, 3, 0, 1, 4, 0,
+        2, 2, 0
+      ]
+      .to_vec(),
+      39
+    )
+  );
+  assert_eq!(trace(narrow_sketch(1, 10.0, 2)), [4, 8, 2, 6, 8]);
+  assert_eq!(trace(narrow_sketch(1, 10.0, 4)), [5, 7, 9, 8, 9]);
+  assert_eq!(trace(narrow_sketch(4, 10.0, 2)), [33, 19, 28, 14, 23]);
+}
+
+// The reset size keeps the low 32 bits of the product, as the original's
+// `.toLong.toInt` does, so a negative multiplier can give a positive reset
+// size: `-4294967295 * 1` truncates to 1, and every counted update resets. The
+// expected values were read from Pekko 2.0.0 on the JVM.
+#[test]
+fn a_negative_reset_product_truncated_to_one_resets_every_update() {
+  let mut sketch = narrow_sketch(1, -4_294_967_295.0, 4);
+  for _ in 0..5 {
+    sketch.increment("a");
+    assert_eq!((sketch.size(), sketch.frequency("a")), (0, 0));
+  }
+  let mut sketch = narrow_sketch(1, -1.0, 4);
+  for count in 1..=5 {
+    sketch.increment("a");
+    assert_eq!((sketch.size(), sketch.frequency("a")), (count, count));
+  }
+}
+
 #[test]
 fn rejects_a_counter_size_that_is_not_supported() {
   let result = FrequencySketch::<str>::new(100, FrequencySketchSettings { counter_bits: 3, ..Default::default() });

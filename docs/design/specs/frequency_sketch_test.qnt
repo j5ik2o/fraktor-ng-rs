@@ -9,6 +9,7 @@
 // - `wide`: three rows of 8-bit counters (8 per word, maximum 255) over four
 //   words, so the word index matters.
 // - `noReset`: a reset size of zero, which never resets.
+// - `single`: one row of 2-bit counters, where the size is the row's size.
 // - `noRows`: depth zero.
 // The `bug*` instances are the negative controls. Each must violate `inv`.
 
@@ -22,7 +23,7 @@ module narrow {
       .then(all {
         place' = Set((0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1), (3, 0), (3, 1))
           .mapBy(k => if (k._1 == 0) 1 else 2),
-        counters' = counters, rowSizes' = rowSizes, updatedSize' = updatedSize, ghost' = ghost, everSaturated' = everSaturated,
+        counters' = counters, rowSizes' = rowSizes, updatedSize' = updatedSize, ghost' = ghost, saturated' = saturated,
       })
       .then(increment(0))
       .then(increment(0))
@@ -32,10 +33,10 @@ module narrow {
       .then(all {
         assert(frequency(0) == 3),
         assert(updatedSize == 3),
-        assert(everSaturated),
+        assert(saturated == Set((0, 1), (1, 1))),
         assert(inv),
         counters' = counters, rowSizes' = rowSizes, updatedSize' = updatedSize, place' = place, ghost' = ghost,
-        everSaturated' = everSaturated,
+        saturated' = saturated,
       })
 
   // Ten updates on four counters, 3, 3, 3 and 1: the tenth halves them to 1,
@@ -46,7 +47,7 @@ module narrow {
       .then(all {
         place' = Set((0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1), (3, 0), (3, 1))
           .mapBy(k => if (k._1 == 3) 3 else k._1),
-        counters' = counters, rowSizes' = rowSizes, updatedSize' = updatedSize, ghost' = ghost, everSaturated' = everSaturated,
+        counters' = counters, rowSizes' = rowSizes, updatedSize' = updatedSize, ghost' = ghost, saturated' = saturated,
       })
       .then(increment(0))
       .then(increment(0))
@@ -59,9 +60,9 @@ module narrow {
       .then(increment(2))
       .then(all {
         assert(updatedSize == 9),
-        assert(everSaturated == false),
+        assert(saturated == Set()),
         counters' = counters, rowSizes' = rowSizes, updatedSize' = updatedSize, place' = place, ghost' = ghost,
-        everSaturated' = everSaturated,
+        saturated' = saturated,
       })
       .then(increment(3))
       .then(all {
@@ -71,7 +72,7 @@ module narrow {
         assert(frequency(3) == 0),
         assert(inv),
         counters' = counters, rowSizes' = rowSizes, updatedSize' = updatedSize, place' = place, ghost' = ghost,
-        everSaturated' = everSaturated,
+        saturated' = saturated,
       })
 }
 
@@ -87,6 +88,11 @@ module wide {
 
 module noReset {
   import frequency_sketch(Depth = 2, Width = 4, Slots = 32, MaxCount = 3, ResetSize = 0, Bug = "none").*
+    from "./frequency_sketch"
+}
+
+module single {
+  import frequency_sketch(Depth = 1, Width = 4, Slots = 32, MaxCount = 3, ResetSize = 10, Bug = "none").*
     from "./frequency_sketch"
 }
 
@@ -107,5 +113,20 @@ module bugNoSaturation {
 
 module bugStaleSize {
   import frequency_sketch(Depth = 2, Width = 4, Slots = 32, MaxCount = 3, ResetSize = 10, Bug = "staleSize").*
+    from "./frequency_sketch"
+}
+
+module bugFirstRowSize {
+  import frequency_sketch(Depth = 2, Width = 4, Slots = 32, MaxCount = 3, ResetSize = 10, Bug = "firstRowSize").*
+    from "./frequency_sketch"
+}
+
+module bugCountSaturated {
+  import frequency_sketch(Depth = 1, Width = 4, Slots = 32, MaxCount = 3, ResetSize = 10, Bug = "countSaturated").*
+    from "./frequency_sketch"
+}
+
+module bugMaxFrequency {
+  import frequency_sketch(Depth = 2, Width = 4, Slots = 32, MaxCount = 3, ResetSize = 10, Bug = "maxFrequency").*
     from "./frequency_sketch"
 }

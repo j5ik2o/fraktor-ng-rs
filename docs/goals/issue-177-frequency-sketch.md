@@ -55,18 +55,18 @@ JVM の実物と同じ値になることを単体テストで確かめた。期�
 | `string_hasher_test.rs` | `MurmurHash3.stringHash` の値（foo、bar、baz、空文字、a） |
 | `string_hash_code_test.rs` | `String.hashCode` の値 |
 | `bits_test.rs` | `Bits` の3関数の値 |
-| `frequency_sketch_value_test.rs` | 5000 回の更新の 1000 回ごとの `size`（3通りの設定）、例外に当たる設定の誤り |
+| `frequency_sketch_value_test.rs` | 5000 回の更新の 1000 回ごとの `size`（3通りの設定）、幅が 1 語より狭いときのカウンタの位置（容量 1 と 4 で、`frequency` と `size`）、負のリセット倍率の切り詰め、例外に当たる設定の誤り |
 | `fast_frequency_sketch_test.rs` | 同じく2通りの設定の `size`、設定の誤り |
 
-`size` の追跡値は、ハッシュ、カウンタの位置、リセットの算術がどれか1つずれても変わる。5通りとも JVM と一致した。
+`size` の追跡値は、ハッシュ、カウンタの位置、リセットの算術がどれか1つずれても変わる。ただ、容量 100 の追跡値は幅が 1 語より広いので、狭い幅でのカウンタの位置は確かめない。PR #205 の設計レビュー（F1、F3）で、狭い幅の頻度と追跡値、負のリセット倍率の切り詰めを足した。どれも JVM と一致した。
 
 ## 検証
 
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test frequency_sketch_spec` | 0 | 22件成功 |
-| `cargo test -p fraktor-actor --lib frequency_sketch` | 0 | 18件成功 |
-| `cargo test --workspace` | 0 | 1010件成功、失敗0（レビュー対応の `frequency_sketch_allocation_test.rs` を足した後、76d8d22） |
+| `cargo test -p fraktor-actor --lib frequency_sketch` | 0 | 20件成功 |
+| `cargo test --workspace` | 0 | 1012件成功、失敗0（設計レビュー F1、F3 の単体テスト 2 件を足した後） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告0 |
 | `cargo fmt --check` | 0 | 差分なし |
 | syn-check（`crates/` の2クレート） | 0 | 違反0、抑制0 |

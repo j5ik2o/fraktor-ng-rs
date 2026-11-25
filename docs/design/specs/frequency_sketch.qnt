@@ -18,9 +18,10 @@
 // The invariants say that counters stay in their range, that each row's size
 // is the sum of its counters (the odd-counter adjustment of the reset keeps
 // this exact), that the sketch's size covers every row's size and stays below
-// the reset size, and, through a ghost of the true counts halved at every
-// reset, that the sketch never underestimates a value while no counter has
-// saturated.
+// the reset size, that a value's frequency is its smallest counter, and,
+// through a ghost of the true counts halved at every reset, that no counter
+// that has never saturated, and no value whose counters have never saturated,
+// is underestimated.
 //
 // `Bug` selects a broken variant for the negative controls in
 // frequency_sketch_test.qnt: "none" is the code.
@@ -35,7 +36,8 @@ module frequency_sketch {
   const MaxCount: int
   // The size at which the reset runs (`ResetSize`). Zero or less disables it.
   const ResetSize: int
-  // "none", "noOddAdjust", "noSaturation" or "staleSize".
+  // "none", "noOddAdjust", "noSaturation", "staleSize", "firstRowSize",
+  // "countSaturated" or "maxFrequency".
   const Bug: str
 
   pure val Values: Set[int] = Set(0, 1, 2, 3)
@@ -56,8 +58,9 @@ module frequency_sketch {
   var place: (int, int) -> int
   // The true number of increments of each value, halved at every reset.
   var ghost: int -> int
-  // Whether an increment ever met a counter at its maximum.
-  var everSaturated: bool
+  // The counters, as (row, index in the row), that an increment ever met at
+  // their maximum.
+  var saturated: Set[(int, int)]
 
   // --- positions -------------------------------------------------------------
 
@@ -79,12 +82,19 @@ module frequency_sketch {
 
   pure def zeros(n: int): List[int] = range(0, n).foldl(List(), (acc, _i) => acc.append(0))
 
-  // `frequency`: the smallest counter of the value, `i32::MAX` without rows.
+  // `frequency`: the smallest counter of the value, `i32::MAX` without rows,
+  // unless it is broken to take the largest.
   def frequency(v: int): int =
-    range(0, Depth).foldl(2147483647, (acc, r) => {
-      val c = counters[r][cellOfValue(v, r)]
-      if (c < acc) c else acc
-    })
+    if (Bug == "maxFrequency")
+      range(0, Depth).foldl(0, (acc, r) => {
+        val c = counters[r][cellOfValue(v, r)]
+        if (c > acc) c else acc
+      })
+    else
+      range(0, Depth).foldl(2147483647, (acc, r) => {
+        val c = counters[r][cellOfValue(v, r)]
+        if (c < acc) c else acc
+      })
 
   // --- the transition -----------------------------------------------------------
 
@@ -102,12 +112,14 @@ module frequency_sketch {
       acc.append(if (raised[r]) counters[r].replaceAt(cellOfValue(v, r), before[r] + 1) else counters[r]))
     val sizes1 = range(0, Depth).foldl(List(), (acc, r) =>
       acc.append(if (raised[r]) rowSizes[r] + 1 else rowSizes[r]))
-    val updated = raised.indices().exists(i => raised[i])
+    // An update counts when a row changed, unless it is broken to count every
+    // update of a sketch with rows, saturated or not.
+    val updated = if (Bug == "countSaturated") Depth > 0 else raised.indices().exists(i => raised[i])
     val updatedSize1 = if (updated) updatedSize + 1 else updatedSize
     val ghost1 = ghost.set(v, ghost.get(v) + 1)
     val resets = updated and updatedSize1 == ResetSize
     all {
-      everSaturated' = or { everSaturated, before.indices().exists(i => before[i] >= MaxCount) },
+      saturated' = saturated.union(Rows.filter(r => before[r] >= MaxCount).map(r => (r, cellOfValue(v, r)))),
       place' = place,
       if (resets) {
         // `reset`: halve every counter, and drop each row's size by its odd
@@ -118,7 +130,10 @@ module frequency_sketch {
         all {
           counters' = rows2,
           rowSizes' = sizes2,
-          updatedSize' = if (Bug == "staleSize") updatedSize1 else maxOf(sizes2, updatedSize1),
+          updatedSize' =
+            if (Bug == "staleSize") updatedSize1
+            else if (Bug == "firstRowSize") sizes2[0]
+            else maxOf(sizes2, updatedSize1),
           ghost' = Values.mapBy(x => ghost1.get(x) / 2),
         }
       } else {
@@ -140,7 +155,7 @@ module frequency_sketch {
       updatedSize' = 0,
       place' = p,
       ghost' = Values.mapBy(_x => 0),
-      everSaturated' = false,
+      saturated' = Set(),
     }
   }
 
@@ -172,12 +187,27 @@ module frequency_sketch {
   // A sketch without rows counts nothing.
   val noRowsNoSize: bool = Depth > 0 or updatedSize == 0
 
-  // While no counter has saturated, each counter is at least the halved true
-  // counts of the values placed on it, so no value is underestimated.
-  val noUnderestimateWhileUnsaturated: bool = everSaturated or and {
+  // With a single row, the sketch's size is that row's size: an update counts
+  // exactly when it raises the row's counter, and the reset takes the row's
+  // size.
+  val oneRowSizeIsTheSize: bool = Depth != 1 or updatedSize == rowSizes[0]
+
+  // A value's frequency is its smallest counter: no larger than any of its
+  // counters, and equal to one of them.
+  val frequencyIsTheSmallestCounter: bool = Depth == 0 or Values.forall(v => and {
+    Rows.forall(r => frequency(v) <= counters[r][cellOfValue(v, r)]),
+    Rows.exists(r => frequency(v) == counters[r][cellOfValue(v, r)]),
+  })
+
+  // A counter that has never saturated is at least the halved true counts of
+  // the values placed on it, and a value none of whose counters has saturated
+  // is not underestimated.
+  val noUnderestimateWhileUnsaturated: bool = and {
     Rows.forall(r => 0.to(Cells - 1).forall(i =>
-      counters[r][i] >= Values.filter(v => cellOfValue(v, r) == i).fold(0, (acc, v) => acc + ghost.get(v)))),
-    Values.forall(v => frequency(v) >= ghost.get(v)),
+      saturated.contains((r, i))
+        or counters[r][i] >= Values.filter(v => cellOfValue(v, r) == i).fold(0, (acc, v) => acc + ghost.get(v)))),
+    Values.forall(v =>
+      Rows.exists(r => saturated.contains((r, cellOfValue(v, r)))) or frequency(v) >= ghost.get(v)),
   }
 
   val inv: bool = and {
@@ -187,6 +217,8 @@ module frequency_sketch {
     rowSizesWithinSize,
     sizeBelowResetSize,
     noRowsNoSize,
+    oneRowSizeIsTheSize,
+    frequencyIsTheSmallestCounter,
     noUnderestimateWhileUnsaturated,
   }
 }
