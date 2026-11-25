@@ -12,6 +12,7 @@ mod frequency_sketch_settings;
 mod frequency_sketch_value;
 mod murmur3;
 mod reset_size;
+mod sketch_depth;
 mod sketch_width;
 mod string_hash_code;
 mod string_hasher;

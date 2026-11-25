@@ -4,7 +4,8 @@ use core::marker::PhantomData;
 
 use super::{
   counter_bits::CounterBits, counter_matrix::CounterMatrix, murmur3::Murmur3, reset_size::ResetSize,
-  sketch_width::SketchWidth, FrequencySketchError, FrequencySketchHasher, FrequencySketchSettings, StringHasher,
+  sketch_depth::SketchDepth, sketch_width::SketchWidth, FrequencySketchError, FrequencySketchHasher,
+  FrequencySketchSettings, StringHasher,
 };
 
 #[cfg(test)]
@@ -65,8 +66,7 @@ impl<A: ?Sized, H: FrequencySketchHasher<A>> FrequencySketch<A, H> {
     let width = SketchWidth::of(capacity, settings.width_multiplier)?;
     let reset_size = ResetSize::of(capacity, settings.reset_multiplier);
     let counter_bits = CounterBits::parse(settings.counter_bits)?;
-    let depth =
-      usize::try_from(settings.depth).map_err(|_| FrequencySketchError::NegativeDepth { depth: settings.depth })?;
+    let depth = SketchDepth::parse(settings.depth)?;
     Ok(Self { counters: CounterMatrix::new(depth, width, counter_bits, reset_size), hasher, values: PhantomData })
   }
 

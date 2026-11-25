@@ -57,6 +57,14 @@ fn rejects_a_width_of_zero() {
   assert!(matches!(result, Err(FrequencySketchError::WidthNotPositive { width: 0 })));
 }
 
+// A capacity above 2^30 rounds up to `i32::MIN`; the 64-bit width is negative
+// and passes the original's overflow check, and its low 32 bits are zero.
+#[test]
+fn a_capacity_above_two_to_the_thirty_gives_a_width_of_zero() {
+  let result = FrequencySketch::<str>::new(1_073_741_825, FrequencySketchSettings::default());
+  assert_eq!(result.err(), Some(FrequencySketchError::WidthNotPositive { width: 0 }));
+}
+
 #[test]
 fn rejects_a_negative_depth() {
   let result = FrequencySketch::<str>::new(100, FrequencySketchSettings { depth: -1, ..Default::default() });

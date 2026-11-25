@@ -35,6 +35,7 @@ TAKT は使わず、担当が直接進めた。前の担当がテストを先に
 
 - 原典が投げる例外は、どれも `FrequencySketchError` の値にした。順序は原典の検査の順で、幅のあふれ（`WidthOverflow`）、2 の冪でない幅（`WidthNotPowerOfTwo`）、カウンタの大きさ（`UnsupportedCounterBits`）、負の深さ（`NegativeDepth`。原典では `NegativeArraySizeException`）。
 - 幅が 0 以下（幅の倍率 0 や、容量 `i32::MIN`）のときは `WidthNotPositive` を返す。原典は作成を通し、最初の更新で配列の範囲外になる。2 の冪の検査は 0 と `i32::MIN` を通すので、その後ろに置いた。
+- 容量が `2^30` を超えると、`ceiling_power_of_two` は原典どおり `i32::MIN` になる。64 bit の積は負になって原典のあふれの検査を通り、既定の倍率では下位 32 bit が 0 になる。そのため `WidthOverflow` ではなく `WidthNotPositive { width: 0 }` を返す（PR #205 の Devin の指摘で単体テストに足した）。
 - 深さ 0 は原典どおり受け付け、`frequency` は `i32::MAX`、`size` は 0 になる。
 
 ### 作らないもの
@@ -62,7 +63,7 @@ JVM の実物と同じ値になることを単体テストで確かめた。期�
 | コマンド | 終了値 | 結果 |
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test frequency_sketch_spec` | 0 | 22件成功 |
-| `cargo test -p fraktor-actor --lib frequency_sketch` | 0 | 16件成功 |
+| `cargo test -p fraktor-actor --lib frequency_sketch` | 0 | 18件成功 |
 | `cargo test --workspace` | 0 | 941件成功、失敗0 |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告0 |
 | `cargo fmt --check` | 0 | 差分なし |

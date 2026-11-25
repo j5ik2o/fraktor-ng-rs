@@ -23,6 +23,12 @@ pub enum FrequencySketchError {
   },
   /// The computed width is zero or negative, so the sketch has no counters to
   /// index. The original accepts such a width and fails on the first update.
+  ///
+  /// A capacity above `2^30` rounds up to `i32::MIN`, as in the original, so
+  /// the 64-bit product is negative and its low 32 bits are zero for the
+  /// default multiplier. Such a capacity is reported here, not as
+  /// [`WidthOverflow`](Self::WidthOverflow), because the original's overflow
+  /// check does not catch it either.
   WidthNotPositive {
     /// The computed width.
     width: i32,

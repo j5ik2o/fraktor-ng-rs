@@ -34,6 +34,13 @@ fn rejects_a_width_that_is_not_a_power_of_two() {
   assert!(matches!(result, Err(FrequencySketchError::WidthNotPowerOfTwo { width: 384 })));
 }
 
+// See the same case of the configurable sketch.
+#[test]
+fn a_capacity_above_two_to_the_thirty_gives_a_width_of_zero() {
+  let result = FastFrequencySketch::<str>::new(1_073_741_825, FastFrequencySketchSettings::default());
+  assert_eq!(result.err(), Some(FrequencySketchError::WidthNotPositive { width: 0 }));
+}
+
 #[test]
 fn rejects_a_width_of_zero() {
   let result =

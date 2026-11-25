@@ -3,19 +3,16 @@
 use core::marker::PhantomData;
 
 use super::{
-  counter_bits::CounterBits, counter_matrix::CounterMatrix, reset_size::ResetSize, sketch_width::SketchWidth,
-  FastFrequencySketchSettings, FrequencySketchError, FrequencySketchHasher, StringHashCode,
+  counter_bits::CounterBits, counter_matrix::CounterMatrix, reset_size::ResetSize, sketch_depth::SketchDepth,
+  sketch_width::SketchWidth, FastFrequencySketchSettings, FrequencySketchError, FrequencySketchHasher, StringHashCode,
 };
 
 #[cfg(test)]
 #[path = "fast_frequency_sketch_test.rs"]
 mod tests;
 
-// The fixed depth of the sketch.
-const DEPTH: usize = 4;
-
 // One seed per row, large primes between 2^63 and 2^64.
-const SEEDS: [i64; DEPTH] = [
+const SEEDS: [i64; SketchDepth::FOUR.rows()] = [
   0xC3A5_C85C_97CB_3127_u64 as i64,
   0xB492_B66F_BE98_F273_u64 as i64,
   0x9AE1_6A3B_2F90_404F_u64 as i64,
@@ -75,7 +72,7 @@ impl<A: ?Sized, H: FrequencySketchHasher<A>> FastFrequencySketch<A, H> {
     let width = SketchWidth::of(capacity, settings.width_multiplier)?;
     let reset_size = ResetSize::of(capacity, settings.reset_multiplier);
     Ok(Self {
-      counters: CounterMatrix::new(DEPTH, width, CounterBits::FOUR, reset_size),
+      counters: CounterMatrix::new(SketchDepth::FOUR, width, CounterBits::FOUR, reset_size),
       index_mask: width.index_mask(),
       hasher,
       values: PhantomData,

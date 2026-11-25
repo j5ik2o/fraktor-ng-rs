@@ -2,7 +2,9 @@
 
 use alloc::{vec, vec::Vec};
 
-use super::{counter_bits::CounterBits, reset_size::ResetSize, sketch_width::SketchWidth, Bits};
+use super::{
+  counter_bits::CounterBits, reset_size::ResetSize, sketch_depth::SketchDepth, sketch_width::SketchWidth, Bits,
+};
 
 // `depth` rows of `width` counters, packed into 64-bit words, with the number
 // of increments per row and overall, and the TinyLFU reset.
@@ -27,7 +29,7 @@ pub(super) struct CounterMatrix {
 }
 
 impl CounterMatrix {
-  pub(super) fn new(depth: usize, width: SketchWidth, counter_bits: CounterBits, reset_size: ResetSize) -> Self {
+  pub(super) fn new(depth: SketchDepth, width: SketchWidth, counter_bits: CounterBits, reset_size: ResetSize) -> Self {
     let slots = counter_bits.per_word() as i32;
     let row_width = 1.max(width.get() / slots) as usize;
     let counter_mask = counter_bits.max_value();
@@ -39,8 +41,8 @@ impl CounterMatrix {
     let reset_mask =
       (1..=slots as u32).fold(counter_reset_mask, |mask, count| mask | counter_reset_mask.wrapping_shl(count * bits));
     Self {
-      rows: vec![vec![0; row_width]; depth],
-      row_sizes: vec![0; depth],
+      rows: vec![vec![0; row_width]; depth.rows()],
+      row_sizes: vec![0; depth.rows()],
       updated_size: 0,
       reset_size,
       column_mask: width.index_mask(),
