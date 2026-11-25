@@ -101,3 +101,11 @@
 - 項目256 の報告書は「v2.0.0 でファイルが削除された」としていたが、訂正する。共通祖先 `0ca804c7af` にこのファイルはない。上流の #2486（ActorSystem の `close`）は、1.x 系統では `3be76d1be7` で scala-2.13+ の新しいファイルとして入った。2.0 系統では `d5ee8a63e3` で `actor-tests/src/test/scala/org/apache/pekko/actor/ActorSystemSpec.scala` の中に入った。ケース「Scala's Using automatically terminates ActorSystem」の本体は、両方で同じである。
 - Rust のテスト `crates/fraktor-actor/tests/actor_system_scala213_plus_spec.rs` は残した。冒頭の出典に移動先を書いた（`2281fe2`）。1 passed。
 - 台帳：旧 id のノードは green、v1.7.1、1/1/1 のまま、履歴として残す。`--list-unverified` には「v2.0.0 で未照合」として出続ける。`ActorSystemSpec` のノード（unported、v2.0.0 で 20 ケース）は unported のままにする。移植済みの 1 件は、この記録にだけ書く。二重には数えない。退役と承継を機械でどう集計するかは、#166 が main に入った後に別の差分で決める。
+
+## 混在のノードの勘定（台帳の検査）
+
+`UnsynchronizedByteArrayInputStreamSpec` は、一部のケースだけを作らない区分にした最初のノード（混在）である。#165 の schema は、混在の green の条件を「`ported` と承認済みの `excluded` と `not_built` の件数の和が `total` に等しい」と定めているが、道具には入っていなかった。このまとまりで、次の 2 つに同じ規則を入れた。
+
+- `rollup.py`：green で `cases.not_built` を持つノードは、要素の記録が揃い、`passing == ported` で、和が `total` に等しく、除外と同じケース名がないときだけ完了に数える。満たさなければ未完了の一覧に理由を出す。作らないの有効な件数にも、記録の揃った混在のノードの分を入れる。`goal_complete_gate_test.py` に 2 件を足した。変更前の `rollup.py` では、承認のない混在のノードが完了に数えられ、この 2 件が失敗する。
+- `verify_red.py`：already_green の式を `passed + excluded + not_built == original_cases` にした。作らないの件数は `excluded_approvals.count_not_built` が数える。要素の検査（`is_valid_not_built_case`）は rollup と共有する。記録不足、重複、除外との重なりがあれば件数を返さず、already_green にしない。式が変わらないままだと、記録の揃った混在のノードは毎回 `unexpected_pass` になり、port-test に戻り続ける。`verify_red_test.py` に 2 件を足した（承認済みの 2 件で already_green になること、承認がなければ `unexpected_pass` のままであること）。式を戻すと前者が失敗する。`record_already_green.py` は total に原典の件数、ported と passing に通過数を書くので、変えなくても混在の勘定と合う。
+- `verify_green.py` はケースを数えないので、変えていない。
