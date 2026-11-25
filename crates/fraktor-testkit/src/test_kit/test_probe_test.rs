@@ -13,6 +13,7 @@ use fraktor_actor::kernel::actor_system::ActorSystem;
 use fraktor_actor::kernel::message::Message;
 
 use super::TestProbe;
+use crate::test_kit::ReceiveWhile;
 use crate::test_kit::AutoPilot;
 use crate::test_kit::AutoPilotControl;
 
@@ -200,4 +201,19 @@ fn a_message_from_another_thread_during_a_pilot_run_is_piloted() {
   probe.expect_msg_within(wait, &"first");
   probe.expect_msg_within(wait, &"second");
   probe.expect_msg_within(wait, &"third");
+}
+
+#[test]
+fn receive_while_takes_the_messages_of_the_probe() {
+  let mut system = ActorSystem::new("TestProbeTest", Arc::new(ChannelBoundary::new()));
+  let mut probe = TestProbe::new(&mut system);
+  probe.ref_handle().tell(1usize, probe.ref_handle());
+  probe.ref_handle().tell("stop", probe.ref_handle());
+
+  let received = probe.receive_while(ReceiveWhile::new().max(Duration::from_millis(200)), |message: &Message| {
+    message.downcast_ref::<usize>().copied()
+  });
+
+  assert_eq!(received, vec![1]);
+  probe.expect_msg_within(Duration::from_millis(200), "stop");
 }
