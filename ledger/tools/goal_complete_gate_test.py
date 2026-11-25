@@ -484,7 +484,7 @@ def _lineage(successor_status: str = "unported", total=20, ported=1, passing=1, 
     successor = {"id": "new/S.scala", "status": successor_status,
                  "cases": {"total": total, "ported": ported, "passing": passing, "carried": carried}}
     retired = {"id": "old/A.scala", "goal": "G0r",
-               "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala", **(retired_extra or {})}}
+               "cases": {"ported": 1}, "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala", **(retired_extra or {})}}
     return rollup.lineage_problems([successor] + (active_extra or []), [retired])
 
 
@@ -517,7 +517,7 @@ def test_a_case_carried_to_a_node_that_is_not_the_successor_is_refused():
                  "cases": {"total": 20, "ported": 1, "passing": 1, "carried": carried}}
     other = {"id": "other/O.scala", "status": "unported",
              "cases": {"total": 3, "ported": 1, "passing": 1, "carried": [dict(carried[0])]}}
-    retired = {"id": "old/A.scala", "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala"}}
+    retired = {"id": "old/A.scala", "cases": {"ported": 1}, "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala"}}
     problems = rollup.lineage_problems([successor, other], [retired])
     assert "other/O.scala" in problems and "new/S.scala" not in problems, problems
     print("43c. a case carried to a node other than the successor is refused")
@@ -559,7 +559,7 @@ def test_lineage_refuses_duplicates_unknown_tags_and_a_non_list_retired():
               "verified_against": "v2.0.0", "evidence": "1 passed"}
     successor = {"id": "new/S.scala", "status": "unported",
                  "cases": {"total": 20, "ported": 1, "passing": 1, "carried": [record]}}
-    retired = {"id": "old/A.scala", "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala"}}
+    retired = {"id": "old/A.scala", "cases": {"ported": 1}, "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala"}}
     assert "old/A.scala" in rollup.lineage_problems([successor], [retired, dict(retired)]), "duplicated retired id"
     padded = dict(successor, cases=dict(successor["cases"], ported=2, passing=2,
                                         carried=[record, dict(record, name="case ")]))
@@ -576,7 +576,7 @@ LINEAGE_LEDGER = ("nodes:\n- id: new/S.scala\n  kind: test\n  pekko:\n    module
                   "      rust_test: t.rs\n      verified_against: v2.0.0\n      evidence: 1 passed\n"
                   "  goal: G0s\n- id: a/A.scala\n  kind: test\n  pekko:\n    module: stub\n  status: green\n"
                   "  goal: G0t\nretired:\n- id: old/A.scala\n  kind: test\n  pekko:\n    module: stub\n"
-                  "  goal: G0r\n  retired:\n    at: 2026-11-25\n    reason: {reason}\n    successor: new/S.scala\n")
+                  "  cases:\n    ported: 1\n  goal: G0r\n  retired:\n    at: 2026-11-25\n    reason: {reason}\n    successor: new/S.scala\n")
 
 
 def test_a_retired_side_problem_keeps_the_successors_goal_open_and_the_rollup_fails():
@@ -605,6 +605,70 @@ def test_a_retired_side_problem_keeps_the_successors_goal_open_and_the_rollup_fa
     print("43f. a retired-side problem keeps the successor's goal open, the whole rollup fails, others are judged")
 
 
+def test_lineage_refuses_a_renamed_duplicate_and_more_cases_than_the_retired_node_ported():
+    """名前だけを変えた同じケース（原典の位置・Rust テスト・退役元が同じ）と、退役元の移植数を超える引き継ぎを拒否する。"""
+    import rollup
+    record = {"name": "case", "from": "old/A.scala", "source": "s L1", "rust_test": "t.rs",
+              "verified_against": "v2.0.0", "evidence": "1 passed"}
+    successor = {"id": "new/S.scala", "status": "unported",
+                 "cases": {"total": 20, "ported": 2, "passing": 2,
+                           "carried": [record, dict(record, name="case (alias)")]}}
+    retired = {"id": "old/A.scala", "cases": {"ported": 1},
+               "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala"}}
+    problems = rollup.lineage_problems([successor], [retired])
+    assert any("同じ" in p for p in problems.get("new/S.scala", [])), problems
+    assert any("移植数" in p for p in problems.get("new/S.scala", [])), problems
+    print("43g. a renamed duplicate and more cases than the retired node ported are refused")
+
+
+def test_a_duplicated_retired_id_reaches_every_successor_it_names():
+    """同じ退役 id が別々の後継を指すとき、最初の後継も含め、すべての後継に異常を伝える。"""
+    import rollup
+    record = {"name": "case", "from": "old/A.scala", "source": "s L1", "rust_test": "t.rs",
+              "verified_against": "v2.0.0", "evidence": "1 passed"}
+    first = {"id": "new/S.scala", "status": "green",
+             "cases": {"total": 1, "ported": 1, "passing": 1, "excluded": [], "carried": [record]}}
+    second = {"id": "new/T.scala", "status": "unported", "cases": {}}
+    retired = [{"id": "old/A.scala", "cases": {"ported": 1},
+                "retired": {"at": "2026-11-25", "reason": "moved", "successor": successor}}
+               for successor in ("new/S.scala", "new/T.scala")]
+    problems = rollup.lineage_problems([first, second], retired)
+    assert "new/S.scala" in problems and "new/T.scala" in problems, problems
+    print("43h. a duplicated retired id reaches every successor it names")
+
+
+def test_a_green_successor_must_cover_its_total_with_ported_and_approved_exclusions():
+    """引き継ぎを持つ green の後継も、total = ported + 承認済みの除外、passing = ported を満たす。"""
+    import rollup
+    record = {"name": "case", "from": "old/A.scala", "source": "s L1", "rust_test": "t.rs",
+              "verified_against": "v2.0.0", "evidence": "1 passed"}
+    retired = {"id": "old/A.scala", "cases": {"ported": 1},
+               "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala"}}
+    def green(total, ported, passing, excluded=()):
+        return {"id": "new/S.scala", "status": "green",
+                "cases": {"total": total, "ported": ported, "passing": passing,
+                          "excluded": list(excluded), "carried": [record]}}
+    assert "new/S.scala" in rollup.lineage_problems([green(20, 1, 1)], [retired]), "only the carried case"
+    assert "new/S.scala" in rollup.lineage_problems([green(2, 2, 1)], [retired]), "passing below ported"
+    approved = {"name": "x", "reason": "r", "approved_by": "someone", "approved_at": "2026-01-01"}
+    assert rollup.lineage_problems([green(3, 2, 2, [approved])], [retired]) == {}
+    assert "new/S.scala" in rollup.lineage_problems([green(3, 2, 2, [{"name": "x", "reason": "r"}])], [retired])
+    print("43i. a green successor must cover its total")
+
+
+def test_a_scalar_retired_list_is_diagnosed_without_crashing_the_goal_check():
+    """retired が整数でも、ゴールの判定は例外で止まらず、診断を出して 0 以外で終わる。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "nodes.yaml"
+        path.write_text("nodes: []\nretired: 1\n", encoding="utf-8")
+        result = subprocess.run([sys.executable, str(ROLLUP), "--ledger", str(path), "--goal", "G0issue99"],
+                                capture_output=True, text=True)
+        assert result.returncode == 1, (result.stdout, result.stderr)
+        assert "Traceback" not in result.stderr, result.stderr
+        assert "retired が配列でない" in result.stdout, result.stdout
+    print("43j. a scalar retired is diagnosed and the goal check ends with 1")
+
+
 def test_goal_whose_nodes_are_all_retired_is_not_complete():
     """属するノードがすべて退役したゴールは、完了と判定しない（退役を理由に出す）。"""
     with tempfile.TemporaryDirectory() as temporary:
@@ -614,7 +678,7 @@ def test_goal_whose_nodes_are_all_retired_is_not_complete():
                   "    - name: case\n      from: old/A.scala\n      source: new/S.scala L1\n"
                   "      rust_test: t.rs\n      verified_against: v2.0.0\n      evidence: 1 passed\n"
                   "  goal: null\nretired:\n- id: old/A.scala\n  kind: test\n  pekko:\n    module: stub\n"
-                  "  status: green\n  goal: G0r\n  retired:\n    at: 2026-11-25\n    reason: moved\n"
+                  "  status: green\n  cases:\n    ported: 1\n  goal: G0r\n  retired:\n    at: 2026-11-25\n    reason: moved\n"
                   "    successor: new/S.scala\n")
         response = make_run(root, order_with(["docs/goals/g0r-stub.md"]), ledger, one_goal_doc("G0r", ["old/A.scala"]))
         result = run_gate(root, response)
@@ -1057,6 +1121,10 @@ def main() -> int:
         test_malformed_lineage_fields_are_diagnosed_and_other_goals_continue,
         test_lineage_refuses_duplicates_unknown_tags_and_a_non_list_retired,
         test_a_retired_side_problem_keeps_the_successors_goal_open_and_the_rollup_fails,
+        test_lineage_refuses_a_renamed_duplicate_and_more_cases_than_the_retired_node_ported,
+        test_a_duplicated_retired_id_reaches_every_successor_it_names,
+        test_a_green_successor_must_cover_its_total_with_ported_and_approved_exclusions,
+        test_a_scalar_retired_list_is_diagnosed_without_crashing_the_goal_check,
         test_takt_triage_treats_the_same_statuses_as_done,
         test_not_built_with_a_nonzero_or_missing_passing_is_not_complete,
         test_non_list_not_built_record_is_diagnosed_without_crashing,

@@ -123,11 +123,71 @@ def test_check_ledger_fails_on_a_case_carried_twice() -> None:
     print("3. check-ledger fails when a case is carried to a node that is not the successor")
 
 
+PROVIDER_LEDGER = """nodes:
+- id: m/P.scala
+  kind: test
+  pekko:
+    module: m
+  status: green
+  needs:
+    testkit: []
+    premise_flags: []
+  cases:
+    total: 1
+    ported: 1
+    passing: 1
+    excluded: []
+    carried:
+    - name: case
+      from: m/Old.scala
+      source: m/P.scala L1
+      rust_test: t.rs
+      verified_against: v2.0.0
+      evidence: 1 passed
+  goal: G0p
+- id: m/Q.scala
+  kind: test
+  pekko:
+    module: m
+  status: unported
+  needs:
+    testkit: ['cap']
+    premise_flags: []
+  goal: G0q
+retired:
+- id: m/Old.scala
+  kind: test
+  pekko:
+    module: m
+  cases:
+    ported: 1
+  retired:
+    at: 2026-11-25
+    reason: {reason}
+    successor: m/P.scala
+"""
+
+
+def test_check_needs_does_not_count_a_goal_with_a_lineage_problem_as_a_provider() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        (root / "capabilities.yaml").write_text("capabilities:\n- id: cap\n  provided_by: G0p\n", encoding="utf-8")
+        for reason, expected in (("moved", 0), ("''", 1)):
+            (root / "nodes.yaml").write_text(PROVIDER_LEDGER.replace("{reason}", reason), encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(TOOLS / "check_needs.py"), "--ledger", str(root / "nodes.yaml"),
+                 "--capabilities", str(root / "capabilities.yaml"), "--goal", "G0q"],
+                capture_output=True, text=True)
+            assert result.returncode == expected, (reason, result.stdout, result.stderr)
+    print("4. check_needs does not count a goal with a lineage problem as a provider")
+
+
 def main() -> int:
     tests = [
         test_convert_baseline_keeps_retired_and_does_not_revive_the_retired_id,
         test_extract_needs_leaves_retired_nodes_untouched,
         test_check_ledger_fails_on_a_case_carried_twice,
+        test_check_needs_does_not_count_a_goal_with_a_lineage_problem_as_a_provider,
     ]
     failed = 0
     for test in tests:
