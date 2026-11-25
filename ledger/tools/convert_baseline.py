@@ -52,11 +52,15 @@ def main() -> int:
     args = ap.parse_args()
 
     existing_by_id = {}
+    # 退役したノード（最上位の retired）。再生成でも落とさずに残し、その id を現役のノードに戻さない。
+    retired = None
     if args.existing:
         with open(args.existing, encoding="utf-8") as f:
             existing = yaml.safe_load(f) or {}
         for node in existing.get("nodes", []):
             existing_by_id[node["id"]] = node
+        retired = existing.get("retired")
+    retired_ids = {r.get("id") for r in retired if isinstance(r, dict)} if isinstance(retired, list) else set()
 
     with open(args.baseline, encoding="utf-8") as f:
         data = yaml.safe_load(f)
@@ -66,6 +70,8 @@ def main() -> int:
         if args.module and mod["directory"] != args.module:
             continue
         for tc in mod.get("test_classes", []):
+            if tc["file"] in retired_ids:
+                continue
             nodes.append(
                 {
                     "id": tc["file"],
@@ -126,8 +132,11 @@ def main() -> int:
         print(f"id が所属モジュールのディレクトリで始まらない: {misplaced}", file=sys.stderr)
         return 1
 
+    output = {"nodes": nodes}
+    if retired is not None:
+        output["retired"] = retired
     yaml.safe_dump(
-        {"nodes": nodes},
+        output,
         sys.stdout,
         allow_unicode=True,
         sort_keys=False,
