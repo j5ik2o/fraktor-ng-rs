@@ -87,6 +87,10 @@ uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger \
 v2.0.0 で原典に新しく入ったテストで、台帳にノードが無いものは `v2.0.0-new-docs-tests.md` が
 記録を持つ（`docs/src/test` の 10 ファイル。`docs` モジュールなので、すべて `do_not_port`）。
 
+- `v2.0.0-undocumented-nodes.tsv`：台帳で `verified_against: v2.0.0` なのに、上の 3 報告書の表に
+  載っていない id の一覧（1 行 1 id。報告書が入った id は消す）。報告書の行と 1 対 1 かは
+  `report_ledger_1to1.py check` が CI で見る。作り直すときは `list-undocumented`（冪等）
+
 ## 基準を変えるとき
 
 1. `tools/pekko-source/pekko-baseline.env` の現行タグ・commit・タグ object・決定日を書き換え、
