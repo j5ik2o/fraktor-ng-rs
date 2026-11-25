@@ -135,8 +135,11 @@
   等しいことになる。`rollup.py` はこの勘定で混在のノードを検査する（2026-11-25、最初の混在のノード
   `UnsynchronizedByteArrayInputStreamSpec` のために入れた）。要素の記録が揃い、`passing` が `ported` に
   等しく、和が `total` に等しくなければ、そのノードを一覧に出してゴールの完了に数えない。同じケースを
-  除外と作らないの両方に置くことも許さない。`verify_red.py` の already_green の勘定と
-  `verify_green.py` には、まだ入っていない
+  除外と作らないの両方に置くことも許さない。`verify_red.py` の already_green の勘定も同じ規則で
+  作らないを加える（`passed + excluded + not_built == original_cases`。要素の検査は
+  `excluded_approvals.count_not_built` と `is_valid_not_built_case` を rollup と共有し、記録不足なら
+  件数を返さず already_green にしない）。`verify_green.py` はケースを数えず、検査のコマンドを走らせる
+  だけなので、変更しない
 - `rollup.py` は、`not_built` のノードの記録を検査し、欠けたノードを一覧に出してゴールの完了に数えない。
   検査するのは、`triage` と `cases` がマッピングであること、`triage.kind` と `triage.reason`、`ported` と `passing` が整数の 0、
   `total` が正の整数であること、`cases.excluded` が空であること（同じケースを除外と作らないに二重に置かない）、`cases.not_built` が配列であること、`cases.not_built` の件数が `total` に

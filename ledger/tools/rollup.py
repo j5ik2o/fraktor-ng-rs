@@ -35,15 +35,12 @@ import sys
 
 import yaml
 
-from excluded_approvals import is_approved_by_human, ledger_loader
+from excluded_approvals import (
+    is_approved_by_human, is_case_name, is_text, is_valid_not_built_case, ledger_loader)
 
 # ゴールの完了に数える status。check_needs.py も同じ集合を使い、
 # TAKT の triage（fraktor-triage.md、fraktor-port-node.yaml）も同じ status を処理済みとする。
 DONE_STATUSES = ("green", "do_not_port", "not_built")
-
-# 作らないケースの要素のうち、空白以外の文字列であるべき欄。承認の2欄は is_approved_by_human が検査する。
-NOT_BUILT_TEXT_KEYS = ("name", "reason", "alternative")
-
 
 def load_nodes(path: str) -> list[dict]:
     """台帳を読み、ノードの一覧を返す。
@@ -56,31 +53,14 @@ def load_nodes(path: str) -> list[dict]:
         return (yaml.load(f, Loader=ledger_loader()) or {}).get("nodes", [])
 
 
-def is_text(value) -> bool:
-    return isinstance(value, str) and bool(value.strip())
-
-
 def mapping(value) -> dict:
     """マッピングならそのまま、そうでなければ空のマッピングを返す（壊れた記録で止めない）。"""
     return value if isinstance(value, dict) else {}
 
 
-def is_case_name(value) -> bool:
-    """ケース名は空白以外の文字列で、前後に空白を持たない（重複の判定をすり抜けさせない）。"""
-    return is_text(value) and value == value.strip()
-
-
 def is_zero(value) -> bool:
     """整数の 0 か（bool の False と、欠落・null は 0 と見なさない）。"""
     return type(value) is int and value == 0
-
-
-def is_valid_not_built_case(record) -> bool:
-    """作らないケースの1要素が、3つの文字列欄と人による承認記録を持つかを返す。"""
-    return (isinstance(record, dict)
-            and all(is_text(record.get(k)) for k in NOT_BUILT_TEXT_KEYS)
-            and is_case_name(record.get("name"))
-            and is_approved_by_human(record))
 
 
 def not_built_records_problems(records: list) -> list[str]:

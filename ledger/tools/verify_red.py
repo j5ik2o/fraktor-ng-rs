@@ -284,6 +284,15 @@ def count_excluded(node_id: str) -> int | None:
     return excluded_approvals.count_excluded(LEDGER, node_id)
 
 
+def count_not_built(node_id: str) -> int | None:
+    """台帳の対象ノードの cases.not_built のうち、記録の揃った件数を返す（混在のノード）。
+
+    規則は `excluded_approvals.count_not_built` が持ち、rollup.py の混在の勘定と同じである。
+    記録不足の要素が 1 件でもあれば None を返し、already_green を許可しない。
+    """
+    return excluded_approvals.count_not_built(LEDGER, node_id)
+
+
 def parse_passed(out: str) -> int | None:
     """対象テストの通過ケース数を返す。失敗の要約を含む・0 件・要約が無い場合は None。
 
@@ -373,10 +382,11 @@ def main() -> int:
     original_cases = count_original_cases(node)
     passed = parse_passed(out)
     excluded = count_excluded(node)
+    not_built = count_not_built(node)
 
     already_green = (
         passed is not None and original_cases is not None and excluded is not None
-        and passed + excluded == original_cases
+        and not_built is not None and passed + excluded + not_built == original_cases
     )
     if already_green:
         classification = "already_green"
@@ -397,7 +407,7 @@ def main() -> int:
     elif classification == "already_green":
         reason = (
             f"already_green: 原典 Pekko のケース数 {original_cases} と通過ケース数 "
-            f"{passed}（承認済みの除外 {excluded} 件）が一致し、対象テストが全件成功している"
+            f"{passed}（承認済みの除外 {excluded} 件、作らない {not_built} 件）が一致し、対象テストが全件成功している"
             f"（前提の実装が契約を満たす）"
         )
 
@@ -409,6 +419,7 @@ def main() -> int:
         "original_cases": original_cases,
         "passed": passed,
         "excluded": excluded,
+        "not_built": not_built,
         "reason": reason,
         **provenance,
         "detail": out[-1500:],

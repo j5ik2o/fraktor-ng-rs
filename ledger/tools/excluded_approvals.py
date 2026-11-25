@@ -77,6 +77,27 @@ def ledger_loader():
     return LedgerLoader
 
 
+def _load_node(ledger_path: str, node_id: str) -> dict | None:
+    """専用ローダで台帳を読み、対象ノードを返す。読めない・無いときは None。"""
+    if not os.path.exists(ledger_path):
+        return None
+    import yaml
+
+    try:
+        doc = yaml.load(open(ledger_path, encoding="utf-8").read(),
+                        Loader=ledger_loader())
+    except (yaml.YAMLError, ValueError, OSError, UnicodeDecodeError):
+        return None
+    nodes = doc.get("nodes") if isinstance(doc, dict) else None
+    if not isinstance(nodes, list):
+        return None
+    node = next((n for n in nodes
+                 if isinstance(n, dict) and n.get("id") == node_id), None)
+    if node is None:
+        return None
+    return node
+
+
 def count_excluded(ledger_path: str, node_id: str) -> int | None:
     """台帳の対象ノードの cases.excluded の件数を返す。読めないときは None。
 
@@ -96,20 +117,7 @@ def count_excluded(ledger_path: str, node_id: str) -> int | None:
     拒否するため None となる（先の未承認除外を隠す入力や、他ノードの承認記録の流用を
     件数に反映しない）。
     """
-    if not os.path.exists(ledger_path):
-        return None
-    import yaml
-
-    try:
-        doc = yaml.load(open(ledger_path, encoding="utf-8").read(),
-                        Loader=ledger_loader())
-    except (yaml.YAMLError, ValueError, OSError, UnicodeDecodeError):
-        return None
-    nodes = doc.get("nodes") if isinstance(doc, dict) else None
-    if not isinstance(nodes, list):
-        return None
-    node = next((n for n in nodes
-                 if isinstance(n, dict) and n.get("id") == node_id), None)
+    node = _load_node(ledger_path, node_id)
     if node is None:
         return None
     cases = node.get("cases")
@@ -146,3 +154,56 @@ def is_approved_by_human(item: dict) -> bool:
     except ValueError:
         return False
     return True
+
+
+# 作らないケースの要素のうち、空白以外の文字列であるべき欄。承認の2欄は is_approved_by_human が検査する。
+NOT_BUILT_TEXT_KEYS = ("name", "reason", "alternative")
+
+
+def is_text(value) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def is_case_name(value) -> bool:
+    """ケース名は空白以外の文字列で、前後に空白を持たない（重複の判定をすり抜けさせない）。"""
+    return is_text(value) and value == value.strip()
+
+
+def is_valid_not_built_case(record) -> bool:
+    """作らないケースの1要素が、3つの文字列欄と人による承認記録を持つかを返す。"""
+    return (isinstance(record, dict)
+            and all(is_text(record.get(k)) for k in NOT_BUILT_TEXT_KEYS)
+            and is_case_name(record.get("name"))
+            and is_approved_by_human(record))
+
+
+def count_not_built(ledger_path: str, node_id: str) -> int | None:
+    """台帳の対象ノードの cases.not_built の件数を返す。数えられないときは None。
+
+    一部のケースだけを作らない区分にしたノード（混在）の already_green の件数式
+    （passed + excluded + not_built == original_cases）に加える件数で、rollup.py の混在の
+    勘定と同じ規則で数える。欄が無い・null・空配列なら 0。要素が1件でも記録不足
+    （is_valid_not_built_case を満たさない）、ケース名の重複、cases.excluded と同じケース名、
+    配列でない記録があれば None を返し、already_green にしない（fail closed）。
+    """
+    node = _load_node(ledger_path, node_id)
+    if node is None:
+        return None
+    cases = node.get("cases")
+    if not isinstance(cases, dict):
+        return None
+    records = cases.get("not_built")
+    if records is None or records == []:
+        return 0
+    if not isinstance(records, list) or not all(is_valid_not_built_case(r) for r in records):
+        return None
+    names = [r["name"] for r in records]
+    if len(set(names)) != len(names):
+        return None
+    excluded = cases.get("excluded") or []
+    if not isinstance(excluded, list):
+        return None
+    excluded_names = {e.get("name").strip() for e in excluded if isinstance(e, dict) and is_text(e.get("name"))}
+    if excluded_names & set(names):
+        return None
+    return len(records)

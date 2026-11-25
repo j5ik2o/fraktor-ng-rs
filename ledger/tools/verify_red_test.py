@@ -1210,6 +1210,46 @@ def test_excluded_without_full_pass_is_not_green():
         print("19. excluded but unaccounted → unexpected_pass:", result["classification"])
 
 
+def _mixed_node(approval: str) -> str:
+    """一部のケースだけを作らない区分にしたノード（混在）。approval は各要素に足す承認の行。"""
+    record = ("    - name: {name}\n"
+              "      reason: the input cannot be expressed in Rust\n"
+              "      alternative: a test of the expressible inputs\n" + approval)
+    not_built = "    not_built:\n" + record.format(name="case b") + record.format(name="case c")
+    node = case_block(NODE_ID, None, None, None)
+    return node.replace("    excluded: []\n", "    excluded: []\n" + not_built)
+
+
+def test_approved_not_built_cases_count_toward_already_green():
+    """作らない 2 件（記録が揃う）+ Rust 1 件成功で、原典 3 件が already_green になる（混在）。"""
+    approval = f"      approved_by: {APPROVED_BY}\n      approved_at: 2026-11-25\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root, nodes_yaml=ledger_yaml([_mixed_node(approval)]),
+            cargo_body=CARGO_STUB_OK, passed=1, original_cases=3, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["classification"] == "already_green", result
+        assert result["not_built"] == 2 and result["excluded"] == 0, result
+        assert result["green_recorded"] is False, result
+        print("19b. approved not_built counted: original 3 = passed 1 + not_built 2")
+
+
+def test_unapproved_not_built_cases_do_not_make_already_green():
+    """作らないの要素に承認が無ければ件数を返さず、already_green にしない（fail closed）。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root, nodes_yaml=ledger_yaml([_mixed_node("")]),
+            cargo_body=CARGO_STUB_OK, passed=1, original_cases=3, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["classification"] == "unexpected_pass", result
+        assert result["not_built"] is None, result
+        print("19c. unapproved not_built → unexpected_pass:", result["classification"])
+
+
 def _excluded_node(excluded_yaml: str, node_id: str = NODE_ID) -> str:
     """case_block の除外部分だけを差し替えたノード YAML。
 
@@ -1888,6 +1928,8 @@ def main() -> int:
         test_rollup_and_check_needs_do_not_break,
         test_excluded_cases_count_toward_green,
         test_excluded_without_full_pass_is_not_green,
+        test_approved_not_built_cases_count_toward_already_green,
+        test_unapproved_not_built_cases_do_not_make_already_green,
         test_excluded_approval_table,
         test_empty_excluded_is_still_counted_as_zero,
         test_count_excluded_rereads_ledger_at_call_time,
