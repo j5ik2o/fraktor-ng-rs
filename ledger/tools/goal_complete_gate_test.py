@@ -715,6 +715,41 @@ def test_a_green_successor_counts_only_valid_distinct_exclusions_and_its_carried
         print(f"43l. {label}: gate = {gate}, whole rollup = {whole}")
 
 
+def test_the_gate_reads_an_invalid_unquoted_retired_date_without_crashing():
+    """引用なしの存在しない退役日があっても、関門は台帳の読み込みで止まらず、無関係なゴールを判定する。"""
+    ledger = ("nodes:\n- id: a/A.scala\n  kind: test\n  pekko:\n    module: stub\n  status: green\n  goal: G0t\n"
+              "retired:\n- id: old/A.scala\n  kind: test\n  pekko:\n    module: stub\n  goal: G0r\n"
+              "  retired:\n    at: 2026-02-30\n    reason: moved\n    successor: a/A.scala\n")
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        response = make_run(root, order_with(["docs/goals/g0t-stub.md"]), ledger, one_goal_doc("G0t", ["a/A.scala"]))
+        result = run_gate(root, response)
+        assert "Traceback" not in json.dumps(result), result
+        assert result["exit_code"] in (0, 1), result
+        print("43m. the gate reads an invalid unquoted date without crashing: exit_code =", result["exit_code"])
+
+
+def test_a_retired_record_with_a_bad_id_still_reaches_its_named_successor():
+    """退役 id が不正でも、特定できる指定後継には異常を伝える（後継のゴールを完了にしない）。"""
+    import rollup
+    successor = {"id": "new/S.scala", "status": "green", "cases": {"total": 1, "ported": 1, "passing": 1}}
+    retired = [{"id": "", "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala"}}]
+    assert "new/S.scala" in rollup.lineage_problems([successor], retired)
+    print("43n. a bad retired id still reaches its named successor")
+
+
+def test_a_non_list_retired_fails_a_goal_check_even_when_the_goal_is_green():
+    """retired が配列でなければ、対象ゴールのノードがすべて green でも rollup --goal は 1 を返す。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "nodes.yaml"
+        path.write_text("nodes:\n- id: a/A.scala\n  kind: test\n  pekko:\n    module: stub\n  status: green\n"
+                        "  goal: G0t\nretired: {}\n", encoding="utf-8")
+        result = subprocess.run([sys.executable, str(ROLLUP), "--ledger", str(path), "--goal", "G0t"],
+                                capture_output=True, text=True)
+        assert result.returncode == 1, (result.stdout, result.stderr)
+    print("43o. a non-list retired fails the goal check")
+
+
 def test_goal_whose_nodes_are_all_retired_is_not_complete():
     """属するノードがすべて退役したゴールは、完了と判定しない（退役を理由に出す）。"""
     with tempfile.TemporaryDirectory() as temporary:
@@ -1173,6 +1208,9 @@ def main() -> int:
         test_a_scalar_retired_list_is_diagnosed_without_crashing_the_goal_check,
         test_the_named_successor_is_judged_the_same_whichever_node_comes_first,
         test_a_green_successor_counts_only_valid_distinct_exclusions_and_its_carried_cases,
+        test_the_gate_reads_an_invalid_unquoted_retired_date_without_crashing,
+        test_a_retired_record_with_a_bad_id_still_reaches_its_named_successor,
+        test_a_non_list_retired_fails_a_goal_check_even_when_the_goal_is_green,
         test_takt_triage_treats_the_same_statuses_as_done,
         test_not_built_with_a_nonzero_or_missing_passing_is_not_complete,
         test_non_list_not_built_record_is_diagnosed_without_crashing,
