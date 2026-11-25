@@ -109,3 +109,14 @@
 - `rollup.py`：green で `cases.not_built` を持つノードは、要素の記録が揃い、`passing == ported` で、和が `total` に等しく、除外と同じケース名がないときだけ完了に数える。満たさなければ未完了の一覧に理由を出す。作らないの有効な件数にも、記録の揃った混在のノードの分を入れる。`goal_complete_gate_test.py` に 2 件を足した。変更前の `rollup.py` では、承認のない混在のノードが完了に数えられ、この 2 件が失敗する。
 - `verify_red.py`：already_green の式を `passed + excluded + not_built == original_cases` にした。作らないの件数は `excluded_approvals.count_not_built` が数える。要素の検査（`is_valid_not_built_case`）は rollup と共有する。記録不足、重複、除外との重なりがあれば件数を返さず、already_green にしない。式が変わらないままだと、記録の揃った混在のノードは毎回 `unexpected_pass` になり、port-test に戻り続ける。`verify_red_test.py` に 2 件を足した（承認済みの 2 件で already_green になること、承認がなければ `unexpected_pass` のままであること）。式を戻すと前者が失敗する。`record_already_green.py` は total に原典の件数、ported と passing に通過数を書くので、変えなくても混在の勘定と合う。
 - `verify_green.py` はケースを数えないので、変えていない。
+
+## PR #168 のレビュー対応（固定 HEAD `9014034`）
+
+| 指摘 | 分類 | 対応 |
+|:---|:---|:---|
+| 独立レビュー P1：実原典で already_green に届かない。外側の `"UnsynchronizedByteArrayInputStream" must {` が件数の候補に入り、15 対 14 で `original_cases` が None になる | 直す | `verify_red.py` の `count_original_cases` は、WordSpec の見出し（`"…" must/should/can/when/which {`）を、その波括弧のブロックに既知の書式のケースが 1 件以上あるときだけ見出しとして認め、ケースには数えないようにした。空の見出しと、未知の書式だけを持つ見出しは、今までどおり数えられない扱いにする。先に足したテスト（実原典と同じ構造の fixture。`b10fb1d`）は修正前に失敗した。固定の v2.0.0 checkout で `verify_red.py` を実行すると、修正前は `unexpected_pass`・`original_cases=null`、修正後は `already_green`・14 = 12 + 作らない 2 だった。green の全ノードを実原典で数え直すと、数えられなかったノードは 42 から 6 に減った。数えられたノードの件数は、すべて台帳の total と一致した（件数が変わったノードはない） |
+| Devin r4688743287、独立レビュー P2：混在のノードで、未承認の除外を rollup が無視する | 直す | `excluded_approvals.excluded_problems` を足し、rollup の混在の勘定と `count_excluded` が同じ検査を使うようにした。未承認の要素があれば、rollup は未完了、verify_red は件数を返さない |
+| Devin r4688743446、独立レビュー P2：同名の承認済みの除外を 2 回数える | 直す | 同じ `excluded_problems` で、除外の中のケース名の重複を拒否する。先に足した回帰テスト（`goal_complete_gate_test.py` 45a・45b、`verify_red_test.py` 19d）は修正前に失敗した |
+| Devin r4688743567：移植と等価性レビューの facet が、混在の作らないケースを扱わない | 直す | `fraktor-port-test.md` と `fraktor-review-equivalence.md` に、承認済みの作らないケースは移植せず、件数の照合から引くことを書いた |
+| Devin r4688743654：記録の不足した混在のノードを人間の確認へ回す分岐がない | 直す | `fraktor-port-node.yaml` の triage の needs_human の条件と、`fraktor-triage.md` の判定の優先順位に、混在の green のノードを含めた |
+| Devin r4688743740、独立レビュー 3：テストの注記が古い（承認を未記録と書く、v1.7.1 の行番号、旧 API の赤） | 直す | Rust テストの冒頭を、v2.0.0 の行（`ByteString.scala` L484、Spec の L45）、v2.0.0 の赤（E0432 と E0599）、台帳の承認済みの作らないケースに合わせて直した |
