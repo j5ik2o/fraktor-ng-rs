@@ -34,6 +34,9 @@ import sys
 import yaml
 
 from excluded_approvals import is_approved_by_human, ledger_loader
+# 退役と引き継ぎの検査は lineage.py が持つ。is_text などの小さな判定も共有する。
+from lineage import (  # noqa: F401  (check_needs と pekko_baseline が rollup から使う)
+    is_case_name, is_text, lineage_problems, load_retired, mapping)
 
 # ゴールの完了に数える status。check_needs.py も同じ集合を使い、
 # TAKT の triage（fraktor-triage.md、fraktor-port-node.yaml）も同じ status を処理済みとする。
@@ -52,20 +55,6 @@ def load_nodes(path: str) -> list[dict]:
     """
     with open(path, encoding="utf-8") as f:
         return (yaml.load(f, Loader=ledger_loader()) or {}).get("nodes", [])
-
-
-def is_text(value) -> bool:
-    return isinstance(value, str) and bool(value.strip())
-
-
-def mapping(value) -> dict:
-    """マッピングならそのまま、そうでなければ空のマッピングを返す（壊れた記録で止めない）。"""
-    return value if isinstance(value, dict) else {}
-
-
-def is_case_name(value) -> bool:
-    """ケース名は空白以外の文字列で、前後に空白を持たない（重複の判定をすり抜けさせない）。"""
-    return is_text(value) and value == value.strip()
 
 
 def is_zero(value) -> bool:
@@ -144,8 +133,13 @@ def case_counts(test_nodes: list[dict]) -> dict:
         if isinstance(excluded, list):
             counts["excluded_recorded"] += len(excluded)
             if n.get("status") != "not_built":
+                # 引き継いだケース（cases.carried）と同じ名前の除外は、移植と二重に数えるので有効に数えない。
+                carried = cases.get("carried")
+                carried_names = {c["name"].strip() for c in carried
+                                 if isinstance(c, dict) and is_text(c.get("name"))} if isinstance(carried, list) else set()
                 counts["excluded"] += sum(1 for e in excluded
-                                          if isinstance(e, dict) and is_approved_by_human(e))
+                                          if isinstance(e, dict) and is_approved_by_human(e)
+                                          and not (is_text(e.get("name")) and e["name"].strip() in carried_names))
         not_built = cases.get("not_built")
         if isinstance(not_built, list):
             counts["not_built_recorded"] += len(not_built)
@@ -207,6 +201,11 @@ def main() -> int:
         problems = not_built_problems(n)
         if problems:
             print(f"  作らない区分の記録が不足: {n['id']}: {'; '.join(problems)}")
+    retired = load_retired(args.ledger)
+    lineage = lineage_problems(nodes, retired)
+    print(f"  退役: {len(retired) if isinstance(retired, list) else 0} 件（集計の対象外）")
+    for node_id, problems in lineage.items():
+        print(f"  退役・引き継ぎの記録が不足: {node_id}: {'; '.join(problems)}")
 
     by_module: dict[str, list[dict]] = collections.defaultdict(list)
     for n in nodes:
@@ -225,9 +224,20 @@ def main() -> int:
     if args.goal:
         members = [n for n in nodes if n.get("goal") == args.goal]
         if not members:
+            gone = [r for r in (retired if isinstance(retired, list) else [])
+                    if isinstance(r, dict) and r.get("goal") == args.goal]
+            if gone:
+                for r in gone:
+                    print(f"ゴール {args.goal}: 属するノード {r.get('id')} は退役した"
+                          f"（後継 {mapping(r.get('retired')).get('successor')}）。完了の判定はしない")
+                return 1
             print(f"ゴール {args.goal}: 属するノードが無い（未発行か ID の誤り）")
             return 1
-        pending = [n for n in members if not is_done(n)]
+        if "retired" in lineage:
+            # retired の構造そのものが不正なら、どのゴールの承継も確かめられないので完了にしない。
+            print(f"ゴール {args.goal}: 台帳の retired が配列でないので、完了と判定しない")
+            return 1
+        pending = [n for n in members if not is_done(n) or n.get("id") in lineage]
         print(
             f"ゴール {args.goal}: ノード {len(members)} 件、"
             f"status 内訳 {dict(collections.Counter(n.get('status') for n in members))}"
@@ -241,7 +251,8 @@ def main() -> int:
             return 1
         print(f"  完了: 全ノードが green か do_not_port か not_built")
         return 0
-    return 0
+    # ゴールを指定しない全体の検査では、退役と引き継ぎの記録の不正を 0 以外の終了値で知らせる。
+    return 1 if lineage else 0
 
 
 if __name__ == "__main__":

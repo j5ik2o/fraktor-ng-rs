@@ -946,33 +946,6 @@ nodes:
     crate: null
     test_file: null
   goal: null
-- id: actor-tests/src/test/scala-2.13+/org/apache/pekko/actor/ActorSystemScala213PlusSpec.scala
-  name: actor-tests:ActorSystemScala213PlusSpec
-  kind: test
-  pekko:
-    module: actor-tests
-    class: ActorSystemScala213PlusSpec
-    test_cases_approx: 1
-  status: green
-  triage:
-    kind: pending
-    reason: null
-  needs:
-    testkit: ['extends-pekko-spec', 'pekko-spec', 'implicit-sender']
-    premise_flags: []
-  depends_on_impl:
-    modules: []
-    coverage: approx
-  cases:
-    total: 1
-    ported: 1
-    passing: 1
-    excluded: []
-  rust:
-    crate: fraktor-actor
-    test_file: crates/fraktor-actor/tests/actor_system_scala213_plus_spec.rs
-  goal: G0issue99
-  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/setup/ActorSystemSetupSpec.scala
   name: actor-tests:ActorSystemSetupSpec
   kind: test
@@ -1045,10 +1018,17 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 20
+    ported: 1
+    passing: 1
     excluded: []
+    carried:
+    - name: "Scala's Using automatically terminates ActorSystem"
+      from: actor-tests/src/test/scala-2.13+/org/apache/pekko/actor/ActorSystemScala213PlusSpec.scala
+      source: "actor-tests/src/test/scala/org/apache/pekko/actor/ActorSystemSpec.scala L345-351（v2.0.0、上流 d5ee8a63e3 #2486）"
+      rust_test: crates/fraktor-actor/tests/actor_system_scala213_plus_spec.rs
+      verified_against: v2.0.0
+      evidence: "ケースの本体は 1.x の 3be76d1be7 と同じ。cargo test -p fraktor-actor --test actor_system_scala213_plus_spec は 1 passed（2026-11-25）"
   rust:
     crate: null
     test_file: null
@@ -33365,3 +33345,37 @@ nodes:
     test_file: crates/fraktor-testkit/tests/test_time_spec.rs
   goal: G0issue121
   verified_against: v2.0.0
+# 退役したノード（現行の基準の原典にファイルが無く、ケースを後継のノードへ引き継いだもの）。
+# 集計と照合の対象外。記録は v1.7.1 で照合した当時のまま残す。
+retired:
+- id: actor-tests/src/test/scala-2.13+/org/apache/pekko/actor/ActorSystemScala213PlusSpec.scala
+  name: actor-tests:ActorSystemScala213PlusSpec
+  kind: test
+  pekko:
+    module: actor-tests
+    class: ActorSystemScala213PlusSpec
+    test_cases_approx: 1
+  status: green
+  triage:
+    kind: pending
+    reason: null
+  needs:
+    testkit: ['extends-pekko-spec', 'pekko-spec', 'implicit-sender']
+    premise_flags: []
+  depends_on_impl:
+    modules: []
+    coverage: approx
+  cases:
+    total: 1
+    ported: 1
+    passing: 1
+    excluded: []
+  rust:
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/actor_system_scala213_plus_spec.rs
+  goal: G0issue99
+  verified_against: v1.7.1
+  retired:
+    at: 2026-11-25
+    reason: "Pekko v2.0.0 にこのファイルが無い。上流 #2486 は 1.x では 3be76d1be7 でこの scala-2.13+ のファイルを足し、2.0 では d5ee8a63e3 で同じケースを ActorSystemSpec.scala に入れた（共通祖先 0ca804c7af にこのファイルは無い）。ノードは v1.7.1 で照合した記録として残し、ケースは後継のノードに引き継いだ"
+    successor: actor-tests/src/test/scala/org/apache/pekko/actor/ActorSystemSpec.scala

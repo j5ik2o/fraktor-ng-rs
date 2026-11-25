@@ -16,7 +16,7 @@ import sys
 
 import yaml
 
-from rollup import is_done, load_nodes
+from rollup import is_done, lineage_problems, load_nodes, load_retired
 
 
 def load_capabilities(path: str) -> dict[str, dict]:
@@ -25,14 +25,22 @@ def load_capabilities(path: str) -> dict[str, dict]:
     return {c["id"]: c for c in doc.get("capabilities") or []}
 
 
-def green_goals(nodes: list[dict]) -> set[str]:
-    """所属ノードがすべて完了したゴール（rollup.is_done。rollup の完了判定と同じ意味論）。"""
+def green_goals(nodes: list[dict], lineage: dict | None = None) -> set[str]:
+    """所属ノードがすべて完了したゴール（rollup の完了判定と同じ意味論）。
+
+    rollup.is_done に加えて、退役と引き継ぎの記録に不足のあるノード（rollup.lineage_problems）を
+    持つゴールは完了に数えない（能力の供給元にしない）。
+    """
+    lineage = lineage or {}
+    if "retired" in lineage:
+        # retired が配列でなければ rollup はどのゴールも完了にしないので、供給元にも数えない。
+        return set()
     by_goal: dict[str, list[dict]] = collections.defaultdict(list)
     for n in nodes:
         if n.get("goal"):
             by_goal[n["goal"]].append(n)
     return {g for g, members in by_goal.items()
-            if all(is_done(m) for m in members)}
+            if all(is_done(m) and m.get("id") not in lineage for m in members)}
 
 
 def main() -> int:
@@ -44,7 +52,7 @@ def main() -> int:
 
     nodes = load_nodes(args.ledger)
     capabilities = load_capabilities(args.capabilities)
-    done = green_goals(nodes) | {args.goal}
+    done = green_goals(nodes, lineage_problems(nodes, load_retired(args.ledger))) | {args.goal}
 
     members = [n for n in nodes if n.get("goal") == args.goal]
     if not members:

@@ -235,3 +235,23 @@
 - 行の位置はノードの最上位、`goal` の次である。欄が無いノードに書くときは、ノードの末尾に足す
 - 検査は `uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger --ledger ledger/nodes.yaml`
   で、違反があれば終了コード 1 になる。CI でも実行する
+
+## 退役と引き継ぎ（`retired`、`cases.carried`、2026-11-25 追加）
+
+基準の切り替えで、原典のファイルが現行の基準に無くなり、ケースが別のファイルに移ったノードの扱いである。最初の例は `ActorSystemScala213PlusSpec`（v2.0.0 には無く、同じケースが `ActorSystemSpec` にある）。
+
+- 退役したノードは、`nodes` から台帳の最上位の `retired` へ移す。ノードの欄は照合した当時のまま残し、`retired` の下に `at`（暦日）、`reason`、`successor`（ケースを引き継いだ現行のノードの id）を足す。`retired` は集計（rollup の N、green、ケース数）と照合（`pekko_baseline.py check-ledger`）の対象外である。`goal` も残すので、閉じたゴールの文書の表は退役したノードを指したままになる
+- 後継のノードは、引き継いだケースを `cases.carried` に記録する。要素は `name`（Pekko 側のケース名）、`from`（退役したノードの id）、`source`（現行の原典のパスと行）、`rust_test`、`verified_against`（そのケースを照合したタグ）、`evidence`（確かめた実行）である。ノード最上位の `verified_against` は suite 全体の照合を表すので、部分移植のノード（status が unported か red）には書かない
+- 部分移植の後継は、`ported` と `passing` を引き継いだ件数にし、`total` は原典のケース数にする（`total > ported`）。suite 全体は green にしない。退役したノードは集計から外れるので、ケースは二重に数えない
+- `rollup.py` の `lineage_problems` が検査する。退役したノードについては、同じ id が `nodes` に無いこと、3 つの欄、後継が現行のノードで、その `cases.carried` に自分からの要素があることを見る。`cases.carried` の要素は、欄が揃い、`from` が退役したノードで、名前が重複しないこと。部分移植の後継は、上の件数の規則を満たすこと。不足は一覧に出し、そのノードが属するゴールの完了に数えない。属するノードがすべて退役したゴールは、`rollup.py --goal` が退役を理由に 1 を返す（完了と判定しない）
+- 検査の細則（PR #169 のレビューで足した）：`retired` は配列で（`{}` などは不正）、id は空でない文字列で一意である。`retired.at` は書式に加えて実在する暦日であること（`2026-02-30` や時刻つきは拒否）。`cases.carried` の各要素は、`from` の退役記録の `successor` がそのノード自身であること（指定された後継のほかに同じケースを置くと二重に数えるので拒否）、`verified_against` が基準ファイルの知るタグであること、ケース名は前後の空白を除いて重複しないこと。欄の型が違っても例外では止めず、診断にする
+- 二重計上の防止（PR #169 の再レビューで足した）：同じ退役元・原典の位置（`source`）・Rust テスト（`rust_test`）の組を、名前だけ変えて 2 回置けない。指定された後継に置いた引き継ぎの件数は、退役元のノードの `cases.ported`（整数）を超えられない。同じ退役 id が重複して別々の後継を指すときは、最初の後継も含めて、その id を後継として指すすべてのノードに異常を伝える。引き継ぎを持つ green の後継も、ほかの green と同じく `total = ported + 承認済みの除外` と `passing = ported` を満たすこと（引き継いだ 1 件だけで suite 全体を green にできない）
+- 引き継ぎを持てる status は、部分移植の `unported` か `red`、または件数のそろった `green` だけである。`do_not_port` や `not_built` など、ほかの判定済みの status にすると記録の不足として扱い、ゴールの完了にも能力の供給元にも数えない（PR #170 のレビューで足した）。どの status でも、引き継いだケースと同じ名前を `cases.excluded` に置くことはできない（同じケースを移植と除外の両方に数えない）
+- ゴールの関門は、対象表の id を、現役のノードと退役したノード（同じ `goal` を持つもの）の両方と照合する。一部のノードだけが退役したゴールも、現役のノードがすべて完了していれば完了になる
+- 後継の suite を移植するとき（記録の方法）：移植の途中は、後継を部分移植のまま（`unported` か `red`、`ported = passing = 引き継いだ件数`）に保ち、新しく移植したケースの件数だけを途中で台帳に足さない（足すと部分移植の件数の検査で拒否される）。引き継いだケースの Rust テスト（`cases.carried` の `rust_test`）はそのファイルに残し、後継の `rust.test_file` には残りのケースだけを移植する。すべてを移植したら、引き継いだケースと新しいケースの両方を同じ実行で確かめ（例：`cargo test -p <crate> --test <後継のテスト> --test <引き継いだテスト>`）、その結果で green への遷移を 1 回で記録する。`ported` と `passing` は両方の和、`total` は原典のケース数、承認済みの除外があれば合わせて total になる。green になった後継は、引き継ぎを持つ green の件数の検査（`total = ported + 有効で一意な承認済みの除外`、`passing = ported`、`ported >= 引き継いだ件数`）を通る。`verify_red` と `verify_green` は、引き継いだケースのファイルを別に数えない（`rust.test_file` だけを実行する）ので、この遷移は TAKT の already_green では記録せず、上の実行の結果を根拠にして台帳を更新する。後継のゴールを発行する前に、この手順を移植の指示に書く（例：`ActorSystemSpec` は 20 件のうち 1 件を `actor_system_scala213_plus_spec.rs` で引き継いでいる。残りの 19 件は、この PR では移植しない）
+- 台帳の行単位の書き換え（`ledger/tools/ledger_lines.py`。verify_red の mark_green と record_already_green が使う）は、`nodes:` の外の最上位の行（`retired:` など）でノードの範囲を終える。末尾の現役ノードに欄を足しても `retired` の中に入らず、退役したノードを書き換えない
+- `check_needs.py` は、退役と引き継ぎの記録に不足のあるノードを持つゴールを、能力の供給元（完了したゴール）に数えない。`retired` が配列でない台帳でも、`rollup.py --goal` は例外では止まらず、診断を出して 1 を返す
+- 退役側だけの不正も、その `successor` のノードに理由を付けるので、後継が属するゴールは完了と判定しない。無関係なゴールは止めずに判定する。ゴールを指定しない `rollup.py` と `pekko_baseline.py check-ledger`（CI の通常の入口）は、不正があれば 0 以外で終わる
+- ゴールの関門（`goal_complete_gate.py`）は、現行のノードに属するものが無く、属するノードがすべて退役したゴールでは、退役したノードの id で文書の対象表と照合する。照合を通った後、rollup が退役を理由に完了と判定しない（1）
+- 台帳を扱うほかの道具：`convert_baseline.py --existing` は再生成で `retired` を残し、退役した id を現役のノードに戻さない。`extract_needs.py` は `retired` 以降を書き換えない
+- 例：`actor-tests/src/test/scala-2.13+/org/apache/pekko/actor/ActorSystemScala213PlusSpec.scala` は退役し、後継は `actor-tests/src/test/scala/org/apache/pekko/actor/ActorSystemSpec.scala` である。後継は unported で、`cases` は 20/1/1、`cases.carried` に 1 件を持つ

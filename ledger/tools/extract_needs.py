@@ -20,6 +20,8 @@ import sys
 
 import yaml
 
+from ledger_lines import TOP_LEVEL_KEY, line_sections
+
 Capability = dict
 
 
@@ -52,7 +54,15 @@ def replace_needs(lines: list[str], by_node: dict[str, dict[str, list[str]]]) ->
     current_id: str | None = None
     in_needs = False
     saw_needs = False
-    for line in lines:
+    # 最上位の欄は ledger_lines.line_sections で見分ける（verify_red の記録と同じ判定）。needs を
+    # 書き換えるのは nodes の中だけで、退役したノード（retired）などは順序によらずそのまま残す。
+    sections = line_sections(lines)
+    for index, line in enumerate(lines):
+        if TOP_LEVEL_KEY.match(line) or sections[index] != "nodes":
+            current_id = None
+            in_needs = False
+            out.append(line)
+            continue
         if line.startswith("- id: "):
             current_id = line.split(":", 1)[1].strip()
             in_needs = False

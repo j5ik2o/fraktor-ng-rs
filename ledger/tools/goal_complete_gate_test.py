@@ -80,6 +80,11 @@ def copy_rollup(root: Path) -> None:
     """rollup.py と、それが読む excluded_approvals.py を一時ディレクトリへ写す。"""
     write(root / "ledger" / "tools" / "rollup.py", ROLLUP.read_text(encoding="utf-8"))
     write(root / "ledger" / "tools" / "excluded_approvals.py", APPROVALS.read_text(encoding="utf-8"))
+    write(root / "ledger" / "tools" / "lineage.py", (ROLLUP.parent / "lineage.py").read_text(encoding="utf-8"))
+    # 引き継ぎのタグの検査に、基準ファイルとその読み手を使う。
+    write(root / "ledger" / "tools" / "pekko_baseline.py", (ROLLUP.parent / "pekko_baseline.py").read_text(encoding="utf-8"))
+    baseline = ROLLUP.parents[2] / "tools" / "pekko-source" / "pekko-baseline.env"
+    write(root / "tools" / "pekko-source" / "pekko-baseline.env", baseline.read_text(encoding="utf-8"))
 
 
 def node(node_id: str, status: str, goal: str | None) -> str:
@@ -472,6 +477,349 @@ def test_not_built_with_a_non_integer_total_or_padded_duplicate_name_is_not_comp
     assert_not_built_incomplete("40b. not_built with a duplicated name padded by a space", "", cases)
 
 
+def _lineage(successor_status: str = "unported", total=20, ported=1, passing=1, carried_from="old/A.scala",
+             retired_extra: dict | None = None, active_extra: list | None = None):
+    import rollup
+    carried = [{"name": "case", "from": carried_from, "source": "new/S.scala L1-2", "rust_test": "t.rs",
+                "verified_against": "v2.0.0", "evidence": "1 passed"}]
+    successor = {"id": "new/S.scala", "status": successor_status,
+                 "cases": {"total": total, "ported": ported, "passing": passing, "carried": carried}}
+    retired = {"id": "old/A.scala", "goal": "G0r",
+               "cases": {"ported": 1}, "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala", **(retired_extra or {})}}
+    return rollup.lineage_problems([successor] + (active_extra or []), [retired])
+
+
+def test_retired_node_and_carried_case_are_checked_and_not_double_counted():
+    """退役したノードと、ケースを引き継いだ部分移植のノードの記録を検査する。"""
+    assert _lineage() == {}, _lineage()
+    assert "new/S.scala" in _lineage(ported=2, passing=2), "ported must equal the carried cases"
+    assert "new/S.scala" in _lineage(total=1), "a partly ported suite must not add up to its total"
+    assert "new/S.scala" in _lineage(carried_from="other/B.scala"), "carried from a node that is not retired"
+    assert "old/A.scala" in _lineage(retired_extra={"successor": "missing/X.scala"})
+    assert "old/A.scala" in _lineage(retired_extra={"at": "2026-02-30T00:00"})
+    assert "old/A.scala" in _lineage(active_extra=[{"id": "old/A.scala", "status": "green", "cases": {}}])
+    assert _lineage(successor_status="green", total=20, ported=20, passing=20) == {}
+    print("43. retired and carried records are checked")
+
+
+def test_retired_dates_must_be_real_calendar_days():
+    """退役日は書式だけでなく、実在する暦日であること（時刻つきも拒否する）。"""
+    assert "old/A.scala" in _lineage(retired_extra={"at": "2026-02-30"}), "a nonexistent day"
+    assert "old/A.scala" in _lineage(retired_extra={"at": "2026-11-25T00:00:00"}), "a timestamp"
+    print("43b. retired.at must be a real calendar day")
+
+
+def test_a_case_carried_to_a_node_that_is_not_the_successor_is_refused():
+    """退役記録の successor と違うノードへの引き継ぎは、二重計上になるので拒否する。"""
+    import rollup
+    carried = [{"name": "case", "from": "old/A.scala", "source": "s L1", "rust_test": "t.rs",
+                "verified_against": "v2.0.0", "evidence": "1 passed"}]
+    successor = {"id": "new/S.scala", "status": "unported",
+                 "cases": {"total": 20, "ported": 1, "passing": 1, "carried": carried}}
+    other = {"id": "other/O.scala", "status": "unported",
+             "cases": {"total": 3, "ported": 1, "passing": 1, "carried": [dict(carried[0])]}}
+    retired = {"id": "old/A.scala", "cases": {"ported": 1}, "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala"}}
+    problems = rollup.lineage_problems([successor, other], [retired])
+    assert "other/O.scala" in problems and "new/S.scala" not in problems, problems
+    print("43c. a case carried to a node other than the successor is refused")
+
+
+def test_malformed_lineage_fields_are_diagnosed_and_other_goals_continue():
+    """successor・退役 id・carried・ケース名の型が違っても例外で止めず、診断を残してほかのゴールを判定する。"""
+    import rollup
+    good = {"name": "case", "from": "old/A.scala", "source": "s L1", "rust_test": "t.rs",
+            "verified_against": "v2.0.0", "evidence": "1 passed"}
+    cases = [
+        ([{"id": "new/S.scala", "status": "unported", "cases": {"carried": 1}}],
+         [{"id": "old/A.scala", "retired": {"at": "2026-11-25", "reason": "r", "successor": ["new/S.scala"]}}]),
+        ([{"id": "new/S.scala", "status": "unported", "cases": {"total": 2, "ported": 1, "passing": 1,
+                                                                 "carried": [dict(good, name=["x"])]}}],
+         [{"id": ["old/A.scala"], "retired": {"at": "2026-11-25", "reason": "r", "successor": "new/S.scala"}}]),
+    ]
+    for nodes, retired in cases:
+        problems = rollup.lineage_problems(nodes, retired)
+        assert problems, (nodes, retired)
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ledger = ("nodes:\n- id: a/A.scala\n  kind: test\n  pekko:\n    module: stub\n  status: green\n"
+                  "  goal: G0k\n- id: new/S.scala\n  kind: test\n  pekko:\n    module: stub\n"
+                  "  status: unported\n  cases:\n    carried: 1\n  goal: null\n"
+                  "retired:\n- id: old/A.scala\n  kind: test\n  pekko:\n    module: stub\n  goal: G0z\n"
+                  "  retired:\n    at: 2026-11-25\n    reason: moved\n    successor: [new/S.scala]\n")
+        response = make_run(root, order_with(["docs/goals/g0k-stub.md"]), ledger, one_goal_doc("G0k", ["a/A.scala"]))
+        result = run_gate(root, response)
+        assert result["exit_code"] == 0, result
+        assert "退役・引き継ぎの記録が不足" in result["output"], result
+        print("43d. malformed lineage is diagnosed and another goal is still judged")
+
+
+def test_lineage_refuses_duplicates_unknown_tags_and_a_non_list_retired():
+    """退役 id の重複、空白だけが違うケース名、未知の基準タグ、配列でない retired を拒否する。"""
+    import rollup
+    record = {"name": "case", "from": "old/A.scala", "source": "s L1", "rust_test": "t.rs",
+              "verified_against": "v2.0.0", "evidence": "1 passed"}
+    successor = {"id": "new/S.scala", "status": "unported",
+                 "cases": {"total": 20, "ported": 1, "passing": 1, "carried": [record]}}
+    retired = {"id": "old/A.scala", "cases": {"ported": 1}, "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala"}}
+    assert "old/A.scala" in rollup.lineage_problems([successor], [retired, dict(retired)]), "duplicated retired id"
+    # 名前の重複だけが診断されるように、退役元の移植数を 2 にし、2 件目には別の証拠を持たせる。
+    roomy = dict(retired, cases={"ported": 2})
+    padded = dict(successor, cases=dict(successor["cases"], ported=2, passing=2,
+                                        carried=[record, dict(record, name="case ", source="s L9", rust_test="u.rs")]))
+    padded_problems = rollup.lineage_problems([padded], [roomy]).get("new/S.scala", [])
+    assert padded_problems and all("ケース名が重複" in p for p in padded_problems), padded_problems
+    unknown = dict(successor, cases=dict(successor["cases"], carried=[dict(record, verified_against="not-a-tag")]))
+    assert "new/S.scala" in rollup.lineage_problems([unknown], [retired]), "an unknown baseline tag"
+    assert rollup.lineage_problems([successor], {}), "retired: {} is not a list"
+    print("43e. duplicates, padded names, unknown tags and a non-list retired are refused")
+
+
+LINEAGE_LEDGER = ("nodes:\n- id: new/S.scala\n  kind: test\n  pekko:\n    module: stub\n  status: green\n"
+                  "  cases:\n    total: 1\n    ported: 1\n    passing: 1\n    carried:\n"
+                  "    - name: case\n      from: old/A.scala\n      source: new/S.scala L1\n"
+                  "      rust_test: t.rs\n      verified_against: v2.0.0\n      evidence: 1 passed\n"
+                  "  goal: G0s\n- id: a/A.scala\n  kind: test\n  pekko:\n    module: stub\n  status: green\n"
+                  "  goal: G0t\nretired:\n- id: old/A.scala\n  kind: test\n  pekko:\n    module: stub\n"
+                  "  cases:\n    ported: 1\n  goal: G0r\n  retired:\n    at: 2026-11-25\n    reason: {reason}\n    successor: new/S.scala\n")
+
+
+def test_a_retired_side_problem_keeps_the_successors_goal_open_and_the_rollup_fails():
+    """退役側だけの不正でも、後継が属するゴールは完了にせず、全体の rollup は 0 以外で終わる。
+
+    無関係なゴールは止めずに判定する。
+    """
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ledger = LINEAGE_LEDGER.format(reason="''")
+        response = make_run(root, order_with(["docs/goals/g0s-stub.md"]), ledger, one_goal_doc("G0s", ["new/S.scala"]))
+        result = run_gate(root, response)
+        assert result["exit_code"] == 1, result
+        assert "退役・引き継ぎの記録が不足" in result["output"], result
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ledger = LINEAGE_LEDGER.format(reason="''")
+        response = make_run(root, order_with(["docs/goals/g0t-stub.md"]), ledger, one_goal_doc("G0t", ["a/A.scala"]))
+        assert run_gate(root, response)["exit_code"] == 0
+        path = root / "ledger" / "nodes.yaml"
+        whole = subprocess.run([sys.executable, str(ROLLUP), "--ledger", str(path)], capture_output=True, text=True)
+        assert whole.returncode != 0, whole.stdout
+        path.write_text(LINEAGE_LEDGER.format(reason="moved"), encoding="utf-8")
+        whole = subprocess.run([sys.executable, str(ROLLUP), "--ledger", str(path)], capture_output=True, text=True)
+        assert whole.returncode == 0, whole.stdout
+    print("43f. a retired-side problem keeps the successor's goal open, the whole rollup fails, others are judged")
+
+
+def test_lineage_refuses_a_renamed_duplicate_and_more_cases_than_the_retired_node_ported():
+    """名前だけを変えた同じケース（原典の位置・Rust テスト・退役元が同じ）と、退役元の移植数を超える引き継ぎを拒否する。"""
+    import rollup
+    record = {"name": "case", "from": "old/A.scala", "source": "s L1", "rust_test": "t.rs",
+              "verified_against": "v2.0.0", "evidence": "1 passed"}
+    successor = {"id": "new/S.scala", "status": "unported",
+                 "cases": {"total": 20, "ported": 2, "passing": 2,
+                           "carried": [record, dict(record, name="case (alias)")]}}
+    retired = {"id": "old/A.scala", "cases": {"ported": 1},
+               "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala"}}
+    problems = rollup.lineage_problems([successor], [retired])
+    assert any("同じ" in p for p in problems.get("new/S.scala", [])), problems
+    assert any("移植数" in p for p in problems.get("new/S.scala", [])), problems
+    print("43g. a renamed duplicate and more cases than the retired node ported are refused")
+
+
+def test_a_duplicated_retired_id_reaches_every_successor_it_names():
+    """同じ退役 id が別々の後継を指すとき、最初の後継も含め、すべての後継に異常を伝える。"""
+    import rollup
+    record = {"name": "case", "from": "old/A.scala", "source": "s L1", "rust_test": "t.rs",
+              "verified_against": "v2.0.0", "evidence": "1 passed"}
+    first = {"id": "new/S.scala", "status": "green",
+             "cases": {"total": 1, "ported": 1, "passing": 1, "excluded": [], "carried": [record]}}
+    second = {"id": "new/T.scala", "status": "unported", "cases": {}}
+    retired = [{"id": "old/A.scala", "cases": {"ported": 1},
+                "retired": {"at": "2026-11-25", "reason": "moved", "successor": successor}}
+               for successor in ("new/S.scala", "new/T.scala")]
+    problems = rollup.lineage_problems([first, second], retired)
+    assert "new/S.scala" in problems and "new/T.scala" in problems, problems
+    print("43h. a duplicated retired id reaches every successor it names")
+
+
+def test_a_green_successor_must_cover_its_total_with_ported_and_approved_exclusions():
+    """引き継ぎを持つ green の後継も、total = ported + 承認済みの除外、passing = ported を満たす。"""
+    import rollup
+    record = {"name": "case", "from": "old/A.scala", "source": "s L1", "rust_test": "t.rs",
+              "verified_against": "v2.0.0", "evidence": "1 passed"}
+    retired = {"id": "old/A.scala", "cases": {"ported": 1},
+               "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala"}}
+    def green(total, ported, passing, excluded=()):
+        return {"id": "new/S.scala", "status": "green",
+                "cases": {"total": total, "ported": ported, "passing": passing,
+                          "excluded": list(excluded), "carried": [record]}}
+    assert "new/S.scala" in rollup.lineage_problems([green(20, 1, 1)], [retired]), "only the carried case"
+    assert "new/S.scala" in rollup.lineage_problems([green(2, 2, 1)], [retired]), "passing below ported"
+    approved = {"name": "x", "reason": "r", "approved_by": "someone", "approved_at": "2026-01-01"}
+    assert rollup.lineage_problems([green(3, 2, 2, [approved])], [retired]) == {}
+    assert "new/S.scala" in rollup.lineage_problems([green(3, 2, 2, [{"name": "x", "reason": "r"}])], [retired])
+    print("43i. a green successor must cover its total")
+
+
+def test_a_scalar_retired_list_is_diagnosed_without_crashing_the_goal_check():
+    """retired が整数でも、ゴールの判定は例外で止まらず、診断を出して 0 以外で終わる。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "nodes.yaml"
+        path.write_text("nodes: []\nretired: 1\n", encoding="utf-8")
+        result = subprocess.run([sys.executable, str(ROLLUP), "--ledger", str(path), "--goal", "G0issue99"],
+                                capture_output=True, text=True)
+        assert result.returncode == 1, (result.stdout, result.stderr)
+        assert "Traceback" not in result.stderr, result.stderr
+        assert "retired が配列でない" in result.stdout, result.stdout
+    print("43j. a scalar retired is diagnosed and the goal check ends with 1")
+
+
+CARRIED_YAML = ("    carried:\n    - name: case\n      from: old/A.scala\n      source: new/S.scala L1\n"
+                "      rust_test: t.rs\n      verified_against: v2.0.0\n      evidence: 1 passed\n")
+RETIRED_YAML = ("retired:\n- id: old/A.scala\n  kind: test\n  pekko:\n    module: stub\n  cases:\n    ported: 1\n"
+                "  goal: G0r\n  retired:\n    at: 2026-11-25\n    reason: moved\n    successor: new/S.scala\n")
+
+
+def lineage_node(node_id: str, goal: str, status: str, total: int, ported: int, excluded: str = "    excluded: []\n") -> str:
+    return (f"- id: {node_id}\n  kind: test\n  pekko:\n    module: stub\n  status: {status}\n"
+            f"  cases:\n    total: {total}\n    ported: {ported}\n    passing: {ported}\n{excluded}"
+            f"{CARRIED_YAML}  goal: {goal}\n")
+
+
+def gate_and_whole(ledger: str, goal: str, member: str) -> tuple[int, int]:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        response = make_run(root, order_with([f"docs/goals/{goal.lower()}-stub.md"]), ledger, one_goal_doc(goal, [member]))
+        gate = run_gate(root, response)["exit_code"]
+        whole = subprocess.run([sys.executable, str(ROLLUP), "--ledger", str(root / "ledger" / "nodes.yaml")],
+                               capture_output=True, text=True).returncode
+        return gate, whole
+
+
+def test_the_named_successor_is_judged_the_same_whichever_node_comes_first():
+    """未指定の後継に同じケースを置いても、並び順によらず正式な後継のゴールは完了で、全体の検査は 0 以外。"""
+    right = lineage_node("new/S.scala", "G0s", "green", 1, 1)
+    wrong = lineage_node("new/W.scala", "G0w", "unported", 3, 1)
+    for label, nodes in (("wrong first", wrong + right), ("wrong last", right + wrong)):
+        gate, whole = gate_and_whole("nodes:\n" + nodes + RETIRED_YAML, "G0s", "new/S.scala")
+        assert gate == 0, (label, gate)
+        assert whole != 0, (label, whole)
+        print(f"43k. {label}: the named successor's gate = {gate}, whole rollup = {whole}")
+
+
+def test_a_green_successor_counts_only_valid_distinct_exclusions_and_its_carried_cases():
+    """承認済みの同じ除外の繰り返しや、引き継いだのに ported が 0 の green は、ゴールでも全体でも通さない。"""
+    approval = "      approved_by: someone\n      approved_at: 2026-01-01\n"
+    repeated = "    excluded:\n" + "".join("    - name: same\n      reason: r\n" + approval for _ in range(19))
+    distinct = "    excluded:\n" + "".join(f"    - name: case {i}\n      reason: r\n" + approval for i in range(20))
+    for label, node in (("19 copies of one exclusion", lineage_node("new/S.scala", "G0s", "green", 20, 1, repeated)),
+                        ("carried but 20/0/0", lineage_node("new/S.scala", "G0s", "green", 20, 0, distinct))):
+        gate, whole = gate_and_whole("nodes:\n" + node + RETIRED_YAML, "G0s", "new/S.scala")
+        assert gate != 0 and whole != 0, (label, gate, whole)
+        print(f"43l. {label}: gate = {gate}, whole rollup = {whole}")
+
+
+def test_the_gate_reads_an_invalid_unquoted_retired_date_without_crashing():
+    """引用なしの存在しない退役日があっても、関門は台帳の読み込みで止まらず、無関係なゴールを判定する。"""
+    ledger = ("nodes:\n- id: a/A.scala\n  kind: test\n  pekko:\n    module: stub\n  status: green\n  goal: G0t\n"
+              "retired:\n- id: old/A.scala\n  kind: test\n  pekko:\n    module: stub\n  goal: G0r\n"
+              "  retired:\n    at: 2026-02-30\n    reason: moved\n    successor: a/A.scala\n")
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        response = make_run(root, order_with(["docs/goals/g0t-stub.md"]), ledger, one_goal_doc("G0t", ["a/A.scala"]))
+        result = run_gate(root, response)
+        assert "Traceback" not in json.dumps(result), result
+        # a/A.scala は不正な退役記録の指定後継なので、読み込みを続けたうえで未完了にする。
+        assert result["exit_code"] == 1, result
+        assert "a/A.scala" in result.get("output", ""), result
+        print("43m. the gate reads an invalid unquoted date without crashing: exit_code =", result["exit_code"])
+
+
+def test_a_retired_record_with_a_bad_id_still_reaches_its_named_successor():
+    """退役 id が不正でも、特定できる指定後継には異常を伝える（後継のゴールを完了にしない）。"""
+    import rollup
+    successor = {"id": "new/S.scala", "status": "green", "cases": {"total": 1, "ported": 1, "passing": 1}}
+    retired = [{"id": "", "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala"}}]
+    assert "new/S.scala" in rollup.lineage_problems([successor], retired)
+    print("43n. a bad retired id still reaches its named successor")
+
+
+def test_a_non_list_retired_fails_a_goal_check_even_when_the_goal_is_green():
+    """retired が配列でなければ、対象ゴールのノードがすべて green でも rollup --goal は 1 を返す。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "nodes.yaml"
+        path.write_text("nodes:\n- id: a/A.scala\n  kind: test\n  pekko:\n    module: stub\n  status: green\n"
+                        "  goal: G0t\nretired: {}\n", encoding="utf-8")
+        result = subprocess.run([sys.executable, str(ROLLUP), "--ledger", str(path), "--goal", "G0t"],
+                                capture_output=True, text=True)
+        assert result.returncode == 1, (result.stdout, result.stderr)
+    print("43o. a non-list retired fails the goal check")
+
+
+def test_a_green_successor_cannot_count_a_carried_case_again_as_an_exclusion():
+    """引き継いだケースと同じ名前の除外は、同じケースを 2 回数えるので拒否する（ゴールでも全体でも）。"""
+    approval = "      approved_by: someone\n      approved_at: 2026-01-01\n"
+    excluded = ("    excluded:\n" + "".join(f"    - name: other {i}\n      reason: r\n" + approval for i in range(18))
+                + "    - name: case\n      reason: r\n" + approval)
+    ledger = "nodes:\n" + lineage_node("new/S.scala", "G0s", "green", 20, 1, excluded) + RETIRED_YAML
+    gate, whole = gate_and_whole(ledger, "G0s", "new/S.scala")
+    assert gate != 0 and whole != 0, (gate, whole)
+    # 集計の有効な除外の件数からは、引き継いだケースと重なる 1 件を外す（記録の件数には残す）。
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "nodes.yaml"
+        path.write_text(ledger, encoding="utf-8")
+        output = subprocess.run([sys.executable, str(ROLLUP), "--ledger", str(path)], capture_output=True, text=True).stdout
+        assert "除外=18（記録 19）" in output, output
+    distinct = "    excluded:\n" + "".join(f"    - name: other {i}\n      reason: r\n" + approval for i in range(19))
+    gate, whole = gate_and_whole("nodes:\n" + lineage_node("new/S.scala", "G0s", "green", 20, 1, distinct) + RETIRED_YAML,
+                                 "G0s", "new/S.scala")
+    assert gate == 0 and whole == 0, (gate, whole)
+    print("43p. a carried case cannot be counted again as an exclusion; distinct exclusions still pass")
+
+
+def test_a_goal_with_active_and_retired_members_is_judged_through_the_gate():
+    """対象表に現役と退役のノードが並ぶゴールも、関門の照合を通り、現役が完了なら完了になる。"""
+    ledger = ("nodes:\n- id: new/S.scala\n  kind: test\n  pekko:\n    module: stub\n  status: unported\n"
+              "  cases:\n    total: 2\n    ported: 1\n    passing: 1\n" + CARRIED_YAML +
+              "  goal: null\n- id: a/A.scala\n  kind: test\n  pekko:\n    module: stub\n  status: green\n"
+              "  goal: G0r\n" + RETIRED_YAML)
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        response = make_run(root, order_with(["docs/goals/g0r-stub.md"]), ledger,
+                            one_goal_doc("G0r", ["a/A.scala", "old/A.scala"]))
+        result = run_gate(root, response)
+        assert result["exit_code"] == 0, result
+        print("43q. a goal with active and retired members: exit_code =", result["exit_code"])
+
+
+def test_a_do_not_port_successor_with_carried_cases_does_not_complete_its_goal():
+    """引き継ぎを持つ後継を do_not_port にしても、関門はそのゴールを完了にしない。"""
+    node = ("- id: new/S.scala\n  kind: test\n  pekko:\n    module: stub\n  status: do_not_port\n"
+            "  cases:\n    total: 20\n    ported: 1\n    passing: 1\n    excluded: []\n" + CARRIED_YAML +
+            "  goal: G0s\n")
+    gate, whole = gate_and_whole("nodes:\n" + node + RETIRED_YAML, "G0s", "new/S.scala")
+    assert gate != 0 and whole != 0, (gate, whole)
+    print("43r. a do_not_port successor: gate =", gate, "whole =", whole)
+
+
+def test_goal_whose_nodes_are_all_retired_is_not_complete():
+    """属するノードがすべて退役したゴールは、完了と判定しない（退役を理由に出す）。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ledger = ("nodes:\n- id: new/S.scala\n  kind: test\n  pekko:\n    module: stub\n  status: unported\n"
+                  "  cases:\n    total: 2\n    ported: 1\n    passing: 1\n    carried:\n"
+                  "    - name: case\n      from: old/A.scala\n      source: new/S.scala L1\n"
+                  "      rust_test: t.rs\n      verified_against: v2.0.0\n      evidence: 1 passed\n"
+                  "  goal: null\nretired:\n- id: old/A.scala\n  kind: test\n  pekko:\n    module: stub\n"
+                  "  status: green\n  cases:\n    ported: 1\n  goal: G0r\n  retired:\n    at: 2026-11-25\n    reason: moved\n"
+                  "    successor: new/S.scala\n")
+        response = make_run(root, order_with(["docs/goals/g0r-stub.md"]), ledger, one_goal_doc("G0r", ["old/A.scala"]))
+        result = run_gate(root, response)
+        # 対象表の照合を通って rollup の退役の分岐に届き、退役を理由に完了と判定しない（1）。
+        assert result["exit_code"] == 1, result
+        assert "退役した" in result.get("output", ""), result
+        print("44. a goal whose nodes are all retired: exit_code =", result["exit_code"])
+
+
 def test_takt_triage_treats_the_same_statuses_as_done():
     """TAKT の triage が処理済みとする status は、rollup の DONE_STATUSES と同じである。
 
@@ -662,6 +1010,7 @@ def test_real_goal_documents_match_current_ledger():
     import rollup
 
     ledger_nodes = rollup.load_nodes(str(REAL_LEDGER))
+    ledger_retired = rollup.load_retired(str(REAL_LEDGER))
     docs = sorted(GOALS.glob("*.md"))
     assert docs, f"no goal documents under {GOALS}"
     for doc_path in docs:
@@ -689,7 +1038,19 @@ def test_real_goal_documents_match_current_ledger():
             assert m, (doc_path.name, first_line)
             goal_id = m.group(1)
             members = sorted(n["id"] for n in ledger_nodes if n.get("goal") == goal_id)
-            assert members, (doc_path.name, "no ledger member for goal", goal_id)
+            if not members:
+                # 属するノードがすべて退役したゴール（前の基準で閉じた記録）。表の id は退役した
+                # ノードと一致し、関門は完了と判定しない（rollup は退役を理由に 1 を返す）。
+                retired = sorted(r["id"] for r in ledger_retired if r.get("goal") == goal_id)
+                assert retired, (doc_path.name, "no ledger member for goal", goal_id)
+                import goal_complete_gate
+                table_ids, error = goal_complete_gate.table_ids_from_document(doc_path.read_text(encoding="utf-8"))
+                assert sorted(table_ids or []) == retired, (doc_path.name, table_ids, error, retired)
+                result = run_gate(root, response)
+                assert result["exit_code"] == 1, (doc_path.name, result)
+                assert "退役した" in result.get("output", ""), (doc_path.name, result)
+                print(f"15. real doc {doc_path.name} ({goal_id}): retired, exit_code =", result["exit_code"])
+                continue
 
             member_nodes = [n for n in ledger_nodes if n.get("goal") == goal_id]
             complete = all(rollup.is_done(n) for n in member_nodes)
@@ -885,6 +1246,25 @@ def main() -> int:
         test_not_built_with_malformed_approval_is_not_complete,
         test_not_built_with_duplicated_case_names_is_not_complete,
         test_not_built_with_a_blank_case_name_is_not_complete,
+        test_retired_node_and_carried_case_are_checked_and_not_double_counted,
+        test_goal_whose_nodes_are_all_retired_is_not_complete,
+        test_retired_dates_must_be_real_calendar_days,
+        test_a_case_carried_to_a_node_that_is_not_the_successor_is_refused,
+        test_malformed_lineage_fields_are_diagnosed_and_other_goals_continue,
+        test_lineage_refuses_duplicates_unknown_tags_and_a_non_list_retired,
+        test_a_retired_side_problem_keeps_the_successors_goal_open_and_the_rollup_fails,
+        test_lineage_refuses_a_renamed_duplicate_and_more_cases_than_the_retired_node_ported,
+        test_a_duplicated_retired_id_reaches_every_successor_it_names,
+        test_a_green_successor_must_cover_its_total_with_ported_and_approved_exclusions,
+        test_a_scalar_retired_list_is_diagnosed_without_crashing_the_goal_check,
+        test_the_named_successor_is_judged_the_same_whichever_node_comes_first,
+        test_a_green_successor_counts_only_valid_distinct_exclusions_and_its_carried_cases,
+        test_the_gate_reads_an_invalid_unquoted_retired_date_without_crashing,
+        test_a_retired_record_with_a_bad_id_still_reaches_its_named_successor,
+        test_a_non_list_retired_fails_a_goal_check_even_when_the_goal_is_green,
+        test_a_green_successor_cannot_count_a_carried_case_again_as_an_exclusion,
+        test_a_goal_with_active_and_retired_members_is_judged_through_the_gate,
+        test_a_do_not_port_successor_with_carried_cases_does_not_complete_its_goal,
         test_takt_triage_treats_the_same_statuses_as_done,
         test_not_built_with_a_nonzero_or_missing_passing_is_not_complete,
         test_non_list_not_built_record_is_diagnosed_without_crashing,
