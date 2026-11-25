@@ -237,6 +237,8 @@ def lineage_problems(nodes: list[dict], retired, known_tags: set[str] | None = N
         problems["retired"].append("台帳の retired が配列でない")
         retired = []
     retired_by_id: dict[str, dict] = {}
+    successors_by_retired: dict[str, list] = collections.defaultdict(list)
+    duplicated_ids: set[str] = set()
     for index, r in enumerate(retired):
         rid = r.get("id") if isinstance(r, dict) else None
         if not is_case_name(rid):
@@ -245,7 +247,9 @@ def lineage_problems(nodes: list[dict], retired, known_tags: set[str] | None = N
         own: list[str] = []
         if rid in retired_by_id:
             own.append("退役したノードの id が重複している")
+            duplicated_ids.add(rid)
         retired_by_id.setdefault(rid, r)
+        successors_by_retired[rid].append(mapping(r.get("retired")).get("successor"))
         if rid in by_id:
             own.append("退役したノードと同じ id が現行の nodes にある")
         info = r.get("retired")
@@ -268,6 +272,12 @@ def lineage_problems(nodes: list[dict], retired, known_tags: set[str] | None = N
             problems[rid] += own
             if successor is not None:
                 problems[successor_id].append(f"引き継ぎ元の退役記録 {rid} に不足がある")
+    for rid in duplicated_ids:
+        for successor_id in successors_by_retired[rid]:
+            if is_text(successor_id) and successor_id in by_id:
+                problems[successor_id].append(f"引き継ぎ元の退役 id {rid} が重複している")
+    carried_from: dict[str, int] = collections.Counter()
+    evidence_seen: set[tuple] = set()
     for n in by_id.values():
         cases = mapping(n.get("cases"))
         carried = cases.get("carried")
@@ -283,21 +293,46 @@ def lineage_problems(nodes: list[dict], retired, known_tags: set[str] | None = N
                 problems[nid].append(f"cases.carried[{index}] の {'・'.join(CARRIED_TEXT_KEYS)} が揃っていない")
                 continue
             names.append(c["name"].strip())
+            evidence = (c["from"], c["source"].strip(), c["rust_test"].strip())
+            if evidence in evidence_seen:
+                problems[nid].append(f"cases.carried[{index}] は、同じ退役元・原典の位置・Rust テストのケースと同じ証拠を使っている")
+            evidence_seen.add(evidence)
             origin = retired_by_id.get(c["from"])
             if origin is None:
                 problems[nid].append(f"cases.carried[{index}] の from が退役したノードでない")
             elif mapping(origin.get("retired")).get("successor") != nid:
                 problems[nid].append(f"cases.carried[{index}] の from の退役記録が、このノードを後継に指定していない")
+            else:
+                # 指定された後継に置いた分だけを数える（ほかのノードの分は直前で拒否している）。
+                carried_from[c["from"]] += 1
             if c["verified_against"] not in tags:
                 problems[nid].append(f"cases.carried[{index}] の verified_against が基準ファイルの知るタグでない")
         if len(set(names)) != len(names):
             problems[nid].append("cases.carried のケース名が重複している（前後の空白を除いて比べる）")
+        if n.get("status") == "green":
+            total, ported, passing = cases.get("total"), cases.get("ported"), cases.get("passing")
+            excluded = cases.get("excluded")
+            excluded = [] if excluded is None else excluded
+            approved = (isinstance(excluded, list)
+                        and all(isinstance(e, dict) and is_approved_by_human(e) for e in excluded))
+            if not (approved and all(type(v) is int for v in (total, ported, passing))
+                    and passing == ported and total == ported + len(excluded)):
+                problems[nid].append("引き継ぎを持つ green のノードが total = ported + 承認済みの除外、"
+                                     "passing = ported を満たさない")
         if n.get("status") != "green":
             total, ported, passing = cases.get("total"), cases.get("ported"), cases.get("passing")
             if not (type(ported) is int and type(passing) is int and ported == passing == len(carried)):
                 problems[nid].append("部分移植のノードの ported と passing が引き継いだ件数と違う")
             if not (type(total) is int and type(ported) is int and total > ported):
                 problems[nid].append("部分移植のノードの total が ported より大きい整数でない")
+    for rid, count in carried_from.items():
+        origin = retired_by_id.get(rid)
+        ported = mapping(origin.get("cases")).get("ported") if origin else None
+        if origin is not None and not (type(ported) is int and count <= ported):
+            for successor_id in successors_by_retired[rid]:
+                if is_text(successor_id) and successor_id in by_id:
+                    problems[successor_id].append(
+                        f"退役元 {rid} から引き継いだケース {count} 件が、退役元の移植数（{ported}）を超える")
     return problems
 
 
@@ -352,7 +387,8 @@ def main() -> int:
     if args.goal:
         members = [n for n in nodes if n.get("goal") == args.goal]
         if not members:
-            gone = [r for r in retired if isinstance(r, dict) and r.get("goal") == args.goal]
+            gone = [r for r in (retired if isinstance(retired, list) else [])
+                    if isinstance(r, dict) and r.get("goal") == args.goal]
             if gone:
                 for r in gone:
                     print(f"ゴール {args.goal}: 属するノード {r.get('id')} は退役した"
