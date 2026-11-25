@@ -472,6 +472,73 @@ def test_not_built_with_a_non_integer_total_or_padded_duplicate_name_is_not_comp
     assert_not_built_incomplete("40b. not_built with a duplicated name padded by a space", "", cases)
 
 
+MIXED_RECORD = ("    - name: {name}\n"
+                "      reason: the input cannot be expressed in Rust\n"
+                "      alternative: a test of the expressible inputs\n"
+                "{approval}")
+
+
+def mixed_node(node_id: str, goal: str, total: int, ported: int, passing: int,
+               not_built: list[tuple[str, str]], excluded: str = "    excluded: []\n") -> str:
+    """一部のケースだけを作らない green のノード（混在）。not_built は (ケース名, 承認の行) の列。"""
+    records = "".join(MIXED_RECORD.format(name=name, approval=approval) for name, approval in not_built)
+    return (
+        f"- id: {node_id}\n"
+        f"  kind: test\n"
+        f"  pekko:\n"
+        f"    module: stub\n"
+        f"  status: green\n"
+        f"  triage:\n"
+        f"    kind: pending\n"
+        f"    reason: null\n"
+        f"  cases:\n"
+        f"    total: {total}\n"
+        f"    ported: {ported}\n"
+        f"    passing: {passing}\n"
+        f"{excluded}"
+        f"    not_built:\n"
+        f"{records}"
+        f"  goal: {goal}\n"
+    )
+
+
+def run_mixed(goal: str, node: str) -> dict:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        response = make_run(root, order_with([f"docs/goals/{goal.lower()}-stub.md"]), "nodes:\n" + node,
+                            one_goal_doc(goal, ["a/M.scala"]))
+        return run_gate(root, response)
+
+
+def test_mixed_green_node_with_approved_not_built_cases_is_complete_and_counted():
+    """混在のノードは、ported と作らないの件数の和が total に等しく、記録が揃えば完了で、件数に入る。"""
+    node = mixed_node("a/M.scala", "G0m", 14, 12, 12, [("caseA", APPROVAL), ("caseB", APPROVAL)])
+    result = run_mixed("G0m", node)
+    assert result["exit_code"] == 0, result
+    assert "作らない=2（記録 2）" in result["output"], result
+    print("41. mixed green with two approved not_built cases: exit_code =", result["exit_code"])
+
+
+def test_mixed_green_node_is_not_complete_without_approval_or_with_a_wrong_sum():
+    """承認の欠けた要素、和の合わない勘定、除外との重複は、混在のノードを未完了にする。"""
+    cases = [
+        ("42a. mixed without approval", mixed_node("a/M.scala", "G0n", 14, 12, 12, [("caseA", APPROVAL), ("caseB", "")])),
+        ("42b. mixed whose sum is short", mixed_node("a/M.scala", "G0n", 14, 11, 11, [("caseA", APPROVAL), ("caseB", APPROVAL)])),
+        ("42c. mixed whose passing is not ported", mixed_node("a/M.scala", "G0n", 14, 12, 11, [("caseA", APPROVAL), ("caseB", APPROVAL)])),
+        ("42d. mixed with the same case excluded and not built", mixed_node(
+            "a/M.scala", "G0n", 14, 11, 11, [("caseA", APPROVAL), ("caseB", APPROVAL)],
+            excluded="    excluded:\n    - name: caseA\n      reason: also excluded\n" + APPROVAL)),
+    ]
+    for label, node in cases:
+        result = run_mixed("G0n", node)
+        assert result["exit_code"] != 0, (label, result)
+        assert "a/M.scala" in result.get("output", ""), (label, result)
+        print(f"{label}: exit_code =", result["exit_code"])
+    result = run_mixed("G0n", cases[0][1])
+    assert "作らない=0（記録 2）" in result["output"], result
+    print("42e. an unapproved mixed record is counted only as recorded")
+
+
 def test_takt_triage_treats_the_same_statuses_as_done():
     """TAKT の triage が処理済みとする status は、rollup の DONE_STATUSES と同じである。
 
@@ -893,6 +960,8 @@ def main() -> int:
         test_check_needs_continues_past_another_goals_broken_not_built,
         test_not_built_node_with_an_exclusion_is_not_complete_or_double_counted,
         test_not_built_with_a_non_integer_total_or_padded_duplicate_name_is_not_complete,
+        test_mixed_green_node_with_approved_not_built_cases_is_complete_and_counted,
+        test_mixed_green_node_is_not_complete_without_approval_or_with_a_wrong_sum,
         test_order_without_goal_path_fails,
         test_order_with_multiple_goal_paths_fails,
         test_missing_goal_document_fails,

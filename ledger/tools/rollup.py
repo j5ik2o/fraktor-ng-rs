@@ -19,6 +19,8 @@
   cases.ported と cases.passing が整数の 0 で、cases.not_built の件数が cases.total に等しく、各要素の
   name・reason・alternative が空白以外の文字列で、承認記録（approved_by、approved_at）が
   除外と同じ is_approved_by_human を満たし、ケース名がノード内で重複しないこと。
+  一部のケースだけを作らない green のノード（混在）は、要素の記録が揃い、passing が ported に
+  等しく、ported と承認済みの excluded と not_built の件数の和が total に等しいこと。
   満たさないノードは一覧に出し、ゴールの完了に数えない。台帳は除外の検査と同じ
   専用ローダ（excluded_approvals.ledger_loader）で読む。
 
@@ -81,8 +83,62 @@ def is_valid_not_built_case(record) -> bool:
             and is_approved_by_human(record))
 
 
+def not_built_records_problems(records: list) -> list[str]:
+    """作らないケースの要素の不足と、ノード内のケース名の重複を返す。"""
+    problems = []
+    for index, record in enumerate(records):
+        if not is_valid_not_built_case(record):
+            problems.append(f"cases.not_built[{index}] の name・reason・alternative・承認記録が揃っていない")
+    names = [r.get("name").strip() for r in records
+             if isinstance(r, dict) and is_text(r.get("name"))]
+    duplicated = sorted({name for name in names if names.count(name) > 1})
+    if duplicated:
+        problems.append(f"cases.not_built のケース名が重複している: {', '.join(duplicated)}")
+    return problems
+
+
+def mixed_not_built_problems(node: dict) -> list[str]:
+    """一部のケースだけを作らない区分にした green のノード（混在）の記録の不足を返す。
+
+    cases.not_built が空か欄が無ければ混在ではなく、空を返す。混在のノードは、作らない
+    要素の記録が揃い、passing が ported に等しく、ported と承認済みの excluded と not_built の
+    件数の和が total に等しいときだけ green として完了に数える。同じケースを除外と作らないの
+    両方に置くことは許さない。
+    """
+    cases = mapping(node.get("cases"))
+    records = cases.get("not_built")
+    if records is None or records == []:
+        return []
+    if not isinstance(records, list):
+        return ["cases.not_built が配列でない"]
+    problems = not_built_records_problems(records)
+    excluded = cases.get("excluded") or []
+    if not isinstance(excluded, list):
+        return problems + ["cases.excluded が配列でない"]
+    not_built_names = {r.get("name").strip() for r in records if isinstance(r, dict) and is_text(r.get("name"))}
+    excluded_names = {e.get("name").strip() for e in excluded if isinstance(e, dict) and is_text(e.get("name"))}
+    overlap = sorted(not_built_names & excluded_names)
+    if overlap:
+        problems.append(f"同じケースが cases.excluded と cases.not_built の両方にある: {', '.join(overlap)}")
+    total, ported, passing = cases.get("total"), cases.get("ported"), cases.get("passing")
+    if not all(type(v) is int and v >= 0 for v in (total, ported, passing)):
+        return problems + ["cases.total・ported・passing が 0 以上の整数でない"]
+    if passing != ported:
+        problems.append("cases.passing が cases.ported と違う")
+    approved_excluded = sum(1 for e in excluded if isinstance(e, dict) and is_approved_by_human(e))
+    if ported + approved_excluded + len(records) != total:
+        problems.append("cases.ported と承認済みの excluded と not_built の件数の和が cases.total と違う")
+    return problems
+
+
 def not_built_problems(node: dict) -> list[str]:
-    """status=not_built のノードの記録の不足を返す。不足が無ければ空。"""
+    """作らない区分の記録の不足を返す。不足が無ければ空。
+
+    status=not_built のノード（全件を作らない）と、status=green で cases.not_built を持つ
+    ノード（混在、mixed_not_built_problems）を検査する。
+    """
+    if node.get("status") == "green":
+        return mixed_not_built_problems(node)
     if node.get("status") != "not_built":
         return []
     problems = []
@@ -110,15 +166,7 @@ def not_built_problems(node: dict) -> list[str]:
     # 全件を作らないノードでは、同じケースを除外にも記録できない（区分が二重になる）。
     if cases.get("excluded"):
         problems.append("全件を作らないノードに cases.excluded がある")
-    for index, record in enumerate(records):
-        if not is_valid_not_built_case(record):
-            problems.append(f"cases.not_built[{index}] の name・reason・alternative・承認記録が揃っていない")
-    names = [r.get("name").strip() for r in records
-             if isinstance(r, dict) and is_text(r.get("name"))]
-    duplicated = sorted({name for name in names if names.count(name) > 1})
-    if duplicated:
-        problems.append(f"cases.not_built のケース名が重複している: {', '.join(duplicated)}")
-    return problems
+    return problems + not_built_records_problems(records)
 
 
 def is_done(node: dict) -> bool:
@@ -149,7 +197,7 @@ def case_counts(test_nodes: list[dict]) -> dict:
         not_built = cases.get("not_built")
         if isinstance(not_built, list):
             counts["not_built_recorded"] += len(not_built)
-            if n.get("status") == "not_built" and not not_built_problems(n):
+            if n.get("status") in ("not_built", "green") and not not_built_problems(n):
                 counts["not_built"] += len(not_built)
     return counts
 
