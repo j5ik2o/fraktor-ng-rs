@@ -630,6 +630,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/abstract_fsm_actor_test.rs
   goal: G0issue162
+  verified_against: v1.7.1
 - id: actor-tests/src/test/java/org/apache/pekko/actor/AbstractFSMWithStashActorTest.java
   name: actor-tests:AbstractFSMWithStashActorTest
   kind: test
@@ -656,6 +657,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/abstract_fsm_with_stash_actor_test.rs
   goal: G0issue162
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorConfigurationVerificationSpec.scala
   name: actor-tests:ActorConfigurationVerificationSpec
   kind: test
@@ -760,6 +762,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/actor_life_cycle_spec.rs
   goal: G0d
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorMailboxSpec.scala
   name: actor-tests:ActorMailboxSpec
   kind: test
@@ -838,6 +841,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/actor_path_spec.rs
   goal: G0a
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorRefSpec.scala
   name: actor-tests:ActorRefSpec
   kind: test
@@ -968,6 +972,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/actor_system_scala213_plus_spec.rs
   goal: G0issue99
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/setup/ActorSystemSetupSpec.scala
   name: actor-tests:ActorSystemSetupSpec
   kind: test
@@ -994,6 +999,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/actor_system_setup_spec.rs
   goal: G0issue150
+  verified_against: v1.7.1
 - id: actor-tests/src/test/java/org/apache/pekko/actor/setup/ActorSystemSetupTest.java
   name: actor-tests:ActorSystemSetupTest
   kind: test
@@ -1020,6 +1026,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/actor_system_setup_test.rs
   goal: G0issue150
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorSystemSpec.scala
   name: actor-tests:ActorSystemSpec
   kind: test
@@ -1098,6 +1105,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/actor_timeout_spec.rs
   goal: G0issue101
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorWithBoundedStashSpec.scala
   name: actor-tests:ActorWithBoundedStashSpec
   kind: test
@@ -1176,6 +1184,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/address_spec.rs
   goal: AddressSpec
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/event/AddressTerminatedTopicBenchSpec.scala
   name: actor-tests:AddressTerminatedTopicBenchSpec
   kind: test
@@ -1228,6 +1237,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/address_test.rs
   goal: null
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/util/AsciiStringCopySpec.scala
   name: actor-tests:AsciiStringCopySpec
   kind: test
@@ -1593,6 +1603,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/byte_iterator_spec.rs
   goal: G0issue130
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala-2.13+/org/apache/pekko/util/ByteStringBuilderScala213PlusSpec.scala
   name: actor-tests:ByteStringBuilderScala213PlusSpec
   kind: test
@@ -1619,6 +1630,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/byte_string_builder_scala213_plus_spec.rs
   goal: G0issue133
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/util/ByteStringBuilderSpec.scala
   name: actor-tests:ByteStringBuilderSpec
   kind: test
@@ -1645,6 +1657,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/byte_string_builder_spec.rs
   goal: G0issue133
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/util/ByteStringInitializationSpec.scala
   name: actor-tests:ByteStringInitializationSpec
   kind: test
@@ -1697,6 +1710,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/byte_string_input_stream_spec.rs
   goal: G0issue130
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/util/ByteStringSpec.scala
   name: actor-tests:ByteStringSpec
   kind: test
@@ -1749,6 +1763,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/byte_string_test.rs
   goal: G0issue133
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/testkit/CallingThreadDispatcherModelSpec.scala
   name: actor-tests:CallingThreadDispatcherModelSpec
   kind: test
@@ -2454,6 +2469,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/dns_settings_spec.rs
   goal: G0issue154
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/io/dns/internal/DomainNameSpec.scala
   name: actor-tests:DomainNameSpec
   kind: test
@@ -2480,6 +2496,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/domain_name_spec.rs
   goal: G0issue142
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/util/DoubleLinkedListSpec.scala
   name: actor-tests:DoubleLinkedListSpec
   kind: test
@@ -2584,6 +2601,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/event_bus_spec.rs
   goal: G0f
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/event/EventStreamSpec.scala
   name: actor-tests:EventStreamSpec
   kind: test
@@ -2610,6 +2628,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/event_stream_spec.rs
   goal: G0f
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/dispatch/ExecutionContextSpec.scala
   name: actor-tests:ExecutionContextSpec
   kind: test
@@ -2870,6 +2889,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/forward_actor_spec.rs
   goal: G0c
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/util/FrequencyListSpec.scala
   name: actor-tests:FrequencyListSpec
   kind: test
@@ -2896,6 +2916,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/frequency_list_spec.rs
   goal: G0issue128
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/util/FrequencySketchSpec.scala
   name: actor-tests:FrequencySketchSpec
   kind: test
@@ -3001,6 +3022,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/hot_swap_spec.rs
   goal: G0e
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/io/dns/IdGeneratorSpec.scala
   name: actor-tests:IdGeneratorSpec
   kind: test
@@ -3027,6 +3049,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/id_generator_spec.rs
   goal: G0issue154
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/util/ImmutableIntMapSpec.scala
   name: actor-tests:ImmutableIntMapSpec
   kind: test
@@ -3261,6 +3284,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/listener_spec.rs
   goal: G0issue113
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/LocalActorRefProviderSpec.scala
   name: actor-tests:LocalActorRefProviderSpec
   kind: test
@@ -3341,6 +3365,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/logging_adapter_test.rs
   goal: G0issue110
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/event/LoggingReceiveSpec.scala
   name: actor-tests:LoggingReceiveSpec
   kind: test
@@ -3445,6 +3470,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/marker_logging_spec.rs
   goal: G0issue108
+  verified_against: v1.7.1
 - id: actor-tests/src/test/java/org/apache/pekko/japi/MatchBuilderTest.java
   name: actor-tests:MatchBuilderTest
   kind: test
@@ -3488,6 +3514,7 @@ nodes:
     crate: null
     test_file: null
   goal: G0issue145
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/util/MessageBufferSpec.scala
   name: actor-tests:MessageBufferSpec
   kind: test
@@ -3540,6 +3567,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/message_spec.rs
   goal: G0issue142
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/routing/MetricsBasedResizerSpec.scala
   name: actor-tests:MetricsBasedResizerSpec
   kind: test
@@ -3592,6 +3620,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/nameserver_address_parser_spec.rs
   goal: G0issue136
+  verified_against: v1.7.1
 - id: actor-tests/src/test/java/org/apache/pekko/japi/pf/PFBuilderTest.java
   name: actor-tests:PFBuilderTest
   kind: test
@@ -3624,6 +3653,7 @@ nodes:
     crate: null
     test_file: null
   goal: G0issue145
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/pattern/PatternSpec.scala
   name: actor-tests:PatternSpec
   kind: test
@@ -3729,6 +3759,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/fraktor_version_spec.rs
   goal: G0issue139
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/dispatch/PinnedActorSpec.scala
   name: actor-tests:PinnedActorSpec
   kind: test
@@ -4041,6 +4072,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/recency_list_spec.rs
   goal: G0issue124
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/util/ReflectSpec.scala
   name: actor-tests:ReflectSpec
   kind: test
@@ -4093,6 +4125,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/relative_actor_path_spec.rs
   goal: G0a
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/routing/ResizerSpec.scala
   name: actor-tests:ResizerSpec
   kind: test
@@ -4145,6 +4178,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/resolv_conf_parser_spec.rs
   goal: G0issue136
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/RestartStrategySpec.scala
   name: actor-tests:RestartStrategySpec
   kind: test
@@ -4171,6 +4205,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/restart_strategy_spec.rs
   goal: G0issue117
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/pattern/RetrySpec.scala
   name: actor-tests:RetrySpec
   kind: test
@@ -4405,6 +4440,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/segmented_recency_list_spec.rs
   goal: G0issue126
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/serialization/SerializationSetupSpec.scala
   name: actor-tests:SerializationSetupSpec
   kind: test
@@ -4561,6 +4597,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/status_reply_spec.rs
   goal: G0issue105
+  verified_against: v1.7.1
 - id: actor-tests/src/test/java/org/apache/pekko/pattern/StatusReplyTest.java
   name: actor-tests:StatusReplyTest
   kind: test
@@ -4587,6 +4624,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/status_reply_test.rs
   goal: G0issue103
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/SupervisorHierarchySpec.scala
   name: actor-tests:SupervisorHierarchySpec
   kind: test
@@ -4640,6 +4678,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/supervisor_misc_spec.rs
   goal: G0e
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/SupervisorSpec.scala
   name: actor-tests:SupervisorSpec
   kind: test
@@ -4692,6 +4731,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/supervisor_tree_spec.rs
   goal: G0issue96
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/util/SwitchSpec.scala
   name: actor-tests:SwitchSpec
   kind: test
@@ -4926,6 +4966,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/ticket669_spec.rs
   goal: G0issue98
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/TimerSpec.scala
   name: actor-tests:TimerSpec
   kind: test
@@ -5108,6 +5149,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/uid_clash_test.rs
   goal: G0issue115
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/io/UnsynchronizedByteArrayInputStreamSpec.scala
   name: actor-tests:UnsynchronizedByteArrayInputStreamSpec
   kind: test
@@ -5134,6 +5176,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/unsynchronized_byte_array_input_stream_spec.rs
   goal: G0issue147
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala/org/apache/pekko/util/VersionSpec.scala
   name: actor-tests:VersionSpec
   kind: test
@@ -5160,6 +5203,7 @@ nodes:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/version_spec.rs
   goal: G0issue139
+  verified_against: v1.7.1
 - id: actor-tests/src/test/scala-jdk21-only/org/apache/pekko/dispatch/VirtualThreadPoolDispatcherSpec.scala
   name: actor-tests:VirtualThreadPoolDispatcherSpec
   kind: test
@@ -13343,6 +13387,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/actor/ActorDocSpec.scala
   name: docs:ActorDocSpec
   kind: test
@@ -13370,6 +13415,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/actor/ActorDocTest.java
   name: docs:ActorDocTest
   kind: test
@@ -13397,6 +13443,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/pattern/BackoffSupervisorDocSpec.scala
   name: docs:BackoffSupervisorDocSpec
   kind: test
@@ -13423,6 +13470,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/pattern/BackoffSupervisorDocTest.java
   name: docs:BackoffSupervisorDocTest
   kind: test
@@ -13450,6 +13498,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/BidiFlowDocSpec.scala
   name: docs:BidiFlowDocSpec
   kind: test
@@ -13477,6 +13526,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/BidiFlowDocTest.java
   name: docs:BidiFlowDocTest
   kind: test
@@ -13505,6 +13555,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/actor/typed/BlockingDispatcherTest.java
   name: docs:BlockingDispatcherTest
   kind: test
@@ -13531,6 +13582,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/actor/fsm/BuncherTest.java
   name: docs:BuncherTest
   kind: test
@@ -13557,6 +13609,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/actor/ByteBufferSerializerDocSpec.scala
   name: docs:ByteBufferSerializerDocSpec
   kind: test
@@ -13583,6 +13636,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/actor/ByteBufferSerializerDocTest.java
   name: docs:ByteBufferSerializerDocTest
   kind: test
@@ -13610,6 +13664,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/circuitbreaker/CircuitBreakerDocSpec.scala
   name: docs:CircuitBreakerDocSpec
   kind: test
@@ -13637,6 +13692,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/cluster/ClusterDocSpec.scala
   name: docs:ClusterDocSpec
   kind: test
@@ -13663,6 +13719,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/cluster/ClusterDocTest.java
   name: docs:ClusterDocTest
   kind: test
@@ -13690,6 +13747,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/sharding/ClusterShardingTest.java
   name: docs:ClusterShardingTest
   kind: test
@@ -13719,6 +13777,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/CompileOnlySpec.scala
   name: docs:CompileOnlySpec
   kind: test
@@ -13745,6 +13804,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/CompositionDocSpec.scala
   name: docs:CompositionDocSpec
   kind: test
@@ -13773,6 +13833,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/CompositionDocTest.java
   name: docs:CompositionDocTest
   kind: test
@@ -13801,6 +13862,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/config/ConfigDocSpec.scala
   name: docs:ConfigDocSpec
   kind: test
@@ -13828,6 +13890,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/config/ConfigDocTest.java
   name: docs:ConfigDocTest
   kind: test
@@ -13855,6 +13918,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/routing/ConsistentHashingRouterDocSpec.scala
   name: docs:ConsistentHashingRouterDocSpec
   kind: test
@@ -13881,6 +13945,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/routing/ConsistentHashingRouterDocTest.java
   name: docs:ConsistentHashingRouterDocTest
   kind: test
@@ -13908,6 +13973,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/actor/typed/CoordinatedActorShutdownSpec.scala
   name: docs:CoordinatedActorShutdownSpec
   kind: test
@@ -13935,6 +14001,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/actor/typed/CoordinatedActorShutdownTest.java
   name: docs:CoordinatedActorShutdownTest
   kind: test
@@ -13963,6 +14030,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/routing/CustomRouterDocSpec.scala
   name: docs:CustomRouterDocSpec
   kind: test
@@ -13990,6 +14058,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/routing/CustomRouterDocTest.java
   name: docs:CustomRouterDocTest
   kind: test
@@ -14017,6 +14086,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/actor/DependencyInjectionDocTest.java
   name: docs:DependencyInjectionDocTest
   kind: test
@@ -14044,6 +14114,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/typed/tutorial_5/DeviceGroupQuerySpec.scala
   name: docs:DeviceGroupQuerySpec
   kind: test
@@ -14070,6 +14141,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/typed/tutorial_5/DeviceGroupQueryTest.java
   name: docs:DeviceGroupQueryTest
   kind: test
@@ -14096,6 +14168,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/typed/tutorial_4/DeviceGroupSpec.scala
   name: docs:DeviceGroupSpec
   kind: test
@@ -14122,6 +14195,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/typed/tutorial_5/DeviceGroupSpec.scala
   name: docs:DeviceGroupSpec
   kind: test
@@ -14148,6 +14222,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/typed/tutorial_4/DeviceGroupTest.java
   name: docs:DeviceGroupTest
   kind: test
@@ -14174,6 +14249,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/typed/tutorial_5/DeviceGroupTest.java
   name: docs:DeviceGroupTest
   kind: test
@@ -14200,6 +14276,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/typed/tutorial_4/DeviceManagerSpec.scala
   name: docs:DeviceManagerSpec
   kind: test
@@ -14226,6 +14303,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/typed/tutorial_5/DeviceManagerSpec.scala
   name: docs:DeviceManagerSpec
   kind: test
@@ -14252,6 +14330,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/typed/tutorial_4/DeviceManagerTest.java
   name: docs:DeviceManagerTest
   kind: test
@@ -14278,6 +14357,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/typed/tutorial_5/DeviceManagerTest.java
   name: docs:DeviceManagerTest
   kind: test
@@ -14304,6 +14384,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/typed/tutorial_3/DeviceSpec.scala
   name: docs:DeviceSpec
   kind: test
@@ -14330,6 +14411,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/typed/tutorial_4/DeviceSpec.scala
   name: docs:DeviceSpec
   kind: test
@@ -14356,6 +14438,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/typed/tutorial_5/DeviceSpec.scala
   name: docs:DeviceSpec
   kind: test
@@ -14382,6 +14465,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/typed/tutorial_3/DeviceTest.java
   name: docs:DeviceTest
   kind: test
@@ -14408,6 +14492,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/typed/tutorial_4/DeviceTest.java
   name: docs:DeviceTest
   kind: test
@@ -14434,6 +14519,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/typed/tutorial_5/DeviceTest.java
   name: docs:DeviceTest
   kind: test
@@ -14460,6 +14546,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/actor/typed/DispatcherDocSpec.scala
   name: docs:DispatcherDocSpec
   kind: test
@@ -14487,6 +14574,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/dispatcher/DispatcherDocSpec.scala
   name: docs:DispatcherDocSpec
   kind: test
@@ -14514,6 +14602,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/actor/typed/DispatcherDocTest.java
   name: docs:DispatcherDocTest
   kind: test
@@ -14540,6 +14629,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/dispatcher/DispatcherDocTest.java
   name: docs:DispatcherDocTest
   kind: test
@@ -14567,6 +14657,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/ddata/DistributedDataDocSpec.scala
   name: docs:DistributedDataDocSpec
   kind: test
@@ -14594,6 +14685,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/ddata/DistributedDataDocTest.java
   name: docs:DistributedDataDocTest
   kind: test
@@ -14620,6 +14712,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/actor/io/dns/DnsCompileOnlyDocSpec.scala
   name: docs:DnsCompileOnlyDocSpec
   kind: test
@@ -14647,6 +14740,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/actor/io/dns/DnsCompileOnlyDocTest.java
   name: docs:DnsCompileOnlyDocTest
   kind: test
@@ -14674,6 +14768,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/discovery/DnsDiscoveryDocSpec.scala
   name: docs:DnsDiscoveryDocSpec
   kind: test
@@ -14700,6 +14795,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/discovery/DnsDiscoveryDocTest.java
   name: docs:DnsDiscoveryDocTest
   kind: test
@@ -14727,6 +14823,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/event/EventBusDocSpec.scala
   name: docs:EventBusDocSpec
   kind: test
@@ -14754,6 +14851,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/event/EventBusDocTest.java
   name: docs:EventBusDocTest
   kind: test
@@ -14781,6 +14879,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/extension/ExtensionDocSpec.scala
   name: docs:ExtensionDocSpec
   kind: test
@@ -14808,6 +14907,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/extension/ExtensionDocTest.java
   name: docs:ExtensionDocTest
   kind: test
@@ -14834,6 +14934,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/actor/FSMDocSpec.scala
   name: docs:FSMDocSpec
   kind: test
@@ -14861,6 +14962,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/actor/fsm/FSMDocTest.java
   name: docs:FSMDocTest
   kind: test
@@ -14887,6 +14989,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/actor/FaultHandlingDocSpec.scala
   name: docs:FaultHandlingDocSpec
   kind: test
@@ -14914,6 +15017,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/actor/FaultHandlingTest.java
   name: docs:FaultHandlingTest
   kind: test
@@ -14941,6 +15045,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/FlowDocSpec.scala
   name: docs:FlowDocSpec
   kind: test
@@ -14969,6 +15074,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/FlowDocTest.java
   name: docs:FlowDocTest
   kind: test
@@ -14996,6 +15102,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/FlowErrorDocSpec.scala
   name: docs:FlowErrorDocSpec
   kind: test
@@ -15023,6 +15130,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/FlowErrorDocTest.java
   name: docs:FlowErrorDocTest
   kind: test
@@ -15051,6 +15159,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/FlowParallelismDocSpec.scala
   name: docs:FlowParallelismDocSpec
   kind: test
@@ -15079,6 +15188,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/FlowParallelismDocTest.java
   name: docs:FlowParallelismDocTest
   kind: test
@@ -15106,6 +15216,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/FlowStreamRefsDocSpec.scala
   name: docs:FlowStreamRefsDocSpec
   kind: test
@@ -15134,6 +15245,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/FlowStreamRefsDocTest.java
   name: docs:FlowStreamRefsDocTest
   kind: test
@@ -15161,6 +15273,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/future/FutureDocSpec.scala
   name: docs:FutureDocSpec
   kind: test
@@ -15188,6 +15301,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/future/FutureDocTest.java
   name: docs:FutureDocTest
   kind: test
@@ -15215,6 +15329,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/GraphCyclesDocTest.java
   name: docs:GraphCyclesDocTest
   kind: test
@@ -15243,6 +15358,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/GraphCyclesSpec.scala
   name: docs:GraphCyclesSpec
   kind: test
@@ -15269,6 +15385,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/GraphDSLDocSpec.scala
   name: docs:GraphDSLDocSpec
   kind: test
@@ -15296,6 +15413,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/GraphStageDocSpec.scala
   name: docs:GraphStageDocSpec
   kind: test
@@ -15323,6 +15441,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/GraphStageDocTest.java
   name: docs:GraphStageDocTest
   kind: test
@@ -15350,6 +15469,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/GraphStageLoggingDocSpec.scala
   name: docs:GraphStageLoggingDocSpec
   kind: test
@@ -15376,6 +15496,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/GraphStageLoggingDocTest.java
   name: docs:GraphStageLoggingDocTest
   kind: test
@@ -15403,6 +15524,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/HubDocTest.java
   name: docs:HubDocTest
   kind: test
@@ -15431,6 +15553,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/HubsDocSpec.scala
   name: docs:HubsDocSpec
   kind: test
@@ -15458,6 +15581,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/io/IODocSpec.scala
   name: docs:IODocSpec
   kind: test
@@ -15484,6 +15608,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/io/IODocTest.java
   name: docs:IODocTest
   kind: test
@@ -15511,6 +15636,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/io/japi/IODocTest.java
   name: docs:IODocTest
   kind: test
@@ -15538,6 +15664,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/actor/InitializationDocSpec.scala
   name: docs:InitializationDocSpec
   kind: test
@@ -15564,6 +15691,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/actor/InitializationDocTest.java
   name: docs:InitializationDocTest
   kind: test
@@ -15591,6 +15719,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/IntegrationDocSpec.scala
   name: docs:IntegrationDocSpec
   kind: test
@@ -15619,6 +15748,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/IntegrationDocTest.java
   name: docs:IntegrationDocTest
   kind: test
@@ -15646,6 +15776,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/io/JavaUdpMulticastTest.java
   name: docs:JavaUdpMulticastTest
   kind: test
@@ -15672,6 +15803,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/KillSwitchDocSpec.scala
   name: docs:KillSwitchDocSpec
   kind: test
@@ -15698,6 +15830,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/KillSwitchDocTest.java
   name: docs:KillSwitchDocTest
   kind: test
@@ -15726,6 +15859,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/persistence/LambdaPersistenceDocTest.java
   name: docs:LambdaPersistenceDocTest
   kind: test
@@ -15753,6 +15887,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/persistence/LambdaPersistencePluginDocTest.java
   name: docs:LambdaPersistencePluginDocTest
   kind: test
@@ -15782,6 +15917,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/coordination/LeaseDocSpec.scala
   name: docs:LeaseDocSpec
   kind: test
@@ -15809,6 +15945,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/coordination/LeaseDocTest.java
   name: docs:LeaseDocTest
   kind: test
@@ -15836,6 +15973,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/persistence/query/LeveldbPersistenceQueryDocSpec.scala
   name: docs:LeveldbPersistenceQueryDocSpec
   kind: test
@@ -15865,6 +16003,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/persistence/query/LeveldbPersistenceQueryDocTest.java
   name: docs:LeveldbPersistenceQueryDocTest
   kind: test
@@ -15895,6 +16034,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/event/LoggingDocSpec.scala
   name: docs:LoggingDocSpec
   kind: test
@@ -15922,6 +16062,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/event/LoggingDocTest.java
   name: docs:LoggingDocTest
   kind: test
@@ -15949,6 +16090,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/testkit/ParentChildSpec.scala
   name: docs:ParentChildSpec
   kind: test
@@ -15976,6 +16118,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/testkit/ParentChildTest.java
   name: docs:ParentChildTest
   kind: test
@@ -16003,6 +16146,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/persistence/PersistenceDocSpec.scala
   name: docs:PersistenceDocSpec
   kind: test
@@ -16029,6 +16173,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/persistence/PersistenceEventAdapterDocSpec.scala
   name: docs:PersistenceEventAdapterDocSpec
   kind: test
@@ -16055,6 +16200,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/persistence/PersistenceEventAdapterDocTest.java
   name: docs:PersistenceEventAdapterDocTest
   kind: test
@@ -16081,6 +16227,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/persistence/testkit/PersistenceInitSpec.scala
   name: docs:PersistenceInitSpec
   kind: test
@@ -16107,6 +16254,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/persistence/testkit/PersistenceInitTest.java
   name: docs:PersistenceInitTest
   kind: test
@@ -16133,6 +16281,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/persistence/PersistenceMultiDocSpec.scala
   name: docs:PersistenceMultiDocSpec
   kind: test
@@ -16159,6 +16308,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/persistence/PersistenceMultiDocTest.java
   name: docs:PersistenceMultiDocTest
   kind: test
@@ -16186,6 +16336,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/persistence/PersistencePluginDocSpec.scala
   name: docs:PersistencePluginDocSpec
   kind: test
@@ -16214,6 +16365,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/persistence/query/PersistenceQueryDocSpec.scala
   name: docs:PersistenceQueryDocSpec
   kind: test
@@ -16240,6 +16392,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/persistence/PersistenceQueryDocTest.java
   name: docs:PersistenceQueryDocTest
   kind: test
@@ -16269,6 +16422,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/persistence/PersistenceSchemaEvolutionDocSpec.scala
   name: docs:PersistenceSchemaEvolutionDocSpec
   kind: test
@@ -16295,6 +16449,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/persistence/PersistenceSchemaEvolutionDocTest.java
   name: docs:PersistenceSchemaEvolutionDocTest
   kind: test
@@ -16322,6 +16477,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/persistence/PersistenceSerializerDocSpec.scala
   name: docs:PersistenceSerializerDocSpec
   kind: test
@@ -16348,6 +16504,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/persistence/testkit/PersistenceTestKitPolicySampleTest.java
   name: docs:PersistenceTestKitPolicySampleTest
   kind: test
@@ -16375,6 +16532,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/persistence/testkit/PersistenceTestKitSampleTest.java
   name: docs:PersistenceTestKitSampleTest
   kind: test
@@ -16403,6 +16561,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/testkit/PlainWordSpec.scala
   name: docs:PlainWordSpec
   kind: test
@@ -16429,6 +16588,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/actor/PropsEdgeCaseSpec.scala
   name: docs:PropsEdgeCaseSpec
   kind: test
@@ -16455,6 +16615,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/QuickStartDocSpec.scala
   name: docs:QuickStartDocSpec
   kind: test
@@ -16481,6 +16642,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/QuickStartDocTest.java
   name: docs:QuickStartDocTest
   kind: test
@@ -16508,6 +16670,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/RateTransformationDocSpec.scala
   name: docs:RateTransformationDocSpec
   kind: test
@@ -16534,6 +16697,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/RateTransformationDocTest.java
   name: docs:RateTransformationDocTest
   kind: test
@@ -16562,6 +16726,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/ReactiveStreamsDocSpec.scala
   name: docs:ReactiveStreamsDocSpec
   kind: test
@@ -16589,6 +16754,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/ReactiveStreamsDocTest.java
   name: docs:ReactiveStreamsDocTest
   kind: test
@@ -16616,6 +16782,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/javadsl/cookbook/RecipeAdhocSourceTest.java
   name: docs:RecipeAdhocSourceTest
   kind: test
@@ -16644,6 +16811,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/javadsl/cookbook/RecipeMultiGroupByTest.java
   name: docs:RecipeMultiGroupByTest
   kind: test
@@ -16672,6 +16840,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/javadsl/cookbook/RecipeReduceByKeyTest.java
   name: docs:RecipeReduceByKeyTest
   kind: test
@@ -16700,6 +16869,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/cookbook/RecipeSpec.scala
   name: docs:RecipeSpec
   kind: test
@@ -16726,6 +16896,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/javadsl/cookbook/RecipeTest.java
   name: docs:RecipeTest
   kind: test
@@ -16752,6 +16923,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/remoting/RemoteDeploymentDocSpec.scala
   name: docs:RemoteDeploymentDocSpec
   kind: test
@@ -16778,6 +16950,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/remoting/RemoteDeploymentDocTest.java
   name: docs:RemoteDeploymentDocTest
   kind: test
@@ -16806,6 +16979,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/RestartDocSpec.scala
   name: docs:RestartDocSpec
   kind: test
@@ -16833,6 +17007,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/RestartDocTest.java
   name: docs:RestartDocTest
   kind: test
@@ -16861,6 +17036,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/routing/RouterDocSpec.scala
   name: docs:RouterDocSpec
   kind: test
@@ -16888,6 +17064,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/routing/RouterDocTest.java
   name: docs:RouterDocTest
   kind: test
@@ -16916,6 +17093,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/actor/SampleActorTest.java
   name: docs:SampleActorTest
   kind: test
@@ -16942,6 +17120,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/io/ScalaUdpMulticastSpec.scala
   name: docs:ScalaUdpMulticastSpec
   kind: test
@@ -16968,6 +17147,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/actor/SchedulerDocSpec.scala
   name: docs:SchedulerDocSpec
   kind: test
@@ -16994,6 +17174,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/actor/SchedulerDocTest.java
   name: docs:SchedulerDocTest
   kind: test
@@ -17021,6 +17202,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/serialization/SerializationDocSpec.scala
   name: docs:SerializationDocSpec
   kind: test
@@ -17048,6 +17230,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/serialization/SerializationDocTest.java
   name: docs:SerializationDocTest
   kind: test
@@ -17075,6 +17258,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/extension/SettingsExtensionDocSpec.scala
   name: docs:SettingsExtensionDocSpec
   kind: test
@@ -17102,6 +17286,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/extension/SettingsExtensionDocTest.java
   name: docs:SettingsExtensionDocTest
   kind: test
@@ -17129,6 +17314,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/actor/SharedMutableStateDocSpec.scala
   name: docs:SharedMutableStateDocSpec
   kind: test
@@ -17155,6 +17341,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/actor/typed/SharedMutableStateDocSpec.scala
   name: docs:SharedMutableStateDocSpec
   kind: test
@@ -17181,6 +17368,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/actor/typed/SharedMutableStateDocTest.java
   name: docs:SharedMutableStateDocTest
   kind: test
@@ -17208,6 +17396,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/SinkRecipeDocSpec.scala
   name: docs:SinkRecipeDocSpec
   kind: test
@@ -17234,6 +17423,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/SinkRecipeDocTest.java
   name: docs:SinkRecipeDocTest
   kind: test
@@ -17262,6 +17452,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/StreamBuffersRateDocTest.java
   name: docs:StreamBuffersRateDocTest
   kind: test
@@ -17289,6 +17480,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/StreamBuffersRateSpec.scala
   name: docs:StreamBuffersRateSpec
   kind: test
@@ -17316,6 +17508,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/io/StreamFileDocSpec.scala
   name: docs:StreamFileDocSpec
   kind: test
@@ -17343,6 +17536,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/io/StreamFileDocTest.java
   name: docs:StreamFileDocTest
   kind: test
@@ -17371,6 +17565,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/StreamPartialGraphDSLDocSpec.scala
   name: docs:StreamPartialGraphDSLDocSpec
   kind: test
@@ -17397,6 +17592,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/StreamPartialGraphDSLDocTest.java
   name: docs:StreamPartialGraphDSLDocTest
   kind: test
@@ -17424,6 +17620,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/io/StreamTcpDocSpec.scala
   name: docs:StreamTcpDocSpec
   kind: test
@@ -17452,6 +17649,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/io/StreamTcpDocTest.java
   name: docs:StreamTcpDocTest
   kind: test
@@ -17480,6 +17678,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/StreamTestKitDocSpec.scala
   name: docs:StreamTestKitDocSpec
   kind: test
@@ -17506,6 +17705,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/StreamTestKitDocTest.java
   name: docs:StreamTestKitDocTest
   kind: test
@@ -17533,6 +17733,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/SubstreamDocSpec.scala
   name: docs:SubstreamDocSpec
   kind: test
@@ -17560,6 +17761,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/SubstreamDocTest.java
   name: docs:SubstreamDocTest
   kind: test
@@ -17587,6 +17789,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/pattern/SupervisedAskSpec.java
   name: docs:SupervisedAskSpec
   kind: test
@@ -17614,6 +17817,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/testkit/TestKitDocTest.java
   name: docs:TestKitDocTest
   kind: test
@@ -17641,6 +17845,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/testkit/TestKitSampleTest.java
   name: docs:TestKitSampleTest
   kind: test
@@ -17668,6 +17873,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/testkit/TestKitUsageSpec.scala
   name: docs:TestKitUsageSpec
   kind: test
@@ -17694,6 +17900,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/testkit/TestkitDocSpec.scala
   name: docs:TestkitDocSpec
   kind: test
@@ -17721,6 +17928,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/actor/TimerDocSpec.scala
   name: docs:TimerDocSpec
   kind: test
@@ -17747,6 +17955,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/actor/TimerDocTest.java
   name: docs:TimerDocTest
   kind: test
@@ -17774,6 +17983,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/TwitterStreamQuickstartDocSpec.scala
   name: docs:TwitterStreamQuickstartDocSpec
   kind: test
@@ -17800,6 +18010,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/TwitterStreamQuickstartDocTest.java
   name: docs:TwitterStreamQuickstartDocTest
   kind: test
@@ -17827,6 +18038,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/io/UdpConnectedDocTest.java
   name: docs:UdpConnectedDocTest
   kind: test
@@ -17854,6 +18066,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/io/UdpDocSpec.scala
   name: docs:UdpDocSpec
   kind: test
@@ -17881,6 +18094,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/io/UdpDocTest.java
   name: docs:UdpDocTest
   kind: test
@@ -17908,6 +18122,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/scala/docs/stream/operators/WithContextSpec.scala
   name: docs:WithContextSpec
   kind: test
@@ -17935,6 +18150,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: docs/src/test/java/jdocs/stream/operators/WithContextTest.java
   name: docs:WithContextTest
   kind: test
@@ -17962,6 +18178,7 @@ nodes:
     crate: null
     test_file: null
   goal: null
+  verified_against: v1.7.1
 - id: osgi/src/test/scala/org/apache/pekko/osgi/ActorSystemActivatorTest.scala
   name: osgi:ActorSystemActivatorTest
   kind: test
@@ -32820,6 +33037,7 @@ nodes:
     crate: fraktor-testkit
     test_file: crates/fraktor-testkit/tests/default_timeout_spec.rs
   goal: G0b
+  verified_against: v1.7.1
 - id: testkit/src/test/scala/org/apache/pekko/testkit/ExplicitlyTriggeredSchedulerSpec.scala
   name: testkit:ExplicitlyTriggeredSchedulerSpec
   kind: test
@@ -32846,6 +33064,7 @@ nodes:
     crate: fraktor-testkit
     test_file: crates/fraktor-testkit/tests/explicitly_triggered_scheduler_spec.rs
   goal: G0issue119
+  verified_against: v1.7.1
 - id: testkit/src/test/scala/org/apache/pekko/testkit/ImplicitSenderSpec.scala
   name: testkit:ImplicitSenderSpec
   kind: test
@@ -32872,6 +33091,7 @@ nodes:
     crate: fraktor-testkit
     test_file: crates/fraktor-testkit/tests/implicit_sender_spec.rs
   goal: G0b
+  verified_against: v1.7.1
 - id: testkit/src/test/scala/org/apache/pekko/testkit/metrics/MetricsKitSpec.scala
   name: testkit:MetricsKitSpec
   kind: test
@@ -32924,6 +33144,7 @@ nodes:
     crate: fraktor-testkit
     test_file: crates/fraktor-testkit/src/fraktorspec/fraktor_spec.rs
   goal: G0b
+  verified_against: v1.7.1
 - id: testkit/src/test/scala/org/apache/pekko/testkit/PekkoSpecSpec.scala
   name: testkit:PekkoSpecSpec
   kind: test
@@ -33002,6 +33223,7 @@ nodes:
     crate: fraktor-testkit
     test_file: crates/fraktor-testkit/tests/test_actors_spec.rs
   goal: G0b
+  verified_against: v1.7.1
 - id: testkit/src/test/scala/org/apache/pekko/testkit/TestEventListenerSpec.scala
   name: testkit:TestEventListenerSpec
   kind: test
@@ -33028,6 +33250,7 @@ nodes:
     crate: fraktor-testkit
     test_file: crates/fraktor-testkit/tests/test_event_listener_spec.rs
   goal: G0d
+  verified_against: v1.7.1
 - id: testkit/src/test/scala/org/apache/pekko/testkit/TestFSMRefSpec.scala
   name: testkit:TestFSMRefSpec
   kind: test
@@ -33106,6 +33329,7 @@ nodes:
     crate: fraktor-testkit
     test_file: crates/fraktor-testkit/tests/test_probe_spec.rs
   goal: G0c
+  verified_against: v1.7.1
 - id: testkit/src/test/scala/org/apache/pekko/testkit/TestTimeSpec.scala
   name: testkit:TestTimeSpec
   kind: test
@@ -33132,3 +33356,4 @@ nodes:
     crate: fraktor-testkit
     test_file: crates/fraktor-testkit/tests/test_time_spec.rs
   goal: G0issue121
+  verified_against: v1.7.1

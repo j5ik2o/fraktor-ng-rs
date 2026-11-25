@@ -32,6 +32,21 @@
 - タグ付け後に `rollup.py --goal <ID>` で対象ノード数と status 内訳を確認する
 - タグの除去・付け替えは人間のみが決める
 
+## 原典の基準タグと照合済みタグ
+
+移植の原典は `tools/pekko-source/pekko-baseline.env` の基準タグ（2026-11-25 から v2.0.0）である。
+決定の記録は `docs/baseline/README.md`。各ノードの `verified_against` は、そのノードを
+どのタグの原典と照合したかを持つ（規則は `docs/decisions/ledger-schema-draft.md`）。
+
+```sh
+# 照合済みタグの検査と集計（違反があれば終了コード 1）
+uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger --ledger ledger/nodes.yaml
+
+# 現行タグで未照合のノードの一覧と、現行の原典にファイルが無いノードの件数
+uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger \
+  --ledger ledger/nodes.yaml --pekko pekko --list-unverified
+```
+
 ## needs の抽出と閉性判定
 
 各ノードの `needs.testkit` は、Pekko 原典ファイルが使う TestKit の能力 id のリストである。
@@ -42,6 +57,8 @@
 - `needs.premise_flags` は前提フラグ（Java 直列化、`Thread.sleep` など）の一致リストで、
   閉性判定には使わない
 - 抽出は存在判定（正規表現が 1 回以上一致するか）であり、継承やヘルパ経由の利用は見えない
+- 台帳の既存の値は 2026-11-25 の基準切り替えより前の原典から抽出した。`--pekko pekko` は現行の基準（v2.0.0）の原典を
+  指すので、再抽出すると値が変わりうる。再抽出は台帳の差分として別に確かめる
 
 ```sh
 # 抽出（nodes.yaml の needs 配下の 2 行だけを書き換える。再実行は冪等）

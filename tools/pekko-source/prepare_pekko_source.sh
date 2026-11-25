@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 作業ツリー直下に Pekko v1.7.1 の原典 pekko/ を用意する。
+# 作業ツリー直下に、基準タグの Pekko 原典 pekko/ を用意する。基準タグと commit の正は
+# 同じディレクトリの pekko-baseline.env（PEKKO_BASELINE_TAG と PEKKO_BASELINE_COMMIT）。
 # TAKT の workflow_config.runtime.prepare から、作業ツリーを cwd にして実行される
 # （init と各ステップの前）。stdout は TAKT が KEY=VALUE として読むため、何も出さない。
 set -euo pipefail
@@ -11,6 +12,10 @@ set -euo pipefail
 unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE \
   GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS \
   GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR GIT_NAMESPACE
+# replace ref で別の commit に見せかけられないようにする。
+export GIT_NO_REPLACE_OBJECTS=1
+# CDPATH があると cd が移動先を stdout に出し、$(cd ... && pwd) の値が壊れる。
+unset CDPATH
 
 # TAKT の runtime.prepare サンドボックスは XDG_CONFIG_HOME を作業ツリー内の空ディレクトリへ
 # 向ける。run 用 opencode サーバは provider 定義を利用者設定から解決するため、graft しないと
@@ -38,11 +43,20 @@ for oc_name in opencode.json opencode.jsonc; do
   fi
 done
 
+# 基準の読み込み。cwd ではなくスクリプトの置き場所から引く（TAKT は作業ツリーを cwd にする）。
+baseline_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/pekko-baseline.env"
+# shellcheck source=pekko-baseline.env
+. "$baseline_file"
+if [ -z "${PEKKO_BASELINE_TAG:-}" ] || [ -z "${PEKKO_BASELINE_COMMIT:-}" ]; then
+  echo "$baseline_file: PEKKO_BASELINE_TAG and PEKKO_BASELINE_COMMIT are required" >&2
+  exit 1
+fi
+
 target="$PWD/pekko"
 local_repo="${PEKKO_SOURCE_LOCAL_REPO:-/Users/j5ik2o/Sources/github.com/j5ik2o/pekko}"
 upstream_url="${PEKKO_SOURCE_UPSTREAM_URL:-https://github.com/apache/pekko}"
-expected="${PEKKO_SOURCE_EXPECTED_COMMIT:-9a54d1294c3ac7821bbed3c940769c3d5027d1ff}"
-tag="v1.7.1"
+expected="${PEKKO_SOURCE_EXPECTED_COMMIT:-$PEKKO_BASELINE_COMMIT}"
+tag="$PEKKO_BASELINE_TAG"
 
 # verify_green の aislop ゲートは node_modules の aislop を使う。run の各ステップの前に
 # node_modules を用意するため、aislop の実行物が無いか、package-lock.json / package.json
@@ -60,6 +74,23 @@ prepare_node_modules() {
 }
 
 prepare_node_modules
+
+# 原典に手が加わっていないかを調べる（追跡ファイルの変更、無視されない未追跡ファイル、
+# assume-unchanged / skip-worktree の印）。利用者の変更は消さずに報告する。
+# 終了コード: 0 変更なし、1 変更あり（stdout に先頭 5 件）、2 git の検査自体が失敗した。
+# 呼び出し側は if や || の中で使うので set -e が効かない。git の失敗は自分で拾う
+# （拾わないと、壊れた index で status が失敗しても「変更なし」と判定してしまう）。
+inspect_source() {
+  local changes listing hidden
+  changes=$(git -C "$target" status --porcelain=v1 --untracked-files=all --ignore-submodules=none) || return 2
+  listing=$(git -C "$target" ls-files -v) || return 2
+  hidden=$(printf '%s\n' "$listing" | grep -E '^[a-zS] ' || true)
+  if [ -n "$changes" ] || [ -n "$hidden" ]; then
+    printf '%s\n%s\n' "$changes" "$hidden" | grep -v '^$' | head -5
+    return 1
+  fi
+  return 0
+}
 
 prepare() {
   rm -rf "$target"
@@ -79,7 +110,19 @@ if [ -e "$target" ] || [ -L "$target" ]; then
      && [ "$(cd "$toplevel" && pwd -P)" = "$(cd "$target" && pwd -P)" ] \
      && head=$(git -C "$target" rev-parse --verify HEAD^{commit} 2>/dev/null); then
     if [ "$head" = "$expected" ]; then
-      exit 0
+      inspected=0
+      changes=$(inspect_source) || inspected=$?
+      case "$inspected" in
+        0) exit 0 ;;
+        1)
+          echo "pekko/: local changes on top of $tag; not removing them. Restore an unmodified checkout:" >&2
+          echo "$changes" >&2
+          ;;
+        *)
+          echo "pekko/: git could not inspect the checkout (broken index or repository?); not removing it" >&2
+          ;;
+      esac
+      exit 1
     fi
     echo "pekko/: HEAD is $head, expected $expected; not removing it" >&2
     exit 1

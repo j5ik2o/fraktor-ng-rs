@@ -11,8 +11,8 @@ id が重複するか、id が所属モジュールのディレクトリで始�
 
 --existing に既存の nodes.yaml を渡すと、状態保持モードになる。baseline 由来の欄
 （name、pekko、depends_on_impl）は新しい baseline から作り直し、運用で育つ欄
-（kind、status、triage、needs、cases、rust、goal）は id が一致する既存ノードから
-そのまま引き継ぐ。状態を持つ既存ノード（status が unported でない、triage.kind が
+（kind、status、triage、needs、cases、rust、goal、verified_against）は id が一致する
+既存ノードからそのまま引き継ぐ。状態を持つ既存ノード（status が unported でない、triage.kind が
 pending でない、goal が設定済み、のいずれか）が新しい baseline に存在しない場合は、
 黙って落とさず、その id を標準エラーへ出して失敗する。状態を持たない既存ノードの
 消失は警告に留める。
@@ -25,7 +25,7 @@ import sys
 import yaml
 
 # 運用で育つ欄。状態保持モードでは既存ノードから引き継ぐ
-STATE_FIELDS = ("kind", "status", "triage", "needs", "cases", "rust", "goal")
+STATE_FIELDS = ("kind", "status", "triage", "needs", "cases", "rust", "goal", "verified_against")
 
 
 def has_state(node: dict) -> bool:
@@ -35,7 +35,7 @@ def has_state(node: dict) -> bool:
     triage = node.get("triage") or {}
     if triage.get("kind") not in (None, "pending"):
         return True
-    if node.get("goal"):
+    if node.get("goal") or node.get("verified_against"):
         return True
     cases = node.get("cases") or {}
     if cases.get("total") is not None or cases.get("excluded"):

@@ -11,6 +11,7 @@
   already_green           移植が正しく、前提の実装が既に契約を満たしている
   unexpected_pass         最初から通ったが、移植の正しさを確かめられない
   unclassifiable          機械分類できない（軽量モデルの判定ステップへ）
+  source_rejected         原典が変更のない現行の基準 commit でない（cargo も台帳も触らず止める）
 
 already_green は「移植の正しさ（原典 Pekko のケース数と、人間が承認した除外の件数の和が、
 通過したケース数に一致し、1 件以上通っている）」と「前提の実装が契約を満たす（対象テストの
@@ -43,15 +44,16 @@ import subprocess
 import sys
 
 import excluded_approvals
+import pekko_baseline
 
 LEDGER = "ledger/nodes.yaml"
 
 # already_green の判定結果を record-already-green へ渡す固定パス（cwd 相対）。
 ALREADY_GREEN_RESULT = os.path.join(".takt", "already-green-result.json")
 
-# 原典 Pekko のチェックアウト先。tools/pekko-source/prepare_pekko_source.sh が
-# cwd に pekko/ を用意する。環境依存パスをコードへ直書きしないため環境変数で上書きできる。
-DEFAULT_ORIGINAL_ROOT = "pekko"
+# 原典 Pekko の場所は pekko_baseline.source_root()（PEKKO_ORIGINAL_ROOT、無ければ cwd の pekko/。
+# tools/pekko-source/prepare_pekko_source.sh が用意する）。record-already-green と ledger-update も
+# 同じ関数で場所を決め、同じ検査（変更のない現行の基準 commit か）を通す。
 
 # 原典のケース書式。Java は @Test 注釈と、その直後の void メソッド宣言。
 JAVA_TEST = re.compile(r"^\s*@Test\b", re.MULTILINE)
@@ -92,8 +94,11 @@ def mark_red(node_id: str) -> bool:
     return _rewrite_node(node_id, lambda i, line: _replace_status(line, "red"))
 
 
-def mark_green(node_id: str, total: int, passed: int, reason: str) -> bool:
-    """台帳の対象ノードを green にし、cases の実数と triage.reason を書く。成功したら True。
+def mark_green(node_id: str, total: int, passed: int, reason: str, verified_against: str) -> bool:
+    """台帳の対象ノードを green にし、cases の実数・triage.reason・verified_against を書く。成功したら True。
+
+    verified_against には照合に使った原典の基準タグを渡す（呼び出し側が
+    pekko_baseline.source_tag で、用意された pekko/ の HEAD から決める）。空なら何も書かない。
 
     verify_green と equivalence-review を通過した後、record-already-green（record_already_green.py）
     から呼ぶ。verify_red の already_green 分類では呼ばない（等価性レビュー中断時に未承認の
@@ -101,7 +106,8 @@ def mark_green(node_id: str, total: int, passed: int, reason: str) -> bool:
 
     total には原典のケース数、ported と passing には Rust の成功件数 passed を書く
     （承認済みの除外がある場合、total = passed + len(excluded) になる）。
-    新キーは増やさない。status・cases の total/ported/passing・既存の triage.reason だけを書き換える。
+    status・cases の total/ported/passing・既存の triage.reason・最上位の verified_against だけを
+    書き換える。verified_against 行が無ければノードの末尾に足し、それ以外の新キーは増やさない。
     triage.reason が null または空のときだけ `already_green: ` 理由を書き、人間が書いた既存の
     理由は上書きしない。triage.reason キーが無い台帳でも green と cases は書き、理由は載せない。
     """
@@ -152,11 +158,12 @@ def mark_green(node_id: str, total: int, passed: int, reason: str) -> bool:
                 lines[i] = f"{reason_indent}reason: {_yaml_scalar(reason)}\n"
             else:
                 reason_preserved = True
-    if not (status_written and cases_written):
+    if not verified_against or not (status_written and cases_written):
         return False
     if not reason_written:
         reason_line = f"{reason_indent}reason: {_yaml_scalar(reason)}\n"
         lines = _insert_after_key(lines, node_id, "triage:", reason_line)
+    lines = _set_top_level_key(lines, node_id, "verified_against", verified_against)
     open(LEDGER, "w", encoding="utf-8").write("".join(lines))
     return not reason_preserved
 
@@ -185,6 +192,28 @@ def _insert_after_key(lines: list[str], node_id: str, key: str, new_line: str) -
         if in_block and re.match(rf"\s+{re.escape(key)}\s*$", line):
             return lines[: i + 1] + [new_line] + lines[i + 1 :]
     return lines
+
+
+def _set_top_level_key(lines: list[str], node_id: str, key: str, value: str) -> list[str]:
+    """対象ノードの最上位の key 行を value に置き換える。無ければノードの末尾に足す。"""
+    start = end = None
+    for i, line in enumerate(lines):
+        if line.startswith("- id: "):
+            if start is not None:
+                end = i
+                break
+            if line.split(":", 1)[1].strip() == node_id:
+                start = i
+    if start is None:
+        return lines
+    end = len(lines) if end is None else end
+    new_line = f"  {key}: {_yaml_scalar(value)}\n"
+    for i in range(start + 1, end):
+        if re.match(rf"  {re.escape(key)}:", lines[i]):
+            return lines[:i] + [new_line] + lines[i + 1:]
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    return lines[:end] + [new_line] + lines[end:]
 
 
 def _rewrite_node(node_id: str, transform) -> bool:
@@ -220,8 +249,7 @@ def count_original_cases(node_id: str) -> int | None:
     数えられないと判断する）。
     0 件は「ケースが無い」であり、移植の正しさを確かめられないため None とする。
     """
-    root = os.environ.get("PEKKO_ORIGINAL_ROOT", DEFAULT_ORIGINAL_ROOT)
-    path = os.path.join(root, node_id)
+    path = os.path.join(pekko_baseline.source_root(), node_id)
     if not os.path.exists(path):
         return None
     try:
@@ -301,16 +329,38 @@ def main() -> int:
     node = info.get("node")
     crate = info.get("crate")
     test_file = info.get("test_file")
+
+    # 原典が変更のない現行の基準でなければ、ケース数も分類も信用できない。台帳を書かずに止める
+    # （workflow は source_rejected を when(true) の ABORT で受ける）。原典には触れない。
+    root = pekko_baseline.source_root()
+    try:
+        baseline = pekko_baseline.load()
+        tag = pekko_baseline.source_tag(baseline, root)
+    except pekko_baseline.BaselineError as error:
+        result = {"classification": "source_rejected", "node": node, "detail": str(error)}
+        try:
+            write_result(result)
+        except OSError as write_error:
+            print(json.dumps({**result, "result_write_failed": str(write_error)},
+                             ensure_ascii=False))
+            return 1
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    # 出所。record-already-green はこの 3 つが揃い、記録時の原典と一致する結果だけを受け付ける
+    # （出所の無い古い結果や、別の原典で出した結果で green を書かない）。
+    provenance = {"source_tag": tag, "source_commit": baseline.commit,
+                  "source_root": str(root.resolve())}
+
     if not (node and crate and test_file):
         result = {"classification": "unclassifiable",
-                  "detail": "previous response lacks node/crate/test_file lines"}
+                  "detail": "previous response lacks node/crate/test_file lines", **provenance}
         try:
             write_result(result)
         except OSError as error:
             print(json.dumps({**result, "result_write_failed": str(error)},
                              ensure_ascii=False))
             return 1
-        print(json.dumps(result))
+        print(json.dumps(result, ensure_ascii=False))
         return 0
 
     stem = os.path.splitext(os.path.basename(test_file))[0]
@@ -360,6 +410,7 @@ def main() -> int:
         "passed": passed,
         "excluded": excluded,
         "reason": reason,
+        **provenance,
         "detail": out[-1500:],
     }
     try:

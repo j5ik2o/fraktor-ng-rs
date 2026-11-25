@@ -45,6 +45,7 @@
     crate: null                    # 移植先クレート（決まり次第）
     test_file: null                # 移植した Rust テストのパス
   goal: null                       # TAKT manager のゴール識別子（割り当て時に記入）
+  verified_against: null           # 照合に使った Pekko の基準タグ。判定済みの status で必須（下記）
 ```
 
 ## 承認内容との対応
@@ -201,7 +202,36 @@
 - 状態保持つきの再生成（2026-11-11 に変換器を改修済み）：baseline を差し替える
   必要が生じたら、`--existing ledger/nodes.yaml` を付けて変換し、出力で置き換える。
   baseline 由来の欄は作り直され、運用で育つ欄（kind、status、triage、needs、
-  cases、rust、goal）は id 一致で引き継がれる。状態を持つノードが新しい baseline に
+  cases、rust、goal、verified_against）は id 一致で引き継がれる。状態を持つノードが新しい baseline に
   存在しない場合は、変換器は黙って落とさず、その id を出して失敗する
 - `ledger/sample-actor-tests.yaml` は actor-tests の先頭 5 ノードのサンプルである
   （同じ変換器に `--module actor-tests --limit 5` を付けた出力）
+
+## `verified_against`（照合済みタグ、2026-11-25 追加）
+
+基準タグの切り替え（`docs/baseline/README.md`。2026-11-25 に v1.7.1 から v2.0.0）の後も、
+ノードごとに「どのタグの原典と照合した結果か」を機械で判別するための欄である。
+
+- 値は Pekko の公式タグ文字列か null。使えるタグは `tools/pekko-source/pekko-baseline.env` の
+  現行タグ（`PEKKO_BASELINE_TAG`）と過去の基準（`PEKKO_HISTORICAL_BASELINES`）だけである
+- 判定済みの status（green、do_not_port、not_built）のノードは必ずタグを持つ。
+  それ以外の status（unported、red）のノードは欄を持たないか null にする
+- 「現行タグで未照合」は、判定済みで `verified_against` が現行タグと違うノードである。
+  `pekko_baseline.py check-ledger --list-unverified` が一覧を出す
+- 2026-11-25 の切り替え時点の判定済みノード（green 50、do_not_port 173）は、過去の照合の
+  記録として `v1.7.1` を持つ。v2.0.0 との照合を終えたノードだけ、その行を `v2.0.0` に変える。
+  照合していないノードを v2.0.0 と書き換えない
+- 新しく green にするノードは、照合に使った原典から決めたタグを書く。原典の場所は全ステップで
+  `pekko_baseline.source_root()`（`PEKKO_ORIGINAL_ROOT`、無ければ `pekko/`）である。
+  `verify_red.py` は数える前に、`record_already_green.py` は記録の前に `pekko_baseline.source_tag` で
+  原典を検査し、ledger-update は `pekko_baseline.py source-tag` の出力を書く。HEAD が現行の基準
+  commit でないか、追跡ファイルの変更・無視されない未追跡ファイル・assume-unchanged /
+  skip-worktree の印があれば失敗し、green を記録しない（旧原典や手を加えた原典で照合したノードに
+  現行タグを付けない）。`record_already_green.py` は、verify_red の結果が出所
+  （`source_tag`、`source_commit`、`source_root`）を欠くとき、出所が不正なとき、出所が今の原典の
+  場所・現行のタグと commit に一致しないときも拒否し、verify_red のやり直しを求める（出所の無い
+  旧形式の結果を、置き直した現行の原典のタグで記録しない）。拒否されたら workflow は
+  ledger-update へ進まない
+- 行の位置はノードの最上位、`goal` の次である。欄が無いノードに書くときは、ノードの末尾に足す
+- 検査は `uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger --ledger ledger/nodes.yaml`
+  で、違反があれば終了コード 1 になる。CI でも実行する
