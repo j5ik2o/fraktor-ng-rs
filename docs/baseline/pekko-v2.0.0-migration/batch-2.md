@@ -77,8 +77,8 @@
 
 | ケース（v2.0.0） | 原典の位置 | 理由 | 代わりの確認 |
 |:---|:---|:---|:---|
-| reject negative skip | `UnsynchronizedByteArrayInputStreamSpec.scala` L66–69（`a5cf13f26c`）、実装 `skip` の `n < 0` の検査 | `skip` は `usize` を受けるので、負の値を表せない。型が拒否を担う | `support_skip_with_large_value` が `skip(50)` の残量で頭打ちになることと、末尾での `skip(usize::MAX) == 0` を確かめる。`support_skip` は `skip(1)`。randomized の op 7 は `skip(0) == 0` を確かめる |
-| not copy the backing array | 同 L165–170、実装のコンストラクタが配列を `this.data` に持つこと | 原典は、ストリームを作った後で配列を書き換え、新しい値を読む。安全な Rust では、ストリームが借りている間は配列を書き換えられない。port の stream は `ByteString` の配列を `Arc` で持ち、`from_array` はコピーする | port の公開契約に「コピーしない」はない。`ByteString::from_array` の rustdoc は、範囲のバイトのコピーから作ると定めている（Pekko の `ByteString.fromArray` も同じくコピーする）。このため、同じスライスを読む代わりの検証は足さない |
+| reject negative skip | `UnsynchronizedByteArrayInputStreamSpec.scala` L66–70（`a5cf13f26c`）、実装 `skip` の `n < 0` の検査 | `skip` は `usize` を受けるので、負の値を表せない。型が拒否を担う | `support_skip_with_large_value` が `skip(50)` の残量で頭打ちになることと、末尾での `skip(usize::MAX) == 0` を確かめる。`support_skip` は `skip(1)`。randomized の op 7 は `skip(0) == 0` を確かめる |
+| not copy the backing array | 同 L165–171、実装のコンストラクタが配列を `this.data` に持つこと | 原典は、ストリームを作った後で配列を書き換え、新しい値を読む。安全な Rust では、ストリームが借りている間は配列を書き換えられない。port の stream は `ByteString` の配列を `Arc` で持ち、`from_array` はコピーする | port の公開契約に「コピーしない」はない。`ByteString::from_array` の rustdoc は、範囲のバイトのコピーから作ると定めている（Pekko の `ByteString.fromArray` も同じくコピーする）。このため、同じスライスを読む代わりの検証は足さない |
 
 台帳には `cases.not_built` の 2 件として記録した（#165 の形式）。ノードは 14/12/12、`verified_against: v2.0.0` で、`rollup.py --goal G0issue147` は混在の勘定（12 + 作らない 2 = 14）で完了と判定する。
 
