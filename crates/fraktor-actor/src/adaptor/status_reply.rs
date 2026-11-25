@@ -3,6 +3,7 @@
 use alloc::sync::Arc;
 use core::any::Any;
 use core::error::Error;
+use core::fmt;
 use core::future::Future;
 
 use crate::adaptor::ErrorMessage;
@@ -13,15 +14,23 @@ use crate::kernel::message::Message;
 ///
 /// The value uses classic actor message type erasure. An error keeps its
 /// concrete type so a recipient can downcast it.
-#[derive(Debug)]
+///
+/// Its `Debug` is the reply's rendering, as Pekko's `toString`: `Success(<value>)`,
+/// `Error(<text>)` for a text error, and `Error(<type>: <error>)` for any other
+/// error. The type is [`core::any::type_name`] of the error given to
+/// [`error`](Self::error), so the rendering names it even when the error's own
+/// `Debug` and `Display` do not. That name is the compiler's rendering and is
+/// not a stable string.
 pub struct StatusReply {
   result: Result<Message, Arc<dyn Error + Send + Sync>>,
+  // The type name of the error, recorded where its concrete type is known.
+  error_type: Option<&'static str>,
 }
 
 impl StatusReply {
   /// Creates a successful reply carrying the given value.
   pub fn success(value: impl Any + Send + Sync) -> Self {
-    Self { result: Ok(Message::new(value)) }
+    Self { result: Ok(Message::new(value)), error_type: None }
   }
 
   /// Creates a successful reply carrying the [StatusReplyAck] acknowledgement.
@@ -35,8 +44,8 @@ impl StatusReply {
   }
 
   /// Creates a failed reply preserving the original error and its concrete type.
-  pub fn error(error: impl Error + Send + Sync + 'static) -> Self {
-    Self { result: Err(Arc::new(error)) }
+  pub fn error<E: Error + Send + Sync + 'static>(error: E) -> Self {
+    Self { result: Err(Arc::new(error)), error_type: Some(core::any::type_name::<E>()) }
   }
 
   /// Creates a reply from `result`, keeping only the text of an error.
@@ -121,5 +130,18 @@ impl StatusReply {
     future: impl Future<Output = Result<Self, Arc<dyn Error + Send + Sync>>>,
   ) -> Result<Message, Arc<dyn Error + Send + Sync>> {
     future.await?.result
+  }
+}
+
+impl fmt::Debug for StatusReply {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match &self.result {
+      | Ok(value) => write!(formatter, "Success({value:?})"),
+      | Err(error) if error.downcast_ref::<ErrorMessage>().is_some() => write!(formatter, "Error({error})"),
+      | Err(error) => match self.error_type {
+        | Some(error_type) => write!(formatter, "Error({error_type}: {error})"),
+        | None => write!(formatter, "Error({error})"),
+      },
+    }
   }
 }

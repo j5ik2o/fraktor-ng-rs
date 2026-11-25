@@ -86,7 +86,7 @@
 
 設計の判断は 2026-11-25 に起動元から受けた（案 A：`Result` を受ける生成関数を 2 つ足す。既存のシグネチャと挙動は保つ。panic は捕まえない）。
 
-- `6287b9de07` #3271「include exception type in toString for non text-error」：Pekko の `toString` は、テキスト以外のエラーを `Error(<例外>)` と表す。port の `StatusReply` には `Display` がない（成功の値は型を消した `Message` で、テキストを持たない）。`Debug` が返信の表示に当たり、エラーの型名を含むので、最初から緑だった（`43e6730`）。負の対照：`Debug` を `Error(<Display>)` に変えると失敗する。
+- `6287b9de07` #3271「include exception type in toString for non text-error」：Pekko の `toString` は、テキスト以外のエラーを `Error(<例外>)` と表す。JVM の例外の `toString` はクラス名で始まるので、エラーが何を出力しても表示に型名が入る。port の `StatusReply` には `Display` がない（成功の値は型を消した `Message` で、テキストを持たない）。表示には `Debug` が当たる。最初の移植では、derive した `Debug` がエラー自身の `Debug` を出すだけだった。テストのエラー（derive の `Debug`）がたまたま型名を出していたため、テストは最初から緑で、返信が型名を付ける契約は確かめていなかった（PR #167 のレビュー指摘）。修正では、`Debug` と `Display` がメッセージだけを出すエラーでテストを書き直した。赤は `StatusReply { result: Err(boho!) }` で、型名が出ない。そのうえで `StatusReply::error` が `core::any::type_name::<E>()` を記録し、`Debug` を手で実装して `Success(<値>)`、`Error(<テキスト>)`、`Error(<型>: <エラー>)` と表すようにした。型名は安定した文字列としては保証しない。`error` の引数は `impl Error` から型引数 `E` に変えたが、呼び出し側から見て受け付ける値は同じである。テキストのエラーの表示 `Error(boho!)` も、同じテストで確かめる。
 - `f1a36ba76b` #2796（`fromTry`、`fromTryKeepException`、5 ケース）と `037b88ad29` #2812（`fromCallable`、`fromCallableKeepException`、5 ケース）：
   - 赤：終了値 101、E0599 が 10 件（`from_result` が 6 件、`from_result_keep_error` が 4 件）。テストは `0b894e9`。
   - 緑：`0cbb4e0` で 20 passed。
