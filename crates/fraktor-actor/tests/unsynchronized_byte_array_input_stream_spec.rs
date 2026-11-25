@@ -284,7 +284,8 @@ fn behave_like_java_io_byte_array_input_stream_under_randomized_operation_sequen
         | 1 => {
           let mut a = vec![0_u8; rnd.next_int(6) as usize];
           let mut b = a.clone();
-          let expected = reference.read_range(&mut b, 0, b.len()).expect("in bounds");
+          let whole = b.len();
+          let expected = reference.read_range(&mut b, 0, whole).expect("in bounds");
           let actual = stream.read_into(&mut a);
           if a.is_empty() && expected.is_none() {
             // The documented deviation: 0 here, -1 in ByteArrayInputStream.
