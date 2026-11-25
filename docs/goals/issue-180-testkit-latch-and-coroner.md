@@ -112,22 +112,22 @@ TestLatch、receive_while、WatchHandle は、どれも状態遷移を持つ。W
 | `receive_while.qnt` | キュー、到着、上限（なし・0〜3）、呼ぶ前の `last`、受け入れたものを拾う、上限に達する、拒んだものを戻す、時間切れ | `nothingLostOrReordered`、`pickedOnlyAccepted`、`withinLimit`、`lastIsLastPicked` |
 | `watch_handle.qnt` | 結果（Pending・Cancelled・Expired）、start、cancel の要求と戻り（終わったのを見て戻る・時間切れで戻る、最大 3 回）、expire、報告（試していない・書けた・失敗した）、finish | `outcomeNeverChanges`、`reportOnlyWhenExpired`、`cancelledWritesNothing`、`finishedConsistent`、`cancelDecides`、`cancelWaitsForFinish` |
 
-`test_latch.qnt` の待つ側は、実装のループと同じく「開いた時刻を読み、期限と比べて決める」。不変条件は、決めた結果と、読んだ時刻・期限・現在の時刻の関係を、決め方とは別の式で書いている。
+`test_latch.qnt` の待つ側は、実装のループと同じ順に、時計を読み（`readClock`）、続けてロックの下で開いた時刻を読んで決める（`readLatchAndDecide`）。2 つの読みの間には、ほかの操作と時間の経過が入りうる。修正 2 で、不変条件 `noTimeoutWhenOpenedInTime`（決めた時点で本当に期限までに開いていたら時間切れにしない）と `noWaitingAfterLateOpening`（遅れて開いたのを見たら待ち続けない）を足した。不変条件は、決めた結果と、読んだ時刻・期限・現在の時刻の関係を、決め方とは別の式で書いている。
 
 検査の結果（quint 0.32.0）：
 
 | コマンド | 結果 |
 |:---|:---|
-| `quint test test_latch.qnt` | 5 件 pass |
+| `quint test test_latch.qnt` | 6 件 pass（修正 2 の後） |
 | `quint test receive_while.qnt` | 4 件 pass |
 | `quint test watch_handle.qnt` | 6 件 pass |
 | `quint run <各仕様> --invariant=invariant --max-steps=30 --max-samples=20000` | 3 本とも `[ok] No violation found` |
 
-不変条件が実際に違反を捕まえることも確かめた。わざと壊した写しを 11 本作り、同じ `quint run` を流した。11 本とも `[violation]` になった。
+不変条件が実際に違反を捕まえることも確かめた。わざと壊した写しを 11 本作り、同じ `quint run` を流した。11 本とも `[violation]` になった。修正 2 では、test_latch の写しをさらに 2 本作り（下の表の最後の 2 つ）、どちらも `[violation]` になった。
 
 | 仕様 | 壊し方 |
 |:---|:---|
-| test_latch | `reset` でラッチを開ける（設計レビューの M3）。`countDown` を 0 で止めない。開いた時刻を見ずに数だけで戻る。`reset` で開いた時刻を消さない |
+| test_latch | `reset` でラッチを開ける（設計レビューの M3）。`countDown` を 0 で止めない。開いた時刻を見ずに数だけで戻る。`reset` で開いた時刻を消さない。遅れて開いたのを見ても待ち続ける（再レビューの N3）。開いた時刻を先に、時計を後に読む（`5c6f69b` の実装の順） |
 | receive_while | 拒んだメッセージを戻さずに捨てる。上限 0 で `last` を消す。上限を見ない |
 | watch_handle | cancel が期限切れの結果を上書きする。cancel が終わりを待たずに「終わった」として戻る。報告を試さずに終わる。expire が Pending かを見ない |
 
@@ -240,3 +240,12 @@ P3 は時刻の競合なので、どちらが先になるかは実行ごとに�
 | `test_latch.rs:74` `reset` の後の `count_down` が待っている側にも効く | 直す（契約として書いた） | `TestLatch` の rustdoc と、原典との差異の節に、(a)(b) として書いた |
 | `test_kit_base.rs:251` 上限 0 でも直前のメッセージを忘れる | 直す | 設計の独立レビューの指摘 7 と同じ |
 | `coroner_test.rs:154` P3 が報告の完了を見ていない | 直す | テストの出力先が flush を記録する。Coroner のスレッドは、書き終えてから flush する。P3 は、期限切れの側で flush が済んでいることと、通知の行、題名、スタックの見出しがあることを確かめる |
+
+## 再レビューの指摘の扱い（修正 2）
+
+設計の再レビュー（`5c6f69b` を対象。全文は起動元の `/Users/j5ik2o/orca/evidence/fraktor-ng-rs-pr211-5c6f69b5/review.md`）で、指摘 3・4・6・7・8 は塞がったと判定された。採らないとした 2 件（`await_cond` の Quint、Devin の `test_kit_base.rs:237`）も、それでよいと判定された。軽い 2 件が残ったので、どちらも直した。
+
+| 指摘 | 扱い | 根拠と、したこと |
+|:---|:---|:---|
+| A. 遅れて開いたのに待ち続ける写し（N3）を、不変条件が捕まえない | 直す | `test_latch.qnt` に `noWaitingAfterLateOpening`（`waiter == Waiting implies not(observed > deadline)`）を足した。N3 の写しで、`invariant` でも、この不変条件だけでも `[violation]` になることを確かめた |
+| B. `ready` が開いた時刻を読んでから時計を読むので、期限の直前に開いても時間切れになる窓がある | 直す | 先に red を確かめた。仕様の待つ側を「時計を読む」と「開いた時刻を読んで決める」の 2 段に分け、`noTimeoutWhenOpenedInTime` を足した。`5c6f69b` の実装と同じ順（開いた時刻が先）の写しは、この不変条件で `[violation]` になった。実装を「`now` を先に取り、続けて `opened_at` を読む」順に直し、仕様もその順にした。直した順では `quint run` が違反なし、`quint test` に `openedBetweenTheReadsJustBeforeTheDeadlineReturnsTest`（2 つの読みの間に、期限の前に開く）を足して pass。Rust の単体テストでは、この窓はナノ秒の幅しかなく、時計を差し込む口もないので、決まった形で再現できない。そのため red の証拠は Quint の写しで取った |

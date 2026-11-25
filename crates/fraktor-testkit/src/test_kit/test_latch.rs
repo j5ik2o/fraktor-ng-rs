@@ -123,11 +123,15 @@ impl TestLatch {
     let system = system.downgrade();
     let deadline = Instant::now() + self.settings.dilated(max);
     loop {
+      // The clock is read before the latch: a latch that is still closed when
+      // it is read afterwards did not open by `now`, so a `now` at or past the
+      // deadline is a real timeout, never one that opened in between.
+      let now = Instant::now();
       let opened_at = self.lock().opened_at;
       if opened_at.is_some_and(|opened_at| opened_at <= deadline) {
         return;
       }
-      let left = deadline.saturating_duration_since(Instant::now());
+      let left = deadline.saturating_duration_since(now);
       assert!(
         opened_at.is_none() && left > Duration::ZERO,
         "Timeout of {max:?} with time factor of {}",

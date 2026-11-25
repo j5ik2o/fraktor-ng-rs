@@ -4,16 +4,18 @@
 // count_down saturates at zero, open sets it to zero, reset sets it back to the
 // count the latch was created with and forgets the moment. Every operation may
 // happen at any time, also while a ready call waits (from an actor or another
-// thread). ready loops: it reads the moment the latch opened, returns when that
-// is not after its deadline, fails when the latch opened late or the deadline
-// has passed, and otherwise lets time pass. A delivery may run past the
-// deadline, so time can pass beyond it before the next check. Time is a step
-// counter; DILATED_MAX is the dilated max.
+// thread). Each pass of the loop in ready first reads the clock, then reads the
+// moment the latch opened (under the lock), and decides: it returns when the
+// latch opened by the deadline, fails when it opened late or when the clock it
+// read was at or past the deadline with the latch closed, and otherwise lets
+// time pass. Anything may happen between the two reads. A delivery may run
+// past the deadline, so time can pass beyond it before the next check. Time is
+// a step counter; DILATED_MAX is the dilated max.
 module test_latch {
   pure val DILATED_MAX = 3
 
   type Op = Created | CountedDown | Opened | ResetOp | Other
-  type Waiter = Idle | Waiting | Returned | TimedOut
+  type Waiter = Idle | Waiting | Checking | Returned | TimedOut
 
   var count: int
   var remaining: int
@@ -27,6 +29,10 @@ module test_latch {
   var openedAt: int
   // The opening moment that the last check of ready read.
   var observed: int
+  // The clock that the current pass of ready read first.
+  var seenNow: int
+  // The real opening moment at the step where the last pass decided.
+  var openedAtDecision: int
 
   action init = {
     nondet c = 0.to(3).oneOf()
@@ -40,6 +46,8 @@ module test_latch {
       deadline' = 0,
       openedAt' = if (c == 0) 0 else -1,
       observed' = if (c == 0) 0 else -1,
+      seenNow' = 0,
+      openedAtDecision' = -1,
     }
   }
 
@@ -53,6 +61,8 @@ module test_latch {
     now' = now,
     deadline' = deadline,
     observed' = observed,
+    seenNow' = seenNow,
+    openedAtDecision' = openedAtDecision,
   }
 
   action countDown = latchOp(CountedDown, if (remaining > 0) remaining - 1 else 0)
@@ -63,22 +73,37 @@ module test_latch {
     waiter == Idle or waiter == Returned or waiter == TimedOut,
     waiter' = Waiting,
     deadline' = now + DILATED_MAX,
-    observed' = openedAt,
+    observed' = observed,
     openedAt' = openedAt,
+    seenNow' = seenNow,
+    openedAtDecision' = openedAtDecision,
     count' = count, remaining' = remaining, before' = before, lastOp' = Other, now' = now,
   }
 
-  // One pass of the loop in ready: read the counter, then decide.
-  action readyCheck = all {
+  // A pass of the loop in ready, first half: read the clock.
+  action readClock = all {
     waiter == Waiting,
-    observed' = openedAt,
-    waiter' = if (openedAt >= 0 and openedAt <= deadline) Returned
-      else if (openedAt >= 0 or now >= deadline) TimedOut
-      else Waiting,
-    openedAt' = openedAt,
+    waiter' = Checking,
+    seenNow' = now,
+    observed' = observed, openedAt' = openedAt, openedAtDecision' = openedAtDecision,
     count' = count, remaining' = remaining, before' = before, lastOp' = Other, now' = now,
     deadline' = deadline,
   }
+
+  // Second half: read the opening moment under the lock, then decide.
+  action readLatchAndDecide = all {
+    waiter == Checking,
+    observed' = openedAt,
+    openedAtDecision' = openedAt,
+    waiter' = if (openedAt >= 0 and openedAt <= deadline) Returned
+      else if (openedAt >= 0 or seenNow >= deadline) TimedOut
+      else Waiting,
+    seenNow' = seenNow, openedAt' = openedAt,
+    count' = count, remaining' = remaining, before' = before, lastOp' = Other, now' = now,
+    deadline' = deadline,
+  }
+
+  action readyCheck = readClock.then(readLatchAndDecide)
 
   // Time passes, also beyond a deadline while a delivery runs.
   action tick = all {
@@ -86,9 +111,10 @@ module test_latch {
     now' = now + 1,
     count' = count, remaining' = remaining, before' = before, lastOp' = Other,
     waiter' = waiter, deadline' = deadline, observed' = observed, openedAt' = openedAt,
+    seenNow' = seenNow, openedAtDecision' = openedAtDecision,
   }
 
-  action step = any { countDown, openLatch, reset, startReady, readyCheck, tick }
+  action step = any { countDown, openLatch, reset, startReady, readClock, readLatchAndDecide, tick }
 
   val counterInRange = remaining >= 0 and remaining <= count
   val countDownSaturates = lastOp == CountedDown implies remaining == (if (before > 0) before - 1 else 0)
@@ -97,13 +123,21 @@ module test_latch {
   val openedAtMatchesCounter = (remaining == 0) iff (openedAt >= 0 and openedAt <= now)
   val returnedOnlyWhenOpenedInTime = waiter == Returned implies (observed >= 0 and observed <= deadline)
   val timedOutOnlyWhenNotOpenedInTime =
-    waiter == TimedOut implies (observed > deadline or (observed < 0 and now >= deadline))
+    waiter == TimedOut implies (observed > deadline or (observed < 0 and seenNow >= deadline))
+  // A latch that really had opened by the deadline when the pass decided never
+  // times out, whatever happened between the two reads.
+  val noTimeoutWhenOpenedInTime =
+    waiter == TimedOut implies not(openedAtDecision >= 0 and openedAtDecision <= deadline)
+  // A pass that saw a late opening does not keep waiting.
+  val noWaitingAfterLateOpening = waiter == Waiting implies not(observed > deadline)
   val invariant = counterInRange and countDownSaturates and openMeansZero and resetRestoresCount
     and openedAtMatchesCounter and returnedOnlyWhenOpenedInTime and timedOutOnlyWhenNotOpenedInTime
+    and noTimeoutWhenOpenedInTime and noWaitingAfterLateOpening
 
   action initWith(c: int): bool = all {
     count' = c, remaining' = c, before' = c, lastOp' = Created, waiter' = Idle,
     now' = 0, deadline' = 0, openedAt' = if (c == 0) 0 else -1, observed' = if (c == 0) 0 else -1,
+    seenNow' = 0, openedAtDecision' = -1,
   }
 
   run opensAfterCountDownsTest =
@@ -123,6 +157,11 @@ module test_latch {
   run openedAfterTheDeadlineTimesOutTest =
     initWith(1).then(startReady).then(tick).then(tick).then(tick).then(tick).then(countDown).then(readyCheck)
       .expect(waiter == TimedOut and remaining == 0)
+
+  run openedBetweenTheReadsJustBeforeTheDeadlineReturnsTest =
+    initWith(1).then(startReady).then(tick).then(tick).then(readClock).then(countDown).then(tick)
+      .then(readLatchAndDecide)
+      .expect(waiter == Returned)
 
   run zeroCountIsOpenTest =
     initWith(0).then(startReady).then(readyCheck).expect(waiter == Returned)
