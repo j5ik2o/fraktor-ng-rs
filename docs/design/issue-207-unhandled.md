@@ -70,7 +70,7 @@ port の失敗モデルは panic の文字列を監督の判断材料にする�
 |:---|:---|:---|:---|
 | P1 | `Props::empty()` は、型の違うメッセージを含むどのメッセージにも `U` をちょうど 1 件出し、message・sender・recipient が一致する | メッセージは `i32` の -2〜2、`&'static str` の 3 種、独自型 1 種。sender は dead letters・test actor・別アクターの 3 種 | `props_empty_reports_every_message_once_for_every_bounded_input` |
 | P2 | `ActorContext::unhandled` を明示的に呼ぶアクターでも、P1 と同じ 1 対 1 が成り立つ | 同上 | `actor_context_unhandled_reports_the_message_and_sender` |
-| P3 | event sink があるとき、`U` 1 件につき `Warning` が 1 件出て、文面が sender の path と message を含む | `i32` の -2〜2 と 3 種の文字列 | `unhandled_is_reported_as_a_warning_to_the_event_sink` |
+| P3 | event sink があるとき、`U` 1 件につき `Warning` が 1 件出て、文面が sender の path と message を含む | `i32` の -2〜2 と 3 種の文字列 | `unhandled_is_reported_as_a_warning_to_the_event_sink`、`an_unhandled_message_is_one_warning_for_event_filter` |
 | P4 | `unhandled` を繰り返しても、I3 のとおりアクターは生き続け、届いた順に 1 件ずつ報告する | 3 件の列（`0,1,2`） | P1 のテストで同じアクターに連続で送る |
 
 P1 と P2 は「1 件につき 1 件」を、同じアクターに複数件を送って確かめる。`Message` の Debug は
@@ -142,6 +142,16 @@ error: could not compile `fraktor-actor` (lib test) due to 2 previous errors
 
 ## 10. 検証（ローカル）
 
-`cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、
-CI の台帳検査（`pekko_baseline.py check-ledger`、`check-refs`、`relocate_nodes.py check`、
-`report_ledger_1to1.py check`）と、ツールの Python テストを流す。結果は PR 本文に書く。
+| コマンド | 結果 |
+|:---|:---|
+| `cargo test -p fraktor-actor --test unhandled_notification_spec` | 5 passed |
+| `cargo test --workspace` | すべて pass |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 成功 |
+| `cargo fmt --check` | 成功 |
+| CI の Python テスト 12 本（`goal_complete_gate_test` ほか） | 成功 |
+| `pekko_baseline.py check-ledger`、`check-refs`、`relocate_nodes.py check`、`report_ledger_1to1.py check` | 成功 |
+
+`an_unhandled_message_is_one_warning_for_event_filter` は、`PekkoSpecSpec` の
+「warn about unhandled messages」が使う `EventFilter.warning` の経路をそのまま通す。原典の
+`start = "unhandled message"` の絞り込みは、port の `EventFilter::Warning` がまだ持たないので、
+この issue では件数（1 件）だけを確かめる。絞り込みは #210 で必要になったら足す。

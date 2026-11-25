@@ -57,6 +57,26 @@ impl<'a> ActorContext<'a> {
     self.executor.send(self.self_ref(), target, Message::new(message));
   }
 
+  /// Reports `message` as one this actor did not handle.
+  ///
+  /// Mirrors `org.apache.pekko.actor.Actor.unhandled`, which an actor calls
+  /// from `receive` for a message its behaviour does not cover. Pekko publishes
+  /// `UnhandledMessage(message, sender(), self)` on the event stream, and the
+  /// port does the same through the executor. The executor also offers the
+  /// report to the event sink that stands in for Pekko's `TestEventListener`,
+  /// as a `Warning` reading `unhandled message from <sender>: <message>`.
+  ///
+  /// Pekko's other branch, which throws `DeathPactException` for a
+  /// [`Terminated`](crate::kernel::actor::Terminated), is not ported: it needs
+  /// the exception type and the supervision policy that stops on it. A
+  /// `Terminated` given here is reported like any other message.
+  pub fn unhandled<M: core::any::Any + Send + Sync>(&mut self, message: M) {
+    let message = Message::new(message);
+    let sender = self.sender();
+    let recipient = self.self_ref();
+    self.executor.publish_unhandled(message, sender, recipient);
+  }
+
   /// Replaces the current behaviour with `behavior`; the frames below it stay.
   ///
   /// Mirrors `context.become(behavior, discardOld = true)`, which is

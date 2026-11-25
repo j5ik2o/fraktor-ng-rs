@@ -4,6 +4,8 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 
 use crate::kernel::actor::Actor;
+use crate::kernel::actor::ActorContext;
+use crate::kernel::message::Message;
 
 #[cfg(test)]
 #[path = "props_test.rs"]
@@ -25,7 +27,31 @@ pub struct Props {
   dispatcher: Option<Arc<str>>,
 }
 
+/// The actor that [`Props::empty`] builds.
+///
+/// Mirrors `Props.EmptyActor`, whose `receive` is `Actor.emptyBehavior`: it
+/// covers no message. The port has no partial function to fall through, so the
+/// actor reports each message it is given through
+/// [`ActorContext::unhandled`](crate::kernel::actor::ActorContext::unhandled).
+struct EmptyActor;
+
+impl Actor for EmptyActor {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    context.unhandled(message);
+  }
+}
+
 impl Props {
+  /// Creates a recipe for an actor that handles no message.
+  ///
+  /// Mirrors `Props.empty`, which is `Props[EmptyActor]()` over
+  /// `Actor.emptyBehavior`. Every message that reaches the actor is reported
+  /// through [`ActorContext::unhandled`], so an actor built from this recipe
+  /// answers nothing and reports each message it is sent.
+  pub fn empty() -> Self {
+    Self::new(|| EmptyActor)
+  }
+
   /// Creates a recipe from a factory.
   ///
   /// The factory is wrapped so that a recipe can travel as a message and be

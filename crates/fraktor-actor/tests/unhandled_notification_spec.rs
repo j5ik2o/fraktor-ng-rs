@@ -26,6 +26,7 @@ use fraktor_actor::kernel::actor_system::ActorSystem;
 use fraktor_actor::kernel::event::EventClass;
 use fraktor_actor::kernel::executor::ShardBoundary;
 use fraktor_actor::kernel::message::Message;
+use fraktor_testkit::event_filter::EventFilter;
 use fraktor_testkit::fraktorspec::FraktorSpec;
 use fraktor_testkit::test_kit::TestProbe;
 
@@ -161,6 +162,22 @@ fn unhandled_is_reported_as_a_warning_to_the_event_sink() {
     assert_eq!(source, &empty.path().to_string());
     assert_eq!(text, &format!("unhandled message from {}: {}", sender.path(), value));
   }
+
+  spec.terminate();
+}
+
+/// The `EventFilter.warning` path that the PekkoSpecSpec case uses: the report
+/// reaches the spec's event sink as one warning, so `intercept` counts exactly
+/// one.
+#[test]
+fn an_unhandled_message_is_one_warning_for_event_filter() {
+  let mut spec = FraktorSpec::new("UnhandledNotificationSpecFilter");
+  let empty = spec.system_mut().actor_of(Props::empty());
+  let sender = spec.system().dead_letters();
+
+  EventFilter::warning().intercept(spec.system_mut(), || {
+    empty.tell(42_i32, sender);
+  });
 
   spec.terminate();
 }

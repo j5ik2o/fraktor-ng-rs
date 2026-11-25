@@ -14,8 +14,10 @@ use crate::kernel::actor::BehaviorStack;
 use crate::kernel::actor::InvalidActorNameException;
 use crate::kernel::actor::Logging::Error;
 use crate::kernel::actor::Logging::EventSink;
+use crate::kernel::actor::Logging::Warning;
 use crate::kernel::actor::Props;
 use crate::kernel::actor::Terminated;
+use crate::kernel::actor::UnhandledMessage;
 use crate::kernel::actor_path::ActorPath;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::event::EventStream;
@@ -1710,6 +1712,26 @@ impl Executor {
     }
     if let Some(sink) = self.event_sink.as_ref() {
       sink.publish(&event);
+    }
+  }
+
+  /// Publishes the report of a message an actor did not handle.
+  ///
+  /// Mirrors the publication `Actor.unhandled` makes: an [`UnhandledMessage`]
+  /// carrying the message, the sender of the delivery, and the recipient, on the
+  /// event stream. Pekko's `TestEventListener` turns that message into a
+  /// `Warning` for the test logger; the port offers the same warning to an
+  /// installed event sink, which is where a test reads it. A system without a
+  /// stream or a sink drops the report without panicking.
+  pub(crate) fn publish_unhandled(&self, message: Message, sender: ActorRef, recipient: ActorRef) {
+    let unhandled = UnhandledMessage::new(message.clone(), sender.clone(), recipient.clone());
+    if let Some(stream) = self.event_stream.as_ref() {
+      stream.publish(unhandled);
+    }
+    if let Some(sink) = self.event_sink.as_ref() {
+      let source = recipient.path().to_string();
+      let text = alloc::format!("unhandled message from {}: {:?}", sender.path(), message);
+      sink.publish(&Warning::new(source, ACTOR_LOG_CLASS, &text));
     }
   }
 
