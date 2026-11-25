@@ -5157,7 +5157,7 @@ nodes:
     module: actor-tests
     class: UnsynchronizedByteArrayInputStreamSpec
     test_cases_approx: 3
-  status: red
+  status: green
   triage:
     kind: pending
     reason: null
@@ -5171,12 +5171,20 @@ nodes:
     total: 14
     ported: 12
     passing: 12
-    excluded: []
+    excluded:
+    - name: not copy the backing array
+      reason: "v2.0.0 の actor-tests/src/test/scala/org/apache/pekko/io/UnsynchronizedByteArrayInputStreamSpec.scala L165-171（a5cf13f26c #3541）。原典は、配列からストリームを作った後に配列の先頭を書き換え、read() が書き換えた値を返すことを観測する。port のストリームは ByteString::from_array が作った時点のコピーを読むので、外部の書き換えは見えない。安全な Rust ではストリームが借りている配列を書き換えられず、共有の可変バッファを公開 API に足さない決定もあるので、等価には書けない。代わりに、ストリームを作るときに入力の長さぶんのコピーをしないことを crates/fraktor-actor/tests/byte_string_input_stream_no_copy_test.rs で確かめる（件数に含めない）。承認：オーナー本人（j5ik2o）が元帥の項目283（e4453）で「2件とも除外として承認し、代わりのテストを足す」と回答した。この記録はその転記"
+      approved_by: j5ik2o
+      approved_at: 2026-11-25
+    - name: reject negative skip
+      reason: "v2.0.0 の actor-tests/src/test/scala/org/apache/pekko/io/UnsynchronizedByteArrayInputStreamSpec.scala L66-70（a5cf13f26c #3541）。原典は skip(-1) が IllegalArgumentException を投げることを観測する。port の skip は usize を受けるので、負の値を渡すコードはコンパイルできず、実行時の拒否を等価には書けない。代わりに、skip(-1) がコンパイルできないことを crates/fraktor-actor/src/kernel/byte_string/byte_string_input_stream.rs の skip の compile_fail doctest で、skip(0)・残量ちょうど・残量超過の境界を同ファイルの単体テスト（byte_string_input_stream_test.rs）で確かめる（件数に含めない）。承認：オーナー本人（j5ik2o）が元帥の項目283（e4453）で「2件とも除外として承認し、代わりのテストを足す」と回答した。この記録はその転記"
+      approved_by: j5ik2o
+      approved_at: 2026-11-25
   rust:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/unsynchronized_byte_array_input_stream_spec.rs
   goal: G0issue147
-  verified_against: null
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/util/VersionSpec.scala
   name: actor-tests:VersionSpec
   kind: test
