@@ -235,6 +235,52 @@ def test_check_ledger_diagnoses_an_unquoted_invalid_retired_date_without_crashin
     print("6. check-ledger diagnoses an unquoted invalid retired date without crashing")
 
 
+APPROVED_CASE = ("    excluded:\n    - name: case\n      reason: r\n"
+                 "      approved_by: someone\n      approved_at: 2026-01-01\n")
+
+
+def run(*args: str) -> int:
+    return subprocess.run([sys.executable, *args], capture_output=True, text=True, cwd=REPO).returncode
+
+
+def test_a_partly_ported_successor_cannot_exclude_its_carried_case() -> None:
+    """部分移植（unported）の後継でも、引き継いだケースを承認済みの除外に入れると拒否する。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        text = ledger().replace("    excluded: []\n    carried:", APPROVED_CASE + "    carried:", 1)
+        assert APPROVED_CASE in text
+        (root / "nodes.yaml").write_text(text, encoding="utf-8")
+        assert run(str(TOOLS / "pekko_baseline.py"), "check-ledger", "--ledger", str(root / "nodes.yaml")) == 1
+        assert run(str(TOOLS / "rollup.py"), "--ledger", str(root / "nodes.yaml")) == 1
+    print("7. a partly ported successor cannot exclude its carried case")
+
+
+def test_a_successor_with_carried_cases_must_be_unported_red_or_counted_green() -> None:
+    """引き継ぎを持つノードを do_not_port などにすると、全体・ゴール・CI・能力の供給のどれでも完了にしない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        text = ledger().replace(
+            "- id: m/New.scala\n  name: m:New\n  kind: test\n  pekko:\n    module: m\n    class: New\n"
+            "    test_cases_approx: 1\n  status: unported\n",
+            "- id: m/New.scala\n  name: m:New\n  kind: test\n  pekko:\n    module: m\n    class: New\n"
+            "    test_cases_approx: 1\n  status: do_not_port\n", 1)
+        text = text.replace("  goal: null\n  rust:", "  goal: null\n  rust:")
+        text = text.replace("    test_file: null\n  goal: null\n- id: m/Other", "    test_file: null\n  goal: G0n\n"
+                            "  verified_against: v2.0.0\n- id: m/Other", 1)
+        assert "status: do_not_port" in text and "goal: G0n" in text
+        text = text.replace("retired:\n", "- id: m/Q.scala\n  kind: test\n  pekko:\n    module: m\n  status: unported\n"
+                            "  needs:\n    testkit: ['cap']\n    premise_flags: []\n  goal: G0q\nretired:\n", 1)
+        (root / "nodes.yaml").write_text(text, encoding="utf-8")
+        (root / "capabilities.yaml").write_text("capabilities:\n- id: cap\n  provided_by: G0n\n", encoding="utf-8")
+        ledger_path = str(root / "nodes.yaml")
+        assert run(str(TOOLS / "pekko_baseline.py"), "check-ledger", "--ledger", ledger_path) == 1
+        assert run(str(TOOLS / "rollup.py"), "--ledger", ledger_path) == 1
+        assert run(str(TOOLS / "rollup.py"), "--ledger", ledger_path, "--goal", "G0n") == 1
+        assert run(str(TOOLS / "check_needs.py"), "--ledger", ledger_path, "--capabilities",
+                   str(root / "capabilities.yaml"), "--goal", "G0q") == 1
+    print("8. a do_not_port successor with carried cases is not complete anywhere")
+
+
 def main() -> int:
     tests = [
         test_convert_baseline_keeps_retired_and_does_not_revive_the_retired_id,
@@ -243,6 +289,8 @@ def main() -> int:
         test_check_needs_does_not_count_a_goal_with_a_lineage_problem_as_a_provider,
         test_check_needs_does_not_count_any_provider_when_retired_is_not_a_list,
         test_check_ledger_diagnoses_an_unquoted_invalid_retired_date_without_crashing,
+        test_a_partly_ported_successor_cannot_exclude_its_carried_case,
+        test_a_successor_with_carried_cases_must_be_unported_red_or_counted_green,
     ]
     failed = 0
     for test in tests:

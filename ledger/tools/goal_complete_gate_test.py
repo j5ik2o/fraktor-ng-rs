@@ -765,6 +765,31 @@ def test_a_green_successor_cannot_count_a_carried_case_again_as_an_exclusion():
     print("43p. a carried case cannot be counted again as an exclusion; distinct exclusions still pass")
 
 
+def test_a_goal_with_active_and_retired_members_is_judged_through_the_gate():
+    """対象表に現役と退役のノードが並ぶゴールも、関門の照合を通り、現役が完了なら完了になる。"""
+    ledger = ("nodes:\n- id: new/S.scala\n  kind: test\n  pekko:\n    module: stub\n  status: unported\n"
+              "  cases:\n    total: 2\n    ported: 1\n    passing: 1\n" + CARRIED_YAML +
+              "  goal: null\n- id: a/A.scala\n  kind: test\n  pekko:\n    module: stub\n  status: green\n"
+              "  goal: G0r\n" + RETIRED_YAML)
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        response = make_run(root, order_with(["docs/goals/g0r-stub.md"]), ledger,
+                            one_goal_doc("G0r", ["a/A.scala", "old/A.scala"]))
+        result = run_gate(root, response)
+        assert result["exit_code"] == 0, result
+        print("43q. a goal with active and retired members: exit_code =", result["exit_code"])
+
+
+def test_a_do_not_port_successor_with_carried_cases_does_not_complete_its_goal():
+    """引き継ぎを持つ後継を do_not_port にしても、関門はそのゴールを完了にしない。"""
+    node = ("- id: new/S.scala\n  kind: test\n  pekko:\n    module: stub\n  status: do_not_port\n"
+            "  cases:\n    total: 20\n    ported: 1\n    passing: 1\n    excluded: []\n" + CARRIED_YAML +
+            "  goal: G0s\n")
+    gate, whole = gate_and_whole("nodes:\n" + node + RETIRED_YAML, "G0s", "new/S.scala")
+    assert gate != 0 and whole != 0, (gate, whole)
+    print("43r. a do_not_port successor: gate =", gate, "whole =", whole)
+
+
 def test_goal_whose_nodes_are_all_retired_is_not_complete():
     """属するノードがすべて退役したゴールは、完了と判定しない（退役を理由に出す）。"""
     with tempfile.TemporaryDirectory() as temporary:
@@ -1227,6 +1252,8 @@ def main() -> int:
         test_a_retired_record_with_a_bad_id_still_reaches_its_named_successor,
         test_a_non_list_retired_fails_a_goal_check_even_when_the_goal_is_green,
         test_a_green_successor_cannot_count_a_carried_case_again_as_an_exclusion,
+        test_a_goal_with_active_and_retired_members_is_judged_through_the_gate,
+        test_a_do_not_port_successor_with_carried_cases_does_not_complete_its_goal,
         test_takt_triage_treats_the_same_statuses_as_done,
         test_not_built_with_a_nonzero_or_missing_passing_is_not_complete,
         test_non_list_not_built_record_is_diagnosed_without_crashing,

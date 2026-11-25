@@ -686,6 +686,25 @@ def test_mark_green_persists_green_and_reason():
         print("13a. mark_green persists green + cases + reason:", node["status"])
 
 
+def test_mark_green_stops_at_the_retired_section():
+    """台帳の末尾の現役ノードを green にしても、最上位の retired の前に書き、退役の記録を壊さない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        retired = ("# 退役したノード\nretired:\n- id: old/A.scala\n  kind: test\n  status: green\n"
+                   "  verified_against: v1.7.1\n  retired:\n    at: 2026-11-25\n    reason: moved\n"
+                   "    successor: a/A.scala\n")
+        write(root / "ledger" / "nodes.yaml", ledger_yaml([case_block(NODE_ID, None, None, None)]) + retired)
+        assert _run_mark_green(root, NODE_ID, 2, 2, "already_green: x") is True
+        import yaml
+        doc = yaml.safe_load((root / "ledger" / "nodes.yaml").read_text(encoding="utf-8"))
+        assert doc["nodes"][-1]["verified_against"] == BASELINE_TAG, doc["nodes"][-1]
+        assert doc["retired"][0]["id"] == "old/A.scala" and "verified_against" not in {
+            k for k in doc if k != "nodes" and k != "retired"}, doc.keys()
+        assert (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8").endswith(retired)
+        assert _run_mark_green(root, "old/A.scala", 1, 1, "already_green: y") is False
+        print("13c. mark_green stops at the retired section and does not touch retired records")
+
+
 def test_mark_green_preserves_human_reason():
     """mark_green は人間が書いた既存の triage.reason を上書きしない（False を返す）。"""
     with tempfile.TemporaryDirectory() as temporary:
@@ -1867,6 +1886,7 @@ def main() -> int:
         test_already_green_reason_returned_in_output,
         test_existing_non_null_reason_is_preserved,
         test_mark_green_persists_green_and_reason,
+        test_mark_green_stops_at_the_retired_section,
         test_mark_green_preserves_human_reason,
         test_record_already_green_writes_green_and_reason,
         test_record_already_green_refuses_a_source_that_is_not_the_current_baseline,
