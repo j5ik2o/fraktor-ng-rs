@@ -197,6 +197,18 @@ impl ByteStringInputStream {
   /// `UnsynchronizedByteArrayInputStream` also stops at the end since v2.0.0;
   /// in v1.7.1 it moved its position by the whole `n` even past the end, so a
   /// later skip there returned a negative count.
+  ///
+  /// `count` is a `usize`, so a negative count does not compile. This stands in
+  /// for the excluded case "reject negative skip" of Pekko v2.0.0's
+  /// `UnsynchronizedByteArrayInputStreamSpec` (L66-70), where `skip(-1)` throws
+  /// `IllegalArgumentException`; it is not counted as one of the node's cases.
+  ///
+  /// ```compile_fail
+  /// use fraktor_actor::kernel::byte_string::ByteString;
+  ///
+  /// let mut stream = ByteString::from_string("abc").as_input_stream();
+  /// stream.skip(-1);
+  /// ```
   pub fn skip(&mut self, count: usize) -> usize {
     self.bytes.skip_bytes(count)
   }

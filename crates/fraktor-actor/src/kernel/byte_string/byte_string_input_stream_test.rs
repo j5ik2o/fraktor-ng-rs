@@ -239,3 +239,23 @@ fn a_range_outside_the_buffer_is_refused_without_moving_the_stream() {
   assert_eq!(input.read_n_bytes_into(&mut buffer, 0, 3), Err(IndexOutOfBoundsError));
   assert_eq!(input.available(), 5);
 }
+
+// Stands in, together with the `compile_fail` example on `skip`, for the
+// excluded case "reject negative skip" of Pekko v2.0.0's
+// UnsynchronizedByteArrayInputStreamSpec (L66-70). Not counted in the ledger.
+#[test]
+fn skip_at_its_boundaries_zero_exactly_the_rest_and_past_the_rest() {
+  let mut input = ByteString::from_string("abc").as_input_stream();
+  assert_eq!(input.skip(0), 0);
+  assert_eq!(input.available(), 3);
+  assert_eq!(input.skip(3), 3);
+  assert_eq!(input.available(), 0);
+  assert_eq!(input.read(), None);
+
+  let mut input = concatenated();
+  assert_eq!(input.skip(6), 5);
+  assert_eq!(input.available(), 0);
+  assert_eq!(input.skip(1), 0);
+  assert_eq!(input.skip(usize::MAX), 0);
+}
+

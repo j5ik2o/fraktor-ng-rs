@@ -36,9 +36,11 @@
 // error types listed below (E0432 and E0599, recorded in
 // docs/baseline/pekko-v2.0.0-migration/batch-2.md).
 
-// Cases not ported. How to treat them is undecided. They are neither excluded nor
-// recorded as not built, so the ledger keeps this node red with 14 cases and 12
-// ported (docs/baseline/pekko-v2.0.0-migration/batch-2.md):
+// Cases not ported. The owner (j5ik2o) approved both as exclusions on
+// 2026-11-25 (`cases.excluded` of this node), with checks that stand in for
+// them and are not counted: `tests/byte_string_input_stream_no_copy_test.rs`
+// for the first, and the `compile_fail` example on `ByteStringInputStream::skip`
+// with the skip boundary unit test for the second:
 //   * "reject negative skip": `skip` takes a `usize`, which cannot be negative.
 //   * "not copy the backing array": the original writes to the array after
 //     building the stream and reads the new byte back. Safe Rust cannot write
