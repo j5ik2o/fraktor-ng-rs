@@ -216,26 +216,11 @@ def known_baseline_tags() -> set[str]:
         return set()
 
 
-def lineage_problems(nodes: list[dict], retired, known_tags: set[str] | None = None) -> dict[str, list[str]]:
-    """退役したノードと、そのケースを引き継いだノード（cases.carried）の記録の不足を、id ごとに返す。
+def retired_side_problems(by_id: dict, retired: list, problems: dict) -> tuple[dict, dict]:
+    """退役した側の記録の不足を problems に足し、id ごとの最初の退役記録と、id ごとの後継の一覧を返す。
 
-    退役の一覧は配列で、各要素は空でない文字列の id を持ち、id は一意で現行の nodes に無い。
-    retired.at は実在する暦日、retired.reason は空でない文字列、retired.successor は現行のノードの id
-    （文字列）で、後継の cases.carried に from が自分の要素がある。
-    cases.carried は配列で、各要素は CARRIED_TEXT_KEYS を空白以外の文字列で持つ。from の退役記録の
-    successor がそのノード自身であること（指定された後継のほかに同じケースを置いて二重に数えない）、
-    verified_against は基準ファイルが知るタグであること、ケース名は前後の空白を除いて重複しないこと。
-    後継が green でなければ（部分移植）、ported と passing は引き継いだ件数に等しく、total はそれより
-    大きい整数でなければならない（suite 全体を green と数えない）。
-    退役側だけの不正は、その退役記録の successor のノードにも理由を付けて返す（後継が属するゴールを
-    完了にしない）。型の違う欄でも例外を出さず、診断にする。
+    退役側の不足と id の重複は、その id を後継として指すすべてのノードにも伝える。
     """
-    tags = known_baseline_tags() if known_tags is None else known_tags
-    problems: dict[str, list[str]] = collections.defaultdict(list)
-    by_id = {n.get("id"): n for n in nodes if isinstance(n, dict) and is_text(n.get("id"))}
-    if not isinstance(retired, list):
-        problems["retired"].append("台帳の retired が配列でない")
-        retired = []
     retired_by_id: dict[str, dict] = {}
     successors_by_retired: dict[str, list] = collections.defaultdict(list)
     duplicated_ids: set[str] = set()
@@ -276,6 +261,54 @@ def lineage_problems(nodes: list[dict], retired, known_tags: set[str] | None = N
         for successor_id in successors_by_retired[rid]:
             if is_text(successor_id) and successor_id in by_id:
                 problems[successor_id].append(f"引き継ぎ元の退役 id {rid} が重複している")
+    return retired_by_id, successors_by_retired
+
+
+def carried_count_problems(n: dict, cases: dict, carried: list) -> list[str]:
+    """引き継ぎを持つノードの件数の不足を返す。green は total = ported + 承認済みの除外と passing = ported、
+    部分移植は ported = passing = 引き継いだ件数かつ total > ported。
+    """
+    own: list[str] = []
+    if n.get("status") == "green":
+        total, ported, passing = cases.get("total"), cases.get("ported"), cases.get("passing")
+        excluded = cases.get("excluded")
+        excluded = [] if excluded is None else excluded
+        approved = (isinstance(excluded, list)
+                    and all(isinstance(e, dict) and is_approved_by_human(e) for e in excluded))
+        if not (approved and all(type(v) is int for v in (total, ported, passing))
+                and passing == ported and total == ported + len(excluded)):
+            own.append("引き継ぎを持つ green のノードが total = ported + 承認済みの除外、"
+                       "passing = ported を満たさない")
+    if n.get("status") != "green":
+        total, ported, passing = cases.get("total"), cases.get("ported"), cases.get("passing")
+        if not (type(ported) is int and type(passing) is int and ported == passing == len(carried)):
+            own.append("部分移植のノードの ported と passing が引き継いだ件数と違う")
+        if not (type(total) is int and type(ported) is int and total > ported):
+            own.append("部分移植のノードの total が ported より大きい整数でない")
+    return own
+
+
+def lineage_problems(nodes: list[dict], retired, known_tags: set[str] | None = None) -> dict[str, list[str]]:
+    """退役したノードと、そのケースを引き継いだノード（cases.carried）の記録の不足を、id ごとに返す。
+
+    退役の一覧は配列で、各要素は空でない文字列の id を持ち、id は一意で現行の nodes に無い。
+    retired.at は実在する暦日、retired.reason は空でない文字列、retired.successor は現行のノードの id
+    （文字列）で、後継の cases.carried に from が自分の要素がある。
+    cases.carried は配列で、各要素は CARRIED_TEXT_KEYS を空白以外の文字列で持つ。from の退役記録の
+    successor がそのノード自身であること（指定された後継のほかに同じケースを置いて二重に数えない）、
+    verified_against は基準ファイルが知るタグであること、ケース名は前後の空白を除いて重複しないこと。
+    後継が green でなければ（部分移植）、ported と passing は引き継いだ件数に等しく、total はそれより
+    大きい整数でなければならない（suite 全体を green と数えない）。
+    退役側だけの不正は、その退役記録の successor のノードにも理由を付けて返す（後継が属するゴールを
+    完了にしない）。型の違う欄でも例外を出さず、診断にする。
+    """
+    tags = known_baseline_tags() if known_tags is None else known_tags
+    problems: dict[str, list[str]] = collections.defaultdict(list)
+    by_id = {n.get("id"): n for n in nodes if isinstance(n, dict) and is_text(n.get("id"))}
+    if not isinstance(retired, list):
+        problems["retired"].append("台帳の retired が配列でない")
+        retired = []
+    retired_by_id, successors_by_retired = retired_side_problems(by_id, retired, problems)
     carried_from: dict[str, int] = collections.Counter()
     evidence_seen: set[tuple] = set()
     for n in by_id.values():
@@ -309,22 +342,9 @@ def lineage_problems(nodes: list[dict], retired, known_tags: set[str] | None = N
                 problems[nid].append(f"cases.carried[{index}] の verified_against が基準ファイルの知るタグでない")
         if len(set(names)) != len(names):
             problems[nid].append("cases.carried のケース名が重複している（前後の空白を除いて比べる）")
-        if n.get("status") == "green":
-            total, ported, passing = cases.get("total"), cases.get("ported"), cases.get("passing")
-            excluded = cases.get("excluded")
-            excluded = [] if excluded is None else excluded
-            approved = (isinstance(excluded, list)
-                        and all(isinstance(e, dict) and is_approved_by_human(e) for e in excluded))
-            if not (approved and all(type(v) is int for v in (total, ported, passing))
-                    and passing == ported and total == ported + len(excluded)):
-                problems[nid].append("引き継ぎを持つ green のノードが total = ported + 承認済みの除外、"
-                                     "passing = ported を満たさない")
-        if n.get("status") != "green":
-            total, ported, passing = cases.get("total"), cases.get("ported"), cases.get("passing")
-            if not (type(ported) is int and type(passing) is int and ported == passing == len(carried)):
-                problems[nid].append("部分移植のノードの ported と passing が引き継いだ件数と違う")
-            if not (type(total) is int and type(ported) is int and total > ported):
-                problems[nid].append("部分移植のノードの total が ported より大きい整数でない")
+        counted = carried_count_problems(n, cases, carried)
+        if counted:
+            problems[nid] += counted
     for rid, count in carried_from.items():
         origin = retired_by_id.get(rid)
         ported = mapping(origin.get("cases")).get("ported") if origin else None
