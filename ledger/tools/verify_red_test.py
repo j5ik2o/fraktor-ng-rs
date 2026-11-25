@@ -826,6 +826,88 @@ def test_record_already_green_keeps_a_column_zero_comment_inside_the_node():
             print(f"13e. record-already-green with a comment inside the node ({label}): valid and complete")
 
 
+NO_YAML_LAUNCH = (
+    "import importlib.abc, runpy, sys\n"
+    "class _NoYaml(importlib.abc.MetaPathFinder):\n"
+    "    def find_spec(self, name, path=None, target=None):\n"
+    "        if name == 'yaml' or name.startswith('yaml.'):\n"
+    "            raise ImportError('yaml is not available in this launch')\n"
+    "        return None\n"
+    "sys.meta_path.insert(0, _NoYaml())\n"
+    "sys.argv = [sys.argv[1]]\n"
+    "runpy.run_path(sys.argv[0], run_name='__main__')\n"
+)
+
+
+def _record_both_ways(root: Path) -> dict[str, tuple[dict, str]]:
+    """同じ台帳で、PyYAML のある起動（CI 相当）と無い起動（TAKT 相当）の record_already_green を走らせる。"""
+    original = (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8")
+    baseline = prepare_baseline_source(root, current=True)
+    _stamp_provenance(root, baseline)
+    result_json = (root / ".takt" / "already-green-result.json").read_text(encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k != "PEKKO_ORIGINAL_ROOT"}
+    env["PEKKO_BASELINE_FILE"] = str(baseline)
+    outcomes = {}
+    for label, command in (("with yaml", [sys.executable, str(RECORD_ALREADY_GREEN)]),
+                           ("without yaml", [sys.executable, "-c", NO_YAML_LAUNCH, str(RECORD_ALREADY_GREEN)])):
+        write(root / "ledger" / "nodes.yaml", original)
+        write(root / ".takt" / "already-green-result.json", result_json)
+        proc = subprocess.run(command, cwd=str(root), env=env, capture_output=True, text=True, check=False)
+        assert proc.returncode == 0, (label, proc.stdout, proc.stderr)
+        outcomes[label] = (json.loads(proc.stdout), (root / "ledger" / "nodes.yaml").read_text(encoding="utf-8"))
+    return outcomes
+
+
+def _green_result_json(root: Path) -> None:
+    write(root / ".takt" / "already-green-result.json", json.dumps({
+        "classification": "already_green", "node": NODE_ID,
+        "original_cases": 2, "passed": 2, "excluded": 0,
+        "reason": "already_green: 原典 Pekko のケース数 2 と通過ケース数 2 が一致",
+    }, ensure_ascii=False))
+
+
+def test_record_already_green_reaches_the_node_when_retired_comes_first_in_both_launches():
+    """retired が nodes より先にあっても、注記があっても、両方の起動で現役ノードに記録し、ほかは保つ。"""
+    import yaml
+    other = case_block("actor-tests/src/test/java/org/apache/pekko/actor/Other.java", 1, 1, 1, status="green")
+    target = case_block(NODE_ID, None, None, None).replace("    total: null\n", "    total: null\n# case counts\n", 1)
+    retired = ("# 退役したノード\nretired:\n- id: old/A.java\n  kind: test\n  status: green\n"
+               "  retired:\n    at: 2026-11-25\n    reason: moved\n    successor: x\n")
+    nodes_part = ledger_yaml([other, target])
+    for label_order, text in (("retired first", "# 台帳\n" + retired + nodes_part), ("retired last", nodes_part + retired)):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write(root / "ledger" / "nodes.yaml", text)
+            _green_result_json(root)
+            before = yaml.safe_load(text)
+            for launch, (result, written) in _record_both_ways(root).items():
+                label = f"{label_order}, {launch}"
+                assert result["recorded"] is True, (label, result)
+                after = yaml.safe_load(written)
+                node = next(n for n in after["nodes"] if n["id"] == NODE_ID)
+                assert node["status"] == "green" and node["verified_against"] == BASELINE_TAG, (label, node)
+                assert (node["cases"]["total"], node["cases"]["ported"], node["cases"]["passing"]) == (2, 2, 2), label
+                assert [n["id"] for n in after["nodes"]] == [n["id"] for n in before["nodes"]], label
+                assert after["nodes"][0] == before["nodes"][0] and after["retired"] == before["retired"], label
+                assert retired in written and "# case counts" in written, label
+                print(f"13f. record-already-green ({label}): recorded on the active node, the rest kept")
+
+
+def test_record_already_green_refuses_a_node_missing_a_count_line_in_both_launches():
+    """cases.passing の行が無いノードは、両方の起動で記録せず、台帳をバイト単位で変えない。"""
+    target = case_block(NODE_ID, None, None, None).replace("    passing: null\n", "", 1)
+    assert "passing:" not in target
+    text = ledger_yaml([target]) + "retired:\n- id: old/A.java\n  kind: test\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write(root / "ledger" / "nodes.yaml", text)
+        _green_result_json(root)
+        for launch, (result, written) in _record_both_ways(root).items():
+            assert result["recorded"] is False, (launch, result)
+            assert written == text, launch
+            print(f"13g. record-already-green ({launch}): a missing passing line is not recorded, bytes unchanged")
+
+
 def test_record_already_green_refuses_a_source_that_is_not_the_current_baseline():
     """pekko/ が過去の基準の原典なら green を書かない（旧原典の照合に現行タグを付けない）。"""
     with tempfile.TemporaryDirectory() as temporary:
@@ -1930,6 +2012,8 @@ def main() -> int:
         test_mark_green_preserves_human_reason,
         test_record_already_green_writes_green_and_reason,
         test_record_already_green_keeps_a_column_zero_comment_inside_the_node,
+        test_record_already_green_reaches_the_node_when_retired_comes_first_in_both_launches,
+        test_record_already_green_refuses_a_node_missing_a_count_line_in_both_launches,
         test_record_already_green_refuses_a_source_that_is_not_the_current_baseline,
         test_modified_tracked_original_is_rejected_by_verify_red,
         test_untracked_file_in_original_is_rejected_by_verify_red,
