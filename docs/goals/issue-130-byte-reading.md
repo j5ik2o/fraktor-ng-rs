@@ -166,3 +166,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0issue130
 uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0issue130
 ```
+
+## Pekko v2.0.0 との照合（2026-11-25 追記）
+
+基準を Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）に切り替えた後に照合した。v1.7.1 は v2.0.0 の祖先ではないので、共通祖先 `0ca804c7af` から両方の系統を比べた。上の本文は v1.7.1 で照合したときの記録なので、そのまま残す。ここでは v2.0.0 の位置と判定だけを書く。台帳の `verified_against` は v2.0.0 にした（第3まとまり、`docs/baseline/pekko-v2.0.0-migration/batch-3.md`。第1・第2まとまりで扱ったノードは、それぞれの記録にある）。
+
+- `ByteIteratorSpec` は v2.0.0 で 1 ケース増えた（`f481c59dd9` #2952）。移植は `docs/baseline/pekko-v2.0.0-migration/batch-1.md` にある。`ByteStringInputStreamSpec` は、両方の系統に同じ patch（`30a0046944` と `692cb16f8d`、#2300）が入り、v2.0.0 でも 3 件のままである。
+- 出典の更新：`UnsynchronizedByteArrayInputStream.java` で、長さ 0 の読み出しが 0 を返す箇所は L140–142 から `readLocal` の L138–140 に移った（`a5cf13f26c`）。v2.0.0 は先頭で `Objects.checkFromIndexSize` を検査する。
+- 出典の更新：`ByteString.scala` は `scala-2.13/` から `scala/` にまとまった（`78cfe25fe9`、`f2b677dfa0`）。2 断片の表現 `ByteString2` が増えた（`29d74ecb74`）が、連結は今も `SequenceInputStream` で読むので、観測は変わらない。
+- 記録済みの差異（EOF の `None`、長さ 0 の `Some(0)`、連結の読み出しで境界をまたいでバッファを埋めること、表現を 1 つの型にまとめること、`ByteArrayIterator` のコピー、`usize`、`ByteString` 全体を移植しないこと）は維持する。

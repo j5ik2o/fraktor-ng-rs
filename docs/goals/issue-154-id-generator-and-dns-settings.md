@@ -327,3 +327,12 @@ cargo test -p fraktor-actor --lib system_host_dns_configuration
 cargo test --workspace
 uv run --with pyyaml python3 ledger/tools/goal_complete_gate_test.py
 ```
+
+## Pekko v2.0.0 との照合（2026-11-25 追記）
+
+基準を Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）に切り替えた後に照合した。v1.7.1 は v2.0.0 の祖先ではないので、共通祖先 `0ca804c7af` から両方の系統を比べた。上の本文は v1.7.1 で照合したときの記録なので、そのまま残す。ここでは v2.0.0 の位置と判定だけを書く。台帳の `verified_against` は v2.0.0 にした（第3まとまり、`docs/baseline/pekko-v2.0.0-migration/batch-3.md`。第1・第2まとまりで扱ったノードは、それぞれの記録にある）。
+
+- テストの変更は、`DnsSettingsSpec` が import の並びだけ、`IdGeneratorSpec` が import の書き方だけである。ケースと入力は同じである。
+- 出典の更新：OS の設定を JDK から読む経路は、反射から method handle に変わった（`246fae4fb8`、`DnsSettings.scala` L174–175 の `publicLookup` と `lookup`。だめなら `privateLookupIn`）。失敗のメッセージには、modular な JDK では `java.base/sun.net.dns` へのアクセスが要る旨が足された（L165）。上の「反射」は、v2.0.0 では「JDK 内部の ResolverConfiguration（method handle）」と読む。
+- 出典の更新：`random` の引数は `java.util.Random` から `java.util.random.RandomGenerator` に変わった（`f571b64f78` #3153、`IdGenerator.scala` L66）。`random(rand)` を移植しない判断は変わらない。
+- 記録済みの差異（型付きの入力値、検査の時期、`next_id` の `Result`、`CachePolicy.Ttl` の一部、OS との差異）は維持する。
