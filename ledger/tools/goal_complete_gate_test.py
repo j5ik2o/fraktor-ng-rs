@@ -472,6 +472,48 @@ def test_not_built_with_a_non_integer_total_or_padded_duplicate_name_is_not_comp
     assert_not_built_incomplete("40b. not_built with a duplicated name padded by a space", "", cases)
 
 
+def _lineage(successor_status: str = "unported", total=20, ported=1, passing=1, carried_from="old/A.scala",
+             retired_extra: dict | None = None, active_extra: list | None = None):
+    import rollup
+    carried = [{"name": "case", "from": carried_from, "source": "new/S.scala L1-2", "rust_test": "t.rs",
+                "verified_against": "v2.0.0", "evidence": "1 passed"}]
+    successor = {"id": "new/S.scala", "status": successor_status,
+                 "cases": {"total": total, "ported": ported, "passing": passing, "carried": carried}}
+    retired = {"id": "old/A.scala", "goal": "G0r",
+               "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala", **(retired_extra or {})}}
+    return rollup.lineage_problems([successor] + (active_extra or []), [retired])
+
+
+def test_retired_node_and_carried_case_are_checked_and_not_double_counted():
+    """退役したノードと、ケースを引き継いだ部分移植のノードの記録を検査する。"""
+    assert _lineage() == {}, _lineage()
+    assert "new/S.scala" in _lineage(ported=2, passing=2), "ported must equal the carried cases"
+    assert "new/S.scala" in _lineage(total=1), "a partly ported suite must not add up to its total"
+    assert "new/S.scala" in _lineage(carried_from="other/B.scala"), "carried from a node that is not retired"
+    assert "old/A.scala" in _lineage(retired_extra={"successor": "missing/X.scala"})
+    assert "old/A.scala" in _lineage(retired_extra={"at": "2026-02-30T00:00"})
+    assert "old/A.scala" in _lineage(active_extra=[{"id": "old/A.scala", "status": "green", "cases": {}}])
+    assert _lineage(successor_status="green", total=20, ported=20, passing=20) == {}
+    print("43. retired and carried records are checked")
+
+
+def test_goal_whose_nodes_are_all_retired_is_not_complete():
+    """属するノードがすべて退役したゴールは、完了と判定しない（退役を理由に出す）。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ledger = ("nodes:\n- id: new/S.scala\n  kind: test\n  pekko:\n    module: stub\n  status: unported\n"
+                  "  cases:\n    total: 2\n    ported: 1\n    passing: 1\n    carried:\n"
+                  "    - name: case\n      from: old/A.scala\n      source: new/S.scala L1\n"
+                  "      rust_test: t.rs\n      verified_against: v2.0.0\n      evidence: 1 passed\n"
+                  "  goal: null\nretired:\n- id: old/A.scala\n  kind: test\n  pekko:\n    module: stub\n"
+                  "  status: green\n  goal: G0r\n  retired:\n    at: 2026-11-25\n    reason: moved\n"
+                  "    successor: new/S.scala\n")
+        response = make_run(root, order_with(["docs/goals/g0r-stub.md"]), ledger, one_goal_doc("G0r", ["old/A.scala"]))
+        result = run_gate(root, response)
+        assert result["exit_code"] != 0, result
+        print("44. a goal whose nodes are all retired: exit_code =", result["exit_code"])
+
+
 def test_takt_triage_treats_the_same_statuses_as_done():
     """TAKT の triage が処理済みとする status は、rollup の DONE_STATUSES と同じである。
 
@@ -662,6 +704,7 @@ def test_real_goal_documents_match_current_ledger():
     import rollup
 
     ledger_nodes = rollup.load_nodes(str(REAL_LEDGER))
+    ledger_retired = rollup.load_retired(str(REAL_LEDGER))
     docs = sorted(GOALS.glob("*.md"))
     assert docs, f"no goal documents under {GOALS}"
     for doc_path in docs:
@@ -689,7 +732,17 @@ def test_real_goal_documents_match_current_ledger():
             assert m, (doc_path.name, first_line)
             goal_id = m.group(1)
             members = sorted(n["id"] for n in ledger_nodes if n.get("goal") == goal_id)
-            assert members, (doc_path.name, "no ledger member for goal", goal_id)
+            if not members:
+                # 属するノードがすべて退役したゴール（v1.7.1 で閉じた記録）。表の id は退役した
+                # ノードと一致し、関門は完了と判定しない（rollup は退役を理由に 1 を返す）。
+                retired = sorted(r["id"] for r in ledger_retired if r.get("goal") == goal_id)
+                assert retired, (doc_path.name, "no ledger member for goal", goal_id)
+                for node_id in retired:
+                    assert f"`{node_id}`" in doc_path.read_text(encoding="utf-8"), (doc_path.name, node_id)
+                result = run_gate(root, response)
+                assert result["exit_code"] != 0, (doc_path.name, result)
+                print(f"15. real doc {doc_path.name} ({goal_id}): retired, exit_code =", result["exit_code"])
+                continue
 
             member_nodes = [n for n in ledger_nodes if n.get("goal") == goal_id]
             complete = all(rollup.is_done(n) for n in member_nodes)
@@ -885,6 +938,8 @@ def main() -> int:
         test_not_built_with_malformed_approval_is_not_complete,
         test_not_built_with_duplicated_case_names_is_not_complete,
         test_not_built_with_a_blank_case_name_is_not_complete,
+        test_retired_node_and_carried_case_are_checked_and_not_double_counted,
+        test_goal_whose_nodes_are_all_retired_is_not_complete,
         test_takt_triage_treats_the_same_statuses_as_done,
         test_not_built_with_a_nonzero_or_missing_passing_is_not_complete,
         test_non_list_not_built_record_is_diagnosed_without_crashing,
