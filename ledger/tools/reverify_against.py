@@ -31,6 +31,7 @@
   - PyYAML は report のときだけ遅延 import する（apply と plan は PyYAML なしで動く）
 """
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -62,13 +63,28 @@ def _resolve_tag(value: str | None) -> str:
     return value
 
 
+def _scalar(text: str) -> str:
+    """YAML のスカラーの値を返す（`"do_not_port"` のような引用符を外し、行末の注記を落とす）。
+
+    台帳はほかの道具が YAML として読むので、比較は生の文字列ではなく値で行う。
+    """
+    value = re.split(r"\s+#", text, maxsplit=1)[0].strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        if value[0] == '"':
+            try:
+                return json.loads(value)
+            except ValueError:
+                return value[1:-1]
+        return value[1:-1].replace("''", "'")
+    return value
+
+
 def read_field(lines: list[str], key: str, span: tuple[int, int]) -> str | None:
     """対象ノードの最上位の欄（列 2 の `key:`）の値を返す。欄が無ければ None。"""
     for i in range(span[0] + 1, span[1]):
         match = TOP_LEVEL_FIELD.match(lines[i])
         if match and match.group(1) == key:
-            value = re.split(r"\s+#", match.group(2), maxsplit=1)[0].strip()
-            return value
+            return _scalar(match.group(2))
     return None
 
 

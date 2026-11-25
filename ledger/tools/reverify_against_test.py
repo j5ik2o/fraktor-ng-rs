@@ -241,6 +241,38 @@ def test_apply_refuses_a_tag_that_is_not_current():
         print("5. 現行タグでない --tag は拒否する")
 
 
+def test_apply_reads_quoted_scalars():
+    """status と verified_against が引用付きのスカラーでも、生の文字列ではなく値で比べる。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        quoted = ledger().replace('  status: do_not_port', '  status: "do_not_port"').replace(
+            f"  verified_against: {PAST}", f'  verified_against: "{PAST}"')
+        path = write_ledger(root, quoted)
+        proc = tool(root, "plan", "--ledger", str(path))
+        assert proc.returncode == 0, (proc.stdout, proc.stderr)
+        assert proc.stdout.splitlines() == ["m/A.scala"], proc.stdout
+        assert apply(root, ["m/A.scala"]).returncode == 0
+        assert f"verified_against: {CURRENT}" in path.read_text(encoding="utf-8")
+        print("5b. 引用付きの status と verified_against を値として比べる")
+
+
+def test_apply_adds_the_field_without_a_trailing_newline():
+    """改行で終わらない台帳でも、欄の追加で 2 行を連結しない（`ledger_lines` の差し込み）。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        text = NODE.format(id="m/A.scala", name="A", status="do_not_port", kind="do_not_port", tag="")
+        before = "nodes:\n" + text.rstrip("\n")
+        path = write_ledger(root, before)
+        proc = apply(root, ["m/A.scala"])
+        assert proc.returncode == 0, (proc.stdout, proc.stderr)
+        after = path.read_text(encoding="utf-8")
+        assert after == before + f"\n  verified_against: {CURRENT}\n", repr(after[-60:])
+        import yaml
+
+        assert yaml.safe_load(after)["nodes"][0]["verified_against"] == CURRENT
+        print("2b. 末尾に改行が無くても欄の追加で壊さない")
+
+
 def test_apply_keeps_retired_first_and_comments():
     """`retired` が `nodes` より前にある台帳でも、注記と退役したノードをそのまま残す。"""
     with tempfile.TemporaryDirectory() as temporary:
@@ -395,6 +427,8 @@ def main() -> int:
         test_apply_refuses_a_status_that_is_not_judged,
         test_apply_refuses_an_id_that_is_not_in_nodes,
         test_apply_refuses_a_tag_that_is_not_current,
+        test_apply_reads_quoted_scalars,
+        test_apply_adds_the_field_without_a_trailing_newline,
         test_apply_keeps_retired_first_and_comments,
         test_apply_is_idempotent_and_reports_no_change,
         test_apply_refuses_duplicate_ids_and_writes_nothing,

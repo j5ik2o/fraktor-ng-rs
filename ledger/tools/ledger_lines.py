@@ -63,6 +63,18 @@ def node_span(lines: list[str], node_id: str) -> tuple[int, int] | None:
     return start, end
 
 
+def _ensure_newline(lines: list[str], index: int) -> list[str]:
+    """index の行の直前に差し込む前に、直前の行の改行を保証する。
+
+    改行で終わらない最後の行に差し込むと、2 行が同じ行に連結されて YAML が壊れる。
+    """
+    if index > 0 and not lines[index - 1].endswith("\n"):
+        patched = list(lines)
+        patched[index - 1] += "\n"
+        return patched
+    return lines
+
+
 def _insert_after_key(lines: list[str], node_id: str, key: str, new_line: str) -> list[str]:
     """対象ノードの key 行の直後に new_line を差し込む（key が無ければ何もしない）。"""
     span = node_span(lines, node_id)
@@ -70,7 +82,7 @@ def _insert_after_key(lines: list[str], node_id: str, key: str, new_line: str) -
         return lines
     for i in range(span[0] + 1, span[1]):
         if re.match(rf"\s+{re.escape(key)}\s*$", lines[i]):
-            return lines[: i + 1] + [new_line] + lines[i + 1 :]
+            return _ensure_newline(lines, i + 1)[: i + 1] + [new_line] + lines[i + 1 :]
     return lines
 
 
@@ -87,4 +99,4 @@ def _set_top_level_key(lines: list[str], node_id: str, key: str, value: str) -> 
     # ノードの後ろの空行と注記（次の欄や退役の節の見出しの注記）の前に足す。
     while end > start + 1 and _is_filler(lines[end - 1]):
         end -= 1
-    return lines[:end] + [new_line] + lines[end:]
+    return _ensure_newline(lines, end)[:end] + [new_line] + lines[end:]
