@@ -22,6 +22,12 @@ SCALA_CASE = re.compile(
 # `it should "..."` で始まる行も、SCALA_CASE と同じ行を両側で数えるために含める。
 SCALA_NAMED_PREFIX = re.compile(
     r'^\s*(?:it\s+should\s+)?"[^"]+"(?:\s+(?=\S)|\s*\.)', re.MULTILINE)
+# 行頭に限らず、mask 済みのテキストのどこにでも現れる宣言の印。`in {`、`in (`、`in new`、`.in`
+# （受け手が文字列でも括弧でも）はケースの宣言、文字列の後の must/should/can/when/which と `{` は見出しの
+# 宣言の印である。行頭のケースと見出しの数と一致しなければ、セミコロンの後や括弧つきの受け手の
+# 宣言を見落としているので、件数を確かめられないと判断する（未知の構文を数えはしない）。
+SCALA_IN_ANYWHERE = re.compile(r'(?:\.\s*in\b|\bin\s*(?:\{|\(|new\b))')
+SCALA_VERB_ANYWHERE = re.compile(r'"[^"]*"\s+(?:must|should|can|when|which)\s*\{')
 # WordSpec の見出し。ケースではなく、下のケースをまとめるブロックである。見出しとして認めるのは、
 # 波括弧で閉じたブロックの中に既知の書式のケースが 1 件以上あるときだけ（空の見出しや、未知の
 # 書式だけを持つ見出しは、件数を確かめられないので数えられない扱いにする）。
@@ -122,7 +128,9 @@ def count_scala_headings(masked: str) -> int | None:
 def count_scala_cases(text: str) -> int | None:
     """Scala の原典のケース数を返す。既知の書式で全件を説明できなければ None。
 
-    文字列リテラルで始まる宣言の候補の数が、ケースと見出しの数の和に一致することを確かめる。
+    文字列リテラルで始まる宣言の候補の数が、ケースと見出しの数の和に一致すること、また行頭に
+    限らない宣言の印（SCALA_IN_ANYWHERE、SCALA_VERB_ANYWHERE）の数が、ケースと見出しの数に
+    それぞれ一致することを確かめる。
     """
     masked = mask(text)
     if masked is None:
@@ -130,5 +138,7 @@ def count_scala_cases(text: str) -> int | None:
     cases = len(SCALA_CASE.findall(masked))
     headings = count_scala_headings(masked)
     if headings is None or len(SCALA_NAMED_PREFIX.findall(masked)) != cases + headings:
+        return None
+    if len(SCALA_IN_ANYWHERE.findall(masked)) != cases or len(SCALA_VERB_ANYWHERE.findall(masked)) != headings:
         return None
     return cases
