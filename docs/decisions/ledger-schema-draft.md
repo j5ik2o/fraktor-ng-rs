@@ -132,8 +132,11 @@
   `cases.not_built` の件数は `total` に等しい。`rust` の欄は null のまま
 - 一部のケースだけが作らない区分のノード（混在）は、残りのケースを移植し、status は移植の勘定で
   決める。green の条件は `ported` と承認済みの `excluded` と `not_built` の件数の和が `total` に
-  等しいことになる。この勘定は `verify_red.py` と `verify_green.py` にまだ入っていない。最初に混在の
-  ノードを扱うゴールで入れる
+  等しいことになる。`rollup.py` はこの勘定で混在のノードを検査する（2026-11-25、最初の混在のノード
+  `UnsynchronizedByteArrayInputStreamSpec` のために入れた）。要素の記録が揃い、`passing` が `ported` に
+  等しく、和が `total` に等しくなければ、そのノードを一覧に出してゴールの完了に数えない。同じケースを
+  除外と作らないの両方に置くことも許さない。`verify_red.py` の already_green の勘定と
+  `verify_green.py` には、まだ入っていない
 - `rollup.py` は、`not_built` のノードの記録を検査し、欠けたノードを一覧に出してゴールの完了に数えない。
   検査するのは、`triage` と `cases` がマッピングであること、`triage.kind` と `triage.reason`、`ported` と `passing` が整数の 0、
   `total` が正の整数であること、`cases.excluded` が空であること（同じケースを除外と作らないに二重に置かない）、`cases.not_built` が配列であること、`cases.not_built` の件数が `total` に
