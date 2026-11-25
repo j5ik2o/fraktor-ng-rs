@@ -66,7 +66,7 @@ JVM の実物と同じ値になることを単体テストで確かめた。期�
 |:---|---:|:---|
 | `cargo test -p fraktor-actor --test frequency_sketch_spec` | 0 | 22件成功 |
 | `cargo test -p fraktor-actor --lib frequency_sketch` | 0 | 18件成功 |
-| `cargo test --workspace` | 0 | 1009件成功、失敗0（main の取り込み後） |
+| `cargo test --workspace` | 0 | 1010件成功、失敗0（レビュー対応の `frequency_sketch_allocation_test.rs` を足した後、76d8d22） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 警告0 |
 | `cargo fmt --check` | 0 | 差分なし |
 | syn-check（`crates/` の2クレート） | 0 | 違反0、抑制0 |
