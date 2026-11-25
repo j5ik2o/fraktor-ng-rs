@@ -48,6 +48,14 @@ impl Props {
   /// `Actor.emptyBehavior`. Every message that reaches the actor is reported
   /// through [`ActorContext::unhandled`], so an actor built from this recipe
   /// answers nothing and reports each message it is sent.
+  ///
+  /// Do not make this actor a subscriber of
+  /// [`UnhandledMessage`](crate::kernel::actor::UnhandledMessage) or of every
+  /// event: it treats the report it receives as another message it does not
+  /// handle and reports that in turn, so the stream never goes idle. Pekko
+  /// behaves the same way, because `aroundReceive` calls `unhandled` for a
+  /// message `emptyBehavior` does not match. A subscriber that watches
+  /// unhandled messages must handle or ignore them.
   pub fn empty() -> Self {
     Self::new(|| EmptyActor)
   }

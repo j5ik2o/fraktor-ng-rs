@@ -89,6 +89,7 @@ P1 と P2 は「1 件につき 1 件」を、同じアクターに複数件を�
 | 購読者のいない stream、sink の無いシステム | 何も起きず panic しない | P1 の一部（sink 無し） |
 | `unhandled` をメッセージの外（`pre_start` など）で呼ぶ | sender はその時点の sender（通常は dead letters）。panic しない | なし（契約は `sender()` のとおり。呼び出し経路を作らない） |
 | `Terminated` を渡す | `U` を出す（原典は `DeathPactException`）。§2 の範囲外 | なし |
+| `Props::empty` のアクターを `UnhandledMessage` または全イベントの購読先にする | 通知が購読先に届き、空アクターがそれをまた未処理として報告するので止まらない。原典も `aroundReceive` が `emptyBehavior` に一致しないメッセージを `unhandled` にするため同じ循環になる。利用側の誤用であり、購読先には未処理通知を扱うか無視するアクターを使う（`Props::empty` の doc コメントにも書く） | なし（原典と同じ。直さない） |
 
 ## 6. 状態遷移と Quint
 

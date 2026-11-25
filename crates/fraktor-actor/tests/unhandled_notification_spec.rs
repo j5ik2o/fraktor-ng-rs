@@ -13,6 +13,7 @@
 // It is not a port of a test class, so it carries no ledger node.
 
 use core::any::Any;
+use core::time::Duration;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -68,7 +69,12 @@ impl EventSink for RecordingSink {
   }
 }
 
-/// Takes one `UnhandledMessage` from `probe` and checks its three fields.
+/// Takes one `UnhandledMessage` from `probe`, checks its three fields, and
+/// checks that the same delivery produced no second report (I1).
+///
+/// A duplicate made while this delivery runs is queued before the probe hands
+/// over the first report, so the zero-length wait below observes it without
+/// adding a pause to the test.
 fn assert_unhandled<T>(probe: &mut TestProbe, expected: &T, sender: &ActorRef, recipient: &ActorRef)
 where
   T: Any + core::fmt::Debug + PartialEq,
@@ -78,6 +84,7 @@ where
   assert_eq!(message, expected);
   assert_eq!(unhandled.sender(), sender);
   assert_eq!(unhandled.recipient(), recipient);
+  probe.expect_no_message(Duration::ZERO);
 }
 
 /// P1 and P4: every message that reaches an empty actor is reported once, with
