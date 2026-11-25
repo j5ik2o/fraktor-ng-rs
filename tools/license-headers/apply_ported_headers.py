@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """移植したファイルの冒頭に、Apache License 2.0 の短いヘッダーを付ける。
 
-対象は、原典（Apache Pekko）からの移植だと分かる行を冒頭 20 行に持つ
-`crates/**/*.rs` だけである。マーカーは次の 3 つ。
+対象は、原典（Apache Pekko）からの移植だと分かる行を、このスクリプトが
+付けたヘッダーを除いた冒頭 20 行に持つ `crates/**/*.rs` だけである。
+マーカーは次の 3 つ。
 
   - `Ported from Pekko`
   - `Port of Pekko`
@@ -45,40 +46,72 @@ HEADER_LINES = (
     "//",
     "// This file has been modified from the Apache Pekko original.",
 )
-HEADER = "\n".join(HEADER_LINES)
-INSERTION = HEADER + "\n\n"
+NEWLINES = ("\r\n", "\n")
+
+
+def header_for(newline):
+    return newline.join(HEADER_LINES)
+
+
+def insertion_for(newline):
+    return header_for(newline) + newline + newline
+
+
+def newline_of(text):
+    """ファイルが使っている改行。CRLF を含むなら CRLF とみなす。"""
+    return "\r\n" if "\r\n" in text else "\n"
+
+
+def strip_header(text):
+    """このスクリプトが付けたヘッダーを除いた本文を返す。無ければそのまま返す。"""
+    for newline in NEWLINES:
+        insertion = insertion_for(newline)
+        if text.startswith(insertion):
+            return text[len(insertion):]
+    return text
 
 
 def is_ported(text):
-    """冒頭のコメントに移植マーカーがあるか。"""
-    head = "\n".join(text.splitlines()[:MARKER_WINDOW])
+    """付けたヘッダーを除いた冒頭に移植マーカーがあるか。"""
+    body = strip_header(text)
+    head = "\n".join(body.splitlines()[:MARKER_WINDOW])
     return MARKER.search(head) is not None
 
 
 def has_header(text):
     """このスクリプトが付けるヘッダーで始まるか。"""
-    return text.startswith(HEADER)
+    return strip_header(text) != text
 
 
 def add_header(text):
     """ヘッダーが無ければ付ける。あればそのまま返す（冪等）。"""
     if has_header(text):
         return text
-    return INSERTION + text
+    return insertion_for(newline_of(text)) + text
 
 
 def remove_header(text):
     """このスクリプトが付けたヘッダーだけを消す。無ければそのまま返す。"""
-    if not text.startswith(INSERTION):
-        return text
-    return text[len(INSERTION):]
+    return strip_header(text)
+
+
+def read_text(path):
+    """改行を変換せずに読む。"""
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        return handle.read()
+
+
+def write_text(path, text):
+    """改行を変換せずに書く。"""
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(text)
 
 
 def ported_files(root):
     """`<root>/crates` 配下で、移植マーカーを持つ Rust ファイルを返す。"""
     files = []
     for path in sorted((root / "crates").rglob("*.rs")):
-        text = path.read_text(encoding="utf-8")
+        text = read_text(path)
         if is_ported(text):
             files.append((path, text))
     return files
@@ -113,14 +146,14 @@ def main(argv=None):
 
     if args.apply:
         for path, text in pending:
-            path.write_text(add_header(text), encoding="utf-8")
+            write_text(path, add_header(text))
         print(f"ported: {len(entries)}  added: {len(pending)}  already headed: {len(headed)}")
         report(root, entries, args.list)
         return 0
 
     if args.remove:
         for path, text in headed:
-            path.write_text(remove_header(text), encoding="utf-8")
+            write_text(path, remove_header(text))
         print(f"ported: {len(entries)}  removed: {len(headed)}  without header: {len(pending)}")
         report(root, entries, args.list)
         return 0

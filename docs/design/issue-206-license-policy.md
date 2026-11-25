@@ -165,7 +165,7 @@ $ shasum -a 256 LICENSE pekko/LICENSE
 
 `tools/license-headers/apply_ported_headers.py`
 
-- 対象は `crates/**/*.rs` のうち、冒頭 20 行に `Ported from Pekko` / `Port of Pekko` / `Checked against Pekko` を持つファイルだけ。**マーカーの無いファイルには触らない。**
+- 対象は `crates/**/*.rs` のうち、このスクリプトが付けたヘッダーを除いた冒頭 20 行に `Ported from Pekko` / `Port of Pekko` / `Checked against Pekko` を持つファイルだけ。**マーカーの無いファイルには触らない。** マーカーの位置はヘッダーの有無に依存せず、`--apply` の後も `--remove` の対象に残る。
 - 付けるヘッダー（Rust のコメント）：
 
 ```rust
@@ -181,7 +181,7 @@ $ shasum -a 256 LICENSE pekko/LICENSE
 // This file has been modified from the Apache Pekko original.
 ```
 
-- 冪等：2 回 `--apply` しても内容は変わらない。`--remove` は付けたヘッダーだけを消して元に戻す。`--check` は未適用があれば終了コード 1（CI 用）。
+- 冪等：2 回 `--apply` しても内容は変わらない。`--remove` は付けたヘッダーだけを消して元に戻す。`--check` は未適用があれば終了コード 1（CI 用）。読み書きは改行を変換しないため、CRLF のファイルもバイト単位で元に戻る（ヘッダーはそのファイルの改行に合わせる）。
 - dry-run（既定）の実測：
 
 ```
@@ -190,7 +190,7 @@ ported: 51  headed: 0  to add: 51
 pending crates/fraktor-actor/tests/...
 ```
 
-- テスト：`tools/license-headers/apply_ported_headers_test.py`（4 件、すべて成功）。冪等性、対象の限定、`--remove` での復元、`--check` の終了コードを一時ディレクトリで確かめる。
+- テスト：`tools/license-headers/apply_ported_headers_test.py`（6 件、すべて成功）。冪等性、対象の限定、`--remove` での復元、`--check` の終了コード、探索窓の末尾（10 行目・20 行目）のマーカーが適用後も対象に残ること、CRLF のバイト単位の復元を一時ディレクトリで確かめる。このテストは CI の Python テスト一覧に登録した。
 
 **適用はまだしていない。** 方針決定後に次を実行する。
 
@@ -203,7 +203,7 @@ python3 tools/license-headers/apply_ported_headers.py --check   # 0 を確認
 
 - 既存の移植ファイルは 1 つも書き換えていない。
 - クレートの `Cargo.toml`（`publish = false`、`version = "0.0.0"`）は変えていない。
-- CI のワークフローは変えていない（`--check` の組み込みは未実施）。
+- CI のワークフローは、ヘッダーツールのテストを Python テスト一覧に加えただけ（`--check` の組み込みは未実施）。
 - 原典 `pekko/` は読み取り専用として扱い、変更していない。
 
 ## 4. 残る判断（元帥）
