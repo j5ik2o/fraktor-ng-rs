@@ -1,3 +1,8 @@
+// Checked against Pekko v2.0.0 (SHA 9fbd2283b1cf701c90a1223bf621942c191db61f): the upstream test
+// file changes only by 4d942a0ca7 #3088, ec27d6dd8c #2724, 00b0a99278 #2081; the cases and their
+// inputs are unchanged.
+// The record is docs/baseline/pekko-v2.0.0-migration/batch-3.md.
+//
 // Ported from Pekko commit 9a54d1294c3ac7821bbed3c940769c3d5027d1ff:
 //   actor-tests/src/test/java/org/apache/pekko/event/LoggingAdapterTest.java
 //   actor-tests/src/test/java/org/apache/pekko/event/ActorWithMDC.java
