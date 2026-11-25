@@ -110,8 +110,8 @@ def count_excluded(ledger_path: str, node_id: str) -> int | None:
 
     台帳を YAML として読み、対象ノードの `cases.excluded` だけを検査する。同じノードの
     `cases` の外にある `excluded` や、除外要素の下位（metadata など）にある承認欄は
-    流用しない。`excluded:` が空配列・null なら 0。台帳が YAML として読めない、
-    `cases` が無い、要素がマッピングでない、または `excluded` がリストでないときは None
+    流用しない。`excluded` の欄が無い、null、空配列なら 0。台帳が YAML として読めない、
+    `cases` が無い、要素がマッピングでない、または `excluded` がリストでない（`false`、`{}` など）ときは None
     （除外の件数を確かめられないと判断する）。台帳が無い・ノードが無いときも None。
     重複したマッピングキーや merge キー (`<<`) を含む台帳も、専用ローダが読み込みを
     拒否するため None となる（先の未承認除外を隠す入力や、他ノードの承認記録の流用を
@@ -121,22 +121,21 @@ def count_excluded(ledger_path: str, node_id: str) -> int | None:
     if node is None:
         return None
     cases = node.get("cases")
-    if not isinstance(cases, dict) or "excluded" not in cases:
+    if not isinstance(cases, dict):
         return None
-    excluded = cases["excluded"]
-    if excluded is None:
-        return 0
+    excluded = cases.get("excluded")
     if excluded_problems(excluded):
         return None
-    return len(excluded)
+    return len(excluded or [])
 
 
 def excluded_problems(excluded) -> list[str]:
     """cases.excluded の記録の不足を返す。rollup.py の混在の勘定と count_excluded が共有する。
 
-    配列でない、要素がマッピングでない、人による承認記録が無い（is_approved_by_human）、
-    ケース名が同じ要素が複数ある、のどれかがあれば、その理由を返す。同名の要素を 2 回数えて
-    件数式を満たすことを防ぐ。空配列と null は不足なしとする。
+    配列でない（`false` や `{}` を含む）、要素がマッピングでない、人による承認記録が無い
+    （is_approved_by_human）、ケース名が同じ要素が複数ある、のどれかがあれば、その理由を返す。
+    同名の要素を 2 回数えて件数式を満たすことを防ぐ。欄の欠落（呼び出し側が None を渡す）、
+    null、空配列だけを「除外なし」として扱う。
     """
     if excluded is None:
         return []

@@ -12,7 +12,8 @@
   fixture は分母に入らない。全体はモジュール平均ではなく、全ノードの合算で出す。
   ケースの勘定として、移植（cases.ported）、除外（cases.excluded）、作らない
   （cases.not_built）の件数を kind=test の全ノードで合算して出す。除外と作らないは、
-  承認記録の有効な件数と、台帳に書かれた件数（括弧内）を分けて出す（case_counts）。
+  verify_red と同じ検査を通った有効な件数と、台帳に書かれた生の件数（括弧内、診断用）を
+  分けて出す（case_counts）。
 
 作らない区分（not_built）の記録の検査:
   status=not_built のノードは、triage.kind が not_built で triage.reason があり、
@@ -36,7 +37,7 @@ import sys
 import yaml
 
 from excluded_approvals import (
-    excluded_problems, is_approved_by_human, is_case_name, is_text, is_valid_not_built_case, ledger_loader)
+    excluded_problems, is_case_name, is_text, is_valid_not_built_case, ledger_loader)
 
 # ゴールの完了に数える status。check_needs.py も同じ集合を使い、
 # TAKT の triage（fraktor-triage.md、fraktor-port-node.yaml）も同じ status を処理済みとする。
@@ -92,8 +93,11 @@ def mixed_not_built_problems(node: dict) -> list[str]:
     if not isinstance(records, list):
         return ["cases.not_built が配列でない"]
     problems = not_built_records_problems(records)
-    excluded = cases.get("excluded") or []
-    problems += excluded_problems(excluded)
+    excluded = cases.get("excluded")
+    excluded_issues = excluded_problems(excluded)
+    problems += excluded_issues
+    if excluded is None:
+        excluded = []
     if not isinstance(excluded, list):
         return problems
     not_built_names = {r.get("name").strip() for r in records if isinstance(r, dict) and is_text(r.get("name"))}
@@ -106,8 +110,8 @@ def mixed_not_built_problems(node: dict) -> list[str]:
         return problems + ["cases.total・ported・passing が 0 以上の整数でない"]
     if passing != ported:
         problems.append("cases.passing が cases.ported と違う")
-    approved_excluded = sum(1 for e in excluded if isinstance(e, dict) and is_approved_by_human(e))
-    if ported + approved_excluded + len(records) != total:
+    valid_excluded = 0 if excluded_issues else len(excluded)
+    if ported + valid_excluded + len(records) != total:
         problems.append("cases.ported と承認済みの excluded と not_built の件数の和が cases.total と違う")
     return problems
 
@@ -155,11 +159,14 @@ def is_done(node: dict) -> bool:
 
 
 def case_counts(test_nodes: list[dict]) -> dict:
-    """ケースの勘定。除外と作らないは、承認記録の有効な要素の数と、記録された要素の数を分けて出す。
+    """ケースの勘定。除外と作らないは、有効な件数と、記録された件数を分けて出す。
 
-    有効な要素の判定は、除外が is_approved_by_human、作らないが is_valid_not_built_case である。
-    作らないは、記録の揃ったノード（not_built_problems が空）の要素だけを有効に数える。
-    status が not_built のノードの除外は、区分が二重になるので有効に数えない（記録件数には入る）。
+    有効な件数は、verify_red と同じ検査を通ったノードの要素だけを数える。除外は
+    excluded_problems（全要素の承認、名前の重複なし、配列であること）が空のノードの要素、
+    作らないは記録の揃ったノード（not_built_problems が空）の要素である。
+    status が not_built のノードの除外は、区分が二重になるので有効に数えない。
+    記録された件数（`*_recorded`）は、台帳に配列として書かれた要素の生の数で、診断用である。
+    不正な要素や重複も含み、勘定には使わない。
     """
     counts = {"ported": 0, "excluded": 0, "excluded_recorded": 0,
               "not_built": 0, "not_built_recorded": 0}
@@ -172,9 +179,8 @@ def case_counts(test_nodes: list[dict]) -> dict:
         excluded = cases.get("excluded")
         if isinstance(excluded, list):
             counts["excluded_recorded"] += len(excluded)
-            if n.get("status") != "not_built":
-                counts["excluded"] += sum(1 for e in excluded
-                                          if isinstance(e, dict) and is_approved_by_human(e))
+            if n.get("status") != "not_built" and not excluded_problems(excluded):
+                counts["excluded"] += len(excluded)
         not_built = cases.get("not_built")
         if isinstance(not_built, list):
             counts["not_built_recorded"] += len(not_built)
@@ -230,7 +236,7 @@ def main() -> int:
         f"  ケース: 移植={cases['ported']} "
         f"除外={cases['excluded']}（記録 {cases['excluded_recorded']}） "
         f"作らない={cases['not_built']}（記録 {cases['not_built_recorded']}）"
-        f"  ※除外・作らないは承認記録の有効な件数、括弧内は台帳に書かれた件数"
+        f"  ※除外・作らないは verify_red と同じ検査を通った有効な件数、括弧内は台帳に書かれた生の件数（診断用）"
     )
     for n in nodes:
         problems = not_built_problems(n)
