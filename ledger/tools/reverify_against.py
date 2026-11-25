@@ -37,7 +37,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ledger_lines import _set_top_level_key
+from ledger_lines import _set_top_level_key, line_sections, node_span
 
 # 判定済み（原典と照合して決めた）status。pekko_baseline.py の JUDGED_STATUSES と同じ。
 JUDGED_STATUSES = ("green", "do_not_port", "not_built")
@@ -89,8 +89,6 @@ def read_field(lines: list[str], key: str, span: tuple[int, int]) -> str | None:
 
 
 def _span(lines: list[str], node_id: str) -> tuple[int, int]:
-    from ledger_lines import node_span
-
     span = node_span(lines, node_id)
     if span is None:
         raise ValueError(f"{node_id}: nodes に無い（退役したノードや、id の誤り）")
@@ -112,8 +110,6 @@ def set_tag(lines: list[str], node_id: str, tag: str) -> list[str]:
 
 def _judged(lines: list[str]) -> list[tuple[str, str | None]]:
     """nodes の判定済みノードの (id, 現在の verified_against) を、台帳の順で返す。"""
-    from ledger_lines import line_sections
-
     sections = line_sections(lines)
     result = []
     for i, line in enumerate(lines):
@@ -165,8 +161,6 @@ def cmd_apply(args) -> int:
     if len(set(ids)) != len(ids):
         print(f"{args.ids}: id が重複している", file=sys.stderr)
         return 1
-    from ledger_lines import node_span
-
     lines = list(original)
     changed, same = [], []
     before_spans = {}
