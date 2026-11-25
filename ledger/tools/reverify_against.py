@@ -73,7 +73,7 @@ def set_tag(lines: list[str], node_id: str, tag: str) -> list[str]:
 
 def _judged(lines: list[str]) -> list[tuple[str, str | None]]:
     """nodes の判定済みノードの (id, 現在の verified_against) を、台帳の順で返す。"""
-    from ledger_lines import TOP_LEVEL_KEY, line_sections
+    from ledger_lines import line_sections
 
     sections = line_sections(lines)
     result = []
