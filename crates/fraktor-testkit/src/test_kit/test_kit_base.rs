@@ -20,6 +20,7 @@ use fraktor_actor::kernel::supervision::SupervisorStrategy;
 
 use crate::test_kit::expected_messages::ClassOf;
 use crate::test_kit::AutoPilot;
+use crate::test_kit::ReceiveWhile;
 use crate::test_kit::ReceivedMessage;
 use crate::test_kit::TestActor;
 use crate::test_kit_extension::TestKitSettings;
@@ -200,6 +201,77 @@ impl TestKitBase {
       received.push(message);
     }
     received
+  }
+
+  /// Takes messages while `pick` accepts them and returns what it picked.
+  ///
+  /// Mirrors `TestKitBase.receiveWhile`. The call ends at the first of: `pick`
+  /// returning `None` for a message, which goes back to the head of the queue
+  /// for the next wait; no message within `idle`; `messages` picked messages;
+  /// or the deadline. The deadline is the dilated `max`, or without one the
+  /// time left in the enclosing `within`, or the dilated single-expect default
+  /// outside one. Afterwards the last message is the last one picked, or none;
+  /// with a `messages` limit of 0 the call takes nothing and, as Pekko's
+  /// returns before its first `receiveOne`, keeps the last message it found.
+  /// The call counts as a no-message wait for `within`, as in Pekko, so a
+  /// scope does not fail because the call used its time up.
+  ///
+  /// As in Pekko, a `pick` that runs past the deadline does not stop the call
+  /// from taking messages that are already queued: a wait with no time left
+  /// still takes a queued message, as `pollFirst` does in Pekko's `receiveOne`.
+  ///
+  /// Pekko's `receiveOne` inside `receiveWhile` does not shorten its wait to
+  /// the `within` deadline; the port's `receive_one` does, so a `max` longer
+  /// than the scope ends at the end of the scope.
+  pub(crate) fn receive_while<T>(
+    &mut self,
+    limits: ReceiveWhile,
+    mut pick: impl FnMut(&Message) -> Option<T>,
+  ) -> Vec<T> {
+    let max = match limits.max_limit() {
+      | Some(max) => self.settings.dilated(max),
+      | None => self.remaining_or_default(),
+    };
+    let stop = Instant::now() + max;
+    let mut picked = Vec::new();
+    let mut last_picked = None;
+    let mut waited = false;
+    while picked.len() < limits.message_limit() {
+      waited = true;
+      let mut wait = stop.saturating_duration_since(Instant::now());
+      if let Some(idle) = limits.idle_limit() {
+        wait = wait.min(idle);
+      }
+      let Some(received) = self.receive_one(wait) else {
+        break;
+      };
+      match pick(received.message()) {
+        | Some(value) => {
+          picked.push(value);
+          last_picked = Some(received);
+        },
+        | None => {
+          self.actor.put_back(received);
+          break;
+        },
+      }
+    }
+    if waited {
+      self.last_message = last_picked;
+    }
+    self.last_was_no_msg = true;
+    picked
+  }
+
+  /// Returns the time left in the enclosing `within`, or the dilated
+  /// single-expect default outside one.
+  ///
+  /// Mirrors `TestKitBase.remainingOrDefault`.
+  fn remaining_or_default(&self) -> Duration {
+    match *self.scope.borrow() {
+      | Some(deadline) => deadline.saturating_duration_since(Instant::now()),
+      | None => self.settings.dilated(self.settings.single_expect_default_timeout()),
+    }
   }
 
   /// Waits for one message per entry in `classes` and returns them.

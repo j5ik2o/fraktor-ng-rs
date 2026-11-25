@@ -16,6 +16,7 @@ use fraktor_actor::kernel::message::Message;
 
 use crate::test_kit::expected_messages::ClassOf;
 use crate::test_kit::AutoPilot;
+use crate::test_kit::ReceiveWhile;
 use crate::test_kit::ReceivedMessage;
 use crate::test_kit::TestKitBase;
 use crate::test_kit_extension::TestKitSettings;
@@ -80,6 +81,26 @@ impl TestKit {
   pub fn receive_n(&mut self, n: usize, max: Duration) -> Vec<ReceivedMessage> {
     let max = self.base.settings().dilated(max);
     self.base.receive_n(n, max)
+  }
+
+  /// Takes messages while `pick` accepts them and returns what it picked,
+  /// corresponding to `receiveWhile`.
+  ///
+  /// The call ends at the first message `pick` rejects, which stays queued for
+  /// the next wait, or at the first of the [`ReceiveWhile`] limits.
+  pub fn receive_while<T>(&mut self, limits: ReceiveWhile, pick: impl FnMut(&Message) -> Option<T>) -> Vec<T> {
+    self.base.receive_while(limits, pick)
+  }
+
+  /// Waits until `condition` holds or the dilated `max` has passed.
+  ///
+  /// Mirrors `TestKitBase.awaitCond`: the timeout is scaled by the time factor,
+  /// the condition is evaluated before the first wait, and the actor system
+  /// keeps running between evaluations. A condition that never holds fails with
+  /// a `timeout` assertion.
+  pub fn await_cond(&mut self, condition: impl FnMut() -> bool, max: Duration) {
+    let max = self.base.settings().dilated(max);
+    self.base.await_cond(condition, max);
   }
 
   /// Returns the handle that holds the deadline of the enclosing `within`.

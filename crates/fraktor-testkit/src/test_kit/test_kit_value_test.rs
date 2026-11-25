@@ -18,6 +18,7 @@ use fraktor_actor::kernel::message::Envelope;
 use fraktor_actor::kernel::message::Message;
 
 use super::TestKit;
+use crate::test_kit::ReceiveWhile;
 
 fn test_kit() -> TestKit {
   TestKit::new(ActorSystem::new("TestKitSpec", Arc::new(ChannelBoundary::new())))
@@ -325,4 +326,217 @@ fn expect_msg_all_conforming_of_returns_every_received_message_in_arrival_order(
     kit.expect_msg_all_conforming_of_within(Duration::from_secs(1), &[ClassOf::of::<i32>(), ClassOf::of::<i32>()]);
 
   assert_eq!(values, vec![1, 2]);
+}
+
+fn send_all(kit: &TestKit, messages: &[usize]) {
+  let test_actor = kit.test_actor();
+  for message in messages {
+    test_actor.tell(*message, test_actor.clone());
+  }
+}
+
+fn small(message: &Message) -> Option<usize> {
+  message.downcast_ref::<usize>().copied().filter(|value| *value < 10)
+}
+
+#[test]
+fn receive_while_collects_messages_until_one_does_not_match() {
+  let mut kit = test_kit();
+  send_all(&kit, &[1, 2, 30, 4]);
+
+  let received = kit.receive_while(ReceiveWhile::new().max(Duration::from_millis(200)), small);
+
+  assert_eq!(received, vec![1, 2]);
+  assert_eq!(kit.expect_msg_type::<usize>(), 30);
+  assert_eq!(kit.expect_msg_type::<usize>(), 4);
+}
+
+#[test]
+fn receive_while_keeps_the_last_matched_message_as_the_last_message() {
+  let mut kit = test_kit();
+  send_all(&kit, &[1, 2, 30]);
+
+  let _ = kit.receive_while(ReceiveWhile::new().max(Duration::from_millis(200)), small);
+
+  let last = kit.last_message().expect("a message matched");
+  assert_eq!(last.downcast_ref::<usize>(), Some(&2));
+}
+
+#[test]
+fn receive_while_stops_after_the_given_number_of_messages() {
+  let mut kit = test_kit();
+  send_all(&kit, &[1, 2, 3]);
+
+  let received = kit.receive_while(ReceiveWhile::new().max(Duration::from_millis(200)).messages(2), small);
+
+  assert_eq!(received, vec![1, 2]);
+  assert_eq!(kit.expect_msg_type::<usize>(), 3);
+}
+
+#[test]
+fn receive_while_returns_what_it_has_when_max_passes() {
+  let mut kit = test_kit();
+  send_all(&kit, &[1]);
+  let started = Instant::now();
+
+  let received = kit.receive_while(ReceiveWhile::new().max(Duration::from_millis(100)), small);
+
+  assert_eq!(received, vec![1]);
+  assert!(started.elapsed() >= Duration::from_millis(100));
+  assert!(kit.last_message().is_some_and(|last| last.downcast_ref::<usize>() == Some(&1)));
+}
+
+#[test]
+fn receive_while_stops_when_idle_passes_between_messages() {
+  let mut kit = test_kit();
+  send_all(&kit, &[1]);
+  let started = Instant::now();
+
+  let received =
+    kit.receive_while(ReceiveWhile::new().max(Duration::from_secs(3)).idle(Duration::from_millis(50)), small);
+
+  assert_eq!(received, vec![1]);
+  assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn receive_while_with_no_match_returns_nothing_and_leaves_the_message_queued() {
+  let mut kit = test_kit();
+  send_all(&kit, &[42]);
+
+  let received: Vec<()> = kit.receive_while(ReceiveWhile::new().max(Duration::from_secs(1)), |_| None);
+
+  assert!(received.is_empty());
+  assert!(kit.last_message().is_none());
+  assert_eq!(kit.expect_msg_type::<usize>(), 42);
+}
+
+#[test]
+fn receive_while_without_max_uses_the_remaining_time_of_within() {
+  let mut spec = crate::fraktorspec::FraktorSpec::new("TestKitSpec");
+  let started = Instant::now();
+
+  let received =
+    spec.within(Duration::from_millis(200), |spec| spec.test_kit_mut().receive_while(ReceiveWhile::new(), small));
+
+  assert!(received.is_empty());
+  assert!(started.elapsed() >= Duration::from_millis(200));
+  assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn receive_while_dilates_max() {
+  let factor = crate::test_kit_extension::TestTimeFactor::new(3.0);
+  let mut spec = crate::fraktorspec::FraktorSpec::with_time_factor("TestKitSpec", factor);
+  let started = Instant::now();
+
+  let received = spec.test_kit_mut().receive_while(ReceiveWhile::new().max(Duration::from_millis(100)), small);
+
+  assert!(received.is_empty());
+  assert!(started.elapsed() >= Duration::from_millis(300));
+}
+
+#[test]
+fn await_cond_runs_the_system_until_the_condition_holds() {
+  let mut kit = test_kit();
+  let seen = Arc::new(Mutex::new(false));
+  let flag = Arc::clone(&seen);
+  let actor = kit.system_mut().actor_of(Props::new(move || SetFlag { seen: Arc::clone(&flag) }));
+  actor.tell("set", actor.clone());
+
+  kit.await_cond(|| *seen.lock().unwrap(), Duration::from_secs(2));
+
+  assert!(*seen.lock().unwrap());
+}
+
+#[test]
+#[should_panic(expected = "timeout")]
+fn await_cond_fails_when_the_condition_never_holds() {
+  let mut kit = test_kit();
+
+  kit.await_cond(|| false, Duration::from_millis(50));
+}
+
+struct SetFlag {
+  seen: Arc<Mutex<bool>>,
+}
+
+impl Actor for SetFlag {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {
+    *self.seen.lock().unwrap() = true;
+  }
+}
+
+/// Every queue of at most `max_length` values drawn from `0..values`.
+fn bounded_queues(max_length: usize, values: usize) -> Vec<Vec<usize>> {
+  let mut queues = vec![Vec::new()];
+  let mut frontier = vec![Vec::new()];
+  for _ in 0..max_length {
+    frontier = frontier
+      .into_iter()
+      .flat_map(|queue: Vec<usize>| {
+        (0..values).map(move |value| {
+          let mut next = queue.clone();
+          next.push(value);
+          next
+        })
+      })
+      .collect();
+    queues.extend(frontier.iter().cloned());
+  }
+  queues
+}
+
+// Property (specs/receive_while.qnt, `nothingLostOrReordered`,
+// `pickedOnlyAccepted`, `withinLimit` and `lastIsLastPicked`): for every queue
+// of up to 4 messages from 0..4, with even messages accepted, and every limit
+// from none to 4, the call returns the longest accepted prefix cut at the
+// limit, the rest of the queue stays queued in order, and the last message is
+// the last one picked, or with a limit of 0 the one from before the call.
+// Checked over the whole bounded domain.
+#[test]
+fn receive_while_takes_the_accepted_prefix_and_keeps_the_rest_for_every_bounded_queue() {
+  let mut kit = test_kit();
+  let limits = [None, Some(0), Some(1), Some(2), Some(3), Some(4)];
+  for queue in bounded_queues(4, 4) {
+    for limit in limits {
+      let before = kit.last_message().and_then(|last| last.downcast_ref::<usize>().copied());
+      send_all(&kit, &queue);
+      let mut call = ReceiveWhile::new().max(Duration::from_millis(1));
+      if let Some(limit) = limit {
+        call = call.messages(limit);
+      }
+
+      let picked = kit.receive_while(call, |message| message.downcast_ref::<usize>().copied().filter(|v| v % 2 == 0));
+
+      let accepted = queue.iter().take_while(|value| *value % 2 == 0).count();
+      let expected = accepted.min(limit.unwrap_or(usize::MAX));
+      assert_eq!(picked, queue[..expected], "queue {queue:?}, limit {limit:?}");
+      let last = kit.last_message().and_then(|last| last.downcast_ref::<usize>().copied());
+      let expected_last = if limit == Some(0) { before } else { picked.last().copied() };
+      assert_eq!(last, expected_last, "queue {queue:?}, limit {limit:?}");
+      let rest: Vec<usize> = kit
+        .receive_n(queue.len() - expected, Duration::from_secs(1))
+        .iter()
+        .map(|received| *received.downcast_ref::<usize>().expect("a usize message"))
+        .collect();
+      assert_eq!(rest, queue[expected..], "queue {queue:?}, limit {limit:?}");
+    }
+  }
+}
+
+// Pekko's `receiveWhile` returns before its first `receiveOne` when `messages`
+// is 0, so `lastMessage` keeps the value it had before the call.
+#[test]
+fn receive_while_with_a_limit_of_zero_keeps_the_previous_last_message() {
+  let mut kit = test_kit();
+  send_all(&kit, &[5, 6]);
+  assert_eq!(kit.expect_msg_type::<usize>(), 5);
+
+  let received: Vec<usize> = kit.receive_while(ReceiveWhile::new().max(Duration::from_millis(50)).messages(0), small);
+
+  assert!(received.is_empty());
+  let last = kit.last_message().and_then(|last| last.downcast_ref::<usize>().copied());
+  assert_eq!(last, Some(5));
+  assert_eq!(kit.expect_msg_type::<usize>(), 6);
 }
