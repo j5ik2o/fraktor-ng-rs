@@ -113,7 +113,7 @@ steps:
     rules:
       - condition: ゴールの対象ノードがすべて台帳で green、do_not_port、または記録の揃った not_built であり（rollup.py --goal が完了を返す）、処理対象が残っていない
         return: goal_complete
-      - condition: 対象ゴールに属するノードに、記録の不足した not_built がある（rollup.py --goal のそのゴールの未完了一覧に not_built として出る。ほかのゴールのノードは含めない）
+      - condition: 対象ゴールに属するノードに、記録の不足した not_built がある（rollup.py --goal のそのゴールの未完了一覧に not_built として出るか、一部のケースを作らない green のノードが作らない区分の記録の不足つきで出る。ほかのゴールのノードは含めない）
         return: needs_human
       - condition: 前提が揃っており、未承認の除外提案がない（承認済みの除外は台帳の cases.excluded に記録されている）
         next: port-test
