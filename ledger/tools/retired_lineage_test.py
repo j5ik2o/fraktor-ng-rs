@@ -281,6 +281,31 @@ def test_a_successor_with_carried_cases_must_be_unported_red_or_counted_green() 
     print("8. a do_not_port successor with carried cases is not complete anywhere")
 
 
+def test_extract_needs_updates_active_nodes_when_retired_comes_first() -> None:
+    """最上位の順序によらず、extract_needs は nodes の現役ノードの needs を更新し、retired は変えない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        text = ledger()
+        retired = text[text.index("retired:\n"):]
+        reordered = retired + text[:text.index("retired:\n")]
+        (root / "nodes.yaml").write_text(reordered, encoding="utf-8")
+        (root / "capabilities.yaml").write_text(
+            "capabilities:\n- id: cap\n  regex: 'class X'\n  provided_by: G0x\npremise_flags: []\n", encoding="utf-8")
+        for name in ("New", "Other"):
+            path = root / "pekko" / "m" / f"{name}.scala"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("class X\n", encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(TOOLS / "extract_needs.py"), "--ledger", str(root / "nodes.yaml"),
+             "--capabilities", str(root / "capabilities.yaml"), "--pekko", str(root / "pekko")],
+            capture_output=True, text=True)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        after = yaml.safe_load((root / "nodes.yaml").read_text(encoding="utf-8"))
+        assert all(n["needs"]["testkit"] == ["cap"] for n in after["nodes"]), after["nodes"]
+        assert (root / "nodes.yaml").read_text(encoding="utf-8").startswith(retired)
+    print("9. extract_needs updates active nodes when retired comes first")
+
+
 def main() -> int:
     tests = [
         test_convert_baseline_keeps_retired_and_does_not_revive_the_retired_id,
@@ -291,6 +316,7 @@ def main() -> int:
         test_check_ledger_diagnoses_an_unquoted_invalid_retired_date_without_crashing,
         test_a_partly_ported_successor_cannot_exclude_its_carried_case,
         test_a_successor_with_carried_cases_must_be_unported_red_or_counted_green,
+        test_extract_needs_updates_active_nodes_when_retired_comes_first,
     ]
     failed = 0
     for test in tests:

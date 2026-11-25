@@ -562,9 +562,12 @@ def test_lineage_refuses_duplicates_unknown_tags_and_a_non_list_retired():
                  "cases": {"total": 20, "ported": 1, "passing": 1, "carried": [record]}}
     retired = {"id": "old/A.scala", "cases": {"ported": 1}, "retired": {"at": "2026-11-25", "reason": "moved", "successor": "new/S.scala"}}
     assert "old/A.scala" in rollup.lineage_problems([successor], [retired, dict(retired)]), "duplicated retired id"
+    # 名前の重複だけが診断されるように、退役元の移植数を 2 にし、2 件目には別の証拠を持たせる。
+    roomy = dict(retired, cases={"ported": 2})
     padded = dict(successor, cases=dict(successor["cases"], ported=2, passing=2,
-                                        carried=[record, dict(record, name="case ")]))
-    assert "new/S.scala" in rollup.lineage_problems([padded], [retired]), "names that differ only by spaces"
+                                        carried=[record, dict(record, name="case ", source="s L9", rust_test="u.rs")]))
+    padded_problems = rollup.lineage_problems([padded], [roomy]).get("new/S.scala", [])
+    assert padded_problems and all("ケース名が重複" in p for p in padded_problems), padded_problems
     unknown = dict(successor, cases=dict(successor["cases"], carried=[dict(record, verified_against="not-a-tag")]))
     assert "new/S.scala" in rollup.lineage_problems([unknown], [retired]), "an unknown baseline tag"
     assert rollup.lineage_problems([successor], {}), "retired: {} is not a list"
@@ -725,7 +728,9 @@ def test_the_gate_reads_an_invalid_unquoted_retired_date_without_crashing():
         response = make_run(root, order_with(["docs/goals/g0t-stub.md"]), ledger, one_goal_doc("G0t", ["a/A.scala"]))
         result = run_gate(root, response)
         assert "Traceback" not in json.dumps(result), result
-        assert result["exit_code"] in (0, 1), result
+        # a/A.scala は不正な退役記録の指定後継なので、読み込みを続けたうえで未完了にする。
+        assert result["exit_code"] == 1, result
+        assert "a/A.scala" in result.get("output", ""), result
         print("43m. the gate reads an invalid unquoted date without crashing: exit_code =", result["exit_code"])
 
 
@@ -755,9 +760,15 @@ def test_a_green_successor_cannot_count_a_carried_case_again_as_an_exclusion():
     approval = "      approved_by: someone\n      approved_at: 2026-01-01\n"
     excluded = ("    excluded:\n" + "".join(f"    - name: other {i}\n      reason: r\n" + approval for i in range(18))
                 + "    - name: case\n      reason: r\n" + approval)
-    gate, whole = gate_and_whole("nodes:\n" + lineage_node("new/S.scala", "G0s", "green", 20, 1, excluded) + RETIRED_YAML,
-                                 "G0s", "new/S.scala")
+    ledger = "nodes:\n" + lineage_node("new/S.scala", "G0s", "green", 20, 1, excluded) + RETIRED_YAML
+    gate, whole = gate_and_whole(ledger, "G0s", "new/S.scala")
     assert gate != 0 and whole != 0, (gate, whole)
+    # 集計の有効な除外の件数からは、引き継いだケースと重なる 1 件を外す（記録の件数には残す）。
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "nodes.yaml"
+        path.write_text(ledger, encoding="utf-8")
+        output = subprocess.run([sys.executable, str(ROLLUP), "--ledger", str(path)], capture_output=True, text=True).stdout
+        assert "除外=18（記録 19）" in output, output
     distinct = "    excluded:\n" + "".join(f"    - name: other {i}\n      reason: r\n" + approval for i in range(19))
     gate, whole = gate_and_whole("nodes:\n" + lineage_node("new/S.scala", "G0s", "green", 20, 1, distinct) + RETIRED_YAML,
                                  "G0s", "new/S.scala")
