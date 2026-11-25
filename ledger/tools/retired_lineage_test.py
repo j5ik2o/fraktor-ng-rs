@@ -66,7 +66,7 @@ def ledger(*, carried_twice: bool = False) -> str:
                     goal="null", tag=""),
     ]
     retired = NODE.format(id="m/Old.scala", name="Old", status="green", total=1, ported=1, carried="",
-                          goal="G0old", tag="  verified_against: v1.7.1\n")
+                          goal="G0old", tag="  verified_against: v2.0.0\n")
     retired += "  retired:\n    at: 2026-11-25\n    reason: moved\n    successor: m/New.scala\n"
     return "nodes:\n" + "".join(nodes) + "retired:\n" + retired
 
