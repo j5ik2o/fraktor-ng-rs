@@ -86,3 +86,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 uv run --with pyyaml python3 ledger/tools/check_needs.py --ledger ledger/nodes.yaml --capabilities ledger/capabilities.yaml --goal G0issue124
 uv run --with pyyaml python3 ledger/tools/rollup.py --ledger ledger/nodes.yaml --goal G0issue124
 ```
+
+## Pekko v2.0.0 との照合（2026-11-25 追記）
+
+基準を Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）に切り替えた後に照合した。v1.7.1 は v2.0.0 の祖先ではないので、共通祖先 `0ca804c7af` から両方の系統を比べた。上の本文は v1.7.1 で照合したときの記録なので、そのまま残す。ここでは v2.0.0 の位置と判定だけを書く。台帳の `verified_against` は v2.0.0 にした（第3まとまり、`docs/baseline/pekko-v2.0.0-migration/batch-3.md`。第1・第2まとまりで扱ったノードは、それぞれの記録にある）。
+
+- テストの変更は `ab12a8f5ec` #2766 と import の並び（`870d4499cc`）だけで、ケースと入力は同じ（1 件）。
+- 出典の更新：時計は `RecencyList.Clock` から `actor/src/main/scala/org/apache/pekko/util/Clock.scala` の `Clock`（L55）に移った。`NanoClock`（L64）と `ScheduledClock`（L77）もそこにある。テストの時計は `actor-tests/src/test/scala/org/apache/pekko/util/TestClock.scala` に共通化された（L22、秒単位の `earlierTime` は L29）。`earlierTime(duration)` の意味（自分の単位で引く）は変わらない。
+- 出典の更新：`new RecencyList(clock)` は `RecencyList(clock)`（`RecencyList.scala` L30、コンストラクタは private）になった。`NanoClock` を使う `empty` は `emptyWithNanoClock`（L27）に改名された。移植しない判断は変わらない。
+- 記録済みの差異（時計の `earlierTime`、skip の付く版の名前、`check` の `forall` の結果を捨てること）は維持する。
