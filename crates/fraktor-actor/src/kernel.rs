@@ -13,6 +13,7 @@ mod clock;
 
 pub use clock::Clock;
 
+pub mod dispatch;
 pub mod double_linked_list;
 pub mod event;
 pub mod executor;

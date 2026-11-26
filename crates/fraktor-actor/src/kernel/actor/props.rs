@@ -44,6 +44,7 @@ pub struct Props {
   factory: Arc<dyn Fn() -> Box<dyn Actor> + Send + Sync>,
   dispatcher: Option<Arc<str>>,
   mailbox: Option<Arc<str>>,
+  router: Option<crate::kernel::actor::RouterConfig>,
 }
 
 /// The actor that [`Props::empty`] builds.
@@ -90,7 +91,7 @@ impl Props {
     F: Fn() -> A + Send + Sync + 'static,
     A: Actor + 'static,
   {
-    Self { factory: Arc::new(move || Box::new(factory())), dispatcher: None, mailbox: None }
+    Self { factory: Arc::new(move || Box::new(factory())), dispatcher: None, mailbox: None, router: None }
   }
 
   /// Records the name of the dispatcher the actor should run on.
@@ -140,6 +141,26 @@ impl Props {
     self.mailbox.as_deref()
   }
 
+  /// Records the router this recipe's actor would head.
+  ///
+  /// Mirrors `Props.withRouter(router)`. The router of this port is
+  /// minimal: at creation the configuration is verified and the head
+  /// is started, but no routees are created and no routing happens, so
+  /// a message to the head is reported as unhandled. Routing itself is
+  /// issue #269 (https://github.com/j5ik2o/fraktor-ng-rs/issues/269).
+  pub fn with_router(mut self, router: crate::kernel::actor::RouterConfig) -> Self {
+    self.router = Some(router);
+    self
+  }
+
+  /// Returns the router the recipe records, when one was set.
+  ///
+  /// Mirrors `Props.routerConfig` narrowed to the record this port
+  /// keeps.
+  pub fn router(&self) -> Option<&crate::kernel::actor::RouterConfig> {
+    self.router.as_ref()
+  }
+
   pub(crate) fn create_actor(&self) -> Box<dyn Actor> {
     (self.factory)()
   }
@@ -147,6 +168,11 @@ impl Props {
 
 impl Clone for Props {
   fn clone(&self) -> Self {
-    Self { factory: Arc::clone(&self.factory), dispatcher: self.dispatcher.clone(), mailbox: self.mailbox.clone() }
+    Self {
+      factory: Arc::clone(&self.factory),
+      dispatcher: self.dispatcher.clone(),
+      mailbox: self.mailbox.clone(),
+      router: self.router.clone(),
+    }
   }
 }

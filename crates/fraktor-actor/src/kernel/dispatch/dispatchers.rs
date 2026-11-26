@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// license agreements; and to You under the Apache License, version 2.0:
+//
+//   https://www.apache.org/licenses/LICENSE-2.0
+//
+// This file is part of the Apache Pekko project, which was derived from Akka.
+//
+// Copyright (C) 2009-2022 Lightbend Inc. <https://www.lightbend.com>
+//
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE and NOTICE
+// at the repository root.
+//
+// This file has been modified from the Apache Pekko original.
+
+//! The table of dispatcher definitions a system verifies against.
+
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+
+use crate::kernel::dispatch::DispatcherConfig;
+use crate::kernel::dispatch::DispatcherKind;
+use crate::kernel::setup::Setup;
+
+/// The id of the dispatcher Pekko uses when none is named.
+///
+/// Mirrors `Dispatchers.DefaultDispatcherId`.
+pub const DEFAULT_DISPATCHER_ID: &str = "pekko.actor.default-dispatcher";
+
+/// The table of dispatcher ids a system knows, with the default id.
+///
+/// Mirrors `org.apache.pekko.dispatch.Dispatchers`: the lookup side
+/// only. Registering a definition makes its id known; the default id
+/// is always known. The table travels into a system through
+/// [`ActorSystemSetup`](crate::kernel::setup::ActorSystemSetup), as a
+/// `Setup`, and stage 5 of #234 extends this same type with aliases
+/// and execution instead of replacing it (design of #194, M1).
+///
+/// A dispatcher that a [`DispatchSettings`](crate::kernel::actor::dispatch_settings::DispatchSettings)
+/// defines also counts as configured for verification, because the
+/// ported tests define their dispatchers that way; its kind reads as
+/// not balancing, as only this table records kinds.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Dispatchers {
+  configs: Vec<DispatcherConfig>,
+  default_id: String,
+}
+
+impl Dispatchers {
+  /// Creates a table holding `configs` plus the default dispatcher.
+  pub fn new(configs: Vec<DispatcherConfig>) -> Self {
+    Self { configs, default_id: DEFAULT_DISPATCHER_ID.to_string() }
+  }
+
+  /// Returns the table with only the default dispatcher.
+  pub fn with_defaults() -> Self {
+    Self::new(Vec::new())
+  }
+
+  /// Returns whether `id` names a dispatcher in this table.
+  ///
+  /// Mirrors `Dispatchers.hasDispatcher`.
+  pub fn has_dispatcher(&self, id: &str) -> bool {
+    id == self.default_id || self.configs.iter().any(|config| config.id == id)
+  }
+
+  /// Returns the kind of the dispatcher `id` names, when known.
+  pub fn kind_of(&self, id: &str) -> Option<DispatcherKind> {
+    if id == self.default_id {
+      return Some(DispatcherKind::Default);
+    }
+    self.configs.iter().find(|config| config.id == id).map(|config| config.kind)
+  }
+
+  /// Returns the id of the default dispatcher.
+  pub fn default_id(&self) -> &str {
+    &self.default_id
+  }
+}
+
+impl Default for Dispatchers {
+  fn default() -> Self {
+    Self::with_defaults()
+  }
+}
+
+impl Setup for Dispatchers {}
