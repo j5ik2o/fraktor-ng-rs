@@ -3080,7 +3080,7 @@ nodes:
     module: actor-tests
     class: IndexSpec
     test_cases_approx: 7
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -3091,14 +3091,16 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 7
+    ported: 7
+    passing: 7
     excluded: []
+    not_built: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/index_spec.rs
+  goal: G0issue187
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/io/InetAddressDnsResolverSpec.scala
   name: actor-tests:InetAddressDnsResolverSpec
   kind: test
@@ -3522,7 +3524,7 @@ nodes:
     module: actor-tests
     class: MessageBufferSpec
     test_cases_approx: 9
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -3533,14 +3535,16 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 9
+    ported: 9
+    passing: 9
     excluded: []
+    not_built: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/message_buffer_spec.rs
+  goal: G0issue187
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/io/dns/internal/MessageSpec.scala
   name: actor-tests:MessageSpec
   kind: test
@@ -5252,7 +5256,7 @@ nodes:
     module: actor-tests
     class: WildcardIndexSpec
     test_cases_approx: 8
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -5263,14 +5267,16 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 8
+    ported: 8
+    passing: 8
     excluded: []
+    not_built: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/wildcard_index_spec.rs
+  goal: G0issue187
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/serialization/WireConfigSpec.scala
   name: actor-tests:WireConfigSpec
   kind: test
