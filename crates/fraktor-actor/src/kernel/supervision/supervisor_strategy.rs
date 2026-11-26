@@ -18,8 +18,6 @@
 
 //! The strategy a parent applies to its children.
 
-use alloc::sync::Arc;
-
 use core::time::Duration;
 
 use crate::kernel::actor::ActorContext;
@@ -28,6 +26,7 @@ use crate::kernel::supervision::Directive;
 use crate::kernel::supervision::FailureKind;
 use crate::kernel::supervision::RestartLimit;
 use crate::kernel::supervision::RestartWindow;
+use crate::kernel::sync::Arc;
 
 #[cfg(test)]
 #[path = "supervisor_strategy_test.rs"]

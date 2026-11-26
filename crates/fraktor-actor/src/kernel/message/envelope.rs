@@ -16,11 +16,10 @@
 
 //! An envelope that binds a message to its recipient and sender.
 
-use alloc::sync::Arc;
-
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::message_value::Message;
+use crate::kernel::sync::Arc;
 
 /// One delivery: who receives the message, what it is, and who sent it.
 ///

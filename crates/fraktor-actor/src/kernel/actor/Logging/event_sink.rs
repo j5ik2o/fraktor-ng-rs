@@ -16,9 +16,8 @@
 
 //! The port that an executor publishes log events to.
 
-use alloc::sync::Arc;
-
 use crate::kernel::actor::Logging::LogEvent;
+use crate::kernel::sync::Arc;
 
 /// Receives the log events an executor publishes.
 ///

@@ -19,11 +19,11 @@
 //! A recipe that creates one actor.
 
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 
 use crate::kernel::actor::Actor;
 use crate::kernel::actor::ActorContext;
 use crate::kernel::message::Message;
+use crate::kernel::sync::Arc;
 
 #[cfg(test)]
 #[path = "props_test.rs"]

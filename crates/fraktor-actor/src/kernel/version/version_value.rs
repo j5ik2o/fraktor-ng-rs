@@ -17,6 +17,8 @@
 //! A parsed version compared by its numbers and qualifier.
 
 use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
 use core::{cmp::Ordering, fmt, hash::Hash};
 
 use super::version_parse_error::VersionParseError;

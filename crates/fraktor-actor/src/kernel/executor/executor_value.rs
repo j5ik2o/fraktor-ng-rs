@@ -25,11 +25,11 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::AtomicU64;
-use core::sync::atomic::Ordering;
 use core::time::Duration;
+
+use portable_atomic::AtomicU64;
+use portable_atomic::Ordering;
 
 use crate::kernel::actor::dispatch_settings::CapacityLimit;
 use crate::kernel::actor::dispatch_settings::DispatchSettings;
@@ -67,6 +67,8 @@ use crate::kernel::supervision::RestartHistory;
 use crate::kernel::supervision::RestartLimit;
 use crate::kernel::supervision::RunOutcome;
 use crate::kernel::supervision::SupervisorStrategy;
+use crate::kernel::sync::Arc;
+use crate::kernel::sync::Weak;
 use crate::kernel::Clock;
 
 #[cfg(test)]
@@ -287,7 +289,7 @@ impl Executor {
     // slot is filled in once, here, so it sits in a `spin::Once` that the
     // handler reads without a lock, and it holds the path in an `Arc`, so
     // rebuilding the handle for one message clones no path.
-    type HandleParts = (u64, Arc<ActorPath>, alloc::sync::Weak<dyn crate::kernel::executor::ShardBoundary>);
+    type HandleParts = (u64, Arc<ActorPath>, Weak<dyn crate::kernel::executor::ShardBoundary>);
     let slot: Arc<spin::Once<HandleParts>> = Arc::new(spin::Once::new());
     let slot_in_handler = slot.clone();
     let handler = Arc::new(move |sender: &ActorRef, message: Message| {

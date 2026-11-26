@@ -17,11 +17,11 @@
 //! The set of setups an actor system is created with.
 
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
 use core::any::{Any, TypeId};
 use core::fmt;
 
 use crate::kernel::setup::Setup;
+use crate::kernel::sync::Arc;
 
 #[cfg(test)]
 #[path = "actor_system_setup_test.rs"]
