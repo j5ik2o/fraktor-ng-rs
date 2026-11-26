@@ -82,21 +82,21 @@ Pekko の `dungeon.ReceiveTimeout` は、セルごとに `State(timeout, task, v
 
 | ファイル | 中身 |
 |:---|:---|
-| `crates/fraktor-actor/src/kernel/actor/receive_timeout.rs`（新規のモジュールの入口） | 再エクスポート |
-| `crates/fraktor-actor/src/kernel/actor/receive_timeout/receive_timeout_message.rs` | `ReceiveTimeout` メッセージ |
-| `crates/fraktor-actor/src/kernel/actor/receive_timeout/receive_timeout_setting.rs` | `ReceiveTimeoutSetting`（設定の enum） |
-| `crates/fraktor-actor/src/kernel/actor/receive_timeout/not_influence_receive_timeout.rs` | 印の trait と分類の関数 |
-| `crates/fraktor-actor/src/kernel/actor/receive_timeout/receive_timeout_state.rs` | セルが持つ状態（設定、3状態、期限、版）。`pub(crate)` |
+| `crates/fraktor-actor/src/kernel/actor/receive_timeout.rs` | `ReceiveTimeout` メッセージ |
+| `crates/fraktor-actor/src/kernel/actor/receive_timeout_setting.rs` | `ReceiveTimeoutSetting`（設定の enum） |
+| `crates/fraktor-actor/src/kernel/actor/not_influence_receive_timeout.rs` | 印の trait と分類の関数 |
+| `crates/fraktor-actor/src/kernel/actor/receive_timeout_state.rs` | セルが持つ状態（設定、3状態、期限、版）。`pub(crate)` |
+| `crates/fraktor-actor/src/kernel/actor/identify.rs` | `Identify` メッセージ |
 | `crates/fraktor-actor/src/kernel/actor/actor_context.rs` | `set_receive_timeout` と `receive_timeout` の2つの口を足す |
 | `crates/fraktor-actor/src/kernel/executor/actor_cell.rs` | 状態を持ち、処理の前後の手順と停止時の取り消しを担う |
-| 実行器（段3 §11.11 の形。ファイルは #252 のマージ後に確定） | 期限の索引を持ち、最も早い期限だけを検査して、期限が来たセルへ `ReceiveTimeout` を積む |
+| 実行器（段3 §11.11 の形。ファイルは #252 のマージ後に確定） | 期限の索引を持ち、先頭から期限が来た行を順に取り除いて発火し、期限が来たセルへ `ReceiveTimeout` を積む |
 
-モジュールの置き方は、既存の `kernel::actor` 配下の1ファイル1型の並び（`timeout` モジュールの `Timeout` の前例を含む）に従う。新しい関数や公開 API を足す前に同じ働きの既存の関数を探す決まりについては、§2 のとおり受信タイムアウトの口は存在せず、重なる口は無いことを確認した。ask の `Timeout`（`kernel::timeout::Timeout`）は ask の期限の型であり、受信タイムアウトの設定には流用しない。
+モジュールの置き方は、既存の `kernel::actor` 配下の1ファイル1型の並び（`timeout` モジュールの `Timeout` の前例を含む）に従う。新しいファイルはすべて `crates/fraktor-actor/src/kernel/actor/` 直下の平坦な末端モジュールとし、入れ子の `receive_timeout/` サブディレクトリは作らない。`kernel/actor.rs` から `pub use` して、公開パスを `fraktor_actor::kernel::actor::{Identify, NotInfluenceReceiveTimeout, ReceiveTimeout, ReceiveTimeoutSetting}` に揃える（§11）。子モジュールを持つ非末端モジュール（`Leafness::Branch`）からの `pub use` は syn-check の `module-wiring` 規則で禁止されるため、サブディレクトリの下に子モジュールを置く形では `kernel::actor::*` の公開パスと両立しない（独立再レビュー2 N1）。`dead_letter_suppression.rs` など既存の平坦な末端モジュールと同じ並びである。新しい関数や公開 API を足す前に同じ働きの既存の関数を探す決まりについては、§2 のとおり受信タイムアウトの口は存在せず、重なる口は無いことを確認した。ask の `Timeout`（`kernel::timeout::Timeout`）は ask の期限の型であり、受信タイムアウトの設定には流用しない。
 
 ### 公開 API の形
 
 ```rust
-// crates/fraktor-actor/src/kernel/actor/receive_timeout/receive_timeout_setting.rs
+// crates/fraktor-actor/src/kernel/actor/receive_timeout_setting.rs
 
 /// Mirrors the `scala.concurrent.duration.Duration` values that
 /// `ActorContext.setReceiveTimeout` accepts, without a general
@@ -111,7 +111,7 @@ pub enum ReceiveTimeoutSetting {
   Finite(Duration), // core::time::Duration
 }
 
-// crates/fraktor-actor/src/kernel/actor/receive_timeout/receive_timeout_message.rs
+// crates/fraktor-actor/src/kernel/actor/receive_timeout.rs
 
 /// Mirrors `org.apache.pekko.actor.ReceiveTimeout`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -163,7 +163,7 @@ impl Identify {
   pub fn message_id(&self) -> &Message;
 }
 
-// crates/fraktor-actor/src/kernel/actor/receive_timeout/not_influence_receive_timeout.rs
+// crates/fraktor-actor/src/kernel/actor/not_influence_receive_timeout.rs
 
 /// Mirrors `org.apache.pekko.actor.NotInfluenceReceiveTimeout`.
 pub trait NotInfluenceReceiveTimeout {}
@@ -277,7 +277,7 @@ pub fn is_not_influence_receive_timeout(&self, message: &Message) -> bool;
 
 判断：足す。ただし置き場所と形を独立レビュー M6 のとおりに直す。`ReceiveTimeoutState` は `pub(crate)` なので、`tests/` の統合テストからは見えない。
 
-- 状態の機械の PBT は単体テストに置く。`crates/fraktor-actor/src/kernel/actor/receive_timeout/receive_timeout_state_test.rs`（`executor_value_test.rs` の並び）。
+- 状態の機械の PBT は単体テストに置く。`crates/fraktor-actor/src/kernel/actor/receive_timeout_state_test.rs`（`executor_value_test.rs` の並び）。
 - アクターを通す PBT は `tests/` に置き、公開の `ActorSystem::set_clock` で手で進める時計を入れる。
 - 形は、性質の列挙よりも参照モデルとの完全一致を主にする。原典の `State(timeout, task, version)` と `invoke` の前後の手順をそのまま写した参照モデルを用意し、操作列（影響する／しない受信、受信中の複数回の設定、期限の到来、積んだ `ReceiveTimeout` の処理、再起動、停止）ごとに、届く `ReceiveTimeout` の列を完全一致で比べる。固定 seed の乱数で操作列を作り、外部の依存は足さない。PBT は原典外であり、台帳の件数には含めない。
 
@@ -393,3 +393,11 @@ pub fn is_not_influence_receive_timeout(&self, message: &Message) -> bool;
 | R3 | 中 | 直す | red のテストを書く前に口を確定する必要がある。`Identify` の型と `Identify::new` と `message_id()`、`NotInfluenceReceiveTimeout` の trait、`ActorSystem::register_not_influence_receive_timeout` の署名を §3 のコードブロックに明記し、`Identify(None)` は `Identify::new(Option::<()>::None)` と書くこと、ケース7のテストアクターは未知のメッセージを無視することを書いた。分類の口は、段3で既にある feature `test-support` の下の `ActorSystem::is_not_influence_receive_timeout(&self, message: &Message) -> bool` と確定し、ケース1を含め14件すべてを `tests/receive_timeout_spec.rs` に収めることと、`test-support` 無効時の clippy 検査を §3 と §12 に書いた |
 | R4 | 低 | 直す | 段3で `ActorContext::new` を作る場所は6か所だった。文脈作成の表を6か所（`invoke` → `ActorCell::receive`、`create_initial`、`restart_cell` の `pre_restart` と `restart`、`run_post_stop`、`execute_child_terminated_hook`）へ更新し、`run_post_stop` は貸さず取り消し済みとすること、`execute_child_terminated_hook` は親の状態を貸し戻すことを §3 に書いた。あわせて `create_initial` の失敗リトライ（原典の `faultCreate`）で `ReceiveTimeoutState` を初期化する行を §3 に足した |
 | R5 | 低 | 直す | 文言の3か所を揃えた。(1) 時計が無い条件を「`self.clock` も境界の `monotonic_time` も `None` のとき」とし、panic の文言は受信タイムアウト専用の理由にすることを §3 に書いた。(2) 冒頭文の「台帳の対象ノードを green にする」を、red（15/14/14）のまま完了とする書き方へ直した。(3) `checked_add` があふれた場合は期限なし（状態は「なし」）になることを §5 に補った |
+
+### 独立再レビュー2（PR #283、antigravity）への回答表
+
+独立再レビュー2（判定は条件つき承認。高0件、中0件、低1件、再レビュー不要）の残る1件への回答である。「直す」とし、本文へ反映した。採らない／別件は無い。
+
+| # | 重さ | 回答 | 理由と反映先 |
+|:--|:--|:--|:---|
+| N1 | 低 | 直す | §3 の置き場所表が `kernel/actor/receive_timeout/*.rs` の入れ子構造のままで、子モジュールを持つ非末端モジュールからの `pub use` を禁止する syn-check の `module-wiring` 規則に掛かり、§11 の公開パス（`kernel::actor::*`）とも食い違っていた。`dead_letter_suppression.rs` など既存の平坦な末端モジュールの前例に合わせ、`receive_timeout.rs`、`receive_timeout_setting.rs`、`not_influence_receive_timeout.rs`、`receive_timeout_state.rs`、`identify.rs` をすべて `crates/fraktor-actor/src/kernel/actor/` 直下の平坦な末端モジュールとして置き、`kernel/actor.rs` から `pub use` して公開パスを `fraktor_actor::kernel::actor::{Identify, NotInfluenceReceiveTimeout, ReceiveTimeout, ReceiveTimeoutSetting}` に揃える形へ §3 の表とその後の段落を直した。表に無かった `identify.rs` も足した。あわせて §3 の署名のコメントのパス（3か所）と §6 の PBT の単体テストの置き場所も平坦なパスへ直し、§3 の表の実行器の行の文言（「最も早い期限だけを検査して」）を本文のループの記述（先頭から期限が来た行を順に取り除いて発火する）に揃えた。第2段で Opus が red のテストを書く前に、テストが書く `use` パスはこの公開パスで確定する |
