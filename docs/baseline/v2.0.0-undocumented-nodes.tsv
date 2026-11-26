@@ -34,11 +34,14 @@ actor-tests/src/test/scala/org/apache/pekko/io/dns/internal/DomainNameSpec.scala
 actor-tests/src/test/scala/org/apache/pekko/io/dns/internal/MessageSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/io/dns/internal/ResolvConfParserSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/pattern/StatusReplySpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/util/AsciiStringCopySpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/ByteIteratorSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/ByteStringBuilderScala213PlusSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/ByteStringBuilderSpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/util/ByteStringInitializationSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/ByteStringInputStreamSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/DoubleLinkedListSpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/util/DurationSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/FrequencyListSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/FrequencySketchSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/GlobSpec.scala	no-report
