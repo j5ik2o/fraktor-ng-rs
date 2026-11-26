@@ -16,7 +16,6 @@
 
 //! A handle that addresses one actor.
 
-use alloc::sync::Arc;
 use core::any::Any;
 use core::fmt;
 use core::hash::{Hash, Hasher};
@@ -26,6 +25,7 @@ use crate::kernel::actor_path::ActorPath;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
+use crate::kernel::sync::Arc;
 
 #[cfg(test)]
 #[path = "actor_ref_value_test.rs"]
@@ -94,7 +94,7 @@ impl ActorRef {
       id: self.id,
       generation: self.generation,
       path: Arc::clone(&self.path),
-      boundary: alloc::sync::Arc::new(crate::kernel::executor::NoOpBoundary),
+      boundary: Arc::new(crate::kernel::executor::NoOpBoundary),
       detached: true,
     }
   }

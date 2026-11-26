@@ -16,15 +16,17 @@
 
 //! A boundary that hands each envelope to a function right away.
 
-use alloc::sync::Arc;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering;
 use core::time::Duration;
 
+use crate::kernel::actor::DeadLetter;
+use crate::kernel::actor::SuppressedDeadLetter;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
+use crate::kernel::sync::Arc;
 
 /// The handler that a function reference runs for each delivered message.
 pub(crate) type Handler = Arc<dyn Fn(&ActorRef, Message) + Send + Sync>;
@@ -48,17 +50,45 @@ pub(crate) type Handler = Arc<dyn Fn(&ActorRef, Message) + Send + Sync>;
 pub(crate) struct FunctionBoundary {
   handler: Handler,
   open: AtomicBool,
+  dead_letters: Option<ActorRef>,
 }
 
 impl FunctionBoundary {
   pub(crate) fn new(handler: Handler) -> Self {
-    Self { handler, open: AtomicBool::new(true) }
+    Self { handler, open: AtomicBool::new(true), dead_letters: None }
+  }
+
+  /// Creates a boundary that, once closed, hands every later post to
+  /// the `dead_letters` handle as it is, so the dead letters route
+  /// wraps it naming the handle itself as the recipient, as Pekko's
+  /// `deadLetterMessageHandler` receives the messages of a stopped
+  /// function reference. The route is fixed at creation and read
+  /// without a lock, so the post path stays as cheap as it was
+  /// (re-review N3 of #192).
+  pub(crate) fn new_with_dead_letters(handler: Handler, dead_letters: Option<ActorRef>) -> Self {
+    Self { handler, open: AtomicBool::new(true), dead_letters }
   }
 }
 
 impl ShardBoundary for FunctionBoundary {
   fn post(&self, envelope: Envelope) {
     if !self.open.load(Ordering::Acquire) {
+      let (_, message, sender) = envelope.into_parts();
+      // A dead letter that cannot be delivered is dropped, as the
+      // dead letters route itself drops one: wrapping it again and
+      // handing it back would make a stopped subscriber of
+      // AllDeadLetters receive its own dead letter forever.
+      if message.downcast_ref::<DeadLetter>().is_some() || message.downcast_ref::<SuppressedDeadLetter>().is_some() {
+        return;
+      }
+      if let Some(dead_letters) = &self.dead_letters {
+        // The raw message goes to the dead letters handle, as Pekko's
+        // `deadLetterMessageHandler` tells `system.deadLetters` the
+        // message itself: the dead letters route then wraps it naming
+        // the handle itself as the recipient (re-review 2, middle 1
+        // of #192), not the stopped function reference.
+        Envelope::new(dead_letters.clone(), message, sender).post_to_boundary();
+      }
       return;
     }
     let (recipient, message, sender) = envelope.into_parts();

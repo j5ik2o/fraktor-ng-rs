@@ -16,9 +16,10 @@
 
 //! A consuming iterator over the bytes of one or more byte arrays.
 
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 
 use super::ByteOrder;
+use crate::kernel::sync::Arc;
 
 #[cfg(test)]
 #[path = "byte_iterator_value_test.rs"]

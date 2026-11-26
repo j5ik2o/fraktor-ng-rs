@@ -1093,7 +1093,7 @@ nodes:
     module: actor-tests
     class: ActorWithBoundedStashSpec
     test_cases_approx: 5
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -1104,14 +1104,16 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 5
+    ported: 5
+    passing: 5
     excluded: []
+    not_built: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/actor_with_bounded_stash_spec.rs
+  goal: G0issue192
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorWithStashSpec.scala
   name: actor-tests:ActorWithStashSpec
   kind: test
@@ -2973,7 +2975,7 @@ nodes:
     module: actor-tests
     class: FunctionRefSpec
     test_cases_approx: 5
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -2984,14 +2986,20 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
-    excluded: []
+    total: 9
+    ported: 8
+    passing: 8
+    excluded:
+    - name: not be found
+      reason: "原典は、登録されていない FunctionRef をパスから解決しても FunctionRef に戻らないことを、Java の直列化（serialize-messages = on）の往復で確かめている。fraktor には宛先のパスからの解決もメッセージの直列化も無い。宛先のパスからの解決か、メッセージの直列化が入ったら見直す。承認：オーナー本人（j5ik2o）が元帥の項目426で「今は除外として承認する」と回答した（2026-11-26）。この記録はその転記"
+      approved_by: j5ik2o
+      approved_at: 2026-11-26
+    not_built: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/function_ref_spec.rs
+  goal: G0issue192
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/util/GlobSpec.scala
   name: actor-tests:GlobSpec
   kind: test
@@ -3983,7 +3991,7 @@ nodes:
     module: actor-tests
     class: ProviderSelectionSpec
     test_cases_approx: 4
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -3994,14 +4002,16 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 4
+    ported: 4
+    passing: 4
     excluded: []
+    not_built: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/provider_selection_spec.rs
+  goal: G0issue192
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/routing/RandomSpec.scala
   name: actor-tests:RandomSpec
   kind: test

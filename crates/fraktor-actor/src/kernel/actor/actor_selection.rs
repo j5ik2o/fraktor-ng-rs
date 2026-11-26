@@ -17,7 +17,6 @@
 //! A path-based address whose target is resolved when the message is
 //! delivered.
 
-use alloc::sync::Arc;
 use core::any::Any;
 
 use crate::kernel::actor_path::ActorPath;
@@ -25,6 +24,7 @@ use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
+use crate::kernel::sync::Arc;
 
 /// The envelope a selection posts to its shard.
 ///

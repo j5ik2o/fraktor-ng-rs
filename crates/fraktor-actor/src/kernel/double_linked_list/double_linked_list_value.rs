@@ -17,10 +17,9 @@
 //! A mutable doubly linked list whose nodes are addressed by id.
 
 use alloc::collections::BTreeMap;
-use core::{
-  ops::{Index, IndexMut},
-  sync::atomic::{AtomicU64, Ordering},
-};
+use core::ops::{Index, IndexMut};
+
+use portable_atomic::{AtomicU64, Ordering};
 
 use super::NodeId;
 
@@ -85,7 +84,7 @@ impl<A> DoubleLinkedList<A> {
   #[must_use]
   pub fn new() -> Self {
     let list = NEXT_LIST
-      .try_update(Ordering::Relaxed, Ordering::Relaxed, |list| list.checked_add(1))
+      .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |list| list.checked_add(1))
       .expect("fewer than 2^64 lists are created");
     Self { nodes: BTreeMap::new(), first: None, last: None, list, next_id: 0 }
   }

@@ -21,8 +21,6 @@
 //! The subscription table that an event stream shares with the loggers it
 //! starts.
 
-use alloc::sync::Arc;
-use alloc::sync::Weak;
 use alloc::vec::Vec;
 use core::any::Any;
 use core::any::TypeId;
@@ -33,6 +31,8 @@ use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::event::EventClass;
 use crate::kernel::event::NullSubscriber;
 use crate::kernel::message::Message;
+use crate::kernel::sync::Arc;
+use crate::kernel::sync::Weak;
 
 #[cfg(test)]
 #[path = "event_stream_bus_test.rs"]

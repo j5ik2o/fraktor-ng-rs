@@ -16,9 +16,10 @@
 
 //! A builder that assembles a [`ByteString`] from many bytes.
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 
 use super::ByteString;
+use crate::kernel::sync::Arc;
 
 #[cfg(test)]
 #[path = "byte_string_builder_test.rs"]

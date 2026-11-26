@@ -17,9 +17,10 @@
 //! A mutable list that orders values from the least to the most recently
 //! updated.
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::time::Duration;
 
+use crate::kernel::sync::Arc;
 use crate::kernel::Clock;
 
 #[cfg(test)]

@@ -18,6 +18,7 @@
 
 use alloc::format;
 use alloc::string::String;
+use alloc::string::ToString;
 use core::fmt;
 
 use crate::kernel::actor::Logging::log_publisher::format_template;

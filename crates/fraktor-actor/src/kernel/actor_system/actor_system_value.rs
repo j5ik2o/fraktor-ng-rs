@@ -11,6 +11,8 @@
 //
 // Copyright (C) 2017-2022 Lightbend Inc. <https://www.lightbend.com>
 //
+// Copyright (C) 2018-2022 Lightbend Inc. <https://www.lightbend.com>
+//
 // Copyright (C) 2009-2022 Lightbend Inc. <https://www.lightbend.com>
 //
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE and NOTICE
@@ -21,11 +23,13 @@
 //! An actor system and its lifecycle.
 
 use alloc::rc::Rc;
-use alloc::sync::Arc;
+use alloc::string::String;
+use alloc::string::ToString;
 use core::cell::RefCell;
 use core::fmt;
 use core::time::Duration;
 
+use crate::kernel::actor::dispatch_settings::DispatchSettings;
 use crate::kernel::actor::ActorSelection;
 use crate::kernel::actor::AllDeadLetters;
 use crate::kernel::actor::DeadLetter;
@@ -33,6 +37,7 @@ use crate::kernel::actor::DeadLetterLogLimit;
 use crate::kernel::actor::DeadLetterSettings;
 use crate::kernel::actor::DeadLetterSuppression;
 use crate::kernel::actor::Dropped;
+use crate::kernel::actor::FunctionRef;
 use crate::kernel::actor::Props;
 use crate::kernel::actor::SuppressedDeadLetter;
 use crate::kernel::actor::UnhandledMessage;
@@ -47,6 +52,7 @@ use crate::kernel::executor::Executor;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::setup::ActorSystemSetup;
 use crate::kernel::supervision::FailureCatcher;
+use crate::kernel::sync::Arc;
 
 #[cfg(test)]
 #[path = "actor_system_value_test.rs"]
@@ -90,13 +96,19 @@ impl ActorSystem {
   /// Creates a running actor system as [`new`](Self::new) does, holding
   /// `setup` for [`setup`](Self::setup) to return.
   ///
-  /// Mirrors `ActorSystem(name, setup)`. The setup changes nothing about how
-  /// the system starts or runs; it only keeps the values for later reads.
+  /// Mirrors `ActorSystem(name, setup)`. Most setups only keep their
+  /// values for later reads, but a setup can affect how the system
+  /// runs: a [`DispatchSettings`] in the setup is installed on the
+  /// executor, whose spawn-time resolution then bounds the stash and
+  /// mailbox capacities of the actors it names.
   pub fn with_setup(name: &str, boundary: Arc<dyn ShardBoundary>, setup: ActorSystemSetup) -> Self {
     let executor = Rc::new(RefCell::new(Executor::new(Self::root_path(name), boundary)));
     let system = WeakActorSystem::new(name.to_string(), Rc::downgrade(&executor));
     let event_stream = EventStream::new(system, false);
     executor.borrow_mut().set_event_stream(event_stream.clone());
+    if let Some(settings) = setup.get::<DispatchSettings>() {
+      executor.borrow_mut().set_dispatch_settings(settings.clone());
+    }
     executor.borrow().set_dead_letter_bus(event_stream.downgrade());
     // The four dead letter classes are subclasses of the AllDeadLetters
     // channel, as the trait links declare in Pekko.
@@ -105,6 +117,21 @@ impl ActorSystem {
     event_stream.declare_subclass::<Dropped, AllDeadLetters>();
     event_stream.declare_subclass::<UnhandledMessage, AllDeadLetters>();
     Self { name: name.to_string(), executor, event_stream, setup }
+  }
+
+  /// Creates a running actor system with `setup`, as
+  /// [`with_setup`](Self::with_setup) does, that also reports a failing
+  /// actor to `catcher`, as
+  /// [`with_failure_catcher`](Self::with_failure_catcher) does.
+  pub fn with_setup_and_failure_catcher(
+    name: &str,
+    boundary: Arc<dyn ShardBoundary>,
+    setup: ActorSystemSetup,
+    catcher: Arc<dyn FailureCatcher>,
+  ) -> Self {
+    let system = Self::with_setup(name, boundary, setup);
+    system.executor.borrow_mut().set_failure_catcher(catcher);
+    system
   }
 
   /// Creates a running actor system that reports a failing actor to `catcher`.
@@ -223,6 +250,30 @@ impl ActorSystem {
     H: Fn(&ActorRef, crate::kernel::message::Message) + Send + Sync + 'static,
   {
     self.executor.borrow_mut().function_ref(name, handler)
+  }
+
+  /// Registers the function reference `watcher` to receive the
+  /// `Terminated` of `target` as a message to its function.
+  ///
+  /// Mirrors `FunctionRef.watch`, lent through the system because the
+  /// handle itself holds no executor reference (design of #192, H1).
+  pub fn function_ref_watch(&mut self, watcher: &FunctionRef, target: &ActorRef) -> ActorRef {
+    self.executor.borrow_mut().function_ref_watch(watcher, target)
+  }
+
+  /// Stops the function reference `watcher` from watching `target`.
+  ///
+  /// Mirrors `FunctionRef.unwatch`, which is idempotent.
+  pub fn function_ref_unwatch(&mut self, watcher: &FunctionRef, target: &ActorRef) -> ActorRef {
+    self.executor.borrow_mut().function_ref_unwatch(watcher, target)
+  }
+
+  /// Returns whether the function reference `watcher` watches `target`.
+  ///
+  /// Mirrors `FunctionRef.isWatching`: the registration survives the
+  /// target's end until the reference unwatches or stops.
+  pub fn function_ref_is_watching(&self, watcher: &FunctionRef, target: &ActorRef) -> bool {
+    self.executor.borrow().function_ref_is_watching(watcher, target)
   }
 
   /// Returns a handle that can reach the executor without owning the system.
