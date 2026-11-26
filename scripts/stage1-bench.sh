@@ -8,6 +8,10 @@
 #
 # A is the main commit just before the stage, B the stage's commit, and
 # the optional A0 the pre-stage-0 commit (7ecb3f5) the design also tracks.
+# The bench test itself arrives with the stage, so A and A0 do not have
+# it: when a comparison checkout lacks the file, this script copies it
+# from the B checkout first. The copy is the only change made to those
+# checkouts, and it is test-only code the measured library never sees.
 # A pair whose control loop values drift by more than 5 percent is
 # discarded as machine noise and reported. The result is, per scenario,
 # the median of the per-pair B/A ratios (the average of the middle two),
@@ -19,11 +23,22 @@ A_DIR=$1
 B_DIR=$2
 A0_DIR=${3:-}
 
+BENCH_REL=crates/fraktor-actor/tests/actor_system_send_stage1_bench.rs
+for dir in "$A_DIR" "$A0_DIR"; do
+  if [ -n "$dir" ] && [ ! -f "$dir/$BENCH_REL" ]; then
+    cp "$B_DIR/$BENCH_REL" "$dir/$BENCH_REL"
+    echo "copied the bench test into $dir (the comparison commits predate it)"
+  fi
+done
+
 run_bench() {
   local dir=$1 out=$2
-  (cd "$dir" && cargo test --release -p fraktor-actor --test actor_system_send_stage1_bench \
-    -- --ignored --nocapture 2>/dev/null | grep '^BENCH ' > "$out")
-  test -s "$out"
+  if ! (cd "$dir" && cargo test --release -p fraktor-actor --test actor_system_send_stage1_bench \
+    -- --ignored --nocapture 2>"$out.err" | grep '^BENCH ' > "$out") || [ ! -s "$out" ]; then
+    echo "bench run failed in $dir; cargo said:" >&2
+    cat "$out.err" >&2
+    return 1
+  fi
 }
 
 work=$(mktemp -d)
