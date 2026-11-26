@@ -22,13 +22,13 @@ use std::vec::Vec;
 
 use fraktor_actor::kernel::actor::AnyDeadLetter;
 use fraktor_actor::kernel::actor::DeadLetter;
-use fraktor_actor::kernel::actor::DeadLetterListener;
 use fraktor_actor::kernel::actor::DeadLetterLogLimit;
 use fraktor_actor::kernel::actor::DeadLetterSettings;
 use fraktor_actor::kernel::actor::DeadLetterSuppression;
 use fraktor_actor::kernel::actor::SuppressedDeadLetter;
 use fraktor_actor::kernel::actor::Terminated;
 use fraktor_actor::kernel::actor_ref::ActorRef;
+use fraktor_actor::kernel::event::DeadLetterListener;
 use fraktor_actor::kernel::event::EventClass;
 use fraktor_actor::kernel::message::Message;
 use fraktor_testkit::fraktorspec::FraktorSpec;
