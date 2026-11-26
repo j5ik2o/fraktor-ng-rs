@@ -703,6 +703,18 @@ Pekko 由来ファイル（`Apache-2.0` のみ）と自作ファイル（`MIT OR
 | `tools/syn-check/Cargo.toml` | 未設定 | `"MIT OR Apache-2.0"` | 全 33 ファイルが完全自作（Pekko 由来 0 件を実測済み）。段 B で設定する（旧 `*-lint` が自作かを確かめてから。L1） |
 | `package.json` | `"Apache-2.0"` | `"Apache-2.0"`（維持） | `private: true`（npm 非公開、CI 用 `aislop` 実行のみ）。リポジトリ全体の有効ライセンスは同じく吸収律により `Apache-2.0` であり整合する |
 
+### 4.3 依存 crate のライセンス
+
+この節は、このリポジトリが依存する crate と、そのライセンスを記録する。#234 の段 0（[Issue #248](https://github.com/j5ik2o/fraktor-ng-rs/issues/248)、`fraktor-actor` の kernel を `no_std` で build できるようにする段）で足す依存を、段 0 のプルリクエストより前にここへ記録する。案は #234 の設計（[`issue-234-multithread-executor.md`](./issue-234-multithread-executor.md) の §7.4）にある。
+
+| crate | 版 | 使う段 | ライセンス | 使い方 |
+|:---|:---|:---|:---|:---|
+| `portable-atomic` | 1.15.0（段 0 で確定する） | 段 0 | Apache-2.0 OR MIT | kernel の原子操作（C1） |
+| `portable-atomic-util` | 0.2.8（段 0 で確定する） | 段 0 | Apache-2.0 OR MIT | CAS の無い target での `Arc`（C3） |
+
+- ライセンスは、どちらも crates.io に公開された crate の `Cargo.toml` の `license` の欄で確かめた（`portable-atomic` 1.15.0、`portable-atomic-util` 0.2.8。どちらも `license = "Apache-2.0 OR MIT"`）。
+- 版は、#234 の設計の §7.4 に書かれていなかったため、この記録を書いた時点の最新の安定版を書いた。実際に使う版は段 0 で確定する。段 0 のプルリクエストでは、`cargo metadata` でライセンスを確かめ直し、使う版がこの記録と違う場合は、この節も合わせて直す。
+
 ---
 
 ## 5. CI への組み込み（`--check`）
