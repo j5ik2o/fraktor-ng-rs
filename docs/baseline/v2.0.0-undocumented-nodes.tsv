@@ -40,9 +40,9 @@ actor-tests/src/test/scala/org/apache/pekko/util/DoubleLinkedListSpec.scala	no-r
 actor-tests/src/test/scala/org/apache/pekko/util/FrequencyListSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/FrequencySketchSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/GlobSpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/util/ImmutableIntMapSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/IndexSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/MessageBufferSpec.scala	no-report
-actor-tests/src/test/scala/org/apache/pekko/util/ImmutableIntMapSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/PrettyDurationSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/RecencyListSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/SegmentedRecencyListSpec.scala	no-report
