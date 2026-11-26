@@ -80,7 +80,8 @@ unsafe fn adapters(mut adapter: *const IP_ADAPTER_ADDRESSES_LH) -> Vec<WindowsAd
     let mut dns_servers = Vec::new();
     let mut server = current.FirstDnsServerAddress.cast_const();
     while let Some(node) = unsafe { server.as_ref() } {
-      if let Some(address) = unsafe { socket_address(node.Address.lpSockaddr) } {
+      let length = usize::try_from(node.Address.iSockaddrLength).unwrap_or(0);
+      if let Some(address) = unsafe { socket_address(node.Address.lpSockaddr, length) } {
         dns_servers.push(address);
       }
       server = node.Next.cast_const();
@@ -92,21 +93,34 @@ unsafe fn adapters(mut adapter: *const IP_ADAPTER_ADDRESSES_LH) -> Vec<WindowsAd
 }
 
 // The IPv4 or IPv6 address `sockaddr` holds, with its port and scope ID, or
-// `None` for another family.
+// `None` for another family or when `length` (the `iSockaddrLength` the IP
+// Helper reported) is shorter than the family's socket address. A short
+// length is skipped, never read past: the reported length is checked before
+// the address is read, so a truncated value cannot panic or be misread.
 //
-// SAFETY: `sockaddr` is null or points to a socket address of its family's
-// size, as `GetAdaptersAddresses` writes it.
+// SAFETY: `sockaddr` is null or points to at least `length` readable bytes,
+// as `GetAdaptersAddresses` writes it.
 #[cfg(windows)]
-unsafe fn socket_address(sockaddr: *const SOCKADDR) -> Option<SocketAddr> {
-  // SAFETY: the caller's contract; the family says which layout follows.
+unsafe fn socket_address(sockaddr: *const SOCKADDR, length: usize) -> Option<SocketAddr> {
+  if length < size_of::<u16>() {
+    return None;
+  }
+  // SAFETY: the caller's contract and the length check above; the family
+  // says which layout follows, and each arm checks its own length first.
   let family = unsafe { sockaddr.as_ref() }?.sa_family;
   match family {
     | AF_INET => {
+      if length < size_of::<SOCKADDR_IN>() {
+        return None;
+      }
       let v4 = unsafe { &*sockaddr.cast::<SOCKADDR_IN>() };
       let octets = unsafe { v4.sin_addr.S_un.S_addr }.to_ne_bytes();
       Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from(octets), u16::from_be(v4.sin_port))))
     },
     | AF_INET6 => {
+      if length < size_of::<SOCKADDR_IN6>() {
+        return None;
+      }
       let v6 = unsafe { &*sockaddr.cast::<SOCKADDR_IN6>() };
       let octets = unsafe { v6.sin6_addr.u.Byte };
       let scope_id = unsafe { v6.Anonymous.sin6_scope_id };
