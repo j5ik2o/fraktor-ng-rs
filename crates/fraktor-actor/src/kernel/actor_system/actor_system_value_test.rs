@@ -628,6 +628,13 @@ fn stopping_a_parent_stops_its_child_first_and_tells_the_child_watcher() {
 
   system.watch(&child_watcher, &child);
   system.watch(&parent_watcher, &parent);
+  let finished = Arc::clone(&order);
+  let stopping = parent.clone();
+  system.downgrade().on_termination(move |actor: &ActorRef| {
+    if actor == &stopping {
+      finished.lock().unwrap().push("parent stopped");
+    }
+  });
 
   system.stop(&parent);
   child.tell("late", parent.clone());
@@ -641,11 +648,13 @@ fn stopping_a_parent_stops_its_child_first_and_tells_the_child_watcher() {
   let order = order.lock().unwrap();
   assert!(!order.contains(&"child delivered"), "the stopped child handled a message: {order:?}");
   let child_stopped = order.iter().position(|label| *label == "child stopped").expect("the child ran post_stop");
+  let parent_stopped = order.iter().position(|label| *label == "parent stopped").expect("the parent stopped");
   let parent_terminated =
     order.iter().position(|label| *label == "parent terminated").expect("the parent watcher was told");
+  assert!(child_stopped < parent_stopped, "the parent finished stopping before its child stopped: {order:?}");
   assert!(child_stopped < parent_terminated, "the parent was reported stopped before its child stopped: {order:?}");
   assert_eq!(order.iter().filter(|label| **label == "child terminated").count(), 1, "{order:?}");
-  assert_eq!(order.len(), 3, "{order:?}");
+  assert_eq!(order.len(), 4, "{order:?}");
   drop(order);
   let child_notices = child_seen.lock().unwrap();
   assert_eq!(child_notices.len(), 1, "the child watcher was not told that the child stopped");
@@ -726,6 +735,13 @@ fn stopping_a_function_ref_stops_its_child_first_and_tells_both_watchers() {
 
   system.watch(&child_watcher, &child);
   system.watch(&target_watcher, &target);
+  let finished = Arc::clone(&order);
+  let stopping = target.clone();
+  system.downgrade().on_termination(move |actor: &ActorRef| {
+    if actor == &stopping {
+      finished.lock().unwrap().push("target stopped");
+    }
+  });
 
   system.stop(&target);
   system.run_until_idle();
@@ -735,11 +751,13 @@ fn stopping_a_function_ref_stops_its_child_first_and_tells_both_watchers() {
   // ordered against each other.
   let order = order.lock().unwrap();
   let child_stopped = order.iter().position(|label| *label == "child stopped").expect("the child ran post_stop");
+  let target_stopped = order.iter().position(|label| *label == "target stopped").expect("the target stopped");
   let target_terminated =
     order.iter().position(|label| *label == "target terminated").expect("the target watcher was told");
+  assert!(child_stopped < target_stopped, "a function reference finished stopping before its child: {order:?}");
   assert!(child_stopped < target_terminated, "a function reference stopped before its child: {order:?}");
   assert_eq!(order.iter().filter(|label| **label == "child terminated").count(), 1, "{order:?}");
-  assert_eq!(order.len(), 3, "{order:?}");
+  assert_eq!(order.len(), 4, "{order:?}");
   drop(order);
   let child_notices = child_seen.lock().unwrap();
   assert_eq!(child_notices.len(), 1, "the child watcher was not told that the child stopped");
