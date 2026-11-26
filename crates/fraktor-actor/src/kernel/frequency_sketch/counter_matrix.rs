@@ -3,7 +3,7 @@
 use alloc::{vec, vec::Vec};
 
 use super::{
-  counter_bits::CounterBits, reset_size::ResetSize, sketch_depth::SketchDepth, sketch_width::SketchWidth, Bits,
+  bits::Bits, counter_bits::CounterBits, reset_size::ResetSize, sketch_depth::SketchDepth, sketch_width::SketchWidth,
 };
 
 // `depth` rows of `width` counters, packed into 64-bit words, with the number

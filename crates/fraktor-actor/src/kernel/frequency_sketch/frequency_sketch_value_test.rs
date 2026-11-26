@@ -1,7 +1,7 @@
 use alloc::{string::ToString, vec::Vec};
 
 use super::FrequencySketch;
-use crate::kernel::frequency_sketch::{FrequencySketchError, FrequencySketchSettings};
+use crate::kernel::frequency_sketch::{bits::Bits, FrequencySketchError, FrequencySketchSettings};
 
 fn sketch(reset_multiplier: f64, counter_bits: i32) -> FrequencySketch<str> {
   FrequencySketch::new(100, FrequencySketchSettings { reset_multiplier, counter_bits, ..Default::default() })
@@ -146,4 +146,58 @@ fn a_sketch_without_rows_counts_nothing() {
   sketch.increment("foo");
   assert_eq!(sketch.frequency("foo"), i32::MAX);
   assert_eq!(sketch.size(), 0);
+}
+
+// A capacity of zero or below is accepted, as the original accepts it. The
+// reset is disabled unless the reset multiplier is negative too, and
+// `i32::MIN` alone gives `WidthNotPositive`.
+#[test]
+fn a_capacity_of_zero_or_below_is_accepted_as_the_original() {
+  let mut zero = FrequencySketch::<str>::new(0, FrequencySketchSettings::default()).expect("the original accepts 0");
+  for _ in 0..5 {
+    zero.increment("foo");
+  }
+  assert_eq!(zero.frequency("foo"), 5);
+  assert_eq!(zero.size(), 5);
+
+  let settings = FrequencySketchSettings { reset_multiplier: -2.0, ..Default::default() };
+  let mut negative = FrequencySketch::<str>::new(-1, settings).expect("the original accepts -1");
+  negative.increment("foo");
+  negative.increment("foo");
+  assert_eq!(negative.frequency("foo"), 1);
+
+  // -1 * 4294967295.0 is negative, but its low 32 bits are 1: the reset runs
+  // on every update.
+  let settings = FrequencySketchSettings { reset_multiplier: 4_294_967_295.0, ..Default::default() };
+  let mut truncated = FrequencySketch::<str>::new(-1, settings).expect("the original accepts -1");
+  for _ in 0..4 {
+    truncated.increment("foo");
+    assert_eq!((truncated.frequency("foo"), truncated.size()), (0, 0));
+  }
+
+  let result = FrequencySketch::<str>::new(i32::MIN, FrequencySketchSettings::default());
+  assert!(matches!(result, Err(FrequencySketchError::WidthNotPositive { width: 0 })));
+  let result =
+    FrequencySketch::<str>::new(i32::MIN, FrequencySketchSettings { width_multiplier: 1, ..Default::default() });
+  assert!(matches!(result, Err(FrequencySketchError::WidthNotPositive { width: i32::MIN })));
+}
+
+// A case of Pekko v2.0.0's `FrequencySketchSpec` (SHA
+// 9fbd2283b1cf701c90a1223bf621942c191db61f), under "FrequencySketch must", and one of
+// the ledger's 22. Twenty are in tests/frequency_sketch_spec.rs; this one and
+// its twin in fast_frequency_sketch_test.rs are here because they call
+// `FrequencySketch.Bits`, which is `private[pekko]` in the original and
+// crate-private in the port.
+// "detect width overflow that would have been missed by Int arithmetic"
+#[test]
+fn frequency_sketch_detect_width_overflow_that_would_have_been_missed_by_int_arithmetic() {
+  // before the fix, widthMultiplier * ceilingPowerOfTwo(capacity) was computed in Int and could silently overflow
+  let capacity: i32 = 536_870_913;
+  let width_multiplier: i32 = 4;
+  // the old Int multiplication silently overflows to a non-power-of-two or zero/negative value
+  let width_int = width_multiplier.wrapping_mul(Bits::ceiling_power_of_two(capacity));
+  assert!(width_int <= 0); // negative or zero due to Int overflow (old broken behavior)
+                           // the new Long multiplication correctly identifies the overflow
+  let width_long = i64::from(width_multiplier) * i64::from(Bits::ceiling_power_of_two(capacity));
+  assert!(width_long > i64::from(i32::MAX));
 }

@@ -1,5 +1,7 @@
 // Property-based tests of the frequency sketches (the design of #177,
-// docs/design/issue-177-frequency-sketch.md §3, P1 to P7).
+// docs/design/issue-177-frequency-sketch.md §3, P1 to P7). P6 checks the
+// crate-private `Bits`, so it is a unit test in
+// src/kernel/frequency_sketch/bits_test.rs.
 //
 // These are not ports of Pekko cases and are not counted in the ledger. The
 // inputs come from a fixed-seed SplitMix64, so a failure repeats; every
@@ -10,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use fraktor_actor::kernel::frequency_sketch::{
-  Bits, FastFrequencySketch, FastFrequencySketchSettings, FrequencySketch, FrequencySketchError, FrequencySketchHasher,
+  FastFrequencySketch, FastFrequencySketchSettings, FrequencySketch, FrequencySketchError, FrequencySketchHasher,
   FrequencySketchSettings, StringHashCode, StringHasher,
 };
 
@@ -310,22 +312,6 @@ fn the_hashers_equal_the_original_definitions() {
   }
   // A surrogate pair, as on the JVM: 0xD83D * 31 + 0xDE00.
   assert_eq!(StringHashCode.hash("😀"), 1_772_899);
-}
-
-// P6: `Bits` agrees with the definitions on any `i32`.
-#[test]
-fn bits_follow_their_definitions() {
-  let mut random = SplitMix64::new(0xB175);
-  let edges = [i32::MIN, i32::MIN + 1, -5, -1, 0, 1, 2, 3, 1 << 30, (1 << 30) + 1, i32::MAX];
-  let values = edges.into_iter().chain((0..20_000).map(|_| random.i32() >> random.below(31)));
-  for value in values {
-    let ceiling = Bits::ceiling_power_of_two(value);
-    assert_eq!(ceiling, reference_ceiling_power_of_two(value), "ceiling_power_of_two({value})");
-    assert_eq!(Bits::is_power_of_two(value), value & value.wrapping_sub(1) == 0, "is_power_of_two({value})");
-    if (1..=1 << 30).contains(&value) {
-      assert_eq!(1_i64 << Bits::power_of_two_exponent(value), i64::from(ceiling), "power_of_two_exponent({value})");
-    }
-  }
 }
 
 // P7: the constructors accept exactly the settings the original accepts and
