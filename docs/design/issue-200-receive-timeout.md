@@ -10,13 +10,13 @@
 
 移植の規約は `.takt/facets/knowledge/fraktor-porting-rules.md` に従う。形の前例は [PR #205](https://github.com/j5ik2o/fraktor-ng-rs/pull/205) の `docs/design/issue-177-frequency-sketch.md` と `docs/goals/issue-177-frequency-sketch.md`、および `docs/design/issue-195-deployer.md`（HOCON を型付きの入力に写す忠実さの判断）である。方針は `docs/decisions/pekko-semantics-first.md`（速さより Pekko の意味論を優先する）に従う。Scala・Java の書き方の対応は `docs/decisions/scala-java-to-rust-correspondence.md`（[PR #282](https://github.com/j5ik2o/fraktor-ng-rs/pull/282) で main に入った）を引いた。同文書の Duration の無限の扱い（汎用の無限の代数を持つ型は作らず、使う場所ごとの型で表す）と、`docs/design/issue-185-util-specs.md` の注意（FSM と ReceiveTimeout では `Option<Duration>` を比較に使わず専用の enum にする）に従う。
 
-結論を先に書く。**受信タイムアウトの本体は fraktor-ng-rs にまだ無い。** `crates/fraktor-actor` の中を `receive_timeout`、`ReceiveTimeout`、`NotInfluence`、`setReceiveTimeout` で探した結果は 0 件であり、`ActorContext` にも受信タイムアウトの口は無い。原典の15件のうち14件は、本書が設計する本体（セルの状態と世代、期限の検査を実行器の運転に組み込む形）を足せば今の1スレッドの実行器のまま移植できる。残る1件（Timers で予定したメッセージのケース）は、Pekko の `Timers` trait と `Scheduler` の port が前提であり、[Issue #234](https://github.com/j5ik2o/fraktor-ng-rs/issues/234) の段6（[Issue #257](https://github.com/j5ik2o/fraktor-ng-rs/issues/257)）の後として分ける（§9）。除外と作らない区分の提案は、ケース単位では無い。ケース3の中の Java API（`getTimeout` が `java.time.Duration` を返す部分）だけは、Rust に対応物が無い部分として §1 に注記する。決めるのはオーナーであるため、本書は提案として書くにとどめ、台帳には書かない。
+結論を先に書く。**受信タイムアウトの本体は fraktor-ng-rs にまだ無い。** `crates/fraktor-actor` の中を `receive_timeout`、`ReceiveTimeout`、`NotInfluence`、`setReceiveTimeout` で探した結果は 0 件であり、`ActorContext` にも受信タイムアウトの口は無い。原典の15件のうち14件は、本書が設計する本体（セルの3状態の機械と、実行器が持つ期限の索引）を足せば移植できる。ただし期限の置き場所は、段3（#252、承認済み）の §11.11 の形（セルは `Arc<Mailbox<ActorCell>>` の中、`actors: BTreeMap<(u64, u32), ActorEntry>`、`ManualExecutor`、`AfterRun`）を前提に書き、実装の順は #252 のマージの後とする。初版が書いた「期限を実行器の運転の中で検査する形は作り直しにはならない」という見込みは、独立レビュー H1 のとおり誤りであり撤回する（§3、§14）。残る1件（ケース9、Timers で予定したメッセージ）は案Aで確定し、#234 の段6（#257）の後へ回す。台帳は red のまま 15/14/14 とし、数からは外さない（§9、§10）。ケース3の中の Java API（`getTimeout`）だけは §1 に注記する提案として残す。
 
 ## 1. 何を移植するか
 
 ### 件数の数え直し
 
-原典の `" in {"` の数を数えた。依頼の目安は15件であり、数え直した結果も15件で、目安と一致する。台帳の `test_cases_approx: 2` は変換時の概数であり、実数とは違う。第2段で台帳の `cases.total` に15を記録する。`ignore` と `pending` は無い。14件に `TimingTest` のタグが付いている（ケース1とケース14には付いていない）。タグは ScalaTest の実行時の振り分けであり、Rust には対応物が無いため、移植ではタグを写さず、時間の値は原典のまま使う（§5）。
+原典の `" in {"` の数を数えた。依頼の目安は15件であり、数え直した結果も15件で、目安と一致する。台帳の `test_cases_approx: 2` は変換時の概数であり、実数とは違う。第2段で台帳の `cases.total` に15を記録する。`ignore` と `pending` は無い。`TimingTest` のタグが付いているのは12件であり、ケース1、14、15には付いていない（独立レビュー L1 で数え直した）。タグは ScalaTest の実行時の振り分けであり、Rust には対応物が無いため、移植ではタグを写さず、時間の値は原典のまま使う（§5）。
 
 ### 対応表
 
@@ -42,7 +42,7 @@
 
 注1（ケース3の Java API の部分）: 原典は `msg.timeout should ===(500.milliseconds)` と `msg.getTimeout should ===(java.time.Duration.ofMillis(500))` の2つを確かめる。後者は Java の利用者向けの取り出し口であり、Rust には `java.time.Duration` が無い。移植では `ReceiveTimeout::timeout() -> core::time::Duration` の1つで両方を代表させる。これはケースの除外ではなく、ケースの中の1行についての「作らない」提案である。理由は、`docs/decisions/scala-java-to-rust-correspondence.md` の決まり（Pekko どおりに写せるものは写し、Rust で同じ振る舞いを作れず数から外す・弱めるときだけ伺う）により、観測できる振る舞い（設定した期間がメッセージに載ること）は Rust の取り出し口で同じく確かめられるためである。レビューで認められなければ、この行に対応する第2の取り出し口の要否を別途決める。
 
-注2（ケース7の予定送信の写し方）: 原典は `system.scheduler.scheduleWithFixedDelay(100.millis, 100.millis)` で `TransparentTick` と `Identify(None)` を送り続ける。移植では、システムの scheduler を新しく作らず、testkit に既にある `ManualScheduler`（`crates/fraktor-testkit/src/manual_scheduler.rs`。Pekko の `ExplicitlyTriggeredScheduler` の移植）でテスト側が時刻を進めて送る形に写す。確かめる振る舞い（影響しないメッセージが届き続けても期限が来ること）は変わらない。システムの scheduler そのものを確かめるケースではないため、#234 の段6の後には回さない。ただし、この写し方を「原典の経路と違う」として認めない場合は、ケース7も段6の後へ移る。その判断は §10 の判断材料に挙げる。
+注2（ケース7の予定送信の写し方）: 原典は `system.scheduler.scheduleWithFixedDelay(100.millis, 100.millis)` で `TransparentTick` と `Identify(None)` を送り続ける。移植では、std のスレッドが100ミリ秒ごとに両方を送り続け、latch が開いたら止める形に写す（独立レビュー M4 の推奨。`ActorRef` は `Send + Sync` であり、原典の `system.scheduler` も別のスレッドで送るため、写し方として最も近い）。testkit の `ManualScheduler` は仮想の時刻で動き実行器の `Clock` とつながっていないため使わない。条件は「待ちの間ずっと送り続ける」ことであり、tick を最初にまとめて送る写し方や短い間だけ送る写し方では、影響しないメッセージで時計を戻す誤った実装でもケースが通ってしまう。時計を戻す変異でケースが落ちることを第2段で確かめる。この写し方では #234 の段6は前提にならない。
 
 ### 原典の補助の型
 
@@ -70,9 +70,9 @@ Pekko の `dungeon.ReceiveTimeout` は、セルごとに `State(timeout, task, v
 
 1. `setReceiveTimeout(timeout)` は、状態が無ければ版（version）1で作り、あれば `timeout` を差し替えて版を1つ上げる。予定の張り直しはその場では行わない。
 2. メッセージの処理の前に、状態があり、かつメッセージが `NotInfluenceReceiveTimeout` でなければ、張ってある予定を取り消す（`cancelReceiveTimeoutIfNeeded`）。この関数は処理の前の版を返す。
-3. メッセージの処理の後に（`checkReceiveTimeoutIfNeeded`）、状態があるか版が変わっていれば、再予定の判定をする。再予定するのは、メッセージが影響するメッセージである場合か、処理の間に版が変わった（＝ハンドラが `setReceiveTimeout` を呼んだ）場合だけである。
-4. 再予定の判定（`checkReceiveTimeout`）では、設定が有限の期間であれば、古い予定を取り消して `scheduler.scheduleOnce(timeout, self, ReceiveTimeout(timeout))` で張り直し、版を1つ上げる。設定が有限でなければ（`Duration.Undefined` と `Duration.Inf` を含む）、予定を取り消すだけである。有限の設定があり、予定がまだ張られていない場合は、再予定の条件が偽でも張る（生成直後と再起動直後のケースである。`ActorCell.create` の経路は `checkReceiveTimeout(reschedule = true)` を呼ぶ）。
-5. 停止のときは予定を取り消す。取り消し済みの予定が後から発火しても、メッセージは届かない（原典は `Cancellable.cancel()` に頼る。移植では世代で同じことをする。§3）。
+3. メッセージの処理の後に（`checkReceiveTimeoutIfNeeded`、`finally` の中にあるためハンドラが失敗しても走る）、状態があるか、処理の前後で版が変わっていれば再予定の判定をする。再予定の引数は「メッセージが影響するメッセージであるか、版が変わった（＝ハンドラが `setReceiveTimeout` を呼んだ）か」のどちらかである。影響するメッセージは、版の差分が無くても張り直しの対象になる（独立レビュー L6 のとおり条件を書き直した）。
+4. 再予定の判定（`checkReceiveTimeout`）では、設定が有限の期間であれば、古い予定を取り消して `scheduler.scheduleOnce(timeout, self, ReceiveTimeout(timeout))` で張り直し、版を1つ上げる。設定が有限でなければ、予定を取り消すだけである。有限の設定があり、予定（task）がまだ張られていない（`emptyCancellable` の）場合は、再予定の引数が偽でも張る（生成直後と再起動直後の経路。`ActorCell.create` と `finishRecreate` は `checkReceiveTimeout(reschedule = true)` を呼ぶ）。
+5. 停止のとき（`terminate` と `faultCreate`）は予定を取り消す。**再起動（`faultRecreate`）では予定を取り消さず、設定は再起動をまたいで残る**（独立レビュー L5）。取り消しの効き目は `Cancellable.cancel()` だけであり、原典の `version` は「1回の処理の前後だけで比べるので一巡しても害が無い」値で、古い発火を抑える仕組みではない。**メールボックスに入った後の `ReceiveTimeout` は、設定がその後に変わっても、普通のメッセージとして必ず配られる**（`ActorCell.scala` の文書。独立レビュー H2）。移植もこの振る舞いをそのまま写し、世代で積んだメッセージを捨てることはしない（§3、§4）。
 
 ケース12とケース13が確かめるのは、手順2と手順3の組み合わせである。影響しないメッセージの処理では予定は取り消されず、ハンドラが設定を変えたときだけ、処理の後の判定で新しい設定が効く。ケース13では、1回の処理の中で設定を2回変え、最後の値だけが効く。
 
@@ -86,10 +86,10 @@ Pekko の `dungeon.ReceiveTimeout` は、セルごとに `State(timeout, task, v
 | `crates/fraktor-actor/src/kernel/actor/receive_timeout/receive_timeout_message.rs` | `ReceiveTimeout` メッセージ |
 | `crates/fraktor-actor/src/kernel/actor/receive_timeout/receive_timeout_setting.rs` | `ReceiveTimeoutSetting`（設定の enum） |
 | `crates/fraktor-actor/src/kernel/actor/receive_timeout/not_influence_receive_timeout.rs` | 印の trait と分類の関数 |
-| `crates/fraktor-actor/src/kernel/actor/receive_timeout/receive_timeout_state.rs` | セルが持つ状態（設定、世代、期限）。`pub(crate)` |
+| `crates/fraktor-actor/src/kernel/actor/receive_timeout/receive_timeout_state.rs` | セルが持つ状態（設定、3状態、期限、版）。`pub(crate)` |
 | `crates/fraktor-actor/src/kernel/actor/actor_context.rs` | `set_receive_timeout` と `receive_timeout` の2つの口を足す |
 | `crates/fraktor-actor/src/kernel/executor/actor_cell.rs` | 状態を持ち、処理の前後の手順と停止時の取り消しを担う |
-| `crates/fraktor-actor/src/kernel/executor/executor_value.rs` | 運転のたびに期限を検査し、期限が来たセルへ `ReceiveTimeout` を配送する |
+| 実行器（段3 §11.11 の形。ファイルは #252 のマージ後に確定） | 期限の索引を持ち、最も早い期限だけを検査して、期限が来たセルへ `ReceiveTimeout` を積む |
 
 モジュールの置き方は、既存の `kernel::actor` 配下の1ファイル1型の並び（`timeout` モジュールの `Timeout` の前例を含む）に従う。新しい関数や公開 API を足す前に同じ働きの既存の関数を探す決まりについては、§2 のとおり受信タイムアウトの口は存在せず、重なる口は無いことを確認した。ask の `Timeout`（`kernel::timeout::Timeout`）は ask の期限の型であり、受信タイムアウトの設定には流用しない。
 
@@ -136,36 +136,63 @@ pub fn receive_timeout(&self) -> ReceiveTimeoutSetting;
 ```
 
 - 原典の `setReceiveTimeout(Duration)` は引数を1つ取る。移植の enum は、`Duration.Undefined`（ケース5とケース12が使う解除）、`Duration.Inf`（ケース11が使う解除）、有限の期間の3つを区別する。`Option<Duration>` にしない理由は #185 の前例のとおりであり、`None` と有限値の比較で「無限は有限より大きい」という原典の大小が逆になる事故を、型の上で起こせなくするためである。比較そのものは本書の本体では行わないが、設定の読み出し口（`receive_timeout()`）が利用者に比較の機会を与えるため、enum で表す。
-- 原典の `cancelReceiveTimeout` に当たる公開の口は作らない。原典でも `ActorContext` には無く、解除は `setReceiveTimeout(Duration.Undefined)` で行う。内部の予定の取り消しは `pub(crate)` とする。
+- `cancelReceiveTimeout` に当たる公開の口は作らない。Scala の `ActorContext` には無い（解除は `setReceiveTimeout(Duration.Undefined)` で行う）。Java の `AbstractActor.ActorContext` には `cancelReceiveTimeout()` があるが、Java API そのものを Rust に作らない方針（対応表）により作らない（独立レビュー L7）。内部の予定の取り消しは `pub(crate)` とする。
 - `ReceiveTimeout` の Java API `getTimeout` は作らない（§1 の注1）。
 
 ### 影響しないメッセージの印と分類
 
-原典の `NotInfluenceReceiveTimeout` はマーカー trait であり、`ReceiveTimeoutCompat.isNotInfluenceReceiveTimeout` は `Identify` の具体クラスを先に見てから trait を見る。Rust の `Message` は型消去されており（`crates/fraktor-actor/src/kernel/message/message_value.rs`）、trait の実装の有無を消去の後から問う口が無い。移植は次の形にする。
+原典の `NotInfluenceReceiveTimeout` はマーカー trait であり、`ReceiveTimeoutCompat.isNotInfluenceReceiveTimeout` は `Identify` の具体クラスを先に見てから trait を見る。原典では分類は型だけで決まる静的な性質である。Rust の `Message` は型消去されており（`crates/fraktor-actor/src/kernel/message/message_value.rs`）、trait の実装の有無を消去の後から問う口が無い。移植は次の形に決める（独立レビュー M1、M2）。
 
-```rust
-/// Marker counterpart of `org.apache.pekko.actor.NotInfluenceReceiveTimeout`.
-pub trait NotInfluenceReceiveTimeout: Any + Send + Sync {}
-
-/// Mirrors `ReceiveTimeoutCompat.isNotInfluenceReceiveTimeout` for the
-/// built-in kinds. User message kinds are classified through the
-/// registration below, following the `DeadLetterSuppression`
-/// registration precedent (`Executor::register_dead_letter_suppression`).
-pub fn is_not_influence_receive_timeout(message: &Message) -> bool;
-```
-
-- 組み込みの判定は2つである。`Identify` の型であることと、`ReceiveTimeout` 自身ではないことの確認ではなく、原典どおり `Identify` を先に判定する。ただし `Identify` と `ActorIdentity` の型そのものは本書では新しく足さない。理由は、ケース1が確かめるのは分類だけであり、自動受信の返信（`ActorIdentity` を返す処理）は別の Spec（ActorRefSpec 系）の範囲だからである。そのためケース1の `Identify(None)` の行は、テストファイルの中に `Identify` に当たる最小の型を置いて分類だけを確かめる形を提案する。この置き方は「本体の型をテストのために作る」形になるため、§10 の判断材料に挙げる。代替は、本体の公開型として `Identify` だけを足し、自動受信の処理は足さない形である。
-- 利用者のメッセージ型の印は、`Message` の包むときに trait を検出できないため、型の登録で表す。先行例は dead letter の抑制の登録（`register_dead_letter_suppression(TypeId)`)であり、分類の関数は、登録された `TypeId` の集合と照らす。テストの `TransparentTick` は、この登録を通して印を付ける。登録の置き場所（`ActorSystem` か `Executor` か）と、登録なしの型を既定で「影響する」とする点は原典と一致する（印が無いメッセージは期限を張り直す）。
-- 分類の関数は公開する。ケース1が crate の外の統合テストから直接呼ぶためであり、内部 API を呼ぶケースを単体テストに置く例外を使わないで済む。
+- **組み込みの型を kernel に足す。** `Identify { message_id }` を kernel の公開型として足し、分類は登録なしで `Identify` を「影響しない」と判定する。テストファイルの中の最小の型で写す初版の提案は採らない。その形では組み込みの判定が働かず、ケース1の1行目が登録で印を付けた2行目と同じことしか確かめなくなり、ケースが弱まるためである。自動受信（`ActorIdentity` の返信）は足さず、後追いの issue を切る（ActorRefSpec と ActorSelectionSpec 系の範囲。中将が切る）。
+- **利用者の型の印は登録で表し、trait は登録の境界で使う。** `ActorSystem` に `register_not_influence_receive_timeout::<T: NotInfluenceReceiveTimeout>()` の形の登録の口を置く。登録表はシステムごと（dead letter 抑制の `DeadLettersShared` と同じ範囲）とし、**登録はそのシステムで最初のメッセージが届くより前に済ませる**ことを制約とする。登録より前に届いたメッセージは「影響する」と分類される（この制約を破った場合の観測であり、I7 の「同じ型は常に同じ分類」は、登録を済ませたシステムの中での性質として書く。§4）。
+- **分類の関数は公開しない。** 原典の `ReceiveTimeoutCompat` は `private[pekko]` であり、`pub` にすると利用者が頼れる約束を足すことになる。分類の関数は `pub(crate)` とし、ケース1は `ActorSystem` の `pub(crate)` の口の単体テストで確かめるか、#181 が使う cargo の feature `test-support` の下に置く。どちらにするかは第2段の冒頭で、既存の `test-support` の有無を見て決める。あわせて、Timers の包みの型（`NotInfluenceReceiveTimeoutTimerMsg` に当たるもの）を後から組み込みとして足せる形にしておく（ケース9、§9）。
 
 ### セルの状態と発火の仕組み（新しい scheduler の口を作らない）
 
-#181 の設計は、kernel のタイマの表と世代を FSM の中に置き、発火だけを外に分け、`Scheduler` の port は #234 の段6（#257）の持ち物として先に決めない、と決めた。本書も同じ線を守る。受信タイムアウトのために汎用のタイマ表や第2の scheduler の口は作らない。
+#181 の設計との関係を正しく書く（独立レビュー M7）。#181 の設計は「kernel は時間を数えない。testkit の期限のスレッドが記録を読んで印を送り返す」と決めた。本書は違う。受信タイムアウトは本番の機能であり、testkit のスレッドに頼れないため、**kernel の実行器が `Clock` を読んで期限を比べ、発火させる**。つまり本書は、kernel に時間を数えさせる分担を #234 の段6からこの件のために前倒しする（§13-3 の問いとして残す）。重ねて作っていない点は正しい。FSM のタイマの表と世代は使わず、汎用のタイマの表も作らない。
 
-- セルは `ReceiveTimeoutState` を1つ持つ。中身は `setting: ReceiveTimeoutSetting`、`generation: u64`、`deadline: Option<Duration>`（`Clock::monotonic()` の値。期限なしは `None`）である。原典の `version` が世代に当たる。世代はセルの中で単調に増え、再起動をまたいで戻さない（再起動前の期限が再起動後のセルに届くことを防ぐためであり、#181 の「世代の数えは再起動で戻さない」と同じ理由である）。
-- 発火は実時間のスレッドでは行わない。実行器がシャードを1手運転するたびに、セルの期限と `Clock` の現在値を比べ、期限に達したセルへ `ReceiveTimeout(setting の期間)` を通常のメッセージとして配送する。期限の計算は `checked_add` で行い、あふれた場合は期限なしとして扱う（adaptor の ask の `AskDeadline::BeyondClockRange` の前例と同じ扱いである。§5）。
-- 処理の前後の手順は §2 の原典の順序どおりに `ActorCell::deliver` と生成・再起動・停止の経路へ組み込む。生成と再起動の直後は、有限の設定があれば予定を張る（原典の `checkReceiveTimeout(reschedule = true)` の経路）。停止では期限を消し、世代を1つ上げる。停止したセルの期限が残っていても、世代が合わなければ配送しない。
-- この形では、時間が進むのは実行器が運転されるときだけである。原典の TimingTest が実時間で待つケースは、移植では TestLatch と TestProbe の待ちが wait driver 経由で実行器を運転する間に期限が検査されるため、同じ観測（期限の後にメッセージが届く）が得られる。実時間の長さは原典の値（500ミリ秒、1秒）を使い、testkit の時間倍率（`TestKitSettings` の dilation）が既存の Spec と同じく効く形にする。
+#### 状態は3つ（H2）
+
+セルは `ReceiveTimeoutState` を1つ持つ。中身は `setting: ReceiveTimeoutSetting` と、次の3状態である。
+
+| 状態 | 意味 | 原典の対応 |
+|:---|:---|:---|
+| なし | 予定は無い | `task` が `emptyCancellable` で、発火済みでもない |
+| 張ってある（期限） | 期限 `deadline` が決まっている | `task` が張ってある |
+| 発火済み（未処理） | 期限が来て `ReceiveTimeout` を積んだが、まだ処理されていない | `task` が発火済みで空でない |
+
+- 期限が来たら、**期限を消して「発火済み」にし、`ReceiveTimeout(setting の期間)` を1件だけ積む**。発火で期限を消すため、`run_one` のたびに積まれることはなく、「発火1回につき積むのは1件」が成り立つ。
+- 積んだ後の `ReceiveTimeout` は普通のメッセージであり、**設定がその後に `Undefined` や `Infinite` に変わっても、世代がずれても、必ず配る**。判定（有限か、期限が来たか）は積む時点だけであり、受信の時点では判定しない（H2 で I1 と I4 を書き直した。§4）。二重に届く場合があるのは原典どおりであり、欠陥ではない。たとえば発火済みの `ReceiveTimeout` がキューに残っている間に新しい期限が張られて再び発火すれば、2件届く。
+- 影響しないメッセージは「発火済み」を張り直さない（原典では `task` が空でないので張り直しが起きない）。影響するメッセージの前処理で、張ってある予定を取り消し、状態を「なし」に戻す。
+- 原典の `version` に当たる版は、1回の処理の前後の変更の検出だけに使う（§2）。古い期限の抑止には使わない。期限の索引（次項）の行が古くなる場合の照合にだけ、世代を使う。
+- 時計が無い場合（境界の `monotonic_time` が `None`）は、`set_receive_timeout(Finite(_))` を呼んだ時点で理由を付けて panic する（前例の `require_restart_clock` に合わせる。独立レビュー L2）。黙って発火しない形にはしない。
+
+#### 期限の置き場所は段3 §11.11 の形を前提にする（H1）
+
+初版の「実行器がシャードを1手運転するたびに全セルを走査する」形と「段3が入っても作り直しにはならない見込み」は撤回する。段3（#252、PR #284 で設計は承認済み）の §11.11 では、`cells: Vec<ActorCell>` が `actors: BTreeMap<(u64, u32), ActorEntry>` に替わり、`ActorCell` は `Arc<Mailbox<ActorCell>>` の中へ移り、`ShardQueue` は消え、`run_one` の意味は「列が空になったら false」に変わる。本書はその形を前提にする。
+
+- 実行器は**張ってある期限の索引**を持つ（独立レビュー L4）。期限と宛先の id と世代で並ぶ `BTreeMap` であり、張ってある期限が無いときは時計も読まない。索引の行はセルの状態より古くなりうるため、発火の前にセルの状態と世代で照合する。世代が要るのはこの照合のためである。
+- 期限の検査は、`ManualExecutor` が `Run` を回した後（`AfterRun` の処理を含む）と、待ちに入る前に、索引の先頭（最も早い期限）だけを見る。待ちの長さは最も早い期限で切る。`await_envelope(max)` は `min(max, 最も早い期限 − 今)` までしか待たない。
+- この形は **Manual の dispatcher に限る**。段5以降の複数スレッドの dispatcher では、誰も実行器を「運転」しないため、アイドルのアクターの期限はこの形では起きない。段5か段6で、**原典どおり scheduler に `ReceiveTimeout` を予約する形（時計のスレッドか `Scheduler` の port による発火）へ作り直す**ことを、#234 の設計（§8 の表か段3・段5 の完了条件）と #252 側へ書いてもらう前提として、ここに明記する。索引は、そのときに `Scheduler` の port へ差し替える単位になる。
+- 実装の順は **#252 のマージの後**とする。今の `executor_value.rs` に組み込むと、#284 と同じ所を同時に書き換えることになるためである。
+
+#### `ActorContext` からセルの状態へ届く経路（M3）
+
+`ActorContext` は処理の間セルに触れない（実行器はセルを取り出して手元に持つ）。そのため、受信タイムアウトの状態は `stack` と同じく、セルから取り出して文脈に貸し、処理の後に戻す。文脈を作る4か所を次のとおりにする。
+
+| 文脈を作る場所 | 貸す状態 | 備考 |
+|:---|:---|:---|
+| `deliver`（通常の処理） | セルの状態 | 処理の前後の手順（§2）はこの貸し借りの前後で担う |
+| `create`（`pre_start`） | 新しいセルの状態 | 原典の `create` の経路。有限なら生成直後に張る |
+| `pre_restart`（古い文脈） | 古い個体の状態 | 原典では `preRestart` の中の `setReceiveTimeout` も状態に残る |
+| `restart`（新しい文脈、`post_restart`） | 再起動をまたいで残った状態 | `finishRecreate` に当たり、新しい個体の `post_restart` の後に有限なら張り直す |
+
+段4で文脈が「自分のセルを借りる」形になる（#234 §6）ため、この貸し借りは段4でその形へ移る。
+
+#### 再起動と失敗の経路（L5）
+
+- 再起動では設定を消さない（`faultRecreate` は予定を取り消さない）。新しい個体の `post_restart` の後に、有限なら張り直す。#181 の FSM が再起動で表を空にする形とは違うので、読み手がそちらを写さないよう明記する。
+- 処理の後の判定は、ハンドラが失敗しても走らせる（原典では `finally` の中）。今は `Resume` の指示が無いため失敗の経路の違いは観測されないが、`Resume` を足すときに効く。
 
 ### no_std で書けるか
 
@@ -173,18 +200,18 @@ pub fn is_not_influence_receive_timeout(message: &Message) -> bool;
 
 ## 4. 守る性質（不変条件）
 
-`S` をセルの設定、`G` を世代、`D` を期限とする。
+`S` をセルの設定、`D` を期限とする。版と世代で積んだメッセージを捨てる約束は置かない（H2）。
 
 | 番号 | 不変条件 |
 |:---:|:---|
-| I1 | 配送される `ReceiveTimeout` の `timeout` は、配送のきっかけになった設定 `Finite(d)` の `d` と常に等しい。設定が `Undefined` か `Infinite` の間に `ReceiveTimeout` は配送されない |
-| I2 | 影響するメッセージの処理が終わるたびに、設定が有限であれば期限は「処理の終了時刻＋期間」に張り直され、有限でなければ期限は無い。影響しないメッセージの処理では、ハンドラが設定を変えた場合にだけ期限が変わり、変えなければ期限は動かない |
-| I3 | 1回の処理の中で設定を何回変えても、効くのは最後の値だけである（ケース13）。処理の後の判定は、処理の前の世代と処理の後の世代の差分だけで決まる |
-| I4 | 世代は単調に増え、再起動と停止をまたいで戻らない。期限切れの配送は、配送の時点で世代が期限を張ったときの世代と一致する場合にだけ行う。取り消した期限、置き換えた期限、停止したセル、再起動前の個体の期限は、どれも配送されない（ケース15） |
+| I1 | 期限が来て積む時点では、設定が `Finite(d)` のときだけ `ReceiveTimeout(d)` を積む。**積んだ `ReceiveTimeout` は、設定がその後に変わっても、必ず配られる** |
+| I2 | 処理の後の判定は原典の `checkReceiveTimeoutIfNeeded` の条件どおりである。影響するメッセージの処理の後は有限なら張り直す。影響しないメッセージの処理では、ハンドラが設定を変えた場合か、予定がまだ張られていない場合にだけ張る（L6） |
+| I3 | 1回の処理の中で設定を何回変えても、効くのは最後の値だけである（ケース13）。処理の後の判定は、版の差分（影響しないメッセージの場合）と、メッセージが影響するかどうかと、予定が張られているかどうかで決まる。版の差分だけで決まるわけではない（L6） |
+| I4 | 発火1回につき、積む `ReceiveTimeout` は1件だけである。発火すると期限は消え、状態は「発火済み」になる。世代は期限の索引の行の照合だけに使い、積んだメッセージの配送を止めるためには使わない |
 | I5 | `ReceiveTimeout` 自身の処理は通常のメッセージと同じであり、その処理の後に次の期限が張られる（繰り返し届く。ケース8） |
-| I6 | 設定の解除（`Undefined` と `Infinite`）は等しく効く。解除の後に期間が過ぎても配送されず、解除の前後でセルのほかの状態（振る舞い、子、購読）は変わらない（ケース5、ケース11、ケース12） |
-| I7 | 分類は決定的である。同じ型のメッセージは常に同じ分類になり、分類はメッセージの中身（値）には依存しない。`Identify` に当たる型と登録された型だけが「影響しない」になる |
-| I8 | 期間が0の設定は、有限として扱い、次の運転で直ちに期限切れになる。原典の `scheduleOnce(0)` が即時に発火することと一致する |
+| I6 | 設定の解除（`Undefined` と `Infinite`）は等しく効く。解除は、まだ積まれていない予定にだけ効く。解除の前後でセルのほかの状態（振る舞い、子、購読）は変わらない（ケース5、ケース11、ケース12） |
+| I7 | 分類は決定的である。登録を済ませたシステムの中では、同じ型のメッセージは常に同じ分類になり、分類はメッセージの中身（値）には依存しない。組み込みの `Identify` と登録された型だけが「影響しない」になる |
+| I8 | 期間が0の設定は、有限として扱い、次の運転で直ちに期限切れになる。原典の `scheduleOnce(0)` が即時に発火することと一致する。ただし期間0では処理のたびに張り直されるため **`run_until_idle` は戻らない**。0の確認は `run_one` か時間を区切った待ちで行う（L3）。原典の文書の「1ミリ秒が最小」は、最小値を強制する規則としては写さず、上の注意として記録する |
 
 ## 5. 壊しうる入力
 
@@ -198,6 +225,8 @@ pub fn is_not_influence_receive_timeout(message: &Message) -> bool;
 | 並行に当たる順序 | 期限切れの配送がキューに入った直後に通常のメッセージが届く順序 | 原典でも `ReceiveTimeout` はメールボックスに入った通常のメッセージであり、順序は配送の順である。移植でもキューに入った順を保つ |
 | 状態 | 停止の処理の中で `set_receive_timeout` を呼ぶ（ケース15の `StoppingSelfActor` は停止の前に呼ぶ） | 停止が優先し、配送されない（I4） |
 | 状態 | 再起動の直後に設定する（ケース14） | 新しい個体の `pre_start`（原典の `postRestart` の経路）で張った期限が効く |
+| 順序 | 発火済みの `ReceiveTimeout` がキューにある間に設定を解除・変更する | 積んだ `ReceiveTimeout` は必ず配られる（I1）。原典どおりであり、二重に届く場合も欠陥ではない |
+| 状態 | 時計が無い境界で `set_receive_timeout(Finite(_))` を呼ぶ | 理由を付けて panic する（L2） |
 | 分類 | 印を登録していない型、値だけが違う同じ型 | すべて「影響する」として扱う（I7） |
 | 文字列に当たる入力 | 本件には文字列の設定入力が無い | 設定は型付きの enum であり、名前や文字列で選ぶ経路を持たない（§8） |
 
@@ -205,25 +234,29 @@ pub fn is_not_influence_receive_timeout(message: &Message) -> bool;
 
 ## 6. PBT を足すか
 
-判断：足す。対象は実時間ではなく、セルの状態の機械（`ReceiveTimeoutState`）である。理由は、不変条件 I2、I3、I4 が「設定の変更、影響する／しないメッセージの処理、取り消し、期限切れ」の操作列に対する性質であり、固定の15件では操作列の組み合わせの一部しか踏まないためである。#177 の設計と同じく、固定 seed の乱数で操作列を作り、外部の依存は足さない。PBT は原典外であり、台帳の件数には含めない。置き場所は `crates/fraktor-actor/tests/receive_timeout_property_test.rs` とし、手動の `Clock` の実装で時刻を進める。
+判断：足す。ただし置き場所と形を独立レビュー M6 のとおりに直す。`ReceiveTimeoutState` は `pub(crate)` なので、`tests/` の統合テストからは見えない。
+
+- 状態の機械の PBT は単体テストに置く。`crates/fraktor-actor/src/kernel/actor/receive_timeout/receive_timeout_state_test.rs`（`executor_value_test.rs` の並び）。
+- アクターを通す PBT は `tests/` に置き、公開の `ActorSystem::set_clock` で手で進める時計を入れる。
+- 形は、性質の列挙よりも参照モデルとの完全一致を主にする。原典の `State(timeout, task, version)` と `invoke` の前後の手順をそのまま写した参照モデルを用意し、操作列（影響する／しない受信、受信中の複数回の設定、期限の到来、積んだ `ReceiveTimeout` の処理、再起動、停止）ごとに、届く `ReceiveTimeout` の列を完全一致で比べる。固定 seed の乱数で操作列を作り、外部の依存は足さない。PBT は原典外であり、台帳の件数には含めない。
 
 | 番号 | 性質 | 確かめる不変条件 |
-|:---:|:---|:---:|
-| P1 | 任意の操作列の後で、期限があるのは設定が有限のときだけであり、期限は最後に張った時刻＋期間と等しい | I1、I2 |
+|:---:|:---|:---|
+| P1 | 任意の操作列の後で、期限があるのは設定が有限で張ってある状態のときだけであり、期限は最後に張った時刻＋期間と等しい | I1、I2 |
 | P2 | 影響しないメッセージだけの列では、設定を変える操作が無い限り期限は一切動かない | I2、I7 |
-| P3 | 世代がずれた期限は、時刻をいくら進めても配送されない。取り消しと停止と置き換えの後の古い期限を含む | I4 |
+| P3 | 発火1回につき積まれるのは1件だけであり、積まれた `ReceiveTimeout` は設定の変更・解除・再起動の後でも必ず届く（参照モデルと完全一致） | I1、I4 |
 | P4 | 設定を変える操作が連続する列では、最後の設定だけが残り、期限は最大で1つである | I3 |
-| P5 | 期間0と `Duration::MAX` を含む任意の期間で、状態の操作は panic しない | I8、§5 の境界 |
+| P5 | 期間0と `Duration::MAX` を含む任意の期間で、状態の操作は panic しない（時計が無い場合の panic は §3 の決められた経路だけ） | I8、§5 の境界 |
 
 ## 7. Quint を書くか
 
 判断：書く。理由は、本件には状態遷移（設定の有無、期限の有無、世代、停止と再起動）があり、正しさの中心が「古い期限の発火を世代で抑える」ことにあるためである。これは #181 の設計が FSM のタイマで Quint を書いた理由（取り消しと置き換えと世代の誤りを固定テストが狭くしか見ない）と同じであり、#234 の設計も mailbox の予約で同じ判断をしている。逆に、状態遷移の無い移植（#185 の DurationSpec）では Quint を書かない判断が前例であり、本件はその場合に当たらない。
 
-- 置き場所は `docs/design/specs/receive_timeout.qnt` と `docs/design/specs/receive_timeout_test.qnt`（`frequency_sketch.qnt` の前例の並び）とする。
-- 状態は、設定（`Undefined`、`Infinite`、`Finite` の区別だけを持ち、期間の値は持たない）、期限の有無、世代、セルの生死（運転中、停止済み）、再起動の有無である。
+- 置き場所は `crates/fraktor-actor/specs/receive_timeout.qnt` と `crates/fraktor-actor/specs/receive_timeout_test.qnt` とする（独立レビュー M5）。`scripts/quint-check-specs.sh` は `crates/*/specs/*.qnt` だけを読むため、`docs/design/specs/` では CI の検査の対象にならない。前例は状態遷移の `fsm_transition.qnt` と `mailbox_scheduling.qnt`（どちらも `crates/fraktor-actor/specs/`）である。
+- 状態は、設定（`Undefined`、`Infinite`、`Finite` の区別だけを持ち、期間の値は持たない）、期限の有無、**発火済み（未処理）の印**、**キューに入った `ReceiveTimeout` の有無**、セルの生死（運転中、停止済み）、再起動の有無である（H2）。
 - 遷移は、設定する、影響するメッセージを処理する、影響しないメッセージを処理する、期限が来る、停止する、再起動する、の6つである。期限が来る手と処理の手は分ける（割り込みを置くためであり、#181 の「発行と受信を分ける」と同じ作りである）。
-- 不変条件は I1（有限のときだけ配送される）、I2（影響しない処理では期限が動かない）、I4（世代がずれた期限は配送されない）に対応するものを置く。
-- 負の対照として、世代の判定を落としたものと、影響しないメッセージで期限を取り消すものを置き、それぞれ狙った不変条件が落ちることを確かめる。
+- 不変条件は I1（有限のときだけ積まれ、積まれたものは必ず届く）、I2（影響しない処理では期限が動かない）、I4（発火1回につき1件）に対応するものを置く。
+- 負の対照として、受信の時点で積んだ `ReceiveTimeout` を捨てるものと、発火で期限を消さないものと、影響しないメッセージで期限を取り消すものを置き、それぞれ狙った不変条件が落ちることを確かめる（H2）。
 - モデルにしないものは、実時間そのもの（期限は「来たかどうか」の真偽で表す）と、期間の算術（PBT と単体テストの範囲）である。
 
 ## 8. HOCON の設定について
@@ -234,11 +267,11 @@ pub fn is_not_influence_receive_timeout(message: &Message) -> bool;
 
 | ケース | 前提 | 扱い |
 |:---:|:---|:---|
-| 9（Timers で予定した影響しないメッセージ） | Pekko の `Timers` trait の移植と、kernel の `Scheduler` の port（#234 の段6、#257）。FSM のタイマの発火も同じ段の後として #181 の設計が後追いを切っている | 本書の第2段の範囲から外し、「#234 の段6の後」と分ける。台帳では未移植のまま残し、green の勘定には入れない（§10） |
-| 7（scheduler で送り続ける影響しないメッセージ） | 原典は `system.scheduler` と `system.dispatcher` を使う | §1 の注2 の写し方（testkit の `ManualScheduler`）を認めれば前提にならない。認めなければ段6の後へ移る |
-| そのほかの13件 | 複数スレッドの dispatcher は前提にならない。原典の TimingTest は実時間の経過を見ているだけであり、スレッドの並行性そのものは見ていない | 今の実行器のまま先に進める。段3（#252、アクターごとのメールボックス）が入っても、本書のセルの状態と手順はセルの側に閉じており、作り直しにはならない見込みである。その確認は段3の側の洗い出しに委ねる |
+| 9（Timers で予定した影響しないメッセージ） | Pekko の `Timers` trait の移植と、kernel の `Scheduler` の port（#234 の段6、#257）。ケース9が確かめるのは、Timers が予定したメッセージに印が残ること（原典の `TimerSchedulerImpl` が、影響しないメッセージを包んで予定する回帰）であり、テストの中でタイマのまねをすると何も確かめないケースになる | **案Aで確定**（中将の判断）。#257 の後へ回す。ケースは unported のまま残し、数からは外さない。台帳は red のまま 15/14/14（§10）。後続の issue は中将が作る。その issue には、ケース9と「Timers の包みは、包む時点で中のメッセージを分類し、影響しないと判定されること」を書く |
+| 7（scheduler で送り続ける影響しないメッセージ） | 原典は `system.scheduler` と `system.dispatcher` を使う | §1 の注2 の写し方（std のスレッドで送り続ける）で前提にならない。決着済みであり、§13 の問いには残さない |
+| そのほかの13件 | 複数スレッドの dispatcher そのものは前提にならない。ただし本体の置き場所は段3 §11.11 の形が前提である（§3） | 先に進める。ただし実装は #252 のマージの後とする。段5以降では、期限の発火を scheduler への予約へ作り直す必要がある（§3）。この作り直しが要ることは #234 の設計側にも書いてもらう |
 
-複数スレッドで時間切れが同時に起きること自体を確かめるケースは、原典の15件の中に無い。したがって「複数スレッドでの時間切れ」を理由に後へ回すケースは、ケース9を除いて無い。
+複数スレッドで時間切れが同時に起きること自体を確かめるケースは、原典の15件の中に無い。
 
 ## 10. 台帳で green にする対象ノード
 
@@ -248,37 +281,60 @@ pub fn is_not_influence_receive_timeout(message: &Message) -> bool;
 - name：`actor-tests:ReceiveTimeoutSpec`
 - 今の状態：`unported`、`cases.total` は `null`、`test_cases_approx: 2`（概数であり実数15とは違う。第2段で `cases.total: 15` を記録する）
 
-第2段の終わりでの見込みは、ケース9の扱いで変わるため、レビューで決めてほしい点に挙げる。
+第2段の終わりでの扱いは、**案Aで確定**である（中将の判断。独立レビューも案Aを推奨し、案B（除外）は採らない）。
 
-- 案A（ケース9を段6の後として分ける場合）：移植14件、未移植1件となり、ノードは green にはならない。rollup の完了判定に照らすと、この issue の第2段は「14件を green 相当まで進め、1件を前提の段の後に残す」形になる。台帳の状態の書き方は、台帳の規約（状態遷移は unported → red → green の順だけ）と rollup の実装に合わせて第2段で決める。
-- 案B（ケース9を除外として承認する場合）：移植14件、除外1件で green になる。ただし除外は人間だけが決める区分であり、本書は理由（前提の `Timers` と `Scheduler` の port が未移植であること）を提案として書くにとどめる。恒久的な除外ではなく前提が揃えば移せるため、本書は案Bを推奨しない。
-- 本書の推奨は案Aである。issue の文面の「台帳の対象ノードを green にする」とは名前が違う形になるため、その点をレビューで確認してほしい。
+- ケース9を #257 の後へ回し、ケースは unported のまま残す。ノードは green にしない。
+- 台帳の書き方は `actor-tests:ExtensionSpec` の前例（ケース5を前提の後に残し、`status: red`、`cases 8/5/5`、`triage.kind: pending`、`reason` に残りの理由）と同じ形にする。本件では `status: red`、`cases.total: 15`、`ported: 14`、`passing: 14`、`triage.reason` に「ケース9は #257 の Timers の port の後」と書く。状態遷移の規約（unported → red → green）にも合う。
+- したがって issue の文面の「台帳の対象ノードを green にする」は案Aでは満たせない。完了の扱いは、§13-1 のとおりオーナーに伺う（中将が指揮系統で上げる）。
 
 あわせて第2段では、`rust.crate` に `fraktor-actor`、`rust.test_file` に `crates/fraktor-actor/tests/receive_timeout_spec.rs` を記録し、`needs.testkit` は現状のままで足りる（不足は無い）。`docs/baseline/v2.0.0-undocumented-nodes.tsv` の行の追加は、ほかの移植の前例に合わせて第2段で行う。
 
 ## 11. 影響
 
-- **公開 API**：追加は `kernel::actor` の `ReceiveTimeout`、`ReceiveTimeoutSetting`、`NotInfluenceReceiveTimeout`、`is_not_influence_receive_timeout` と、`ActorContext` の `set_receive_timeout` と `receive_timeout` である。既存の公開 API の変更と削除は無い。
+- **公開 API**：追加は `kernel::actor` の `ReceiveTimeout`、`ReceiveTimeoutSetting`、`NotInfluenceReceiveTimeout`、`Identify` と、`ActorContext` の `set_receive_timeout` と `receive_timeout` と、`ActorSystem` の登録の口 `register_not_influence_receive_timeout` である。分類の関数 `is_not_influence_receive_timeout` は公開しない（M1）。既存の公開 API の変更と削除は無い。
 - **新しいコードファイルのヘッダー**：第2段で足す `crates/**/*.rs` の新しいファイルには、自作のものも含めて Apache-2.0 のヘッダーを付け、Pekko の移植であるファイルには原典の指定を入れる（加藤の決まり、2026-11-26。決まりの見直しは [Issue #241](https://github.com/j5ik2o/fraktor-ng-rs/issues/241) で進行中）。本書のような設計の Markdown には、既存の設計文書にヘッダーが無いため付けない。
 - **台帳**：対象は §10 の1ノードだけである。本書の段では触らない。
-- **#181 との重なり**：#181（[PR #275](https://github.com/j5ik2o/fraktor-ng-rs/pull/275)、設計レビュー中）は kernel の FSM にタイマの表と世代を足す。本書は FSM の表を使わず、別の汎用タイマ表も作らない。重なるのは「世代で古い発火を捨てる」という考え方だけであり、世代の数え自体はセルと FSM で別々に持つ。将来 `Scheduler` の port が段6で入るときは、本書の期限の検査と #181 の発火の出口の両方がその port の利用者になる。その差し替えは段6の側の仕事として、ここに記録する。
+- **#181 との重なり**：#181（[PR #275](https://github.com/j5ik2o/fraktor-ng-rs/pull/275)、設計レビュー中）は kernel の FSM にタイマの表と世代を足し、「kernel は時間を数えない」と決めた。本書は FSM の表を使わず、別の汎用タイマ表も作らないが、**kernel の実行器が時間を数える点では #181 と違う線である**（M7。理由は §3）。重なるのは「期限と世代で索引を照合する」という考え方だけであり、数えはセルと FSM で別々に持つ。将来 `Scheduler` の port が段6で入るときは、本書の期限の索引と #181 の発火の出口の両方がその port の利用者になる。その差し替えは段6の側の仕事として、ここに記録する。
 - **保存済みのデータと上流**：影響は無い。Pekko の上流へ送るものも無い。
 - **守りの仕組み**：CI の必須チェックは変えない。第2段で、移植したテストと PBT と Quint の検査が必須チェックの中で動くようになる。
-- **実行時間**：原典の時間の値を使うため、統合テストに最大で数秒の実時間の待ちが加わる。testkit の時間倍率が効く形にするため、倍率を上げる実行では待ちは長くなる。既存の TimingTest 相当の Spec（`actor_timeout_spec.rs` など）と同じ性質である。
+- **実行時間**：原典の時間の値を使うため、統合テストに最大で数秒の実時間の待ちが加わる。時間の倍率（dilation）は、待ちの長さ（TestLatch、expectNoMessage）だけに掛かり、`set_receive_timeout` の値には掛からない。原典も同じである（L7）。ケース13で値に倍率を掛ける写し方をしないこと。
 
 ## 12. 第2段の進め方（設計レビューが通ってから）
 
-1. Claude Opus の担当が、`crates/fraktor-actor/tests/receive_timeout_spec.rs` に §1 の14件を書き、台帳の対象ノードを red にして、失敗を確認する（red）。ケース1の置き方（§3 の `Identify` の扱い）は、§10 の判断が決まってから書く。
+1. 実装は #252 のマージの後とする。Claude Opus の担当が、`crates/fraktor-actor/tests/receive_timeout_spec.rs` に §1 の14件を書き、台帳の対象ノードを red（15/14/14 の見込み）にして、失敗を確認する（red）。ケース1は kernel の公開型 `Identify` を使う（§3）。ケース7は std のスレッドで送り続ける形で書く（§1 の注2）。
 2. 本書の担当が、§3 の本体だけを実装してテストを通す（green）。テストが誤りだと思った場合は、テストを書き換えず、triage への差し戻しとして報告する。
-3. `crates/fraktor-actor/tests/receive_timeout_property_test.rs` に §6 の PBT を足し、`docs/design/specs/receive_timeout.qnt` と `receive_timeout_test.qnt` に §7 の Quint を足す。
-4. 台帳の対象ノードを §10 の見込みどおりに更新し、`docs/baseline/v2.0.0-undocumented-nodes.tsv` を作り直す。
+3. §6 の PBT（単体テストと、公開の時計を使う `tests/` の2か所）と、§7 の Quint（`crates/fraktor-actor/specs/receive_timeout.qnt` と `receive_timeout_test.qnt`）を足す。
+4. 台帳の対象ノードを §10 の確定どおり（red、15/14/14）に更新し、`docs/baseline/v2.0.0-undocumented-nodes.tsv` を作り直す。
 5. CI と同じ検査を流す。`cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、台帳の Python テスト（`ledger/tools`）、Quint の検査である。必須のチェックが1つでも落ちたら、ほかの完了を待たずに直す。
 6. PR をドラフトから外し、マージできる状態にする。マージはしない。ボットの指摘とトップレベルのコメントには、それぞれ直した／別件／採らないと理由を書いて返信し、スレッドを解決する。
 
 ## 13. レビューで決めてほしい点
 
-1. **ケース9を「#234 の段6の後」として分け、対象ノードを green にしない案Aでよいか。** 認めない場合は、ケース9の除外の承認（案B）か、`Timers` と `Scheduler` の port を本書の範囲に引き込むか、どちらかになる。引き込む場合は公開 API の追加が大きく増え、#181 の後追いと #257 の範囲と重なるため、第2段へ進まず範囲を組み直す必要がある。
-2. **ケース7の予定送信を testkit の `ManualScheduler` で写す形でよいか。** 認めない場合はケース7も段6の後へ移り、先に進めるのは13件になる。
-3. **ケース1の `Identify` の扱いをどうするか。** 本書の提案は、テストファイルの中に `Identify` に当たる最小の型を置いて分類だけを確かめる形である。代替は、本体の公開型として `Identify` だけを足す形である。自動受信の返信そのものは、どちらの形でも本書の範囲に入れない。
-4. **発火を実行器の運転の中の期限検査で行う形でよいか。** 代替は、実時間のスレッドで発火させる形であり、それは `Scheduler` の port の形を本書が先に決めることになり、#257 と二重になる。本書は前者を推奨する。
-5. **ケース3の Java API の行（`getTimeout`）を、Rust の `timeout()` で代表させる形でよいか。** §1 の注1 の提案である。
+1. **ケース9を案Aで回す結果、対象ノードが green にならないことの完了の扱い。** ケース9の扱い自体は中将の判断で案Aに確定した（§9、§10）。issue の文面の「対象ノードを green にする」は満たせないため、この issue の完了の扱いはオーナーに伺う（中将が指揮系統で上げる）。
+2. **ケース3の Java API の行（`getTimeout`）を、Rust の `timeout()` で代表させる形でよいか。** §1 の注1 の提案である。前例があってもケースの中の1行を移さないことに当たるため、伺う決まりに従い残す。
+3. **kernel の実行器に時間を数えさせてよいか。** #181 は「kernel は時間を数えない」と決め、#234 の段6が `Scheduler` の port の持ち主である。本書は受信タイムアウトのためにその分担を前倒しする（§3、M7）。段5以降で scheduler への予約へ作り直す前提と合わせて決めてほしい。
+
+決着済みの点（初版の問いから外したもの）：ケース7の写し方は std のスレッドで送り続ける形（M4）、ケース1の `Identify` は kernel の公開型にする（M2）、発火の置き場所は段3 §11.11 を前提にし段5以降で作り直す（H1）。
+
+## 14. 独立レビュー（PR #283）への回答表
+
+独立レビュー（Opus、判定は要修正。高2件、中7件、低7件）の全16件への回答である。全件を「直す」とし、本文へ反映した。採らない／別件は無い。
+
+| # | 重さ | 回答 | 理由と反映先 |
+|:--|:--|:--|:---|
+| H1 | 高 | 直す | 段3 §11.11 でセルの置き場所がメールボックスへ移り、段5ではアイドルのアクターの期限を誰も検査しない。「作り直しにはならない」を撤回し、段3の形を前提、待ちを最も早い期限で切ること、段5か段6で scheduler への予約へ作り直すこと、実装は #252 のマージの後とすることを §3 と §9 に書いた |
+| H2 | 高 | 直す | 原典の `version` は1回の処理の前後だけで比べる値であり、積んだ `ReceiveTimeout` は設定変更後も配られる。I1 と I4 を積む時点だけの判定に書き直し、状態を「なし／張ってある／発火済み（未処理）」の3つにし、発火で期限を消すことを §2、§3、§4 に書いた。二重に届きうることは原典の振る舞いとして明記した |
+| M1 | 中 | 直す | 引数なしの公開関数では登録表を読めない。登録表はシステムごと、登録は最初のメッセージより前を制約とし、登録の境界で trait を使う形に決めた。分類の関数は公開せず、`pub(crate)` か feature `test-support` の下に置くことを §3 に書いた |
+| M2 | 中 | 直す | テストの中の最小の型では組み込みの判定が働かずケース1が弱まる。kernel の公開型 `Identify` を足し、自動受信は後追いの issue に分けることを §3 に書いた |
+| M3 | 中 | 直す | `ActorContext` はセルに触れない。状態を `stack` と同じく文脈に貸す形にし、文脈を作る4か所（deliver、create、pre_restart、restart）の表を §3 に書いた |
+| M4 | 中 | 直す | `ManualScheduler` は実行器の `Clock` とつながっておらず、誤った実装でもケース7が通る写し方がありうる。std のスレッドで100ミリ秒ごとに送り続け、latch が開いたら止める形に §1 の注2 を書き直した |
+| M5 | 中 | 直す | `docs/design/specs/` は CI の Quint 検査の対象外である。置き場所を `crates/fraktor-actor/specs/receive_timeout.qnt` に §7 で直した |
+| M6 | 中 | 直す | 状態は `pub(crate)` で `tests/` から見えない。PBT を単体テストと、公開の `set_clock` を使う `tests/` に分け、参照モデルとの完全一致の形に §6 を書き直した。P3 は H2 に合わせて置き換えた |
+| M7 | 中 | 直す | 「#181 と同じ線」は事実と違う。#181 は kernel が時間を数えず、本書は実行器が `Clock` を読む。違いと理由（本番の機能なので testkit に頼れない）を §3 と §11 に書き、問いの言い直しを §13-3 に置いた。表は重ねていない点は維持した |
+| L1 | 低 | 直す | `TimingTest` のタグは12件であり、ケース1、14、15には無い。§1 を数え直して直した |
+| L2 | 低 | 直す | 時計が無い場合を決めていなかった。前例 `require_restart_clock` に合わせ、`set_receive_timeout(Finite)` の時点で理由つきで panic することを §3 に書いた |
+| L3 | 低 | 直す | 期間0では `run_until_idle` が戻らない。I8 にその注意と、確認は `run_one` か時間を区切った待ちで行うことを §4 に書いた |
+| L4 | 低 | 直す | 全セルの走査は負担が増える。実行器に期限の索引を持たせ、期限が無いときは時計も読まない形を §3 に書いた。世代は索引の照合に使う |
+| L5 | 低 | 直す | 再起動の扱いが抜けていた。再起動では設定を消さず `post_restart` の後に張り直すことと、処理の後の判定は失敗でも走らせることを §2 と §3 に書いた |
+| L6 | 低 | 直す | I2 と I3 が原典の `checkReceiveTimeoutIfNeeded` の条件を落としていた。影響するか、版が変わったか、予定が張られているか、の条件どおりに §2 と §4 を書き直した |
+| L7 | 低 | 直す | (a) Java の `cancelReceiveTimeout()` はあるため、Scala の側に限る書き方と、Java API を作らない理由を §3 に書いた。(b) 倍率は待ちだけに掛かり設定の値には掛からないことを §11 に書いた |
