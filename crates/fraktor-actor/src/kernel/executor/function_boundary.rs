@@ -61,8 +61,7 @@ impl FunctionBoundary {
   }
 
   /// Returns the boundary that tells `arrivals` each time its handler has
-  /// run, so a caller waiting for a test actor wakes (design of #234,
-  /// section 11.11.6).
+  /// run, so a caller waiting for a test actor wakes.
   pub(crate) fn with_arrivals(self, arrivals: Arc<ArrivalNotice>) -> Self {
     Self { arrivals: Some(arrivals), ..self }
   }

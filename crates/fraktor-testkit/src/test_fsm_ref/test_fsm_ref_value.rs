@@ -191,7 +191,7 @@ where
     // Pekko's `TestFSMRef` builds the actor on a calling-thread
     // dispatcher, so a machine that fails to start throws at creation
     // and no reference is handed out. Here the machine starts in its own
-    // run (design of #234, section 11.12.10), so the dispatcher is run
+    // run, so the dispatcher is run
     // until the machine has started or stopped; work queued before it
     // runs too. The contract is then a check: a machine the supervisor
     // stopped during its start is terminated at this point, and the

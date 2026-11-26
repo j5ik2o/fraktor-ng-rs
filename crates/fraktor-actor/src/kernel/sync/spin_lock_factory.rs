@@ -24,7 +24,7 @@ use crate::kernel::sync::RawLock;
 /// Makes spin locks.
 ///
 /// This is the kernel's default for a system that one thread drives, where
-/// nobody waits for a lock (design of #234, section 3.2). A thread pool with
+/// nobody waits for a lock. A thread pool with
 /// more threads than cores, or an embedded target where an interrupt may take
 /// the same lock, needs the adaptor's lock instead: a spinning thread keeps
 /// the holder from running.
