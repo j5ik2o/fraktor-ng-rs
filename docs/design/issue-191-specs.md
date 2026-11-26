@@ -1,8 +1,8 @@
-# 設計：#191 actor の Consistency／DeadLetterSuspension／DeadLetterSupression
+# 設計：#191 actor の DeadLetterSuspension／DeadLetterSupression
 
-[Issue #191](https://github.com/j5ik2o/fraktor-ng-rs/issues/191) の設計の記録である。Pekko v2.0.0（commit `9fbd2283b1cf701c90a1223bf621942c191db61f`）の actor-tests にある `ConsistencySpec`、`DeadLetterSuspensionSpec`、`DeadLetterSupressionSpec` の 3 本を Rust へ移植し、台帳の対象ノード 3 件を green にする。
+[Issue #191](https://github.com/j5ik2o/fraktor-ng-rs/issues/191) の設計の記録である。Pekko v2.0.0（commit `9fbd2283b1cf701c90a1223bf621942c191db61f`）の actor-tests にある `DeadLetterSuspensionSpec` と `DeadLetterSupressionSpec` の 2 本を Rust へ移植し、台帳の対象ノード 2 件を green にする。`ConsistencySpec` は元帥の決定（2026-11-26）でこの issue から外れた。経緯は §1 に書く。
 
-この文書は第 1 段（設計だけ）である。実装は、別の担当がこの設計をレビューして通ってから、第 2 段で red → green の順に行う。この文書自体がドラフト PR の唯一の変更である。台帳は第 2 段で更新する（この段では `status: unported` のまま触らない）。
+この文書は第 1 段（設計）の記録であり、第 2 段（実装）は設計レビューを通ってから red → green の順に行う。台帳は第 2 段で更新する。
 
 進め方の規約は `.takt/facets/knowledge/fraktor-porting-rules.md`、設計文書の前例は [PR #205](https://github.com/j5ik2o/fraktor-ng-rs/pull/205) の [issue-177-frequency-sketch.md](issue-177-frequency-sketch.md) に従う。ノード 1 件＝テストファイル 1 件、ファイル冒頭に出典（Pekko v2.0.0 のファイルパス）をコメントで残す。
 
@@ -12,38 +12,22 @@
 
 ### 件数の数え直し
 
-原典の `" in {"` の数を数え直した。`ConsistencySpec` と `DeadLetterSuspensionSpec` は台帳の目安と一致する。`DeadLetterSupressionSpec` は台帳の目安が 0 件になっているが、数え直しは 2 件であり、issue の目安（2 件）と一致する。台帳の目安 0 は誤りであり、第 2 段で台帳を更新するときに `cases.total: 2` として記録する。
+原典の `" in {"` の数を数え直した。`DeadLetterSuspensionSpec` は台帳の目安と一致する。`DeadLetterSupressionSpec` は台帳の目安が 0 件になっているが、数え直しは 2 件であり、issue の目安（2 件）と一致する。台帳の目安 0 は誤りであり、第 2 段で台帳を更新するときに `cases.total: 2` として記録する。`ConsistencySpec` は数え直し 1 件であるが、この issue の対象からは外れた（下の段落）。
 
 | 原典 | 目安（issue／台帳） | 数え直し | 内訳 |
 |:---|---:|---:|:---|
-| `actor-tests/src/test/scala/org/apache/pekko/actor/ConsistencySpec.scala` | 1／1 | **1** | 「The Pekko actor model implementation must」の下に 1 件 |
 | `actor-tests/src/test/scala/org/apache/pekko/actor/DeadLetterSuspensionSpec.scala` | 1／1 | **1** | 1 件の中に、数え上げ 1〜4、一時停止、再開、リセットの段がすべて入る |
 | `actor-tests/src/test/scala/org/apache/pekko/actor/DeadLetterSupressionSpec.scala` | 2／0 | **2** | 宛先が停止したアクターの場合と、`system.deadLetters` の場合の 2 件 |
-| 合計 | 4 | **4** | |
+| 合計 | 3 | **3** | |
 
-台帳の対象ノードは次の 3 件で、どれも `status: unported`、`triage.kind: pending` である。
+台帳の対象ノードは次の 2 件で、どれも `status: unported`、`triage.kind: pending` である。
 
-- `actor-tests/src/test/scala/org/apache/pekko/actor/ConsistencySpec.scala`
 - `actor-tests/src/test/scala/org/apache/pekko/actor/DeadLetterSuspensionSpec.scala`
 - `actor-tests/src/test/scala/org/apache/pekko/actor/DeadLetterSupressionSpec.scala`
 
-### 対応表：ConsistencySpec（1 件）
+### ConsistencySpec をこの issue から外した理由
 
-移す先は `crates/fraktor-actor/tests/consistency_spec.rs` である。
-
-| # | 原典のケース | Rust のテスト名 | 移す／作らない |
-|:---:|:---|:---|:---|
-| 1 | provide memory consistency | `provide_memory_consistency` | 移す（形を変える。§2.4） |
-
-原典は、fork-join の dispatcher（スレッド数はコア数の 1.5 倍、上限 2000）で `threads + 1` 個の `ConsistencyCheckingActor` を立て、各アクターへ手順番号 0〜9999 を同じ送信者から順に送り、アクターが「直前の手順番号の続きであること」と「`left.value + right.value == 42`」を毎回確かめ、最後に `"done"` へ `"done"` を返すことを検査する。失敗するとアクターが `"Test failed: ..."` を送信者へ送り、テストは `expectMsg("done")` で失敗する。
-
-形を変える点は 3 つある。fraktor-ng-rs には dispatcher もスレッドプールも無く、executor は 1 つのシャードを逐次に配送する。そのため、dispatcher（fork-join、throughput = 1）と 5 分の制限時間は写さない。制限は testkit の既定の待ち時間にする。アクター数は固定値にせず、原典の式でテストの中で求める。`std::thread::available_parallelism` で得たコア数に 1.5 を掛けて切り上げ、[1, 2000] に収めたものがスレッド数であり、アクター数はスレッド数 + 1 である（原典の `ThreadPoolConfig.scaledPoolSize(minThreads = 1, factor = 1.5, maxThreads = 2000)` と `threads + 1` の写し）。`CacheMisaligned` のパディング（JVM の false sharing を避けるための埋め草）は写さない。各アクターの状態はそのアクターだけが持ち、共有メモリは存在しないためである。手順は原典どおり 0〜9999 である。
-
-dispatcher を写さないことは、ケースの除外ではない。元帥が 2026-11-26 に決めたとおり、dispatcher の形（fork-join、throughput = 1）を写さないことは「前提の違い」として記録し、このケースは green にしてよい。理由は、ConsistencySpec が守っている性質が「たくさんのアクターが別々のスレッドで動いても、メモリの見え方が一貫している」ことであり、dispatcher の形はその手段にすぎないためである。
-
-ただし green の条件として、アクターが実際に 2 つ以上のスレッドで同時に動くことをテストの中で確かめて記録する。一次情報で確かめた fraktor-ng-rs の事情は次のとおりである。`ActorSystem` は 1 シャード＝1 executor であり、executor は `Rc<RefCell<Executor>>` の後ろにあり（`actor_system_value.rs:36,46`）、システムは `Send` でも `Sync` でもない。1 つのシステムを複数スレッドから駆動することはできず、複数スレッドで動く実行器は fraktor-ng-rs に無い。そのためテストは、スレッドごとに 1 つのシステム（シャード）を作る形にする。各スレッドが既定の実行器で自分のシステムを駆動し、担当のアクターへ手順を送る。各アクターは処理のたびに `std::thread::current().id()` を共有の `Arc<Mutex<HashSet<ThreadId>>>` へ記録し、テストは最後に、集まったスレッド id の種類が 2 以上であることを assert する。この assert が無いと、単一スレッドで動いていても green になってしまうため、assert はケースの一部である。前提の違いとして残るのは、1 つのアクターがその生存中にスレッドをまたいで移らないことである（Pekko では 1 つのアクターの処理がスレッドをまたぎうる）。アクター同士は別々のスレッドで同時に動き、各アクターの中では C1〜C3 を原典どおりに確かめる。
-
-第 2 段の最初に、この形で実際に複数スレッドで動くことを実測する（スレッド id の種類が 2 以上になること）。もしこの形が作れないと分かった場合は、このノードを green にしない。その場合は除外になるので、設計にその旨を書き、元帥経由で上司に上げる。作らないケースは無い。
+`ConsistencySpec`（数え直し 1 件）は、元帥の決定（2026-11-26）で、この issue から外し、未移植のまま後回しにする。除外ではない。別の issue [#235](https://github.com/j5ik2o/fraktor-ng-rs/issues/235) に分け、複数スレッドの実行器の設計 [#234](https://github.com/j5ik2o/fraktor-ng-rs/issues/234) の後に置いた。理由は、ケースが守る性質（1 つのシステムの中で、アクターが実際に 2 つ以上のスレッドで同時に動き、その状態の見え方が一貫すること）を、fraktor-ng-rs の今の作りでは確かめられないためである。`ActorSystem` は 1 シャード＝1 executor で、executor は `Rc<RefCell<Executor>>` の後ろにあり、event stream も `Rc<RefCell<StreamSetup>>` を持つため、システムは `Send` でも `Sync` でもない（再レビューの試作で `assert_send::<ActorSystem>()` は E0277 が 3 件）。複数スレッドで動く実行器は無く、`Executor` は `pub(crate)` なのでテストの側からも組めない。「スレッドごとに 1 つずつシステムを作る」形は、1 つのシステムの中でアクターが複数スレッドで動くことにはならない。この PR では、ConsistencySpec の台帳ノードを `unported` のまま変えず、設計からも外す。アクター数を原典の式で求める形などの設計の材料は、#235 の側で使う。
 
 ### 対応表：DeadLetterSuspensionSpec（1 件）
 
@@ -109,7 +93,7 @@ dispatcher を写さないことは、ケースの除外ではない。元帥が
 | 時刻の port | ある | `kernel/clock.rs` の `Clock`（単調時刻）。`ActorSystem::set_clock` で executor へ入れられ、testkit 側には手動で進める時計の前例（`ManualScheduler` と、各 spec の `TestClock`）がある |
 | testkit | ある（ただし `EventFilter` に Info と前方一致が無い） | `TestProbe` 相当（`TestKit`）、`expect_msg`、`expect_no_message`、`watch` と `expect_terminated`、`TestActors::echo_actor_props` はある。`EventFilter` は Error と Warning だけで、`info` と `start` の前方一致が無く、`intercept` が読むのは event stream ではなく `event_sink` の登録表である（M5）。SuspensionSpec が使う形を testkit へ足す（§2.3） |
 | `ActorSelection` | 無い | 型も、`ActorSystem::actor_selection` も、パス解決も無い（§2.5） |
-| dispatcher、スレッドプール、設定文字列 | 無い | ConsistencySpec の形を変える理由である（§1、§2.4）。この issue では足さない |
+| dispatcher、スレッドプール、設定文字列 | 無い | この issue では足さない |
 
 したがって、この issue の本体作業は「dead letters の生成、振り分け、ログの数え上げと一時停止」を新規に足すことであり、既存の公開 API の変更は `ActorSelection` の追加と、dead letters ハンドルの振る舞いの変更（捨てるだけ→ publish する）だけである。
 
@@ -178,7 +162,7 @@ impl<'a> AnyDeadLetter<'a> {
 ```rust
 pub(crate) struct DeadLettersShared {
   bus: spin::Mutex<Option<EventStreamBusWeak>>,   // システムの生成後に埋める
-  suppression: spin::Mutex<HashSet<TypeId>>,       // §2.2 の登録表
+  suppression: spin::Mutex<BTreeSet<TypeId>>,      // §2.2 の登録表（HashSet は alloc に無い。再レビューの低 3）
   self_ref: spin::Mutex<Option<ActorRef>>,         // deadLetters 自身。生成後に埋める
   clock: spin::Mutex<Option<Arc<dyn Clock>>>,      // リスナーの開始時に捕まえる
   terminating: AtomicBool,                         // 現在は常に false（§2.3）
@@ -219,7 +203,7 @@ kernel 自身の抑制対象は、システムの生成時に kernel が既定�
 
 ### 2.3 DeadLetterListener と設定
 
-原典の `pekko.event.DeadLetterListener` は、イベントストリームから `DeadLetter`、`Dropped`、`UnhandledMessage` を購読するアクターであり、数え上げと上限と一時停止を持ち、`Logging::Info` をイベントストリームへ publish する。移植はアクターにはせず、`EventStream` の開始処理が作る function ref（`start_unsubscriber` と `start_unhandled_message_forwarder` の前例と同じ形）として実装する。状態は `Arc<spin::Mutex<DeadLetterListener>>` に置く（H3。`Rc<RefCell<_>>` は `Send + Sync` の要求で E0277 になる）。リスナーは executor を借りに行かず、要るもの（時計、自分の購読先の bus、終了の旗）は開始のときに捕まえる。
+原典の `pekko.event.DeadLetterListener` は、イベントストリームから `DeadLetter`、`Dropped`、`UnhandledMessage` を購読するアクターであり、数え上げと上限と一時停止を持ち、`Logging::Info` をイベントストリームへ publish する。移植はアクターにはせず、`EventStream` の開始処理が作る function ref（`start_unsubscriber` と `start_unhandled_message_forwarder` の前例と同じ形）として実装する。状態は `Arc<spin::Mutex<DeadLetterListener>>` に置く（H3。`Rc<RefCell<_>>` は `Send + Sync` の要求で E0277 になる）。リスナーは executor を借りに行かず、要るもの（時計、自分の購読先の bus、event sink、終了の旗）は開始のときに捕まえる（再レビューの低 4。sink へも出すため、sink も捕まえる）。
 
 設定は値で渡し、開始は 1 回の呼び出しにまとめる（L7。設定と開始を分けると、開始の後に変えた設定と時計が反映されないためである）。
 
@@ -268,28 +252,18 @@ impl<T: Any + Send + Sync> Payload for T { fn type_name(&self) -> &'static str {
 
 一時停止の文面の期間の表示は、原典の `PrettyDuration.pretty` の形（`%.4g` と単位の略号、例：2 秒は `[2.000 s]`）にする（L1）。crate の中に Duration を整える既存の関数は無いので、no_std で書ける `%.4g` 相当の整形をリスナーのモジュールに小さく足す（`dead_letter_listener/pretty_duration.rs`）。#186 の移植が `kernel::pretty_duration` を main に入れた後は、そちらへ寄せる。
 
-期限は `Clock` port から読む。リスナーは開始のときに、システムへ入っている時計への参照を捕まえる。テストは `ActorSystem::set_clock` で手動の時計を入れてからリスナーを開始し、期限を進める。
+期限は `Clock` port から読む。リスナーは開始のときに、システムへ入っている時計への参照を捕まえる。時計が入っていないときは、executor の `now()` と同じ順で、シャードの境界の `monotonic_time` へ fallback する（再レビューの低 4）。テストは `ActorSystem::set_clock` で手動の時計を入れてからリスナーを開始し、期限を進める。
 
 ### 2.4 ConsistencySpec の本体側
 
-足す本体は無い。使うものはすべて既にある（アクターの生成、`tell`、testkit の `expect_msg`）。テスト側のアクターは原典の `ConsistencyCheckingActor` を写す。
-
-```rust
-struct ConsistencyCheckingActor { left: i64, right: i64, last_step: i64 }
-// left は 42 から始め、受けるたびに left += 1、right -= 1。
-// receive(step: i64): last_step != step - 1 なら sender へ "Test failed: …" を送る。
-//   left + right != 42 なら sender へ "Test failed: 42 failed" を送る。
-// receive("done"): sender へ "done" を送り、自分を止める。
-```
-
-状態は `i64` の 2 値だけにし、原典の `CacheMisaligned` のパディングと `Long` の各フィールドは写さない。アクター数は §1 のとおり原典の式で求める（`available_parallelism` のコア数 × 1.5 の切り上げを [1, 2000] に収め、+1）。実行の形は §1 に書いたとおり、スレッドごとに 1 システムを作り、各スレッドが自分のアクターへ 0〜9999 を順に送る。各アクターは処理のたびに現在のスレッド id を共有の集合へ記録し、テストは全アクターから `"done"` を受けた後で、スレッド id の種類が 2 以上であることを assert する。失敗の文面が test actor へ届いた場合は `expect_msg("done")` が失敗するので、原典と同じく失敗として観測できる。
+この issue から外れたため、本体側の設計は書かない（§1）。材料は [#235](https://github.com/j5ik2o/fraktor-ng-rs/issues/235) の側で使う。
 
 ### 2.5 ActorSelection の最小実装
 
 SupressionSpec の 2 ケースは後半で `system.actorSelection(deadActor.path) ! msg` を使う。fraktor-ng-rs には選択の仕組みが無いため、次の最小実装を足す。
 
 ```rust
-pub struct ActorSelection { /* system への弱い参照、path: ActorPath */ }
+pub struct ActorSelection { /* 境界の Arc<dyn ShardBoundary> と運び手の参照、path: ActorPath */ }
 impl ActorSystem {
   pub fn actor_selection(&self, path: &ActorPath) -> ActorSelection;
 }
@@ -298,7 +272,7 @@ impl ActorSelection {
 }
 ```
 
-形は、設計レビューの論点 6 の推奨どおりにする。`tell` は executor を同期に引かず、選択の封筒（内部型 `ActorSelectionMessage { path, message, sender }`）をシステムの境界へ送り、**解決は配送のときに executor が行う**（Pekko の `ActorSelectionMessage` と `deliverSelection` と同じ形）。この形なら、アクターの `receive` の中から `tell` を呼んでも二重借用にならない（L6）。
+形は、設計レビューの論点 6 の推奨どおりにする。`tell` は executor を同期に引かず、選択の封筒（内部型 `ActorSelectionMessage { path, message, sender }`）をシステムの境界へ送り、**解決は配送のときに executor が行う**（Pekko の `ActorSelectionMessage` と `deliverSelection` と同じ形）。作るときに、境界の `Arc<dyn ShardBoundary>` と運び手の参照を捕まえておき、`tell` は境界へ post するだけにする（再レビューの低 2）。`WeakActorSystem` を持つ形では、`upgrade().borrow_mut()` が要るため `receive` の中から呼ぶと二重借用になり、`ActorSelection` も `!Send` になるため、その形は採らない。
 
 解決の規則は、この issue のケースが要る範囲に限る。
 
@@ -311,7 +285,7 @@ impl ActorSelection {
 
 ### 2.6 no_std
 
-新しく足す型とリスナーは `core` と `alloc` だけで書ける。使うのは `alloc::{string::String, vec::Vec, sync::Arc, collections::BTreeMap}`、`core::{any::TypeId, time::Duration, sync::atomic::AtomicBool}` と、既存の依存の `spin::Mutex`（no_std 対応）と既存の `Clock` port である。`std` を必要とするのはテスト（Consistency のスレッドと、手動の時計）だけであり、新しいモジュールは `std` を import しない。前例どおり、クレート全体は `#![no_std]` ではない。
+新しく足す型とリスナーは `core` と `alloc` だけで書ける。使うのは `alloc::{string::String, vec::Vec, sync::Arc, collections::BTreeMap}`、`core::{any::TypeId, time::Duration, sync::atomic::AtomicBool}` と、既存の依存の `spin::Mutex`（no_std 対応）と既存の `Clock` port である。`std` を必要とするのはテスト（手動の時計）だけであり、新しいモジュールは `std` を import しない。前例どおり、クレート全体は `#![no_std]` ではない。
 
 ## 3. 守る性質（不変条件）
 
@@ -319,13 +293,13 @@ impl ActorSelection {
 
 | 番号 | 不変条件 |
 |:---|:---|
-| D1 | 停止したアクターへの通常のメッセージ 1 件は、`DeadLetter(message, sender, そのアクター)` をちょうど 1 件 publish する。二重にも、ゼロにもならない |
+| D1 | 停止したアクターへの通常のメッセージ 1 件は、`DeadLetter(message, sender, そのアクター)` をちょうど 1 件 publish する。二重にも、ゼロにもならない。ここでいう停止したアクターはセルのアクターに限る。停止した function ref は境界が閉じられ、`post` が黙って捨てるため、dead letter にならない（再レビューの低 7） |
 | D2 | 抑制対象のメッセージ 1 件は、`SuppressedDeadLetter(message, sender, 処理した参照)` をちょうど 1 件 publish し、`DeadLetter` は publish しない。宛先は処理した参照であり、deadLetters の参照が処理した場合は `system.deadLetters`、空の参照が処理した場合はその空の参照になる（M1） |
 | D3 | `deadLetters` へ送られた `DeadLetter` は、特別扱いに当たらない限り宛先を保ったまま publish される。中身が抑制対象の場合は、その `DeadLetter` は publish されず、中身について D2 が起きる |
 | D4 | `AllDeadLetters` の購読者は、D1 と D2 の両方を送った順に受ける。`DeadLetter` の購読者は D2 を受けず、`SuppressedDeadLetter` の購読者は D1 を受けない |
 | D5 | 生きているアクターへの配送は dead letter を作らない。棚上げとキューの残りの転送は、`DeadLetter` に包んで送るため、転送された 1 件につき dead letter をちょうど 1 件作り、宛先は元のアクターのままである |
 | D6 | 抑制の判定は型（登録した `TypeId`）で決まる。ただし文字列の制御メッセージ `"PoisonPill"` と `"Kill"` だけは値で決まる（M2）。判定はそれ以外のメッセージの内容には依存しない |
-| D7 | 停止したアクター宛ての `DeadLetter` は publish しない（捨てる）。`DeadLetter` を購読したまま止まったアクターがいても、dead letter は循環せず、配送は終わる（H1） |
+| D7 | 停止したアクター宛ての `DeadLetter` は publish しない（捨てる）。`DeadLetter` を購読したまま止まったアクターがいても、dead letter のイベントについては循環せず、配送は終わる（H1）。範囲は dead letter のイベントに限る。リスナーの Info を購読したまま止まった購読者がいる場合の循環は D7 の範囲の外であり、§6 に記録する（再レビューの低 1） |
 
 ### DeadLetterListener
 
@@ -341,11 +315,7 @@ impl ActorSelection {
 
 ### Consistency
 
-| 番号 | 不変条件 |
-|:---|:---|
-| C1 | 同じ送信者が同じアクターへ送ったメッセージは、送った順に処理される（手順番号が飛ばない、入れ替わらない） |
-| C2 | 1 件の処理の中での状態の読み書きは、そのアクターの前後の処理と混ざらない。`left + right` は処理の前後で常に 42 である |
-| C3 | `"done"` は、そのアクターが受けたすべての手順を処理した後にだけ返る |
+この issue から外れたため、性質は書かない（§1）。
 
 ## 4. PBT を足すか
 
@@ -355,7 +325,6 @@ impl ActorSelection {
 |:---|:---|:---|
 | リスナーの状態機械 | ランダムな dead letter の列（種別 3 種と抑制対象を混ぜる）と、ランダムな時計の進行を、手動の時計を持つリスナーへ流し、モデル（状態、`count`、ログの列）と毎手比べる。上限は 1、2、4、無制限から選び、一時停止の期間は 0、短い値、長い値から選ぶ | L1〜L6 |
 | 振り分け | ランダムな宛先（生きているアクター、停止したアクター、`DeadLetter` を購読したまま停止したアクター、`deadLetters`）とメッセージの種別（通常、抑制対象、`DeadLetter` で包んだもの）の組み合わせを送り、3 種の購読者が受ける列をモデルと比べる。購読したまま停止したアクターへの dead letter が循環しないこと（D7）もこのモデルで確かめる | D1〜D7 |
-| Consistency | PBT は足さない。性質は順序そのものであり、ランダム化する入力が無い（手順列は固定である）。代わりにアクター数と手順数を変えた 2 通りの実行を通常のテストとして書く | C1〜C3 |
 
 ## 5. Quint で書くかどうか
 
@@ -368,22 +337,21 @@ impl ActorSelection {
 置き場所は、設計レビューの M6 と論点 7 の推奨どおりに分ける。本体は CI が毎回検査する場所に置き、負の対照は設計の側に置く。
 
 - 本体：`crates/fraktor-actor/specs/dead_letter_listener.qnt`。1 つのモジュールにし、`invariant` を不変条件の積として定義し、名前が `*Test` で終わる run を持たせる（run を持たない本体だけのファイルは CI の検査が「defines no run」で落とすためである）。CI の検査は `scripts/quint-check-specs.sh` であり、`docs/design/specs/` はその対象の外である。
-- 負の対照：`docs/design/specs/dead_letter_listener_test.qnt`。流すコマンドは `quint verify --invariant <名前> docs/design/specs/dead_letter_listener_test.qnt` と `quint test docs/design/specs/dead_letter_listener_test.qnt` であり、seed はファイルの中の run の定義に固定する。第 2 段の完了報告に、流した結果を添える。
+- 負の対照：`docs/design/specs/dead_letter_listener_test.qnt`。bug のモジュールごとに、`.expect(not(<不変条件>))` を持つ run を書き、`quint test --main=<bug のモジュール> --match=<run 名> docs/design/specs/dead_letter_listener_test.qnt` で流す。`quint verify` は Apalache が要り、CI にも入れない方針（`docs/design/quint-in-ci.md`）なので使わない。seed は run の定義では固定できず、要る場合は CLI の `--seed` で渡して結果に記録する（再レビューの低 5）。第 2 段の完了報告に、流した結果を添える。
 
 本体の中身は次のとおりである。
 
 - 状態：`mode`（`Logging` か `Suspended`）、`count`、`now`（時刻。整数の刻み）、`deadline`、`logged`（ログした dead letter の列の長さと、最後の文面の種別）。
-- 遷移：`receiveDeadLetter`、`receiveDropped`、`receiveUnhandled`、`receiveSuppressed`、`tick`（時刻を 1 刻み進める）。上限と一時停止の期間は、run ごとに定数で与える。
+- 遷移：`receiveDeadLetter`、`receiveDropped`、`receiveUnhandled`、`receiveSuppressed`、`tick`（時刻を 1 刻み進める）。上限と一時停止の期間は、状態の変数にし、run ごとの `initWith(l, d)` と、`nondet` で選ぶ `init` で与える（再レビューの低 5。Quint の `const` で書くと CI の script が `QNT500 Uninitialized const` で落ちる。状態の変数の形では試作で exit 0、3 passing であった）。
 - 不変条件：`countIsUnsuppressedSeen`（L1）、`noLogWhileSuspended`（L2。期限を過ぎていない `Suspended` では `logged` が増えない）、`suspendAtLimit`（L3）、`resumeResetsCount`（L4。再開の直後は `count == 0` で `mode == Logging`）、`deadlineIsStrict`（L5。`now == deadline` では再開しない）。`invariant` はこの 5 つの積である。
 - run（インスタンス）：`limit4Test`（上限 4、期間 2。原典の設定）、`limit1Test`（上限 1。最初の 1 件で一時停止に入る）、`limit2shortTest`（上限 2、期間 0。時計を進めない間は再開せず、1 刻み進めた後の最初の 1 件で再開する。M7）、`unlimitedTest`（一時停止に入らない）。
 - 負の対照：`bugNoReset`（再開で `count` を戻さない）、`bugCountsSuppressed`（抑制対象を数える）、`bugLogsWhileSuspended`（一時停止でもログする）、`bugResumeAtDeadline`（`now == deadline` で再開する）、`bugOffByOneNotLogged`（再開の文面の件数を 1 つずらす）。それぞれ狙った不変条件が落ちることを確かめる。
 
 モデルにしていないもの：ログの文面の文字列そのもの（件数と種別だけを持つ。文面は §6 の単体テストと原典のケースで確かめる）、`u32::MAX` での数え上げの巻き戻し（到達しない）、終了中の抑制（ケースが使わない）。
 
-### 書かない：振り分けと Consistency
+### 書かない：振り分け
 
 - **振り分け（書かない）。** 状態を持たない。1 件の入力に対する出力が型と宛先だけで決まる純粋な規則であり、§4 のモデル PBT が入力の組み合わせ全体を比べる。遷移の列でしか出ない壊れ方は無い。
-- **Consistency（書かない）。** 守る性質は配送の順序と、1 アクターの状態の不可分性であり、Quint はスレッドとメモリの可視性をモデルにしないため、確かめる対象にならない。原典自身も実行でしか確かめていない。壊れ方は executor の配送順序の変更であり、これはケースの実行が落とす。
 
 なお、指示文にある「メールボックスの一時停止」は、この 3 本の原典には現れない。DeadLetterSuspensionSpec の suspension は dead letters ログの一時停止であり、アクターのメールボックスの停止（Pekko の `Mailbox` の suspended 状態）ではない。fraktor-ng-rs の executor にはメールボックスの停止という状態も無い。したがって、メールボックスの停止についての Quint は、この issue では書かない。
 
@@ -403,9 +371,8 @@ impl ActorSelection {
 | リスナー | 一時停止の期間が無期限（`None`） | 再開しない。上限に達した後は二度とログしない | 単体テスト |
 | リスナー | 期限ちょうどの時刻に届く dead letter | 再開しない（L5）。1 刻み前と 1 刻み後で結果が変わる境界である | Quint の `deadlineIsStrict`、PBT は時刻の進行に期限の前後を含める |
 | リスナー | 一時停止の間に届く大量の dead letter | 数え上げだけが進み、再開の文面の件数が大きくなる。件数の計算 `count - limit - 1` が負にならないのは、再開が上限到達の後にだけ起きるためである | PBT、Quint |
+| リスナー | 上限が `Unlimited` で、Info の購読者が購読したまま止まっている | リスナーが出した Info が止まった購読者宛ての `DeadLetter(Info)` になり、リスナーがそれを数えてまた Info を出す循環が残る（再レビューの低 1。試作のモデルでは 100000 回で打ち切っても終わらず、`Count(4)` なら 5 回で終わる）。Pekko でも同じ循環はあるが、既定で動く unsubscriber が抜け道になる。fraktor の unsubscriber は `start_unsubscriber` を呼んだときだけ動く。この issue では直さず、D7 の範囲の外としてここに記録する | 範囲の外（この文書に明記） |
 | リスナー | 数え上げが `u32::MAX` に達する | 原典は `Int.MaxValue` で 1 へ戻す。移植も同じく戻す。この境界を実行で踏む検査は無い（到達に 2^32 件が要る） | 範囲の外（この文書に明記） |
-| Consistency | アクター数が 1、または手順数が 0 | アクター数 1 では順序の検査だけが残る。手順数 0 では `"done"` だけが往復する | §4 の 2 通りの実行 |
-| Consistency | 失敗の文面が test actor へ届く順序 | `"done"` の期待が失敗の文面で失敗し、ケースが落ちる。原典と同じ観測である | ケース 1 |
 | ActorSelection | 存在しないパスへの選択 | 空の参照として振り分けられる。パスが長い、空の要素を含む場合も同じである | ケース 1 と 2 の選択の段 |
 | ActorSelection | ワイルドカードを含むパス | この issue では作らない。ワイルドカードは通常の要素として扱われ、一致するアクターは無い | 範囲の外（この文書に明記） |
 
@@ -415,9 +382,9 @@ impl ActorSelection {
 
 - **公開 API**：追加が中心である。`fraktor_actor::kernel::actor::{DeadLetter, SuppressedDeadLetter, Dropped, AllDeadLetters, AnyDeadLetter, DeadLetterSuppression}`、`kernel::actor_system::{DeadLetterSettings, DeadLetterLogLimit}`、`ActorSystem::{actor_selection, register_dead_letter_suppression, start_dead_letter_listener}`、`kernel::actor_selection::ActorSelection`。`Message` へ `pub(crate)` の `payload_type_name` を足し、中身に非公開の `Payload` trait を挟む（L8）。testkit へ `EventFilter::info()` と `start` の前方一致を足す（M5）。
 - **振る舞いの変更**：`deadLetters` ハンドルが、受け取ったメッセージを捨てるだけではなくイベントストリームへ publish するようになる。既存のテストで `dead_letters()` を送信者として使うものは影響を受けない（送信者として使う分には publish は起きない）。ただし、停止したアクターの棚上げとキューの残りを `deadLetters` へ転送する既存の経路は、これまで観測できなかった dead letter を publish するようになる。転送は `DeadLetter` に包む形へ変わる（M3）。購読者がいないシステムでは publish は何も起こさないが、イベントストリームの購読を持つ既存のテスト（`event_stream_spec.rs` 等）が dead letter を受ける可能性がある。第 2 段では `cargo test --workspace` でこの影響を確かめ、落ちたテストは実装でごまかさず報告する。
-- **台帳**：第 2 段で対象ノード 3 件を green（1/1/1、1/1/1、2/2/2、`verified_against: v2.0.0`）にし、`docs/baseline/v2.0.0-undocumented-nodes.tsv` を作り直す。ゴール文書 `docs/goals/issue-191-specs.md` は第 2 段で作る。
+- **台帳**：第 2 段で DeadLetterSuspensionSpec と DeadLetterSupressionSpec の 2 ノードを green（1/1/1、2/2/2、`verified_against: v2.0.0`）にする。ConsistencySpec のノードは `unported` のまま変えない（#235 へ分けた）。`docs/baseline/v2.0.0-undocumented-nodes.tsv` を作り直す。ゴール文書 `docs/goals/issue-191-specs.md` は第 2 段で作る。
 - **依存**：足さない（`spin` は既存の依存である）。
-- **計算量**：dead letter の publish は購読者の数に比例する。リスナーの処理は 1 件あたり定数である。Consistency のテストは、アクター数が原典の式で決まるため実行環境で変わる。手順数は 10,000 で固定であり、総配送数はアクター数 × 10,000 になる。実行時間が問題になる場合は、手順数を変えずアクター数を先に調整し、その変更を報告する。
+- **計算量**：dead letter の publish は購読者の数に比例する。リスナーの処理は 1 件あたり定数である。
 
 ## 8. レビューで見てほしい点（設計レビューで決まった形）
 
@@ -427,7 +394,7 @@ impl ActorSelection {
 2. **抑制の印（§2.2）。** `TypeId` の登録制にする。kernel が `Terminated` を既定で登録し、文字列の制御メッセージは値で判定し、登録表は共有の欄に置く（レビューの論点 2 の推奨と条件）。
 3. **リスナーの開始（§2.3）。** 明示の開始 `start_dead_letter_listener(settings)` の 1 回の呼び出しにまとめる。開始のときに時計と deadLetters の参照と終了の旗を捕まえる。`declare_subclass` の 4 件は、リスナーの有無と関係なくシステムの生成時に宣言する（レビューの論点 3 の推奨）。
 4. **ログの型名（§2.3）。** `i32` でよい。期待値は `core::any::type_name::<i32>()` で組み、取り出しは `Message` の中の非公開の `Payload` trait で行う（レビューの論点 4 の推奨）。
-5. **ConsistencySpec（§1、§2.4）。** アクター数は原典の式で求める。dispatcher の形を写さないことは「前提の違い」として記録し、green にしてよい（元帥の決定、2026-11-26）。条件は、アクターが実際に 2 つ以上のスレッドで同時に動くことをテストで確かめて記録することであり、形は §1 に書いた。作れない場合は green にせず、除外として上司に上げる。
+5. **ConsistencySpec（§1）。** 元帥の決定（2026-11-26）でこの issue から外し、[#235](https://github.com/j5ik2o/fraktor-ng-rs/issues/235) へ分けた。未移植のままであり、除外ではない。
 6. **ActorSelection（§2.5）。** この issue に含める。`tell` は選択の封筒を送り、解決は配送のときに行う。解決の対象はセルと function ref の両方である（レビューの論点 6 の推奨）。
 7. **Quint（§5）。** リスナーの一時停止に限る。本体は `crates/fraktor-actor/specs/dead_letter_listener.qnt` に 1 モジュールで置き、負の対照は `docs/design/specs/` に置く（レビューの論点 7 の推奨）。
 8. **作らないもの（§2.3、§2.5）。** ActorSelection のワイルドカードと `Identify` は作らない。リスナーの終了中の抑制は未移植とし、設定の値だけを持つ（レビューの論点 8 の推奨）。
@@ -448,7 +415,7 @@ impl ActorSelection {
 | M5（`EventFilter` に Info と前方一致が無い） | 直した。testkit への追加と、Info を event sink へも出す経路を §2.3 と §7 に書いた |
 | M6（Quint の置き場所） | 直した。本体を `crates/fraktor-actor/specs/dead_letter_listener.qnt` の 1 モジュールにし、`invariant` と `*Test` の run を持たせ、負の対照と流すコマンドを §5 に書いた |
 | M7（期間 0 の行と L5 の食い違い） | 直した。§6 を「1 刻み以上進んだ後の最初の 1 件が再開になる」に直し、Quint の run も合わせた |
-| M8（ConsistencySpec の形の変更） | 元帥の決定で決着した。アクター数は原典の式で求め、dispatcher の形を写さないことは「前提の違い」として記録して green にしてよい。条件として、アクターが実際に 2 つ以上のスレッドで同時に動くことをテストで確かめる形を §1 と §2.4 に書いた。作れない場合は green にせず、上司に上げる |
+| M8（ConsistencySpec の形の変更） | 元帥の決定（2026-11-26）で、この issue から外して #235 へ分けた（§1）。 |
 | L1（期間の表示） | 直した。文面を `[2.000 s]` とし、`%.4g` 相当の整形を足すことを §2.3 に書いた |
 | L2（一時停止の期間の既定値） | 直した。既定を 5 分にした |
 | L3（`isWrappedSuppressed` の読み） | 直した。§2.3 の判定を原典の読みに直し、文面の開封と「wrapped in [..]」を書いた |
@@ -458,3 +425,18 @@ impl ActorSelection {
 | L7（設定と開始の分離） | 直した。`start_dead_letter_listener(settings)` の 1 回の呼び出しにまとめた |
 | L8（`payload_type_name` の作り方） | 直した。`Message` の中の非公開の `Payload` trait で取り出す形を §2.3 に書いた |
 | 論点 1〜8 への推奨 | すべて推奨どおりにした。§8 に決まった形をまとめた |
+
+## 10. 再レビュー（PR #230、HEAD 02ac72b）への回答
+
+判定は「要修正（ConsistencySpec の 1 点だけ）」であった。DeadLetterSuspensionSpec と DeadLetterSupressionSpec の 2 ノードは実装に入ってよいとされ、この 2 ノードの第 2 段を進める。ConsistencySpec は、元帥の決定でこの issue から外れた。
+
+| 指摘 | 対応 |
+|:---|:---|
+| 高 1（ConsistencySpec の形は条件を満たさない） | 元帥の決定（2026-11-26）で、この issue から外して [#235](https://github.com/j5ik2o/fraktor-ng-rs/issues/235) へ分け、未移植のまま後回しにした（除外ではない）。設計からも外した（§1） |
+| 低 1（`Unlimited` かつ Info の購読者が停止していると循環が残る） | D7 の範囲を dead letter のイベントに限ると書き、§6 に循環の行を足して範囲の外として記録した |
+| 低 2（`ActorSelection` が弱い参照を持つ） | 作るときに境界の `Arc<dyn ShardBoundary>` と運び手の参照を捕まえる形に直した |
+| 低 3（`HashSet` が no_std と合わない） | 登録表を `BTreeSet<TypeId>` に直した |
+| 低 4（リスナーが捕まえるもの） | event sink を捕まえるものに足し、時計の fallback（境界の `monotonic_time`）を書いた |
+| 低 5（Quint の書き方） | 上限と期間を状態の変数と `initWith` で与える形に直し、負の対照の流し方を `quint test --main=…` に直した |
+| 低 6（Consistency の追加の実行と割り当て） | ConsistencySpec がこの issue から外れたため、対象が無くなった |
+| 低 7（停止した function ref） | D1 の対象をセルのアクターに限ると書いた |
