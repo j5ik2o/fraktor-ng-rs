@@ -26,6 +26,7 @@
 台帳の対象ノードは `actor-tests/src/test/scala/org/apache/pekko/actor/DeployerSpec.scala`（`status: unported`、`test_cases_approx: 16`、`needs.testkit: [extends-pekko-spec, pekko-spec]`）の1件である。第2段の台帳の `cases.total` には実数の16を記録する。16件すべてを移す設計であり（§5）、除外は0件である。
 
 > 2026-11-26 修正：独立レビュー（Opus。高1・中7・低5）と上司の判断（F1 を採る、ケース16は除外せず型付きの対応で移す）を受けて本書を直した。指摘への対応は末尾の §8 回答表に1件ずつ書く。
+> 2026-11-26 再修正：再レビュー（Opus。中3・低5）と、狭めと判断の11件について中将（2026-11-26）の決定を受けて本書を直した。対応は §9 に書く。
 
 ### ケースの分け方：設定の書式を見るか、読んだ結果の Deploy を見るか
 
@@ -173,17 +174,23 @@ pub enum RouterSelection {
 
 /// 節の `nr-of-instances` の値。ケース5（区分A）を型で表すための形。
 /// 原典の `getInt` は符号つき32ビットであり、負数を受ける
-/// （`nr-of-instances = -1` のプールができる）。範囲を超える値は
-/// `ConfigException.WrongType` になる。HOCON の文字列 "2" は
-/// 数として読めるため、`NotANumber` が表すのは、Typesafe Config が
-/// 数に直せない値（"boom" など）である。移植では未解釈の値を
-/// 保持する変種を用意し、解釈の段で誤りにする（§2.6）。
-/// `within` を `Duration` で表す点も同じ扱いであり、負の期間は
-/// 表せない（原典の `getMillisDuration` との差として記録する）。
+/// （`nr-of-instances = -1` で `RoundRobinPool(-1)` になる。再レビューが
+/// 原典の jar で確かめた）。結果の `DeployedRouter::Pool` の件数も
+/// `i32` で保持し、-1 をそのまま持てる（再レビュー中2）。
+/// 範囲を超える値（`3000000000`）は原典では `ConfigException.WrongType`
+/// （out-of-range）になる。`Value(i32)` では作れないため、範囲外の値は
+/// `NotANumber` で渡す。すなわち `NotANumber` が表すのは「`i32` に
+/// 直せない値」であり、数でない文字列（"boom"）と範囲外の数の
+/// 両方を含む。HOCON の文字列 "2" は原典で数として読めるが、
+/// 型付きの入力では `Value(2)` で渡す。
+/// 移植では未解釈の値を保持する変種を用意し、解釈の段で
+/// 誤りにする（§2.6）。
 pub enum NumberOfInstances {
   Value(i32),
   NotANumber(String),
 }
+
+型で表せない値（入力の型による狭め。中将（2026-11-26）が意図した狭めとして決定した）：負の `within`（`Duration` で表す）と、resizer の負の下限と上限（`u32` で表す）は、型付きの入力では利用者がそもそも書けない。原典ではどちらも誤りになる値だが、入口が型である以上、観察できる入力としては存在しない。件数だけを原典の `Int` に合わせて `i32` にした理由は、ケース5と F1 の条件が件数の範囲を検証の対象にしているためである。
 
 pub struct ResizerSection {
   // `enabled` の欄は持たない。節に resizer があれば常に有効である（§2.5）。
@@ -200,8 +207,8 @@ pub struct ResizerSection {
 設計上の決めは次の3点である。
 
 1. **`default` の節は型の既定値として持ち、`default` のキーの上書きは扱わない。** 原典は節ごとに `config.withFallback(default)` をし、利用者が `pekko.actor.deployment.default` を上書きすると全部の節に効く。移植の `DeploymentSection` はすべての項目が値を持つ型であり、どの項目を節が書いたのかを区別できないため、利用者が渡した `default` の節を他の節の土台として重ねる方法が無い。そこで本書は、`from_sections` で `default` のキーは読み飛ばすだけにし、既定の上書きは扱わないと決める（レビュー中3の推奨 (a)）。これは HOCON の設定の体系の狭めであり、§5 の F2 に挙げる。ケースは既定の上書きを使わず、G0b の決定 E（設定の体系は作らない）とも合う。移植では `DeploymentSection::default()` が reference.conf の `default` と同じ値を持ち、節を作る側は変える項目だけを上書きする。原典の「節に無い項目は既定から来る」という振る舞いは、既定値を持つフィールドとして写る。なお、`from_sections` に同じキーを2回渡すと後のものが丸ごと勝つ。HOCON では同じキーの節は項目ごとに合成されるため、この入力は原典の HOCON からは作れない入力であり、ずれとして記録する。
-2. **`router` は文字列ではなく `RouterSelection` で選ぶ。** 原典の `createRouterConfig` は `routerTypeMapping` で短い名前をクラス名へ写し、`DynamicAccess` の反射で `RouterConfig` を生成する。Rust には反射による生成が無く、クラス名も無い。種類を列挙で選ぶ形は `PoolKind` の前例どおりである。短い名前と組み込みの FQCN は `RouterSelection::from_setting`（§2.6）で選択値に写り、知らない名前と組み込みでない FQCN だけが `Custom(String)` に保持され、解釈の段で誤りになる（原典では反射の失敗が `IllegalArgumentException` になる）。`Custom` を黙って `FromCode` に丸めない。
-3. **グループ系と tail-chopping と balancing も値として保持する。** 原典の `createRouterConfig` は名前で分岐せず反射に渡すため、グループ系の節も `Deploy` になる。入口で拒むと原典より狭くなるため、選択値としては全15件を受け、生成も値の保持まで行う（レビュー中4を受けて、保持に必要な欄と種類を足した）。原典の `Config` コンストラクタが読む項目は種類ごとに違い、グループ系は `routees.paths`、tail-chopping は `within` と `tail-chopping-router.interval`、balancing は `nr-of-instances` だけを読む。`DeploymentSection` には `routees_paths` と `tail_chopping_interval` を足し（§2.2）、`PoolKind` には `Balancing` と `TailChopping` を足す（§2.4）。件数を読むのはプール系だけであり、グループ系は `nr-of-instances` を読まない（§2.6 の規則）。`Custom`（知らない名前と、組み込みでない FQCN）だけは保持できず、生成の段で `DeployError::UnsupportedRouter` を返す。これは反射生成を作らない範囲の帰結であり、組み込み15件の FQCN は `Custom` にしない（§2.6）。
+2. **`router` は文字列ではなく `RouterSelection` で選ぶ。** 原典の `createRouterConfig` は `routerTypeMapping` で短い名前をクラス名へ写し、`DynamicAccess` の反射で `RouterConfig` を生成する。Rust には反射による生成が無い。種類を列挙で選ぶ形は `PoolKind` の前例どおりである。短い名前と組み込みの FQCN は `RouterSelection::from_setting`（§2.6）で選択値に写り、知らない名前と組み込みでない FQCN だけが `Custom(String)` に保持され、解釈の段で誤りになる（原典では反射の失敗が `IllegalArgumentException` になる）。`Custom` を黙って `FromCode` に丸めない。
+3. **グループ系と tail-chopping と balancing も値として保持する。** 原典の `createRouterConfig` は名前で分岐せず反射に渡すため、グループ系の節も `Deploy` になる。入口で拒むと原典より狭くなるため、選択値としては全15件を受け、生成も値の保持まで行う（レビュー中4を受けて、保持に必要な欄と種類を足した）。原典の `Config` コンストラクタが読む項目は種類ごとに違い、グループ系は `routees.paths`、tail-chopping は `within` と `tail-chopping-router.interval`、balancing は `nr-of-instances` だけを読む。`DeploymentSection` には `routees_paths` と `tail_chopping_interval` を足し（§2.2）、`PoolKind` には `Balancing` と `TailChopping` を足す（§2.4）。件数を読むのはプール系だけであり、グループ系は `nr-of-instances` を読まない（§2.6 の規則）。`Custom`（知らない名前と、組み込みでない FQCN。NoRouter の FQCN を含む）だけは保持できず、生成の段で `DeployError::UnsupportedRouter` を返す。これは反射生成を作らない範囲の帰結であり、組み込みの FQCN のうち14件は `Custom` にしない（NoRouter の FQCN の扱いは §2.6）。
 
 
 ### 2.3 結果の型：`Deploy`、`Scope`、`Deployer`
@@ -233,7 +240,8 @@ impl Scope {
 /// from typed sections, `deploy`, and `lookup`.
 pub struct Deployer {
   index: WildcardIndex<Deploy>,
-  router_type_mapping: RouterTypeMapping,  // §2.6
+  // 名前の対応は値を持たず、`RouterSelection::from_setting` と
+  // `fqcn` の関数として置く（§2.6）。
 }
 
 impl Deployer {
@@ -242,6 +250,10 @@ impl Deployer {
   /// `deploy` する流れの写し。キーが "default" の節は読み飛ばし、
   /// 引き当ての対象にしない（原典の構築子の分岐どおり。
   /// 既定の上書きを扱わない点は §2.2 の決め1）。
+  /// 注意（分け方の罠）：キーは Java の `split` の規則で分けるため、
+  /// 先頭に `/` の無いキー（"a/b"）は `/b` に縮み、要素が1つだけの
+  /// キー（"svc"）は要素列が空になって黙って登録されない（§2.3）。
+  /// これは原典どおりの挙動であり、誤りにはならない。
   pub fn from_sections(
     sections: impl IntoIterator<Item = (String, DeploymentSection)>,
   ) -> Result<Self, DeployError>;
@@ -317,9 +329,9 @@ pub enum DeployedRouter {
   /// プール。原典の `Pool` の各実装。
   Pool {
     kind: PoolKind,                 // §2.4 の追加分を含む
-    nr_of_instances: u32,
+    nr_of_instances: i32,           // 原典の `Int` のまま（-1 を保持できる。中2）
     resizer: Option<DefaultResizer>,
-    use_pool_dispatcher: bool,
+    use_pool_dispatcher: bool,      // balancing では常に false（§2.5）
   },
   /// グループ。原典の `Group` の各実装。経路の列は節の
   /// `routees.paths` から来る。
@@ -334,6 +346,8 @@ pub enum GroupKind {
   Broadcast,
   ScatterGatherFirstCompleted { within: Duration },
   TailChopping { within: Duration, interval: Duration },
+  /// 値は常に 0。原典の `ConsistentHashingGroup` の `Config`
+  /// コンストラクタは `routees.paths` しか読まない（低2）。
   ConsistentHashing { virtual_nodes_factor: u32 },
 }
 
@@ -375,7 +389,11 @@ impl DefaultResizer {
 
 移植では、**節に `resizer` が少しでもあれば常に有効**として解釈する規則を明示する（レビュー中2で訂正）。原典の条件は `config.hasPath("resizer") && !deployment.getBoolean("resizer.enabled")` のときに `resizer.enabled = on` を重ねるものであり、`enabled = off` と明示してあっても有効になる。「既定を真にする」ではない。したがって `ResizerSection` は `enabled` の欄を持たず、`resizer: Option<ResizerSection>` が `Some` であること自体が有効を表す。壊しうる入力の例は、`resizer { enabled = off, lower-bound = 2 }` を持つ round-robin-pool の節であり、原典では `Some(DefaultResizer(lowerBound = 2))` になる。`nr_of_instances` は節の値（既定1）を保持する。期待値の `0` は写さない。写すと、節に書かれていない値を結果に作ることになるためである。この点は原典との見かけの差として、テストのコメントと本書に理由を残す。`DefaultResizer()` の既定値（下限1・上限10・圧力1・rampup 0.2・backoff 0.3・backoff rate 0.1・messages-per-resize 10）は reference.conf の `resizer` の既定値と一致し、節の指定（下限1・上限10）とも一致するため、ケース13は「節で一部を指定し、残りは既定値で埋まった resizer」を確かめるケースとして移せる。
 
-resizer の**振る舞い**（メッセージ数による判定、プールの大きさの増減）は本件では作らない。作るのは値の解釈と検証（下限・上限の非負、上限が下限以上、率の範囲、`messages_per_resize > 0`）だけであり、これは原典の `DefaultResizer` の構築時の検証の写しである。`Resizer.fromConfig` のもう一方の分岐である `optimal-size-exploring-resizer` は本件では作らない。原典では `DefaultResizer` と両方が有効だと `ResizerInitializationException` になる点も、範囲外として記録する。
+resizer の**振る舞い**（メッセージ数による判定、プールの大きさの増減）は本件では作らない。作るのは値の解釈と検証だけであり、これは原典の `DefaultResizer` の構築時の検証の写しである。
+
+**resizer を読む種類は限られる（再レビュー中1）。** resizer を読むのは、balancing を除くプール（round-robin、random、smallest-mailbox、broadcast、scatter-gather、tail-chopping、consistent-hashing）だけである。原典の `BalancingPool` の `Config` コンストラクタは `nr-of-instances` しか読まず、グループ系と `from-code` も resizer を読まない。そのため、balancing、グループ、from-code の節に壊れた resizer（下限が上限より大きいなど）を書いても、原典では誤りにならず、結果の resizer は付かない。`DefaultResizer::new` の検証（`DeployError::InvalidResizer`）は、resizer を読む種類にだけかける。検証の内容は、上限が下限以上であること、率の範囲、`messages_per_resize > 0` である（下限と上限の「非負」の検証は、型で表せないため書かない。§2.2）。あわせて、`use_pool_dispatcher` は balancing では常に `false` になる（原典の `BalancingPool` は `pool-dispatcher` を読まない）。
+
+`Resizer.fromConfig` のもう一方の分岐である `optimal-size-exploring-resizer` は本件では作らない。原典では `DefaultResizer` と両方が有効だと `ResizerInitializationException` になる点も、範囲外として記録する。
 
 ### 2.6 誤りの型と、名前の対応表
 
@@ -403,16 +421,20 @@ pub enum DeployError {
 - `routerTypeMapping` は、原典では `pekko.actor.router.type-mapping` の節を `Map[String, String]` として公開する値である。移植では文字列の表ではなく、型付きの対応として公開する（ケース16。§5 の F3）。
 
 ```rust
-/// 短い名前15件と、組み込みの FQCN 15件を受ける。
+/// 短い名前15件と、組み込みの FQCN 14件を受ける。
 /// 原典の `routerTypeMapping.getOrElse(routerType, routerType)` の
 /// 写しであり、組み込みの FQCN で書いても同じ選択値になる。
-/// それ以外は `Custom` に保持する。
+/// それ以外は `Custom` に保持する。NoRouter の FQCN は例外であり、
+/// `Custom` に保持する（下記）。
 pub fn from_setting(value: &str) -> RouterSelection;
 /// 選択値の FQCN。`Custom` は保持した文字列をそのまま返す。
+/// `FromCode` は "org.apache.pekko.routing.NoRouter" を返す。
 pub fn fqcn(&self) -> &str;
 ```
 
 FQCN は定数として持つ（例：`ROUND_ROBIN_POOL_FQCN = "org.apache.pekko.routing.RoundRobinPool"`）。#192 の `ProviderSelection` と同じ形であり、組み込みの FQCN を `Custom` にして狭めることを避ける。
+
+**NoRouter の FQCN は受ける側に入れない（再レビュー中3）。** 原典の `createRouterConfig` が `NoRouter` を返すのは文字列が `"from-code"` のときだけであり、`router = "org.apache.pekko.routing.NoRouter"` は反射に回って生成に失敗し、`IllegalArgumentException` でシステムが起動しない（再レビューが原典の jar で確かめた）。そのため `from_setting("org.apache.pekko.routing.NoRouter")` は `Custom` を返し、生成の段で `UnsupportedRouter` になる。一方で `fqcn(FromCode)` は、ケース16のために `"org.apache.pekko.routing.NoRouter"` を返したままにする。したがって往復の性質 `from_setting(x.fqcn()) == x` は、`FromCode` だけ成り立たない。性質として書くときは `FromCode` を外すと明記する。
 
 
 ### 2.7 no_std で書けるか
@@ -429,7 +451,7 @@ FQCN は定数として持つ（例：`ROUND_ROBIN_POOL_FQCN = "org.apache.pekko
 - **I4（scope は常に NoScopeGiven）**: 設定から作る `Deploy` の `scope` は常に `NoScopeGiven` である（原典の `parseConfig` が固定で渡す）。
 - **I5（完全一致の優先は段ごと）**: 各段では完全一致の子が `"*"` の子と接頭辞の子より優先される。ただし要素列全体で「完全一致する節が必ず勝つ」わけではない。完全一致の子を選んだ先で行き止まると、戻らずに `None` になる（I10 の反例4・5）。`/some/random-service` の節が土台にあるのはこの段ごとの優先による。
 - **I6（二重ワイルドカードの範囲。その節だけを登録した場合）**: 末尾の `"**"` の節だけを登録した `Deployer` では、その節は接頭辞に1要素以上を足した要素列に一致し、接頭辞そのものには一致しない。`/double` が `/double/**` に一致しないことが境界である。他の節と一緒では、I10 のため一致しないことがある（I10 の反例1）。末尾でない位置の `"**"` は通常の子として扱われる（既存の `WildcardIndex` の文書どおり）。
-- **I10（後戻りしない貪欲な一致）**: 引き当ては段ごとに、完全一致の子、`"*"` の子、接頭辞の子の順で1本だけを選び、一度選んだら戻らない。単一ワイルドカードの木で着いた節に子があれば、そこに値が無くても二重ワイルドカードの木へは回らない。原典の `WildcardTree.findWithSingleWildcard` と移植済みの `WildcardIndex::find` の形であり、本件はこの規則を変えない。反例（独立レビューが原典と移植済みの索引で試作して確かめた）は次のとおりである。
+- **I10（後戻りしない貪欲な一致）**: 引き当ては段ごとに、完全一致の子、`"*"` の子、接頭辞の子の順で1本だけを選び、一度選んだら戻らない。接頭辞の子の順序は単一ワイルドカードの木だけの話であり、二重ワイルドカードの木は接頭辞の子を見ない（#187 の W3）。単一ワイルドカードの木で着いた節に子があれば、そこに値が無くても二重ワイルドカードの木へは回らない。原典の `WildcardTree.findWithSingleWildcard` と移植済みの `WildcardIndex::find` の形であり、本件はこの規則を変えない。反例（独立レビューが原典と移植済みの索引で試作して確かめた）は次のとおりである。
 
   | 節のキー | 引くパス | 結果 |
   |:---|:---|:---|
@@ -455,15 +477,16 @@ FQCN は定数として持つ（例：`ROUND_ROBIN_POOL_FQCN = "org.apache.pekko
 
 ### PBT を足すか
 
-**足す。** 置き場所は `crates/fraktor-actor/tests/deployer_property_test.rs` で、原典外の件として台帳の件数に含めない。対象は次の4性質である。
+**足す。** 置き場所は `crates/fraktor-actor/tests/deployer_property_test.rs` で、原典外の件として台帳の件数に含めない。対象は次の8性質である。
 
 - **P1（差分検査）**: 任意のキーの列から作った `Deployer` について、`lookup_path(q).map(|d| &d.path)` が、同じキーを同じ分け方で入れた `WildcardIndex<String>` の `find` と常に等しい。照合の規則は #187 で `wildcard_index_model_test.rs` に固定済みであり、本件で確かめるのは「`Deployer` が索引を正しく使っていること（分け方、返す値、I3）」である。あわせて、返る `path` は登録したキーのどれかであることを確かめる。
 - **P2**: 任意の要素列について、完全一致の節だけを登録した `Deployer` では、その要素列の引き当てがその節になる。
-- **P3**: 末尾 `"**"` の節だけを登録した `Deployer` では、その節は接頭辞に1要素以上を足したすべての要素列に一致し、接頭辞そのものには一致しない（I6 の範囲どおり。他の節と一緒の場合は P1 の差分検査が受け持つ）。
+- **P3**: 末尾 `"**"` の節だけを登録した `Deployer` では、その節は接頭辞に1要素以上を足したすべての要素列に一致し、接頭辞そのものには一致しない（I6 の範囲どおり。他の節と一緒の場合は P1 の差分検査が受け持つ）。ただし接頭辞は接頭辞パターン（`x*` の形の要素）を含まない場合に限る。二重ワイルドカードの木は接頭辞の子を見ないため、`"/a*/**"` だけを登録しても `"/ab/x"` は引けない（再レビュー低1）。
 - **P4**: 不正な要素を含むキーは常に `Err` になり、その後の `lookup` の結果は登録前と変わらない（I8）。生成器には `"***"`、`"a**"`、途中の空の要素（`"//a"`）を含める。
 - **P5**: 任意の文字列 `s` について、`lookup_path(s)` が `lookup(&split_deployment_path(s))` と等しい（中1）。
 - **P6**: 任意の `NumberOfInstances`（`NotANumber` を含む）について、`FromCode` の節とグループ系の節は誤りにならず、前者は `NoRouter`、後者はグループの値になる（I7 と §2.6 の規則）。
-- **P7**: 節に resizer があれば、その項目の値によらず解釈結果の resizer は `Some` になる（中2）。
+- **P7**: resizer を読む種類（balancing を除くプール）の節に resizer があれば、その項目の値によらず解釈結果の resizer は `Some` になる（中2。再レビュー中1で範囲を絞った）。
+- **P8**: balancing、グループ、`from-code` の節では、resizer の節があっても（壊れた値でも）結果の resizer は付かず、誤りにもならない。balancing では `use_pool_dispatcher` も常に `false` になる（再レビュー中1）。
 
 生成器は既存の property test（`glob_property_test.rs`、`wildcard_index` の単体テスト）の範囲に倣い、要素は短い ASCII の名前と `"*"`、`"**"` から作り、深さの上限は32とする（§3 の深さの性質）。非 ASCII と禁止文字は固定の表だけに頼らず、`ActorPath::is_valid_path_element` が偽になる要素を生成器で作って P4 を回す。
 
@@ -491,14 +514,14 @@ FQCN は定数として持つ（例：`ROUND_ROBIN_POOL_FQCN = "org.apache.pekko
 ### F3（忠実さの判断）：ケース16「have correct router mappings」
 
 - 当初は除外を提案したが、独立レビューの指摘と上司の判断で取り下げ、型付きの対応で移す。理由は3つある。(1) #192 の `ProviderSelection` が、Pekko の FQCN を定数で持ち、`from_setting` で短い名前と FQCN の両方を受ける形で、同種のケースを除外ではなく忠実さの判断として移した前例がある。(2) 原典は FQCN を `router` に直接書くことを許すため、組み込みの FQCN を受けないと狭めになる。(3) 移せる形があるものを除外として上げる理由が弱い。
-- 形は §2.6 のとおりである。`RouterSelection::from_setting` が短い名前15件と FQCN 15件を受け、それ以外を `Custom` に保持する。`RouterSelection::fqcn` が対応する FQCN を返す。ケース16は、原典が比べる13件の短い名前が、期待どおりの FQCN を持つ選択値に写ることを確かめる。
+- 形は §2.6 のとおりである。`RouterSelection::from_setting` が短い名前15件と FQCN 14件を受け、それ以外（NoRouter の FQCN を含む）を `Custom` に保持する。`RouterSelection::fqcn` が対応する FQCN を返す。ケース16は、原典が比べる13件の短い名前が、期待どおりの FQCN を持つ選択値に写ることを確かめる。
 - 失われるものは、Typesafe Config の節として書かれた対応表が実行時に読まれることの確認だけであり、対応そのものは型付きの関数として固定される。
 
 ### F2（忠実さの判断）：入力全体（ケース1〜15）
 
 - 原典の入力は HOCON の文字列であり、引用符で囲んだキー（`"/some/*"`）やコメントを含む書式そのものは、どのケースも検証していない（書式の誤りを見るケースは DeployerSpec に無い）。入力を `DeploymentSection` の値に写すことで失われるのは HOCON の構文の解釈だけであり、節の意味（キーと項目の対応）は §1.2 の対応表で1対1に保つ。
 - ケース1の `config` の比較は、保持した `DeploymentSection` の値の比較に写る（§2.3 の違い3）。
-- `default` の節の上書きは扱わない（§2.2 の決め1）。原典では `pekko.actor.deployment.default` の上書きが全部の節に効くため、これは設定の体系の狭めであり、ここに記録する。同じキーを2回渡したときの合成の違い（§2.2 の決め1）も同じ扱いである。
+- `default` の節の上書きは扱わない（§2.2 の決め1）。原典では `pekko.actor.deployment.default` の上書きが全部の節に効くため、これは設定の体系の狭めであり、ここに記録する。**中将（2026-11-26）が意図した狭めとして採ると決めた。** 条件として、設定を読む段が入るときに、項目を `Option` にして重ねる形を考え直すことをここに書く。同じキーを2回渡したときの合成の違い（§2.2 の決め1）も同じ扱いであり、原典の入口からは作れない入力であるため、ずれではない。
 
 ### 範囲外として作らないもの（ケースの除外ではない）
 
@@ -509,19 +532,19 @@ FQCN は定数として持つ（例：`ROUND_ROBIN_POOL_FQCN = "org.apache.pekko
 
 ## 6. 第2段へ残す判断材料
 
-1. **テストの置き場所**：規約は「内部 API を呼ぶケースは単体テストに置き、台帳の `rust.cases_outside_test_file` に書く」とする。原典は `deployer.lookup` という内部 API を直接呼ぶ。案は2つある。(a) 規約どおり `deployer_value_test.rs` の単体テストに置く。(b) `Deployer` を公開 API として確定させ、`tests/deployer_spec.rs` に置く。本書の推奨は (b) であり、独立レビューも、#187 の `WildcardIndex`（Pekko では `@InternalApi` だが公開して `tests/wildcard_index_spec.rs` に置いた）の前例を引いて (b) を支持した。第2段は (b) で進める。
+1. **テストの置き場所**：規約は「内部 API を呼ぶケースは単体テストに置き、台帳の `rust.cases_outside_test_file` に書く」とする。原典は `deployer.lookup` という内部 API を直接呼ぶ。案は2つある。(a) 規約どおり `deployer_value_test.rs` の単体テストに置く。(b) `Deployer` を公開 API として確定させ、`tests/deployer_spec.rs` に置く。本書の推奨は (b) であり、独立レビューも、#187 の `WildcardIndex`（Pekko では `@InternalApi` だが公開して `tests/wildcard_index_spec.rs` に置いた）の前例を引いて (b) を支持した。**中将（2026-11-26）が (b) を採ると決めた**ため、第2段は (b) で進める。外に出すのは型だけで、振る舞いを強める約束は足さない。
 2. **グループ系・tail-chopping・balancing の生成**：値として保持する案で確定した（§2.2 の決め3、§2.4）。
 3. **`ConsistentHashingPool` の `virtualNodesFactor`**：閉じた。原典の `Config` コンストラクタは読まず、期待値は `0` である（§2.4。独立レビューが原典で裏取り済み）。
 4. **既存の `RouterConfig` と `DeployedRouter` の統合**：§2.4。本件では統合しない提案である。
 5. **台帳の分母**：`total: 16`、`ported: 16`、除外0件で記録する。ケース5とケース16は忠実さの判断（F1、F3）として `ported` に含める。
-6. **パスの分け方（Java の `split` の挙動）を写すかどうか**：§2.3 の分け方は JVM に固有の振る舞いであり、`pekko-semantics-first.md` の「1件ずつオーナーに伺う」の対象である。写す案（原典どおり。黙って登録されないキーが出る）と、先頭の `/` の無いキーや末尾の `/` を誤りにする狭めの案がある。本書は写す案で設計を書き、判断はオーナーに残す。
+6. **パスの分け方（Java の `split` の挙動）**：決まった。**中将（2026-11-26）が、原典どおり写すと決めた。** 狭めの案（先頭の `/` の無いキーや末尾の `/` を誤りにする）は、原典が通す設定を止めるためずれになる。除外ではなく原典どおりに写すため、オーナーへの伺いは要らない。罠（`"a/b"` が `/b` に縮む、`"svc"` が黙って消える）は `from_sections` の文書に注意として書いた（§2.3）。
 7. **`PoolKind` の拡張の申し送り**：consistent-hashing の振り分けを #269 で作るか別の issue に回すかは #269 の設計で決める（§1.3）。#194 の性質の表への追加は第2段の作業に含めた（§7）。
 
 ## 7. 第2段の進め方（設計レビューが通ってから）
 
 1. red：`tests/deployer_spec.rs`（または §6 の判断による単体テスト）に移すケースを先に書き、失敗を確認する。
 2. green：§2 の型を `kernel::actor::deploy` に足し、`PoolKind` へ `ConsistentHashing`、`Balancing`、`TailChopping` を足す。新しいファイルには自作のものも含めて Apache-2.0 のヘッダーを付ける。
-3. #194 の `tests/actor_configuration_verification_property_test.rs` の種類の表へ、新しい種類を足す（できれば網羅を `match` で強制する形に直す）。
+3. #194 の `tests/actor_configuration_verification_property_test.rs` の種類の表へ、新しい種類を足す（できれば網羅を `match` で強制する形に直す）。ただし balancing は routee 用の dispatcher を自分で作る特別な種類であり、表へ足すときに期待値を他のプールと同じにしてよいかを、原典の `ActorConfigurationVerificationSpec` と `BalancingPool` で確かめてから書く（再レビュー低5）。機械的に1行足すだけでは済まない可能性がある。
 4. 台帳の対象ノードを更新し、`ledger/tools/rollup.py` で完了判定をする。
 5. CI と同じ検査を流す：`cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`ledger/tools` の Python テスト。Quint は本件では書かないため対象外である。
 6. PR をドラフトから外し、必須のチェックが落ちたら他の完了を待たずに直す。ボットの指摘とトップレベルのコメントには「直した／別件／採らない」と理由を書いて返信し、スレッドを解決する。マージはしない。
@@ -545,3 +568,32 @@ FQCN は定数として持つ（例：`ROUND_ROBIN_POOL_FQCN = "org.apache.pekko
 | 低4：PBT の範囲と抜け | P4 の生成器に `"***"`、`"a**"`、`"//a"` を入れ、不正な要素を生成器で作る形にした。P5、P6、P7 を足した |
 | 低5：その他 | `virtualNodesFactor` の裏取りを済んだものとして §2.4 と §6 に書いた。同じキーを2回渡すずれを §2.2 に書いた。`lookup(ActorPath)` を作らないことを §2.3 に書いた。`DeploymentSection` の derive を §2.2 に書いた |
 | Quint の条件 | 「`Deployer` を複数スレッドで共有する段では Quint が要る」を §4 に足した |
+
+## 9. 再レビューへの回答表と、狭めと判断の決定（2026-11-26）
+
+再レビュー（Opus。Pekko 2.0.0 の jar で原典の `deployer.lookup` を実行して確認）の指摘への対応は次のとおりである。
+
+| 指摘 | 対応 |
+|:---|:---|
+| 中1：balancing、グループ、from-code は resizer を読まない。P7 が偽 | P7 の範囲を「balancing を除くプール」に絞り、P8 を足した。resizer の検証（`InvalidResizer`）は resizer を読む種類にだけかけることを §2.5 に書いた。balancing では `use_pool_dispatcher` が常に `false` になることも §2.5 に書いた |
+| 中2：件数の型が入力 `i32` と結果 `u32` で食い違う | 結果の `DeployedRouter::Pool` の件数を `i32` に直し、-1 が `RoundRobinPool(-1)` として保持されることを §2.2 に書いた。範囲外の値（`3000000000`）は `NotANumber` で渡し、`NotANumber` の意味を「`i32` に直せない値（数でない文字列と範囲外の数の両方）」に直した |
+| 中3：NoRouter の FQCN を受けると原典より広い | `from_setting` が受ける FQCN を14件にし、NoRouter の FQCN は `Custom` にして生成の段で `UnsupportedRouter` になる形に §2.6 を直した。`fqcn(FromCode)` は NoRouter の FQCN を返したままにし、往復の性質は `FromCode` だけ成り立たないことを明記した |
+| 低1：P3 に接頭辞パターンを外す条件 | P3 に「接頭辞は接頭辞パターンを含まない場合に限る」を足し、I10 に「二重の木は接頭辞の子を見ない」を書き足した |
+| 低2：`GroupKind::ConsistentHashing` の係数も 0 | §2.4 のグループ側の定義に、原典の `ConsistentHashingGroup` のコンストラクタは `routees.paths` しか読まず値は常に0であることを書いた |
+| 低3：古い文3か所 | 「クラス名も無い」の文を直した。`Deployer` の `router_type_mapping` の欄を消した。「対象は次の4性質」を8性質に直した |
+| 低4：resizer の下限と上限の型 | 下の判断の4のとおり、型の狭めとして採り、「非負」の検証の文を §2.5 から消した。表せないことは §2.2 に書いた |
+| 低5：balancing を #194 の表に足すときの期待値 | §7 の3に、期待値を原典で確かめてから書くことを入れた |
+
+狭めと判断の11件は、レビューの推奨どおりに**中将（2026-11-26）が決めた**。内訳は次のとおりである。
+
+1. Java の `split` の挙動は写す（§6 の6）。
+2. `default` の節の上書きを扱わないことは、意図した狭めとして採る。条件は F2 に書いた（設定を読む段で `Option` にして重ねる形を考え直す）。
+3. 同じキーを2回渡すと後のものが丸ごと勝つことは採る。原典の入口からは作れない入力であり、ずれではない。
+4. 型で表せない値（負の `within`、resizer の負の下限と上限）は、意図した狭めとして採る。表せないことを §2.2 に書き、「非負」の検証の文は消した。
+5. `Custom`（組み込みでない FQCN。NoRouter の FQCN を含む）が `UnsupportedRouter` になることは採る。原典でも起動に失敗し、観察できる結果は同じである。
+6. ケース13の `nrOfInstances = 0` を写さず節の値1を持つことは採る。原典の実物の値は1である。
+7. HOCON の `Config` の等価性を写さないことは採る。原典のケース1は同じ値を自分自身と比べているだけである。
+8. `optimal-size-exploring-resizer`、`tags`、`with_fallback`、`lookup(ActorPath)` を作らないことは、範囲外として採る。
+9. `NaN` の率を素通しにすることは、原典どおりとして採る。
+10. `Deployer` を公開 API にして `tests/` に置くことは、#187 の前例どおり採る（§6 の1）。
+11. `PoolKind` に種類を足すことの影響は、記録で足りるものとして採る。振り分けは #269 への申し送りのままとし、balancing の検証の期待値は低5で確かめる。
