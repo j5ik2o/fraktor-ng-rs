@@ -1,4 +1,4 @@
-# ゴール：issue #186 util の PrettyDurationSpec／GlobSpec／SwitchSpec の移植
+# ゴール G0issue186：util の PrettyDurationSpec／GlobSpec／SwitchSpec の移植
 
 ## 目的
 
@@ -8,11 +8,13 @@ Pekko v2.0.0 の `actor-tests` の util の3つの Spec（PrettyDurationSpec、G
 
 ## 対象ノード
 
-| ノード | 件数 | 状態 |
-|:---|---:|:---|
-| `actor-tests/src/test/scala/org/apache/pekko/util/PrettyDurationSpec.scala` | 13 | green |
-| `actor-tests/src/test/scala/org/apache/pekko/util/GlobSpec.scala` | 6 | green |
-| `actor-tests/src/test/scala/org/apache/pekko/util/SwitchSpec.scala` | 6 | green |
+| id | Rust の統合テスト | 原典のケース数 |
+|:---|:---|---:|
+| `actor-tests/src/test/scala/org/apache/pekko/util/PrettyDurationSpec.scala` | `crates/fraktor-actor/tests/pretty_duration_spec.rs` | 13 |
+| `actor-tests/src/test/scala/org/apache/pekko/util/GlobSpec.scala` | `crates/fraktor-actor/tests/glob_spec.rs` | 6 |
+| `actor-tests/src/test/scala/org/apache/pekko/util/SwitchSpec.scala` | `crates/fraktor-actor/tests/switch_spec.rs` | 6 |
+
+3ノードとも green である。
 
 PrettyDurationSpec の件数は、原典の `cases.foreach` が10件の表を展開するため、台帳の概数（3件）と issue の目安（4件）ではなく実数の13件である。除くケースは無い。
 
