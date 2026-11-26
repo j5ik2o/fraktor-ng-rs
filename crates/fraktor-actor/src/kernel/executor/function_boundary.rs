@@ -23,7 +23,6 @@ use core::time::Duration;
 
 use crate::kernel::actor::DeadLetter;
 use crate::kernel::actor_ref::ActorRef;
-use crate::kernel::event::EventStreamBusWeak;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
@@ -50,7 +49,7 @@ pub(crate) type Handler = Arc<dyn Fn(&ActorRef, Message) + Send + Sync>;
 pub(crate) struct FunctionBoundary {
   handler: Handler,
   open: AtomicBool,
-  dead_letters: Option<EventStreamBusWeak>,
+  dead_letters: Option<ActorRef>,
 }
 
 impl FunctionBoundary {
@@ -58,13 +57,13 @@ impl FunctionBoundary {
     Self { handler, open: AtomicBool::new(true), dead_letters: None }
   }
 
-  /// Creates a boundary that, once closed, publishes a
-  /// [`DeadLetter`] for every later post on the stream behind
-  /// `dead_letters`, as Pekko's `deadLetterMessageHandler` receives the
-  /// messages of a stopped function reference. The route is fixed at
-  /// creation and read without a lock, so the post path stays as cheap
-  /// as it was (re-review N3 of #192).
-  pub(crate) fn new_with_dead_letters(handler: Handler, dead_letters: Option<EventStreamBusWeak>) -> Self {
+  /// Creates a boundary that, once closed, hands a [`DeadLetter`]
+  /// wrapping every later post to the `dead_letters` handle, as Pekko's
+  /// `deadLetterMessageHandler` receives the messages of a stopped
+  /// function reference. The route is fixed at creation and read
+  /// without a lock, so the post path stays as cheap as it was
+  /// (re-review N3 of #192).
+  pub(crate) fn new_with_dead_letters(handler: Handler, dead_letters: Option<ActorRef>) -> Self {
     Self { handler, open: AtomicBool::new(true), dead_letters }
   }
 }
@@ -74,7 +73,8 @@ impl ShardBoundary for FunctionBoundary {
     if !self.open.load(Ordering::Acquire) {
       let (recipient, message, sender) = envelope.into_parts();
       if let Some(dead_letters) = &self.dead_letters {
-        dead_letters.publish(DeadLetter::new(message, sender, recipient));
+        let wrapped = DeadLetter::from_message(message, sender.clone(), recipient);
+        dead_letters.tell(wrapped, sender);
       }
       return;
     }

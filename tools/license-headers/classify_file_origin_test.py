@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import classify_file_origin as c  # noqa: E402
 import origin_decisions as d  # noqa: E402
 import origin_evidence as e  # noqa: E402
 import origin_pekko as p  # noqa: E402
@@ -119,6 +120,56 @@ class Decisions(unittest.TestCase):
     def test_external_spdx_is_kept_as_written(self):
         out = self.decide([("crates/a/src/ported.rs", "Apache-2.0 AND Unlicense", "元帥", "2026-11-26", "M3")])
         self.assertEqual(out["crates/a/src/ported.rs"][0], "Apache-2.0 AND Unlicense")
+
+
+class NewFiles(unittest.TestCase):
+    """新規ファイルは、自作も含めて、まず Apache-2.0（元帥の規則、2026-11-26）。"""
+
+    BATCH = [("@要確認", d.SPDX_APACHE, "元帥", "2026-11-26", "決定 2")]
+
+    def decide(self, rows):
+        decisions = [(n + 2, *dec) for n, dec in enumerate(self.BATCH)]
+        return d.apply_decisions(rows, decisions, "d.tsv")
+
+    def test_a_crates_file_missing_from_the_previous_list_is_marked(self):
+        rows = [row("crates/a/src/new_own.rs")]
+        marked = c.mark_new_files(rows, {})
+        self.assertEqual(marked[0][5], "要確認")
+        self.assertEqual(marked[0][6], c.NEW_FILE_REASON)
+        self.assertEqual(self.decide(marked)["crates/a/src/new_own.rs"][0], d.SPDX_APACHE)
+
+    def test_an_existing_held_file_stays_held(self):
+        rows = [row("crates/a/src/old_own.rs")]
+        previous = {"crates/a/src/old_own.rs": ("", "", d.HELD, "")}
+        marked = c.mark_new_files(rows, previous)
+        self.assertEqual(marked[0][5], "")
+        self.assertEqual(self.decide(marked)["crates/a/src/old_own.rs"][0], d.HELD)
+
+    def test_the_mark_is_sticky_across_regenerations(self):
+        rows = [row("crates/a/src/new_own.rs")]
+        previous = {"crates/a/src/new_own.rs": ("要確認", c.NEW_FILE_REASON, d.SPDX_APACHE, "d.tsv:2")}
+        marked = c.mark_new_files(rows, previous)
+        self.assertEqual(marked[0][5], "要確認")
+        self.assertEqual(marked[0][6], c.NEW_FILE_REASON)
+
+    def test_a_batch_decided_own_row_keeps_the_mark_after_another_flag_reason(self):
+        rows = [row("crates/a/src/new_own.rs")]
+        previous = {
+            "crates/a/src/new_own.rs": ("要確認", "Pekko への言及がある", d.SPDX_APACHE, "d.tsv:2"),
+        }
+        marked = c.mark_new_files(rows, previous)
+        self.assertEqual(marked[0][5], "要確認")
+        self.assertEqual(marked[0][6], c.NEW_FILE_REASON)
+        self.assertEqual(self.decide(marked)["crates/a/src/new_own.rs"][0], d.SPDX_APACHE)
+
+    def test_other_scope_and_already_flagged_rows_are_untouched(self):
+        rows = [
+            row("docs/new.md", verdict="Pekko 由来", kind="Pekko言及", scope="other"),
+            row("crates/a/src/flagged.rs", verdict="Pekko 由来", kind="原典同名", flag="要確認"),
+        ]
+        marked = c.mark_new_files(rows, {})
+        self.assertEqual(marked[0][5], "")
+        self.assertEqual(marked[1][6], "")
 
 
 class DecisionFile(unittest.TestCase):

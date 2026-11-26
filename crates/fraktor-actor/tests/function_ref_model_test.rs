@@ -180,7 +180,7 @@ fn classify(refs: &[FunctionRef], parent: &ActorRef, message: &Message) -> Obser
   }
   if let Some(dead) = message.downcast_ref::<DeadLetter>() {
     let payload = dead.message().downcast_ref::<String>().cloned().unwrap_or_default();
-    let index = refs.iter().position(|reference| reference.as_actor_ref() == dead.recipient()).expect("known ref");
+    let index = refs.iter().position(|reference| reference.as_actor_ref() == *dead.recipient()).expect("known ref");
     return Observed::Dead(payload, index);
   }
   panic!("unexpected message {message:?}");

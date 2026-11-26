@@ -1,6 +1,7 @@
 //! Event buses and the event stream that carries their log events.
 
 mod actor_event_bus;
+mod dead_letter_listener;
 mod event_class;
 mod event_stream;
 mod event_stream_bus;
@@ -9,6 +10,7 @@ mod null_subscriber;
 mod scanning_event_bus;
 
 pub use actor_event_bus::ActorEventBus;
+pub use dead_letter_listener::DeadLetterListener;
 pub use event_class::EventClass;
 pub use event_stream::EventStream;
 pub use event_stream_bus::EventStreamBus;

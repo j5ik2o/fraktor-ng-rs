@@ -128,8 +128,8 @@ impl Actor for StashingActorWithOverflow {
 fn expect_dead_letter(kit: &mut TestKit, expected: &'static str, sender: &ActorRef, recipient: &ActorRef) {
   let dead = kit.expect_msg_type::<DeadLetter>();
   assert_eq!(dead.message().downcast_ref::<&'static str>().copied(), Some(expected), "dead letter message");
-  assert_eq!(&dead.sender(), sender, "dead letter sender for {expected}");
-  assert_eq!(&dead.recipient(), recipient, "dead letter recipient for {expected}");
+  assert!(dead.sender() == sender, "dead letter sender for {expected}");
+  assert!(dead.recipient() == recipient, "dead letter recipient for {expected}");
 }
 
 // Original: `testDeadLetters`.

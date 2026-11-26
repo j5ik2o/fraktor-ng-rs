@@ -28,7 +28,7 @@ ProviderSelectionSpec と ActorWithBoundedStashSpec は green である。
 
 ## 成果物
 
-- 本体：`crates/fraktor-actor/src/kernel/actor/` の `provider_selection.rs`（`ProviderSelection::from_setting`）、`dispatch_settings.rs`（`CapacityLimit`、`DispatchSettings`、`MailboxDefinition`）、`stash_overflow_exception.rs`、`dead_letter.rs`（event stream へ発行する観測手段）、`function_ref.rs`（`FunctionRef` newtype）。あわせて `ActorContext::try_stash`、`Props::with_mailbox`、`ActorSystem` と `ActorContext` の function ref の watch 系メソッドを足した
+- 本体：`crates/fraktor-actor/src/kernel/actor/` の `provider_selection.rs`（`ProviderSelection::from_setting`）、`dispatch_settings.rs`（`CapacityLimit`、`DispatchSettings`、`MailboxDefinition`）、`stash_overflow_exception.rs`、`function_ref.rs`（`FunctionRef` newtype）。あわせて `ActorContext::try_stash`、`Props::with_mailbox`、`ActorSystem` と `ActorContext` の function ref の watch 系メソッドを足した。DeadLetter の観測手段は、当初この issue で新設したが、main へ先に入った #191 の DeadLetter 移植に合わせてそちらを使う形へ改めた（型と dead letters ハンドルの経路は #191 のものを使い、この issue の発行箇所は包んで送る形にそろえた）
 - 移植テスト：`provider_selection_spec.rs`（4件）、`actor_with_bounded_stash_spec.rs`（5件）、`function_ref_spec.rs`（8件）
 - 原典の外のテスト：`provider_selection_property_test.rs`（任意文字列とモデルの照合）、`bounded_stash_property_test.rs`（VecDeque の参照モデルとの照合）、`function_ref_model_test.rs`（登録表モデルとの照合）、本体の単体テスト3件
 - Quint：`crates/fraktor-actor/specs/bounded_stash.qnt`、`crates/fraktor-actor/specs/function_ref.qnt`（ProviderSelection には書かない。設計の判断）
@@ -46,7 +46,7 @@ Mac mini（`~/muse-work/fraktor-ng-rs-192`）で実行した。
 |:---|:---|
 | `cargo fmt --check` | 通過 |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 通過 |
-| `cargo test --workspace` | 1176件、失敗0 |
+| `cargo test --workspace` | 1191件、失敗0 |
 | `bash scripts/quint-check-specs.sh` | bounded_stash は 5 passing、function_ref は 6 passing、どちらも `No violation found` |
 | syn-check（`crates/*/`） | 違反0 |
 | `npm run check:aislop` | 受理済みの指摘と一致 |

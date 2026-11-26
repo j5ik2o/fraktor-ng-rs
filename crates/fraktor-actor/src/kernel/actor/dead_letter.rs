@@ -14,26 +14,20 @@
 //
 // This file has been modified from the Apache Pekko original.
 
-//! The event a message becomes when it reaches dead letters.
-//!
-//! Mirrors `org.apache.pekko.actor.DeadLetter`, the event stream
-//! event published for a message that could not be delivered.
+//! A message that was not delivered to its recipient.
+
+use core::any::Any;
 
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::message::Message;
 
-/// A message that was sent to dead letters, with its sender and the
-/// actor it was addressed to.
+/// The event that reports a message which was not delivered.
 ///
-/// Mirrors `org.apache.pekko.actor.DeadLetter`. The executor publishes
-/// one on the event stream for each message it hands to dead letters
-/// from the bounded stash paths (the overflow of `unstash_all`, the
-/// stash of a stopping actor, and the queue of a stopping actor), so a
-/// test subscribes to it as the original's cases do. No `PartialEq` is
-/// derived: `Message` has none, so a test reads the parts through the
-/// accessors instead, as with
-/// [`UnhandledMessage`](crate::kernel::actor::UnhandledMessage).
-#[derive(Clone, Debug)]
+/// Mirrors `org.apache.pekko.actor.DeadLetter`: it carries the message that
+/// was not delivered, the actor that sent it, and the actor it was addressed
+/// to. The event stream publishes it on the `DeadLetter` channel, which is
+/// also a channel of [`AllDeadLetters`](super::AllDeadLetters).
+#[derive(Clone)]
 pub struct DeadLetter {
   message: Message,
   sender: ActorRef,
@@ -41,23 +35,32 @@ pub struct DeadLetter {
 }
 
 impl DeadLetter {
-  /// Creates the event for `message` from `sender` to `recipient`.
-  pub fn new(message: Message, sender: ActorRef, recipient: ActorRef) -> Self {
+  /// Creates the report of `message`, sent by `sender` to `recipient`.
+  pub fn new<M: Any + Send + Sync>(message: M, sender: ActorRef, recipient: ActorRef) -> Self {
+    Self { message: Message::new(message), sender, recipient }
+  }
+
+  /// Creates the report of an already wrapped `message`.
+  ///
+  /// Used when a delivery that never reached its actor is handed to the dead
+  /// letters handle with its payload intact, as the mailbox clean-up does
+  /// with the messages left in a stopped actor's stash or queue.
+  pub fn from_message(message: Message, sender: ActorRef, recipient: ActorRef) -> Self {
     Self { message, sender, recipient }
   }
 
-  /// Returns the message that reached dead letters.
+  /// Returns the message that was not delivered.
   pub fn message(&self) -> &Message {
     &self.message
   }
 
-  /// Returns the sender of the message.
-  pub fn sender(&self) -> ActorRef {
-    self.sender.clone()
+  /// Returns the actor that sent the message.
+  pub fn sender(&self) -> &ActorRef {
+    &self.sender
   }
 
   /// Returns the actor the message was addressed to.
-  pub fn recipient(&self) -> ActorRef {
-    self.recipient.clone()
+  pub fn recipient(&self) -> &ActorRef {
+    &self.recipient
   }
 }
