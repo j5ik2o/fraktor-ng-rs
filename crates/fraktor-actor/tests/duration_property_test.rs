@@ -148,9 +148,16 @@ fn inputs_outside_the_checked_range_keep_their_properties() {
     let a = any_duration(&mut random);
     let b = any_duration(&mut random);
     assert_eq!(a.checked_add(b).is_none(), b > Duration::MAX - a, "seed {seed:#x}: checked_add({a:?}, {b:?})");
+    // The same draws near the limit that do succeed are undone by the
+    // inverse operation, which P1 and P2 do not generate.
+    if let Some(sum) = a.checked_add(b) {
+      assert_eq!(sum - b, a, "seed {seed:#x}: ({a:?} + {b:?}) - {b:?}");
+    }
     let n = random.next_u64() as u32;
     if a.checked_mul(n).is_none() {
       assert_eq!(a.saturating_mul(n), Duration::MAX, "seed {seed:#x}: saturating_mul({a:?}, {n})");
+    } else if n >= 1 {
+      assert_eq!(a.checked_mul(n).expect("checked above") / n, a, "seed {seed:#x}: ({a:?} * {n}) / {n}");
     }
   }
 }
