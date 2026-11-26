@@ -27,6 +27,7 @@ use crate::kernel::actor::BehaviorStack;
 use crate::kernel::actor::FunctionRef;
 use crate::kernel::actor::InvalidActorNameException;
 use crate::kernel::actor::Props;
+use crate::kernel::actor::ReceiveTimeoutSetting;
 use crate::kernel::actor::Running;
 use crate::kernel::actor::StashOverflowException;
 use crate::kernel::actor_ref::ActorRef;
@@ -452,6 +453,22 @@ impl<'a> ActorContext<'a> {
   /// after the actor returns.
   pub fn stop(&mut self, target: &ActorRef) {
     self.executor.request_stop(target.clone());
+  }
+
+  /// Sets the receive timeout of this actor.
+  ///
+  /// Mirrors `ActorContext.setReceiveTimeout`. Callable from `pre_start`,
+  /// `post_restart`, and `receive`, as in Pekko.
+  pub fn set_receive_timeout(&mut self, timeout: ReceiveTimeoutSetting) {
+    let _ = timeout;
+    todo!("#200: set_receive_timeout is not implemented yet")
+  }
+
+  /// Returns the receive timeout this actor set last.
+  ///
+  /// Mirrors `ActorContext.receiveTimeout`.
+  pub fn receive_timeout(&self) -> ReceiveTimeoutSetting {
+    todo!("#200: receive_timeout is not implemented yet")
   }
 
   /// Completes child stops before the default restart hook runs `post_stop`.

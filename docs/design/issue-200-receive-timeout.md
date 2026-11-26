@@ -289,6 +289,8 @@ pub fn is_not_influence_receive_timeout(&self, message: &Message) -> bool;
 | P4 | 設定を変える操作が連続する列では、最後の設定だけが残り、期限は最大で1つである | I3 |
 | P5 | 期間0と `Duration::MAX` を含む任意の期間で、状態の操作は panic しない（時計が無い場合の panic は §3 の決められた経路だけ） | I8、§5 の境界 |
 
+テストの担当が変えた点：P1〜P5 をすべて `crates/fraktor-actor/tests/receive_timeout_property_test.rs` に置き、公開の面と `ActorSystem::set_clock` の手で進める時計を使って、原典の `State` と `invoke` の前後を写した参照モデルと、届く `ReceiveTimeout` の列（時刻と期間）を完全一致で比べる形にした。単体テストの `receive_timeout_state_test.rs` は書かない。理由：`ReceiveTimeoutState`（`pub(crate)`）の関数のシグネチャが §3 に無く、テストの側で決めると実装の形を縛るためである。性質はどれも外から観測できるので弱まらない（中将の判断、2026-11-27）。
+
 ## 7. Quint を書くか
 
 判断：書く。理由は、本件には状態遷移があり、3状態（なし／張ってある／発火済み）と、影響する／しないメッセージの処理・再設定・停止・再起動の組み合わせの中で、発火1回につき1件であることと、積んだ `ReceiveTimeout` の確実な配送（I1・I2・I4）を守ることが正しさの中心にあるためである（独立再レビュー R2。初版の「古い期限の発火を世代で抑えることが中心」という理由は H2 で原典の振る舞いと違うことが分かり、撤回した）。これは #181 の設計が FSM のタイマで Quint を書いた理由（取り消しと置き換えの誤りを固定テストが狭くしか見ない）と同じであり、#234 の設計も mailbox の予約で同じ判断をしている。逆に、状態遷移の無い移植（#185 の DurationSpec）では Quint を書かない判断が前例であり、本件はその場合に当たらない。
@@ -299,6 +301,8 @@ pub fn is_not_influence_receive_timeout(&self, message: &Message) -> bool;
 - 不変条件は I1（有限のときだけ積まれ、積まれたものは必ず届く）、I2（影響しない処理では期限が動かない）、I4（発火1回につき1件）に対応するものを置く。
 - 負の対照として、受信の時点で積んだ `ReceiveTimeout` を捨てるものと、発火で期限を消さないものと、影響しないメッセージで期限を取り消すものを置き、それぞれ狙った不変条件が落ちることを確かめる（H2）。
 - モデルにしないものは、実時間そのもの（期限は「来たかどうか」の真偽で表す）と、期間の算術（PBT と単体テストの範囲）である。
+
+テストの担当が変えた点：Quint は `crates/fraktor-actor/specs/receive_timeout.qnt` の1ファイルにし、`invariant` と、名前が Test で終わる run（負の対照を含む）を同じファイルに置いた。理由：`scripts/quint-check-specs.sh` はファイルごとに `invariant` を求め、前例の `fsm_transition.qnt` も1ファイルであるためである（中将の判断、2026-11-27）。
 
 ## 8. HOCON の設定について
 
@@ -401,3 +405,5 @@ pub fn is_not_influence_receive_timeout(&self, message: &Message) -> bool;
 | # | 重さ | 回答 | 理由と反映先 |
 |:--|:--|:--|:---|
 | N1 | 低 | 直す | §3 の置き場所表が `kernel/actor/receive_timeout/*.rs` の入れ子構造のままで、子モジュールを持つ非末端モジュールからの `pub use` を禁止する syn-check の `module-wiring` 規則に掛かり、§11 の公開パス（`kernel::actor::*`）とも食い違っていた。`dead_letter_suppression.rs` など既存の平坦な末端モジュールの前例に合わせ、`receive_timeout.rs`、`receive_timeout_setting.rs`、`not_influence_receive_timeout.rs`、`receive_timeout_state.rs`、`identify.rs` をすべて `crates/fraktor-actor/src/kernel/actor/` 直下の平坦な末端モジュールとして置き、`kernel/actor.rs` から `pub use` して公開パスを `fraktor_actor::kernel::actor::{Identify, NotInfluenceReceiveTimeout, ReceiveTimeout, ReceiveTimeoutSetting}` に揃える形へ §3 の表とその後の段落を直した。表に無かった `identify.rs` も足した。あわせて §3 の署名のコメントのパス（3か所）と §6 の PBT の単体テストの置き場所も平坦なパスへ直し、§3 の表の実行器の行の文言（「最も早い期限だけを検査して」）を本文のループの記述（先頭から期限が来た行を順に取り除いて発火する）に揃えた。第2段で Opus が red のテストを書く前に、テストが書く `use` パスはこの公開パスで確定する |
+
+テストの担当が変えた点：§6 の PBT の置き場所を `tests/receive_timeout_property_test.rs` の1か所にし、§7 の Quint を `receive_timeout.qnt` の1ファイルにした。理由：§6 と §7 の末尾に書いたとおりである（中将の判断、2026-11-27）。
