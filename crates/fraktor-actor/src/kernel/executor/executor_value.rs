@@ -417,7 +417,6 @@ pub(crate) struct Executor {
   dead_letter_listener: Option<ActorRef>,
   boundary_active: bool,
   hook_child_creation_refused: bool,
-  terminated: bool,
   routes_closed: Arc<AtomicBool>,
   clock: Option<Arc<dyn Clock>>,
   next_delivery: u64,
@@ -480,7 +479,6 @@ impl Executor {
       dead_letter_listener: None,
       boundary_active: false,
       hook_child_creation_refused: false,
-      terminated: false,
       routes_closed,
       clock: None,
       next_delivery: 0,
@@ -696,9 +694,7 @@ impl Executor {
     let dead_letters = self.dead_letters.clone();
     let routes_closed = self.routes_closed.clone();
     Arc::new(move |envelope: Envelope| {
-      // Once the system has terminated, a refused envelope is discarded,
-      // as the closed executor queue discarded it before the routing moved
-      // to the sender's thread (review of PR #295).
+      // Once the system has terminated, a refused envelope is discarded.
       if routes_closed.load(Ordering::SeqCst) {
         return;
       }
@@ -707,6 +703,12 @@ impl Executor {
         shared.route_undeliverable(message, sender, recipient, &dead_letters);
       }
     })
+  }
+
+  /// Routes `message` to dead letters through the shared rules, with the
+  /// executor's dead letters handle as the destination of the routing.
+  fn route_undeliverable(&self, message: Message, sender: ActorRef, recipient: ActorRef) {
+    self.dead_letters_shared.route_undeliverable(message, sender, recipient, &self.dead_letters);
   }
 
   /// Records the subscription table the dead letter routing rules publish
@@ -1219,7 +1221,7 @@ impl Executor {
     if let Some(name) = name {
       validate_actor_name(name)?;
     }
-    if self.terminated {
+    if self.is_terminated() {
       return Err(InvalidActorNameException::terminating().into());
     }
     let label = match name {
@@ -1422,7 +1424,7 @@ impl Executor {
     let Some(entry) = self.parent_entry(parent) else {
       return Err(InvalidActorNameException::terminating());
     };
-    if self.terminated || self.is_terminating(parent) {
+    if self.is_terminated() || self.is_terminating(parent) {
       self.hook_child_creation_refused = true;
       return Err(InvalidActorNameException::terminating());
     }
@@ -1456,7 +1458,7 @@ impl Executor {
     if let Some(name) = name {
       validate_actor_name(name)?;
     }
-    if self.terminated {
+    if self.is_terminated() {
       return Err(InvalidActorNameException::terminating().into());
     }
     match self.parent_entry(parent) {
@@ -2614,7 +2616,6 @@ impl Executor {
   /// handler for every message that reaches its handle after the terminate,
   /// where Pekko's test actor has stopped and its messages are dead letters.
   pub(crate) fn stop_all(&mut self) {
-    self.terminated = true;
     self.routes_closed.store(true, Ordering::SeqCst);
     self.fatal = false;
     self.boundary.close();
@@ -2695,7 +2696,7 @@ impl Executor {
 
   /// Returns whether the system has been terminated.
   pub(crate) fn is_terminated(&self) -> bool {
-    self.terminated
+    self.routes_closed.load(Ordering::SeqCst)
   }
 
   /// Returns whether `target` no longer has a running actor behind it.
@@ -2726,7 +2727,7 @@ impl Executor {
 
   /// Refuses to start an actor once the system has been terminated.
   fn assert_running(&self) {
-    assert!(!self.terminated, "{TERMINATED_MESSAGE}");
+    assert!(!self.is_terminated(), "{TERMINATED_MESSAGE}");
   }
 
   /// Delivers the message a selection envelope carries, resolving its
@@ -2834,8 +2835,7 @@ impl Executor {
         },
         | Err(refused) => {
           let (message, sender) = refused.into_message();
-          let dead_letters = self.dead_letters.clone();
-          self.dead_letters_shared.route_undeliverable(message, sender, recipient, &dead_letters);
+          self.route_undeliverable(message, sender, recipient);
           self.finish_boundary();
         },
       }
@@ -2857,8 +2857,7 @@ impl Executor {
       self.finish_boundary();
       return;
     }
-    let dead_letters = self.dead_letters.clone();
-    self.dead_letters_shared.route_undeliverable(message, sender, recipient, &dead_letters);
+    self.route_undeliverable(message, sender, recipient);
     // The routing publishes synchronously, so the dead letter listener
     // may have reached its limit inside this delivery; the boundary
     // work (including the listener's own stop) runs here as it does at
@@ -3441,14 +3440,11 @@ impl Executor {
     if self.is_local(&recipient) {
       if recipient.mailbox_is_closed() {
         // The watcher has already stopped, so its mailbox turns the notice
-        // away. Route the notice itself to dead letters here, as the
-        // executor's delivery of a refused envelope did before the routing
-        // moved to the sender's thread: the pending record is consumed
-        // (never registered) and the internal carrier never surfaces as a
-        // dead letter's payload (review of PR #295).
+        // away. Route the notice itself to dead letters here: the pending
+        // record is consumed (never registered) and the internal carrier
+        // never surfaces as a dead letter's payload.
         let message = custom.unwrap_or_else(|| Message::new(notice));
-        let dead_letters = self.dead_letters.clone();
-        self.dead_letters_shared.route_undeliverable(message, sender, recipient, &dead_letters);
+        self.route_undeliverable(message, sender, recipient);
         return;
       }
       let pending = Arc::new(PendingTermination { watcher: recipient.clone(), notice, custom });
