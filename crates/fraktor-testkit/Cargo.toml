@@ -2,6 +2,8 @@
 name = "fraktor-testkit"
 version = "0.0.0"
 edition = "2021"
+# Crate-level license is Apache-2.0; per-file license headers state each source file's SPDX identifier.
+license = "Apache-2.0"
 publish = false
 
 [dependencies]
