@@ -20,10 +20,7 @@
 
 //! A handle to an actor system that does not keep it alive.
 
-use alloc::rc::Rc;
-use alloc::rc::Weak;
 use alloc::string::String;
-use core::cell::RefCell;
 use core::time::Duration;
 
 use crate::kernel::actor::Props;
@@ -31,6 +28,9 @@ use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::Executor;
 use crate::kernel::message::Message;
 use crate::kernel::supervision::SupervisorStrategy;
+use crate::kernel::sync::lock;
+use crate::kernel::sync::Arc;
+use crate::kernel::sync::Weak;
 
 /// A handle to an actor system that does not keep it alive.
 ///
@@ -41,21 +41,27 @@ use crate::kernel::supervision::SupervisorStrategy;
 /// is gone panics, so a probe used after its spec has been torn down fails
 /// loudly instead of silently doing nothing.
 ///
+/// The handle is `Send + Sync` from stage 1 of #234, but the executor is
+/// still guarded by one lock that a call takes with `try_lock`: before
+/// stage 5, using the system from several threads at the same time panics
+/// with "already borrowed: re-entrant or concurrent use", as a call from
+/// inside `receive` does.
+///
 /// Once the system has been terminated, `spawn_child` and `function_ref` panic
 /// with the same cause as `ActorSystem::actor_of`, because the executor owns
 /// that state. Pekko's `attachChild` refuses a defunct guardian for the same
 /// reason (`pekko/actor/.../dungeon/Children.scala:313-314`).
 pub struct WeakActorSystem {
   name: String,
-  executor: Weak<RefCell<Executor>>,
+  executor: Weak<spin::Mutex<Executor>>,
 }
 
 impl WeakActorSystem {
-  pub(crate) fn new(name: String, executor: Weak<RefCell<Executor>>) -> Self {
+  pub(crate) fn new(name: String, executor: Weak<spin::Mutex<Executor>>) -> Self {
     Self { name, executor }
   }
 
-  fn upgrade(&self) -> Rc<RefCell<Executor>> {
+  fn upgrade(&self) -> Arc<spin::Mutex<Executor>> {
     self.executor.upgrade().unwrap_or_else(|| panic!("the actor system {} is gone", self.name))
   }
 
@@ -75,7 +81,7 @@ impl WeakActorSystem {
     name: Option<&str>,
     strategy: SupervisorStrategy,
   ) -> ActorRef {
-    self.upgrade().borrow_mut().spawn_child_from_weak(parent, props, name, strategy)
+    lock(&self.upgrade()).spawn_child_from_weak(parent, props, name, strategy)
   }
 
   /// Starts a handle whose shard runs `handler` for each delivered message.
@@ -83,7 +89,7 @@ impl WeakActorSystem {
   where
     H: Fn(&ActorRef, Message) + Send + Sync + 'static,
   {
-    self.upgrade().borrow_mut().function_ref(name, handler)
+    lock(&self.upgrade()).function_ref(name, handler)
   }
 
   /// Registers `callback` to run with the handle of every actor that stops.
@@ -91,25 +97,25 @@ impl WeakActorSystem {
   /// Mirrors the notification that Pekko's `ActorClassificationUnsubscriber`
   /// receives for the actors it watches. A component that is not an actor, such
   /// as an event bus, has no mailbox to receive a `Terminated` notice, so it
-  /// registers here instead. The callback must not borrow the executor, which
-  /// is already borrowed while it runs.
+  /// registers here instead. The callback must not lock the executor, which
+  /// is already locked while it runs.
   pub fn on_termination<F>(&self, callback: F)
   where
-    F: Fn(&ActorRef) + 'static,
+    F: Fn(&ActorRef) + Send + 'static,
   {
-    self.upgrade().borrow_mut().on_termination(callback);
+    lock(&self.upgrade()).on_termination(callback);
   }
 
   /// Registers `watcher` to receive the `Terminated` notice of `target`.
   pub fn watch(&self, watcher: &ActorRef, target: &ActorRef) {
-    self.upgrade().borrow_mut().watch(watcher, target);
+    lock(&self.upgrade()).watch(watcher, target);
   }
 
   /// Stops `watcher` from receiving the notice of `target`.
   ///
   /// Mirrors `ActorContext.unwatch` reached through a non-owning handle.
   pub fn unwatch(&self, watcher: &ActorRef, target: &ActorRef) {
-    self.upgrade().borrow_mut().unwatch(watcher, target);
+    lock(&self.upgrade()).unwatch(watcher, target);
   }
 
   /// Stops `target`, telling its watchers that it is gone.
@@ -117,7 +123,7 @@ impl WeakActorSystem {
   /// Mirrors `ActorSystem.stop` reached through a non-owning handle, which is
   /// how a probe or a test that only holds a `Weak` back-edge stops an actor.
   pub fn stop(&self, target: &ActorRef) {
-    self.upgrade().borrow_mut().stop_at_boundary(target);
+    lock(&self.upgrade()).stop_at_boundary(target);
   }
 
   /// Returns whether `target` no longer has a running actor behind it.
@@ -128,23 +134,23 @@ impl WeakActorSystem {
   /// runs and true once the actor has stopped. The scope and its limits are the
   /// ones `watch` documents.
   pub fn is_actor_terminated(&self, target: &ActorRef) -> bool {
-    self.upgrade().borrow().is_actor_terminated(target)
+    lock(&self.upgrade()).is_actor_terminated(target)
   }
 
   /// Delivers every message that is waiting until nothing is left.
   pub fn run_until_idle(&self) {
-    self.upgrade().borrow_mut().run_until_idle();
+    lock(&self.upgrade()).run_until_idle();
   }
 
   /// Delivers at most one message and returns whether it delivered one.
   pub fn run_one(&self) -> bool {
-    self.upgrade().borrow_mut().run_one()
+    lock(&self.upgrade()).run_one()
   }
 
   /// Waits at most `max` for one message from the boundary and moves it onto
   /// the local queue. Returns whether a message arrived.
   pub fn await_envelope(&self, max: Duration) -> bool {
-    self.upgrade().borrow_mut().await_envelope(max)
+    lock(&self.upgrade()).await_envelope(max)
   }
 }
 

@@ -21,8 +21,8 @@ use alloc::sync::Arc;
 
 use crate::adaptor::ChannelBoundary;
 use crate::kernel::actor_path::ActorPath;
+use crate::kernel::actor_ref::next_actor_ref;
 use crate::kernel::actor_ref::ActorRef;
-use crate::kernel::executor::next_actor_ref;
 use crate::kernel::supervision::Directive;
 use crate::kernel::supervision::FailureKind;
 use crate::kernel::supervision::RestartLimit;

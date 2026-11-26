@@ -131,7 +131,7 @@ impl<'a> ActorContext<'a> {
   /// later `pop_behavior` reaches the frame that was below the replaced head.
   pub fn change_behavior<F>(&mut self, behavior: F)
   where
-    F: FnMut(&mut ActorContext<'_>, Message) + 'static,
+    F: FnMut(&mut ActorContext<'_>, Message) + Send + 'static,
   {
     self.stack.change(Box::new(behavior));
   }
@@ -142,7 +142,7 @@ impl<'a> ActorContext<'a> {
   /// `pop_behavior` restores the behaviour below.
   pub fn push_behavior<F>(&mut self, behavior: F)
   where
-    F: FnMut(&mut ActorContext<'_>, Message) + 'static,
+    F: FnMut(&mut ActorContext<'_>, Message) + Send + 'static,
   {
     self.stack.push(Box::new(behavior));
   }

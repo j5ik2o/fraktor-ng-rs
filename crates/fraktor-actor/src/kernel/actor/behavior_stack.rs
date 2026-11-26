@@ -24,7 +24,7 @@ use crate::kernel::{actor::ActorContext, message::Message};
 ///
 /// It reads and writes the context of the delivery it handles, so it can
 /// `become` or `unbecome` again while it runs.
-pub(crate) type Frame = Box<dyn FnMut(&mut ActorContext<'_>, Message) + 'static>;
+pub(crate) type Frame = Box<dyn FnMut(&mut ActorContext<'_>, Message) + Send + 'static>;
 
 /// The head a delivery runs, taken out of the stack so it can be called.
 ///
