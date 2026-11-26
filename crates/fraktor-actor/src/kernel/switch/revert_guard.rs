@@ -1,0 +1,38 @@
+//! A drop guard that reverts a switch's state unless it is defused.
+
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// Reverts the state in `on` back to `from` on drop, unless defused.
+///
+/// The guard is declared after the switch's lock guard, so it drops while
+/// the lock is still held (the design of #186,
+/// docs/design/issue-186-util-specs.md §2.3). The revert itself is the
+/// original's `compareAndSet(!from, from)`: under the lock a store would
+/// give the same result, but the original's form is kept. Because the
+/// revert runs on drop, it covers both an action that returns `Err` and an
+/// action that panics, matching the original, which catches every
+/// `Throwable`.
+pub(super) struct RevertGuard<'a> {
+  on: &'a AtomicBool,
+  from: bool,
+  armed: bool,
+}
+
+impl<'a> RevertGuard<'a> {
+  pub(super) fn new(on: &'a AtomicBool, from: bool) -> Self {
+    Self { on, from, armed: true }
+  }
+
+  /// Keeps the change: the state stays as the caller set it.
+  pub(super) fn defuse(&mut self) {
+    self.armed = false;
+  }
+}
+
+impl Drop for RevertGuard<'_> {
+  fn drop(&mut self) {
+    if self.armed {
+      let _ = self.on.compare_exchange(!self.from, self.from, Ordering::SeqCst, Ordering::SeqCst);
+    }
+  }
+}
