@@ -1285,7 +1285,6 @@ mod stage3 {
 
   struct SetPeer(ActorRef);
 
-  // Holds the handle of its peer, so two of them hold each other's mailboxes.
   struct PeerHolder {
     peer: Option<ActorRef>,
   }
