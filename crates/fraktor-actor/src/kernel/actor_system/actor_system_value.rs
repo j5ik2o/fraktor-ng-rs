@@ -205,7 +205,9 @@ impl ActorSystem {
   /// Each call hands out a handle with a fresh identifier and generation zero,
   /// so handles of different actors compare unequal. The actor is started below
   /// `/user`, with the default supervisor strategy, as the guardian does for a
-  /// top-level actor.
+  /// top-level actor. The call returns before `pre_start` runs: the actor
+  /// starts in its own run, once the dispatcher has run it, as Pekko's
+  /// `actorOf` returns once it has enqueued `Create`.
   ///
   /// Panics once the system has been terminated, with the same cause as Pekko,
   /// which throws `IllegalStateException` from `attachChild` when a defunct
@@ -383,12 +385,13 @@ impl ActorSystem {
     erased.clone().downcast::<E::Ext>().expect("the registry stores the type the id created")
   }
 
-  /// Stops `target`, telling its watchers that it is gone.
+  /// Asks `target` to stop. Its watchers are told once it has stopped.
   ///
-  /// Mirrors `org.apache.pekko.actor.ActorSystem.stop`, which asks the
-  /// guardian to stop the actor.
+  /// Mirrors `org.apache.pekko.actor.ActorSystem.stop`, which is
+  /// asynchronous: the target gets a `Terminate` and stops in its own run,
+  /// so the stop takes effect once the dispatcher has run it.
   pub fn stop(&mut self, target: &ActorRef) {
-    Executor::lend(&self.executor, |executor| executor.stop_at_boundary(target));
+    Executor::lend(&self.executor, |executor| executor.stop(target));
   }
 
   /// Registers `watcher` to receive the `Terminated` notice of `target`.

@@ -66,7 +66,7 @@ pub use priority_queue::PriorityQueue;
 pub use run_limits::RunLimits;
 pub(crate) use run_outcome::RunOutcome;
 pub(crate) use run_report::RunReport;
-pub use system_message::SystemMessage;
+pub(crate) use system_message::SystemMessage;
 pub use throughput::Throughput;
 pub use throughput_deadline::ThroughputDeadline;
 pub use unbounded_queue::UnboundedQueue;

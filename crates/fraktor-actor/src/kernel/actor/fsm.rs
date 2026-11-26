@@ -549,6 +549,10 @@ where
       let sender = context.self_ref();
       self.make_transition(context, initial, None, Vec::new(), sender);
     }
+    #[cfg(feature = "test-support")]
+    if let Some(handle) = &self.handle {
+      handle.mark_started();
+    }
   }
 
   fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
