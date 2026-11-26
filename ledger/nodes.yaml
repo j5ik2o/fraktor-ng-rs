@@ -3965,7 +3965,7 @@ nodes:
     module: actor-tests
     class: PropsCreationSpec
     test_cases_approx: 6
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -3981,9 +3981,9 @@ nodes:
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/props_creation_spec.rs
+  goal: G0issue193
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ProviderSelectionSpec.scala
   name: actor-tests:ProviderSelectionSpec
   kind: test
