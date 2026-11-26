@@ -2968,7 +2968,7 @@ nodes:
     module: actor-tests
     class: GlobSpec
     test_cases_approx: 6
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -2979,14 +2979,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
+    total: 6
     ported: null
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/glob_spec.rs
+  goal: G0issue186
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/HotSwapSpec.scala
   name: actor-tests:HotSwapSpec
   kind: test
@@ -3814,7 +3814,7 @@ nodes:
     module: actor-tests
     class: PrettyDurationSpec
     test_cases_approx: 3
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -3825,14 +3825,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
+    total: 13
     ported: null
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/pretty_duration_spec.rs
+  goal: G0issue186
 - id: actor-tests/src/test/scala/org/apache/pekko/serialization/PrimitivesSerializationSpec.scala
   name: actor-tests:PrimitivesSerializationSpec
   kind: test
@@ -4736,7 +4736,7 @@ nodes:
     module: actor-tests
     class: SwitchSpec
     test_cases_approx: 6
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -4747,14 +4747,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
+    total: 6
     ported: null
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/switch_spec.rs
+  goal: G0issue186
 - id: actor-tests/src/test/scala/org/apache/pekko/dispatch/sysmsg/SystemMessageListSpec.scala
   name: actor-tests:SystemMessageListSpec
   kind: test
