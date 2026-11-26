@@ -50,6 +50,9 @@ rollup.py --goal を走らせる。ここでは takt も cargo も node も起�
  38. check_needs も、ほかのゴールの壊れた not_built の記録で止まらない
  39. 全件を作らないノードに承認済みの除外があれば未完了で、除外の有効件数にも数えない
  40. not_built の total が正の整数でない（true）、前後に空白のあるケース名で重複を隠すなら完了にしない
+ 41. green の混在ノード（移植 + 承認済みの作らない区分、件数が一致）なら完了にする
+ 42. green の混在ノードでも、作らない要素に承認記録が無ければ完了にしない
+ 43. green の混在ノードで件数が合わなければ（total ≠ passing + 除外 + 作らない）完了にしない
 """
 import json
 import os
@@ -266,6 +269,70 @@ def test_green_and_not_built_is_complete():
         result = run_gate(root, response)
         assert result["exit_code"] == 0, result
         print("28. green + not_built: exit_code =", result["exit_code"])
+
+
+MIXED_GREEN_CASES = (
+    "    total: 3\n"
+    "    ported: 2\n"
+    "    passing: 2\n"
+    "    excluded: []\n"
+    "    not_built:\n"
+    "    - name: someCase\n"
+    "      reason: the original checks a JVM-only helper\n"
+    "      alternative: a compile_fail doctest\n"
+)
+
+
+def mixed_green_node(node_id: str, goal: str, approval: str, cases: str = MIXED_GREEN_CASES) -> str:
+    """混在ノード。移植 2 件と作らない 1 件を持つ green。approval は要素へ足す承認の行。"""
+    return (
+        f"- id: {node_id}\n"
+        f"  kind: test\n"
+        f"  pekko:\n"
+        f"    module: stub\n"
+        f"  status: green\n"
+        f"  cases:\n"
+        f"{cases}{approval}"
+        f"  goal: {goal}\n"
+    )
+
+
+def test_mixed_green_with_approved_not_built_is_complete():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.java"]
+        ledger = "nodes:\n" + mixed_green_node(ids[0], "G0x", APPROVAL)
+        response = make_run(root, order_with(["docs/goals/g0x-stub.md"]), ledger,
+                            one_goal_doc("G0x", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] == 0, result
+        print("41. mixed green + approved not_built: exit_code =", result["exit_code"])
+
+
+def test_mixed_green_with_unapproved_not_built_is_not_complete():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.java"]
+        ledger = "nodes:\n" + mixed_green_node(ids[0], "G0y", "")
+        response = make_run(root, order_with(["docs/goals/g0y-stub.md"]), ledger,
+                            one_goal_doc("G0y", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] != 0, result
+        assert "a/A.java" in result.get("output", ""), result
+        print("42. mixed green + unapproved not_built: exit_code =", result["exit_code"])
+
+
+def test_mixed_green_with_count_mismatch_is_not_complete():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.java"]
+        cases = MIXED_GREEN_CASES.replace("    total: 3\n", "    total: 4\n")
+        ledger = "nodes:\n" + mixed_green_node(ids[0], "G0z", APPROVAL, cases)
+        response = make_run(root, order_with(["docs/goals/g0z-stub.md"]), ledger,
+                            one_goal_doc("G0z", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] != 0, result
+        print("43. mixed green + count mismatch: exit_code =", result["exit_code"])
 
 
 def test_not_built_without_approval_is_not_complete():
@@ -1242,6 +1309,9 @@ def main() -> int:
         test_green_and_do_not_port_is_complete,
         test_goal_without_members_is_not_complete,
         test_green_and_not_built_is_complete,
+        test_mixed_green_with_approved_not_built_is_complete,
+        test_mixed_green_with_unapproved_not_built_is_not_complete,
+        test_mixed_green_with_count_mismatch_is_not_complete,
         test_not_built_without_approval_is_not_complete,
         test_not_built_with_malformed_approval_is_not_complete,
         test_not_built_with_duplicated_case_names_is_not_complete,

@@ -13,9 +13,10 @@
   unclassifiable          機械分類できない（軽量モデルの判定ステップへ）
   source_rejected         原典が変更のない現行の基準 commit でない（cargo も台帳も触らず止める）
 
-already_green は「移植の正しさ（原典 Pekko のケース数と、人間が承認した除外の件数の和が、
-通過したケース数に一致し、1 件以上通っている）」と「前提の実装が契約を満たす（対象テストの
-全件成功）」の両方が確かめられる場合に限る。片方でも欠ける場合は unexpected_pass に倒す。
+already_green は「移植の正しさ（原典 Pekko のケース数と、人間が承認した除外と作らない区分の
+件数の和が、通過したケース数に一致し、1 件以上通っている）」と「前提の実装が契約を満たす
+（対象テストの全件成功）」の両方が確かめられる場合に限る。片方でも欠ける場合は
+unexpected_pass に倒す。
 原典が用意されていない環境（pekko/ が無い）、または原典のケースをすべて数えたと確認できない
 ファイル（WordSpec の `"name" must {` など既知の書式で全件を説明できない構文を含む）では
 移植を確かめられないため already_green にはしない。
@@ -107,7 +108,8 @@ def mark_green(node_id: str, total: int, passed: int, reason: str, verified_agai
     green を残さないため）。
 
     total には原典のケース数、ported と passing には Rust の成功件数 passed を書く
-    （承認済みの除外がある場合、total = passed + len(excluded) になる）。
+    （承認済みの除外や作らない区分がある場合、total = passed + len(excluded) + len(not_built)
+    になる）。
     status・cases の total/ported/passing・既存の triage.reason・最上位の verified_against だけを
     書き換える。verified_against 行が無ければノードの末尾に足し、それ以外の新キーは増やさない。
     triage.reason が null または空のときだけ `already_green: ` 理由を書き、人間が書いた既存の
@@ -286,6 +288,16 @@ def count_excluded(node_id: str) -> int | None:
     return excluded_approvals.count_excluded(LEDGER, node_id)
 
 
+def count_not_built(node_id: str) -> int | None:
+    """台帳の対象ノードの cases.not_built のうち、人間が承認した件数を返す。
+
+    承認記録の判定と件数計算は `excluded_approvals` が持つ。未承認・不正な記録が
+    1 件でもあれば None を返し、already_green を許可しない（詳細は
+    `excluded_approvals.count_not_built`）。欄が無いノードは 0 件である。
+    """
+    return excluded_approvals.count_not_built(LEDGER, node_id)
+
+
 def parse_passed(out: str) -> int | None:
     """対象テストの通過ケース数を返す。失敗の要約を含む・0 件・要約が無い場合は None。
 
@@ -375,10 +387,12 @@ def main() -> int:
     original_cases = count_original_cases(node)
     passed = parse_passed(out)
     excluded = count_excluded(node)
+    not_built = count_not_built(node)
 
     already_green = (
         passed is not None and original_cases is not None and excluded is not None
-        and passed + excluded == original_cases
+        and not_built is not None
+        and passed + excluded + not_built == original_cases
     )
     if already_green:
         classification = "already_green"
@@ -399,8 +413,8 @@ def main() -> int:
     elif classification == "already_green":
         reason = (
             f"already_green: 原典 Pekko のケース数 {original_cases} と通過ケース数 "
-            f"{passed}（承認済みの除外 {excluded} 件）が一致し、対象テストが全件成功している"
-            f"（前提の実装が契約を満たす）"
+            f"{passed}（承認済みの除外 {excluded} 件、作らない区分 {not_built} 件）が一致し、"
+            f"対象テストが全件成功している（前提の実装が契約を満たす）"
         )
 
     result = {
@@ -411,6 +425,7 @@ def main() -> int:
         "original_cases": original_cases,
         "passed": passed,
         "excluded": excluded,
+        "not_built": not_built,
         "reason": reason,
         **provenance,
         "detail": out[-1500:],
