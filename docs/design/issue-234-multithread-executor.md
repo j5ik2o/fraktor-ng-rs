@@ -1573,6 +1573,14 @@ I1 と同じく panic する（停止を捨てると、名前の解放と watche
     `DeadLetterMailbox` も送り手のスレッドで流すので原典には近いが、dead letters の購読者が `run_until_idle` の前に通知を
     受け取り、今の時点が変わる。今の時点に頼るテストを洗い出してからでないと採れない
 
+  上の 4／4・`upgrade` 0 は、数える範囲を限った数である（プルリクエスト #295 のレビューで明記した）。数えるのは、
+  数え上げを置いた場所（`ActorRef` と `Endpoint` の複製、予約、`Mailbox::executor` の `upgrade`）で、`tell` から
+  送り手のスレッドで dead letters へ流し終えるまでの区間であり、数え上げのテストが購読者の無い形で確かめた数で
+  ある。流したあとの EventStream への発行は数に入らない。発行には、購読表の弱参照の `upgrade`
+  （`EventStreamBusWeak::publish`）と、購読者 1 件ごとのハンドルの複製があり、抑制されたメッセージを
+  `SuppressedDeadLetter` に包むときは dead letters のハンドルの複製も加わる。これらは、実行器が流していた形でも
+  発行の側にあったものであり、断られる経路全体の上限ではなく、発行 1 回あたりの数として別に読む。
+
 **条件 1 の数え方**：kernel の `sync::Arc` は標準の `Arc`（CAS の無い target では `portable_atomic_util::Arc`）の別名で、
 複製の回数を数える仕掛けが無い。`strong_count` を見るだけでは、見る前に捨てられた複製を数えられない。そこで、複製が
 起きる場所を限り、そこに `cfg(test)` の数え上げを置く。

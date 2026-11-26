@@ -70,7 +70,26 @@ impl ActorRef {
     (*self.path).clone()
   }
 
+  /// Returns whether this handle's mailbox is already closed, as a stopped
+  /// actor's is. A handle that posts to a boundary has no mailbox to close.
+  pub(crate) fn mailbox_is_closed(&self) -> bool {
+    match &self.endpoint {
+      | Endpoint::Mailbox(mailbox) => mailbox.is_closed(),
+      | Endpoint::Boundary(_) => false,
+    }
+  }
+
   /// Sends a message to the actor, naming `sender` as the sender.
+  ///
+  /// If the actor has stopped, the message goes to dead letters on this
+  /// (the sender's) thread, before `tell` returns (issue #286): a dead
+  /// letter subscriber whose handler runs where it is told (a function
+  /// reference) is called on this thread. Such a handler runs while the
+  /// sender's work is in progress, so it must not call back into the same
+  /// system's driving calls (spawning, stopping, or running the system):
+  /// the executor is lent for the duration of a run and those calls would
+  /// wait for it. Telling another actor from the handler is fine, as it
+  /// only enqueues.
   pub fn tell<M: Any + Send + Sync>(&self, message: M, sender: ActorRef) {
     self.send_message(Message::new(message), sender);
   }
