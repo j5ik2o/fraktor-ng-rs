@@ -505,4 +505,20 @@ mod unwind {
     assert!(fixture.mailbox.has_cell(), "the run took the actor out of a closed mailbox");
     assert!(fixture.seen.lock().unwrap().is_empty());
   }
+
+  // A send reserves the mailbox, a stop closes it and takes the runs that
+  // wait, and only then does the send hand its run over: the run of the
+  // closed mailbox must not stay behind.
+  #[test]
+  fn a_run_handed_over_after_the_stop_took_the_runs_is_refused() {
+    let fixture = Fixture::new();
+    assert!(fixture.mailbox.enqueue(envelope(1)).is_ok());
+    let run = Mailbox::try_schedule(&fixture.mailbox).expect("there is work");
+
+    let _ = fixture.mailbox.close();
+    assert!(fixture.executor.take_runs_of(&fixture.mailbox).is_empty());
+    fixture.executor.submit(ManualTask::Run(run));
+
+    assert!(fixture.executor.is_empty(), "the run of a closed mailbox stayed behind");
+  }
 }

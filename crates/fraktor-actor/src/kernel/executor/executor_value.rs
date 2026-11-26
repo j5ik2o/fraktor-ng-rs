@@ -148,6 +148,10 @@ const HANDLE_CHILD_TERMINATED_FAILED_MESSAGE: &str = "handleChildTerminated fail
 /// (`reference.conf:622`).
 const MANUAL_THROUGHPUT: u32 = 5;
 
+/// How long a wait on a boundary without a wake signal polls the boundary
+/// before it looks at the mailboxes again.
+const POLL_SLICE: Duration = Duration::from_millis(1);
+
 /// A reply to send to `reply_to` after the actor it was registered on stops.
 struct DeferredReply {
   reply_to: ActorRef,
@@ -1059,16 +1063,17 @@ impl Executor {
         if !self.is_live(parent) && !self.is_guardian(parent) {
           return Err(InvalidActorNameException::terminating().into());
         }
-        // A child of the user guardian is a top-level actor, so its
-        // name must also be free in the top-level registry.
-        if parent == &self.user_guardian {
-          if let Some(name) = name {
-            if self.user_children.contains_key(name) {
-              return Err(InvalidActorNameException::name_taken(name).into());
-            }
-          }
-        }
       },
+    }
+    // A child of the user guardian is a top-level actor, so its name must
+    // also be free in the top-level registry, whether or not the guardian
+    // already keeps a record of its own children.
+    if parent == &self.user_guardian {
+      if let Some(name) = name {
+        if self.user_children.contains_key(name) {
+          return Err(InvalidActorNameException::name_taken(name).into());
+        }
+      }
     }
     // The configuration check reads only the recipe and the path. For
     // an unnamed child the last path segment is the generated name,
@@ -2158,16 +2163,31 @@ impl Executor {
       return true;
     }
     let Some(arrivals) = self.arrivals.clone() else {
-      return match self.boundary.poll_within(max) {
-        | Some(envelope) => {
+      // Without a signal, a send to a mailbox from another thread wakes
+      // nothing: the boundary is polled in short slices, and the mailboxes
+      // are looked at between them.
+      let mut waited = Duration::ZERO;
+      while waited < max {
+        let slice = (max - waited).min(POLL_SLICE);
+        if let Some(envelope) = self.boundary.poll_within(slice) {
           self.manual.submit(ManualTask::Envelope(envelope));
-          true
-        },
-        | None => false,
-      };
+          return true;
+        }
+        waited += slice;
+        if has_work(self) {
+          return true;
+        }
+      }
+      return false;
     };
     let Some(start) = self.boundary.monotonic_time() else {
-      arrivals.wait(max);
+      // Without a clock, a wait that a stale signal ends is started again
+      // for `max`; only a wait that sees no signal at all ends with `false`.
+      while arrivals.wait(max) {
+        if has_work(self) {
+          return true;
+        }
+      }
       return has_work(self);
     };
     let deadline = start.saturating_add(max);

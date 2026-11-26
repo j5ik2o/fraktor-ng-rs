@@ -56,9 +56,15 @@ impl<C: MailboxCell> ManualExecutor<C> {
   }
 
   /// Puts `task` at the end of the list. After the system has terminated,
-  /// the task is dropped, outside the lock.
+  /// or when it is a run of a mailbox that has closed, the task is dropped,
+  /// outside the lock.
+  ///
+  /// The closed check is inside the lock: a stop closes the mailbox and then
+  /// takes its runs under the same lock, so a run reserved before the close
+  /// and handed over after it cannot stay behind.
   pub(crate) fn submit(&self, task: ManualTask<C>) {
     let refused = self.tasks.with(|tasks| match tasks {
+      | Some(_) if matches!(&task, ManualTask::Run(run) if run.mailbox_is_closed()) => Err(task),
       | Some(tasks) => {
         let was_empty = tasks.is_empty();
         tasks.push_back(task);

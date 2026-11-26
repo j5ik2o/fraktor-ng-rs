@@ -1783,4 +1783,116 @@ mod stage3 {
 
     assert!(mailboxes.iter().all(|mailbox| mailbox.upgrade().is_none()), "a custom watch kept a mailbox");
   }
+
+  // A boundary that hands out no wake signal.
+  struct WithoutSignal(ChannelBoundary);
+
+  impl crate::kernel::executor::ShardBoundary for WithoutSignal {
+    fn monotonic_time(&self) -> Option<Duration> {
+      self.0.monotonic_time()
+    }
+
+    fn post(&self, envelope: crate::kernel::message::Envelope) {
+      self.0.post(envelope);
+    }
+
+    fn poll(&self) -> Option<crate::kernel::message::Envelope> {
+      self.0.poll()
+    }
+
+    fn poll_within(&self, max: Duration) -> Option<crate::kernel::message::Envelope> {
+      self.0.poll_within(max)
+    }
+
+    fn has_pending(&self) -> bool {
+      self.0.has_pending()
+    }
+
+    fn close(&self) {
+      self.0.close();
+    }
+  }
+
+  // A boundary that hands out a wake signal but no clock.
+  struct WithoutClock(ChannelBoundary);
+
+  impl crate::kernel::executor::ShardBoundary for WithoutClock {
+    fn post(&self, envelope: crate::kernel::message::Envelope) {
+      self.0.post(envelope);
+    }
+
+    fn poll(&self) -> Option<crate::kernel::message::Envelope> {
+      self.0.poll()
+    }
+
+    fn poll_within(&self, max: Duration) -> Option<crate::kernel::message::Envelope> {
+      self.0.poll_within(max)
+    }
+
+    fn has_pending(&self) -> bool {
+      self.0.has_pending()
+    }
+
+    fn wake_signal(&self) -> Option<Arc<dyn crate::kernel::dispatch::WakeSignal>> {
+      self.0.wake_signal()
+    }
+
+    fn close(&self) {
+      self.0.close();
+    }
+  }
+
+  #[test]
+  fn without_a_signal_a_send_to_a_mailbox_from_another_thread_ends_the_wait() {
+    let mut system = ActorSystem::new("WaitWithoutSignal", Arc::new(WithoutSignal(ChannelBoundary::new())));
+    let actor = system.actor_of(Props::new(|| Sink));
+    let sender = system.dead_letters();
+    let started = Instant::now();
+    let sending = thread::spawn(move || {
+      thread::sleep(Duration::from_millis(50));
+      actor.tell(1_u32, sender);
+    });
+
+    assert!(system.await_envelope(Duration::from_secs(5)));
+    let waited = started.elapsed();
+    sending.join().unwrap();
+    assert!(waited < Duration::from_secs(2), "the wait slept past the send: {waited:?}");
+  }
+
+  #[test]
+  fn without_a_clock_a_signal_for_work_already_done_does_not_end_the_wait() {
+    let mut system = ActorSystem::new("WaitWithoutClock", Arc::new(WithoutClock(ChannelBoundary::new())));
+    let actor = system.actor_of(Props::new(|| Sink));
+    actor.tell(1_u32, system.dead_letters());
+    system.run_until_idle();
+
+    let started = Instant::now();
+    assert!(!system.await_envelope(Duration::from_millis(100)), "no work came");
+    assert!(started.elapsed() >= Duration::from_millis(100), "the wait ended before its deadline");
+  }
+
+  #[test]
+  fn a_named_child_of_the_user_guardian_is_refused_a_top_level_name_once_the_guardian_has_a_record() {
+    let mut system = system("UserGuardianNames");
+    let taken = system.actor_of_named(Props::new(|| Sink), "x").expect("the name is free");
+    let guardian = system.resolve_actor_ref(&taken.path().parent());
+    let weak = system.downgrade();
+    weak
+      .try_spawn_child(
+        &guardian,
+        Props::new(|| Sink),
+        Some("y"),
+        crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+      )
+      .expect("y is free");
+
+    let again = weak.try_spawn_child(
+      &guardian,
+      Props::new(|| Sink),
+      Some("x"),
+      crate::kernel::supervision::SupervisorStrategy::default_strategy(),
+    );
+
+    assert!(again.is_err(), "a second top-level actor named x started");
+  }
 }

@@ -45,6 +45,11 @@ impl<C: MailboxCell> MailboxRun<C> {
     Self { mailbox }
   }
 
+  /// Returns whether the mailbox of this run has closed.
+  pub(crate) fn mailbox_is_closed(&self) -> bool {
+    self.mailbox.is_closed()
+  }
+
   /// Returns whether this is a run of `mailbox`.
   pub(crate) fn is_for(&self, mailbox: &Mailbox<C>) -> bool {
     core::ptr::eq(&*self.mailbox, mailbox)
