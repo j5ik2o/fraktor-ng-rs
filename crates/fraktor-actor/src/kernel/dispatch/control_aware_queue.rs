@@ -32,6 +32,13 @@ use crate::kernel::sync::LockFactory;
 /// Mirrors `org.apache.pekko.dispatch.UnboundedControlAwareMailbox`. Pekko marks
 /// a control message with the `ControlMessage` trait; a message here is type
 /// erased, so the queue asks a function instead.
+///
+/// The function must be a pure function of the message. A mailbox with a
+/// queue of its own ([`Mailbox::new`](super::Mailbox::new)) calls `enqueue`
+/// inside its gate, so the function runs while the gate is held: it must not
+/// send a message, and must not call any method of a mailbox. Reaching the
+/// same gate again would never return (a spin lock spins, a thread lock
+/// blocks).
 pub struct ControlAwareQueue {
   is_control: Box<dyn Fn(&Message) -> bool + Send + Sync>,
   queues: LockCell<Queues>,

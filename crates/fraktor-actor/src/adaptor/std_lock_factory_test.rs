@@ -87,6 +87,7 @@ fn a_mailbox_on_std_locks_handles_every_message_from_many_senders_once() {
   use std::sync::mpsc;
   use std::sync::Mutex;
   use std::time::Duration;
+  use std::time::Instant;
 
   use crate::kernel::actor_path::ActorPath;
   use crate::kernel::actor_path::RootActorPath;
@@ -98,6 +99,7 @@ fn a_mailbox_on_std_locks_handles_every_message_from_many_senders_once() {
   use crate::kernel::dispatch::RunLimits;
   use crate::kernel::dispatch::RunOutcome;
   use crate::kernel::dispatch::SystemMessage;
+  use crate::kernel::dispatch::Throughput;
   use crate::kernel::dispatch::UnboundedQueue;
   use crate::kernel::executor::NoOpBoundary;
   use crate::kernel::message::Envelope;
@@ -123,7 +125,10 @@ fn a_mailbox_on_std_locks_handles_every_message_from_many_senders_once() {
   let seen = Arc::new(Mutex::new(std::vec::Vec::new()));
   let cell = Counter { seen: Arc::clone(&seen), running: Arc::new(AtomicBool::new(false)) };
   let queue = Arc::new(UnboundedQueue::new(&StdLockFactory));
-  let mailbox = Arc::new(Mailbox::new(cell, queue, RunLimits::new(5), &StdLockFactory));
+  let mailbox = Arc::new(Mailbox::new(cell, queue, RunLimits::new(Throughput::new(5)), &StdLockFactory));
+  // A lost message would keep the pool waiting; past this deadline the pool
+  // stops, and the count below reports the loss instead of hanging.
+  let deadline = Instant::now() + Duration::from_secs(30);
   let (submit, submitted) = mpsc::channel::<MailboxRun<Counter>>();
   let submitted = Arc::new(Mutex::new(submitted));
 
@@ -138,7 +143,7 @@ fn a_mailbox_on_std_locks_handles_every_message_from_many_senders_once() {
               again.send(run).unwrap();
             }
           },
-          | Err(_) if seen.lock().unwrap().len() == (SENDERS * EACH) as usize => return,
+          | Err(_) if Instant::now() > deadline || seen.lock().unwrap().len() == (SENDERS * EACH) as usize => return,
           | Err(_) => {},
         }
       })

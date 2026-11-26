@@ -260,7 +260,7 @@ impl<C: MailboxCell> Mailbox<C> {
   /// (Pekko's `processMailbox`). It looks at the flag, not at the system
   /// queue, after each message.
   pub(crate) fn process_mailbox(&self, cell: &mut C) {
-    let mut left = self.limits.throughput();
+    let mut left = self.limits.throughput().messages();
     let deadline = self.limits.deadline_from_now();
     while self.status.should_process_message() {
       let Some(envelope) = self.queue.dequeue() else { break };

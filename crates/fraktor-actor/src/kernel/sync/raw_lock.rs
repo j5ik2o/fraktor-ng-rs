@@ -33,6 +33,10 @@
 /// - run `section` exactly once per call to [`lock`](Self::lock);
 /// - never run two sections of the same lock at the same time, on any thread
 ///   or in any interrupt;
+/// - make every write of one section visible to the sections that run after
+///   it: releasing the lock is a release and taking it is an acquire, as for
+///   any mutex, so that the end of a section happens before the start of the
+///   next one, also on another thread;
 /// - release the lock when `section` unwinds, and ignore any poisoning that
 ///   the unwind leaves behind, so that the next section still runs.
 pub unsafe trait RawLock: Send + Sync {

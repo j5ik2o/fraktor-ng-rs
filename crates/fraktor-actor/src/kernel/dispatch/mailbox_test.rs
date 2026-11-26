@@ -32,6 +32,7 @@ use crate::kernel::dispatch::MessageQueue;
 use crate::kernel::dispatch::RunLimits;
 use crate::kernel::dispatch::RunOutcome;
 use crate::kernel::dispatch::SystemMessage;
+use crate::kernel::dispatch::Throughput;
 use crate::kernel::dispatch::UnboundedQueue;
 use crate::kernel::executor::NoOpBoundary;
 use crate::kernel::message::Envelope;
@@ -69,9 +70,9 @@ fn unbounded() -> Arc<dyn MessageQueue> {
 
 fn mailbox(queue: Arc<dyn MessageQueue>, shared: bool) -> Mailbox<Keeper> {
   if shared {
-    Mailbox::sharing(Keeper::default(), queue, RunLimits::new(5), &SpinLockFactory)
+    Mailbox::sharing(Keeper::default(), queue, RunLimits::new(Throughput::new(5)), &SpinLockFactory)
   } else {
-    Mailbox::new(Keeper::default(), queue, RunLimits::new(5), &SpinLockFactory)
+    Mailbox::new(Keeper::default(), queue, RunLimits::new(Throughput::new(5)), &SpinLockFactory)
   }
 }
 

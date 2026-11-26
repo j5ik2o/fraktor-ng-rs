@@ -38,6 +38,8 @@ use crate::kernel::dispatch::MailboxCell;
 use crate::kernel::dispatch::RunLimits;
 use crate::kernel::dispatch::RunOutcome;
 use crate::kernel::dispatch::SystemMessage;
+use crate::kernel::dispatch::Throughput;
+use crate::kernel::dispatch::ThroughputDeadline;
 use crate::kernel::dispatch::UnboundedQueue;
 use crate::kernel::executor::NoOpBoundary;
 use crate::kernel::message::Envelope;
@@ -139,7 +141,7 @@ impl Fixture {
 
 #[test]
 fn a_run_handles_at_most_the_throughput_and_asks_to_run_again() {
-  let fixture = Fixture::new(RunLimits::new(2));
+  let fixture = Fixture::new(RunLimits::new(Throughput::new(2)));
   for value in 1..=5 {
     fixture.send(value);
   }
@@ -159,7 +161,7 @@ fn a_run_handles_at_most_the_throughput_and_asks_to_run_again() {
 
 #[test]
 fn a_throughput_of_zero_counts_as_one() {
-  let fixture = Fixture::new(RunLimits::new(0));
+  let fixture = Fixture::new(RunLimits::new(Throughput::new(0)));
   fixture.send(1);
   fixture.send(2);
 
@@ -169,7 +171,7 @@ fn a_throughput_of_zero_counts_as_one() {
 
 #[test]
 fn waiting_system_messages_go_before_the_first_normal_message() {
-  let fixture = Fixture::new(RunLimits::new(5));
+  let fixture = Fixture::new(RunLimits::new(Throughput::new(5)));
   fixture.send(1);
   fixture.send_system(SystemMessage::Create);
   fixture.send_system(SystemMessage::Resume);
@@ -184,7 +186,7 @@ fn waiting_system_messages_go_before_the_first_normal_message() {
 #[test]
 fn a_system_message_sent_during_receive_goes_before_the_next_message() {
   let fixture = Fixture::with_hook(
-    RunLimits::new(5),
+    RunLimits::new(Throughput::new(5)),
     Box::new(|mailbox, value| {
       if value == 1 {
         assert!(mailbox.system_enqueue(SystemMessage::Create).is_ok());
@@ -201,7 +203,7 @@ fn a_system_message_sent_during_receive_goes_before_the_next_message() {
 
 #[test]
 fn a_suspended_mailbox_handles_only_system_messages_until_resumed() {
-  let fixture = Fixture::new(RunLimits::new(5));
+  let fixture = Fixture::new(RunLimits::new(Throughput::new(5)));
   fixture.send_system(SystemMessage::Suspend);
   fixture.send(1);
 
@@ -218,7 +220,7 @@ fn a_suspended_mailbox_handles_only_system_messages_until_resumed() {
 
 #[test]
 fn terminate_closes_the_mailbox_and_the_run_stops() {
-  let fixture = Fixture::new(RunLimits::new(5));
+  let fixture = Fixture::new(RunLimits::new(Throughput::new(5)));
   fixture.send_system(SystemMessage::Terminate);
   fixture.send_system(SystemMessage::Create);
   fixture.send(1);
@@ -236,7 +238,7 @@ fn terminate_closes_the_mailbox_and_the_run_stops() {
 #[test]
 fn a_message_that_comes_during_the_last_receive_runs_again() {
   let fixture = Fixture::with_hook(
-    RunLimits::new(1),
+    RunLimits::new(Throughput::new(1)),
     Box::new(|mailbox, value| {
       if value == 1 {
         assert!(mailbox.enqueue(envelope(2)).is_ok());
@@ -256,7 +258,7 @@ fn a_message_that_comes_during_the_last_receive_runs_again() {
 #[test]
 #[should_panic(expected = "invariant I1")]
 fn a_run_without_the_actor_in_its_slot_panics() {
-  let fixture = Fixture::new(RunLimits::new(5));
+  let fixture = Fixture::new(RunLimits::new(Throughput::new(5)));
   fixture.send(1);
   let run = Mailbox::try_schedule(&fixture.mailbox).expect("there is work");
   let _actor = fixture.mailbox.take_cell();
@@ -269,7 +271,7 @@ fn a_run_without_the_actor_in_its_slot_panics() {
 #[test]
 fn the_actor_is_put_back_when_receive_panics() {
   let fixture = Fixture::with_hook(
-    RunLimits::new(5),
+    RunLimits::new(Throughput::new(5)),
     Box::new(|_, value| {
       assert_ne!(value, 13, "receive fails on 13");
     }),
@@ -299,7 +301,8 @@ impl Clock for HandClock {
 fn a_run_stops_taking_messages_after_the_deadline() {
   let clock = Arc::new(HandClock::default());
   let ticking = Arc::clone(&clock);
-  let limits = RunLimits::new(10).with_deadline(Duration::from_millis(2), clock);
+  let limits = RunLimits::new(Throughput::new(10))
+    .with_deadline(ThroughputDeadline::new(Duration::from_millis(2)).expect("two milliseconds is a deadline"), clock);
   let fixture = Fixture::with_hook(
     limits,
     Box::new(move |_, _| {
@@ -320,19 +323,7 @@ fn a_run_stops_taking_messages_after_the_deadline() {
 
 #[test]
 fn a_deadline_under_one_millisecond_counts_as_none() {
-  let clock = Arc::new(HandClock::default());
-  let ticking = Arc::clone(&clock);
-  let limits = RunLimits::new(3).with_deadline(Duration::from_micros(999), clock);
-  let fixture = Fixture::with_hook(
-    limits,
-    Box::new(move |_, _| {
-      ticking.0.fetch_add(10_000_000, Ordering::SeqCst);
-    }),
-  );
-  for value in 1..=3 {
-    fixture.send(value);
-  }
-
-  assert_eq!(fixture.drive(), 1);
-  assert_eq!(fixture.log(), ["m1", "m2", "m3"]);
+  assert_eq!(ThroughputDeadline::new(Duration::from_micros(999)), None);
+  assert_eq!(ThroughputDeadline::new(Duration::ZERO), None);
+  assert!(ThroughputDeadline::new(Duration::from_millis(1)).is_some());
 }

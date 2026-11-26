@@ -27,6 +27,7 @@ use crate::kernel::actor_ref::next_actor_ref;
 use crate::kernel::address::Address;
 use crate::kernel::dispatch::BoundedQueue;
 use crate::kernel::dispatch::ControlAwareQueue;
+use crate::kernel::dispatch::MessagePriority;
 use crate::kernel::dispatch::PriorityQueue;
 use crate::kernel::dispatch::UnboundedQueue;
 use crate::kernel::executor::NoOpBoundary;
@@ -55,6 +56,11 @@ fn item_of(envelope: &Envelope) -> Item {
 
 fn class_of(message: &Message) -> i32 {
   message.downcast_ref::<Item>().expect("an Item message").class
+}
+
+// The class as a priority: class 0 goes first.
+fn priority_of(message: &Message) -> MessagePriority {
+  MessagePriority::new(class_of(message))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -244,7 +250,7 @@ fn stable_priority_queue_keeps_the_order_within_a_priority() {
   check_queue(
     "stable priority",
     7,
-    || PriorityQueue::new(class_of, true, &SpinLockFactory),
+    || PriorityQueue::new(priority_of, true, &SpinLockFactory),
     || Priority { items: Vec::new(), stable: true },
   );
 }
@@ -254,7 +260,7 @@ fn priority_queue_hands_out_the_highest_priority_first() {
   check_queue(
     "priority",
     7,
-    || PriorityQueue::new(class_of, false, &SpinLockFactory),
+    || PriorityQueue::new(priority_of, false, &SpinLockFactory),
     || Priority { items: Vec::new(), stable: false },
   );
 }

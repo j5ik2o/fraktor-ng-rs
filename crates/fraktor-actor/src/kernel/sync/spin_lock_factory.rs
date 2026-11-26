@@ -40,7 +40,7 @@ impl LockFactory for SpinLockFactory {
 struct SpinRawLock(spin::Mutex<()>);
 
 // SAFETY: `spin::Mutex` lets one guard live at a time and runs `section` once
-// under it. The guard is dropped when `section` unwinds, which unlocks, and a
+// under it. Taking it is an acquire and dropping the guard a release. The guard is dropped when `section` unwinds, which unlocks, and a
 // spin lock has no poisoning.
 unsafe impl RawLock for SpinRawLock {
   fn lock(&self, section: &mut dyn FnMut()) {

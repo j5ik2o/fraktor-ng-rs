@@ -34,7 +34,9 @@ mod tests;
 /// [`MessageQueueFactory`](super::MessageQueueFactory).
 ///
 /// An implementation must not run user code inside its lock: it moves
-/// envelopes in and out and never drops one there (invariant I16).
+/// envelopes in and out and never drops one there (invariant I16). A mailbox
+/// with a queue of its own calls `enqueue` inside its gate, so `enqueue` must
+/// not call back into any mailbox.
 pub trait MessageQueue: Send + Sync {
   /// Puts `envelope` at the end of the queue, or hands it back when the queue
   /// has no room. A rejected envelope goes to dead letters.

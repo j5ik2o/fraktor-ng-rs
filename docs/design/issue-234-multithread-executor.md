@@ -1190,4 +1190,5 @@ bot の記録 `pr236-design-rereview3.md` にある。M1 と M2 は元帥が決�
 | 門とキューのロック | 自分専用のキューでは、門のロックの中でキューのロックを取る（逆の順では取らない）。共有のキューでは門を取らない | キューは `Arc<dyn MessageQueue>` で差し替えられるので、門と同じロックにはできない。§3.2 のロックの順序の 3 の中の順として決めた |
 | priority と control-aware の関数 | キューのロックの外で呼ぶが、自分専用のキューでは門のロックの中になる。メッセージを送らないことを求める | Pekko も比較の関数を `PriorityBlockingQueue` のロックの中で呼ぶ。門の外で呼ぶ形は、段 5 で門の作りを替えるときに考える |
 | std のロック | `std::sync::Mutex`（`StdLockFactory`） | 依存を足さないため（`parking_lot` は足さない。§7.4） |
+| throughput、期限、優先度 | 専用の型 `Throughput`（0 は 1）、`ThroughputDeadline`（1ms 未満は無し）、`MessagePriority`（小さい数が先。型の順序は先に出るものが大きい） | 移植の規約の domain-primitive（特別な扱いを持つ値を基本型のまま渡さない）。Devin の指摘、PR #273 |
 | bounded の priority と control-aware | 段 2 では入れない | 満杯の待ちと一緒に段 5 で入れる（dispatcher ごとのメールボックスの種類） |

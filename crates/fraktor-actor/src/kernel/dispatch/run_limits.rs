@@ -18,6 +18,8 @@
 
 use core::time::Duration;
 
+use crate::kernel::dispatch::Throughput;
+use crate::kernel::dispatch::ThroughputDeadline;
 use crate::kernel::sync::Arc;
 use crate::kernel::Clock;
 
@@ -29,32 +31,29 @@ use crate::kernel::Clock;
 /// passed; the message it has taken is always handled to the end.
 #[derive(Clone)]
 pub struct RunLimits {
-  throughput: u32,
-  deadline: Option<(Duration, Arc<dyn Clock>)>,
+  throughput: Throughput,
+  deadline: Option<(ThroughputDeadline, Arc<dyn Clock>)>,
 }
 
 impl RunLimits {
-  /// Limits a run to `throughput` messages, without a deadline. A throughput
-  /// of 0 counts as 1, as in Pekko.
-  pub fn new(throughput: u32) -> Self {
-    Self { throughput: throughput.max(1), deadline: None }
+  /// Limits a run to `throughput` messages, without a deadline.
+  pub fn new(throughput: Throughput) -> Self {
+    Self { throughput, deadline: None }
   }
 
-  /// Adds a deadline, measured on `clock` from the start of the run. A
-  /// deadline under one millisecond counts as none, as in Pekko
-  /// (`AbstractDispatcher.scala:372`).
+  /// Adds a deadline, measured on `clock` from the start of the run.
   #[must_use]
-  pub fn with_deadline(mut self, deadline: Duration, clock: Arc<dyn Clock>) -> Self {
-    self.deadline = if deadline >= Duration::from_millis(1) { Some((deadline, clock)) } else { None };
+  pub fn with_deadline(mut self, deadline: ThroughputDeadline, clock: Arc<dyn Clock>) -> Self {
+    self.deadline = Some((deadline, clock));
     self
   }
 
-  pub(crate) fn throughput(&self) -> u32 {
+  pub(crate) fn throughput(&self) -> Throughput {
     self.throughput
   }
 
   /// Returns the moment the run must stop taking messages, if any.
   pub(crate) fn deadline_from_now(&self) -> Option<(Duration, &dyn Clock)> {
-    self.deadline.as_ref().map(|(deadline, clock)| (clock.monotonic() + *deadline, &**clock))
+    self.deadline.as_ref().map(|(deadline, clock)| (deadline.from(clock.monotonic()), &**clock))
   }
 }

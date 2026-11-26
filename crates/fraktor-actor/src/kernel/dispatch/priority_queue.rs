@@ -22,6 +22,7 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::cmp::Reverse;
 
+use crate::kernel::dispatch::MessagePriority;
 use crate::kernel::dispatch::MessageQueue;
 use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
@@ -32,12 +33,18 @@ use crate::kernel::sync::LockFactory;
 /// a limit, guarded by a lock.
 ///
 /// Mirrors `org.apache.pekko.dispatch.UnboundedPriorityMailbox` and
-/// `UnboundedStablePriorityMailbox` with a `PriorityGenerator`: a lower number
-/// is a higher priority. A stable queue hands out envelopes of the same
+/// `UnboundedStablePriorityMailbox` with a `PriorityGenerator`. A stable queue hands out envelopes of the same
 /// priority in the order they came; a queue that is not stable makes no
 /// promise about them, as Pekko's `PriorityBlockingQueue` makes none.
+///
+/// The function must be a pure function of the message. A mailbox with a
+/// queue of its own ([`Mailbox::new`](super::Mailbox::new)) calls `enqueue`
+/// inside its gate, so the function runs while the gate is held: it must not
+/// send a message, and must not call any method of a mailbox. Reaching the
+/// same gate again would never return (a spin lock spins, a thread lock
+/// blocks).
 pub struct PriorityQueue {
-  priority: Box<dyn Fn(&Message) -> i32 + Send + Sync>,
+  priority: Box<dyn Fn(&Message) -> MessagePriority + Send + Sync>,
   stable: bool,
   state: LockCell<Heap>,
 }
@@ -47,10 +54,10 @@ struct Heap {
   next_seq: u64,
 }
 
-// Ordered so that the heap's maximum is the next envelope out: the lowest
-// priority number, then (in a stable queue) the lowest sequence number.
+// Ordered so that the heap's maximum is the next envelope out: the highest
+// priority, then (in a stable queue) the lowest sequence number.
 struct Entry {
-  key: Reverse<(i32, u64)>,
+  key: (MessagePriority, Reverse<u64>),
   envelope: Envelope,
 }
 
@@ -78,7 +85,7 @@ impl PriorityQueue {
   /// Creates an empty queue that orders messages by `priority`, lowest first.
   /// When `stable` is true, messages of the same priority keep their order.
   pub fn new(
-    priority: impl Fn(&Message) -> i32 + Send + Sync + 'static,
+    priority: impl Fn(&Message) -> MessagePriority + Send + Sync + 'static,
     stable: bool,
     locks: &dyn LockFactory,
   ) -> Self {
@@ -98,7 +105,7 @@ impl MessageQueue for PriorityQueue {
     self.state.with(|heap| {
       let seq = if stable { heap.next_seq } else { 0 };
       heap.next_seq += 1;
-      heap.entries.push(Entry { key: Reverse((priority, seq)), envelope });
+      heap.entries.push(Entry { key: (priority, Reverse(seq)), envelope });
     });
     Ok(())
   }
