@@ -609,7 +609,7 @@ fn stopping_a_parent_stops_its_child_first_and_tells_the_child_watcher() {
     &parent,
     Props::new({
       let order = Arc::clone(&order);
-      move || OrderedSink { order: Arc::clone(&order), label: "child delivered" }
+      move || OrderedSink { order: Arc::clone(&order), label: "child delivered", stopped: "child stopped" }
     }),
     Some("child"),
     crate::kernel::supervision::SupervisorStrategy::default_strategy(),
@@ -633,11 +633,20 @@ fn stopping_a_parent_stops_its_child_first_and_tells_the_child_watcher() {
   child.tell("late", parent.clone());
   system.run_until_idle();
 
-  assert_eq!(
-    *order.lock().unwrap(),
-    alloc::vec!["child terminated", "parent terminated"],
-    "the notices arrived in the wrong order"
-  );
+  // Pekko orders the two notices only through the parent's stop: the parent
+  // finishes stopping after its child has, and only then is its own
+  // Terminated sent. The two watchers are different recipients, so the order
+  // in which their notices arrive is not promised
+  // (message-delivery-reliability.md:109-130).
+  let order = order.lock().unwrap();
+  assert!(!order.contains(&"child delivered"), "the stopped child handled a message: {order:?}");
+  let child_stopped = order.iter().position(|label| *label == "child stopped").expect("the child ran post_stop");
+  let parent_terminated =
+    order.iter().position(|label| *label == "parent terminated").expect("the parent watcher was told");
+  assert!(child_stopped < parent_terminated, "the parent was reported stopped before its child stopped: {order:?}");
+  assert_eq!(order.iter().filter(|label| **label == "child terminated").count(), 1, "{order:?}");
+  assert_eq!(order.len(), 3, "{order:?}");
+  drop(order);
   let child_notices = child_seen.lock().unwrap();
   assert_eq!(child_notices.len(), 1, "the child watcher was not told that the child stopped");
   assert!(child_notices[0].existence_confirmed());
@@ -649,6 +658,7 @@ fn stopping_a_parent_stops_its_child_first_and_tells_the_child_watcher() {
 struct OrderedSink {
   order: Arc<Mutex<Vec<&'static str>>>,
   label: &'static str,
+  stopped: &'static str,
 }
 
 #[test]
@@ -695,7 +705,10 @@ fn stopping_a_function_ref_stops_its_child_first_and_tells_both_watchers() {
   let target = system.function_ref("target", |_sender: &ActorRef, _message: Message| {});
   let child = system.downgrade().spawn_child(
     &target,
-    Props::new(|| NoOp),
+    Props::new({
+      let order = Arc::clone(&order);
+      move || OrderedSink { order: Arc::clone(&order), label: "child delivered", stopped: "child stopped" }
+    }),
     Some("child"),
     crate::kernel::supervision::SupervisorStrategy::default_strategy(),
   );
@@ -717,11 +730,17 @@ fn stopping_a_function_ref_stops_its_child_first_and_tells_both_watchers() {
   system.stop(&target);
   system.run_until_idle();
 
-  assert_eq!(
-    *order.lock().unwrap(),
-    alloc::vec!["child terminated", "target terminated"],
-    "a function reference stopped before its child"
-  );
+  // As for a parent actor: the function reference is reported stopped only
+  // after its child has stopped, and the two watchers' notices are not
+  // ordered against each other.
+  let order = order.lock().unwrap();
+  let child_stopped = order.iter().position(|label| *label == "child stopped").expect("the child ran post_stop");
+  let target_terminated =
+    order.iter().position(|label| *label == "target terminated").expect("the target watcher was told");
+  assert!(child_stopped < target_terminated, "a function reference stopped before its child: {order:?}");
+  assert_eq!(order.iter().filter(|label| **label == "child terminated").count(), 1, "{order:?}");
+  assert_eq!(order.len(), 3, "{order:?}");
+  drop(order);
   let child_notices = child_seen.lock().unwrap();
   assert_eq!(child_notices.len(), 1, "the child watcher was not told that the child stopped");
   assert!(child_notices[0].existence_confirmed());
@@ -733,6 +752,10 @@ fn stopping_a_function_ref_stops_its_child_first_and_tells_both_watchers() {
 impl Actor for OrderedSink {
   fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {
     self.order.lock().unwrap().push(self.label);
+  }
+
+  fn post_stop(&mut self) {
+    self.order.lock().unwrap().push(self.stopped);
   }
 }
 
