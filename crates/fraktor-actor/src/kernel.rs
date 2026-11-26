@@ -32,7 +32,7 @@ pub mod segmented_recency_list;
 pub mod setup;
 pub mod supervision;
 pub mod switch;
-mod sync;
+pub mod sync;
 pub mod timeout;
 pub mod token_bucket;
 pub mod version;
