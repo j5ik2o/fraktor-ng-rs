@@ -23,6 +23,7 @@
 //! The executor that owns one shard of actors and runs their messages.
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
@@ -242,7 +243,7 @@ pub(crate) struct Executor {
   system_guardian: ActorRef,
   dispatchers: Dispatchers,
   watch_messages: Vec<(ActorRef, ActorRef, Message)>,
-  user_children: Vec<(String, ActorRef)>,
+  user_children: BTreeMap<String, ActorRef>,
 }
 
 impl Executor {
@@ -293,7 +294,7 @@ impl Executor {
       system_guardian,
       dispatchers: Dispatchers::with_defaults(),
       watch_messages: Vec::new(),
-      user_children: Vec::new(),
+      user_children: BTreeMap::new(),
     };
     executor.function_refs.push(executor.dead_letters.clone());
     executor
@@ -642,26 +643,6 @@ impl Executor {
     self.send(sender, &dead_letters, Message::new(wrapped));
   }
 
-  /// Records a top-level name in the user guardian's registry, the
-  /// same registry `spawn_named_child_under` keeps for one parent, so
-  /// a name taken at the top level is taken for `actor_of_named` too.
-  fn record_user_child(&mut self, name: String, reference: ActorRef) {
-    self.user_children.push((name, reference));
-  }
-
-  /// Removes entries from `user_children` whose actors have already
-  /// terminated, freeing their names for reuse.
-  fn prune_user_children(&mut self) {
-    let mut index = 0;
-    while index < self.user_children.len() {
-      if self.is_actor_terminated(&self.user_children[index].1) {
-        self.user_children.remove(index);
-      } else {
-        index += 1;
-      }
-    }
-  }
-
   /// Starts a top-level actor after both the name checks and the
   /// configuration checks, as `ActorSystem.actorOf` does in Pekko,
   /// which throws both refusal kinds from the one call.
@@ -670,8 +651,10 @@ impl Executor {
   /// liveness and name uniqueness, then dispatcher and router
   /// configuration. With a router, the head that starts is the minimal
   /// router head: verification has passed, no routees are created, and
-  /// a message to the head is reported as unhandled. A top-level actor
-  /// that stops during `pre_start` or later frees its name for reuse.
+  /// a message to the head is reported as unhandled. A named top-level
+  /// actor is recorded in `user_children` only if it stays live past
+  /// `pre_start`, and `forget_child` removes it when it stops, so its
+  /// name is immediately free for reuse.
   pub(crate) fn try_spawn_user(&mut self, props: Props, name: Option<&str>) -> Result<ActorRef, ActorCreationError> {
     if let Some(name) = name {
       validate_actor_name(name)?;
@@ -684,11 +667,8 @@ impl Executor {
       | None => alloc::format!("${}", next_spawn_name()),
     };
     let path = self.root.with_child("user").with_child(&label);
-    if name.is_some() {
-      self.prune_user_children();
-      if self.user_children.iter().any(|(used, _)| used == &label) {
-        return Err(InvalidActorNameException::name_taken(&label).into());
-      }
+    if name.is_some() && self.user_children.contains_key(&label) {
+      return Err(InvalidActorNameException::name_taken(&label).into());
     }
     self.verify_configuration(&props, &path)?;
     let head_props = match props.router() {
@@ -699,8 +679,8 @@ impl Executor {
       | None => props,
     };
     let reference = self.spawn_at(head_props, path, None, SupervisorStrategy::default_strategy(), false);
-    if self.cells.iter().any(|cell| cell.accepts(&reference)) {
-      self.record_user_child(label, reference.clone());
+    if name.is_some() && self.cells.iter().rev().any(|cell| cell.accepts(&reference)) {
+      self.user_children.insert(label, reference.clone());
     }
     Ok(reference)
   }
@@ -1231,7 +1211,10 @@ impl Executor {
     for entry in &mut self.parents {
       entry.children.retain(|(_, held)| held != child);
     }
-    self.user_children.retain(|(_, held)| held != child);
+    let child_path = child.path();
+    if self.user_children.get(child_path.name()) == Some(child) {
+      self.user_children.remove(child_path.name());
+    }
   }
 
   /// Runs `parent`'s child-terminated hook for the stopped `child`.
