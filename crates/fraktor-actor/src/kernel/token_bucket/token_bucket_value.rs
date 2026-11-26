@@ -124,7 +124,7 @@ impl<C: Clock> TokenBucket<C> {
     // capacity)`: when the sum does not fit in an `i64`, the original's
     // available tokens go negative (or far above the capacity), while the
     // port keeps the invariant that the available tokens stay within
-    // `0..=capacity` for every input (design F1).
+    // `0..=capacity` for every input.
     self.available_tokens = self.available_tokens.saturating_add(tokens_arrived).min(self.capacity);
 
     if cost <= self.available_tokens {

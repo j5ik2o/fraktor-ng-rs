@@ -38,7 +38,6 @@ use crate::kernel::actor::DeadLetterSettings;
 use crate::kernel::actor::DeadLetterSuppression;
 use crate::kernel::actor::Dropped;
 use crate::kernel::actor::FunctionRef;
-use crate::kernel::actor::InvalidActorNameException;
 use crate::kernel::actor::Props;
 use crate::kernel::actor::SuppressedDeadLetter;
 use crate::kernel::actor::UnhandledMessage;
@@ -224,14 +223,16 @@ impl ActorSystem {
   ///
   /// Mirrors `ActorSystem.actorOf(props, name)`, which throws
   /// `InvalidActorNameException` for a name that is taken, empty, or
-  /// malformed, and `ConfigurationException` for a configuration that
-  /// fails verification. The port returns both as one
+  /// malformed, `IllegalStateException` on a terminated system, and
+  /// `ConfigurationException` for a configuration that fails
+  /// verification. The name is free again once the actor that holds it
+  /// has stopped. The port returns these refusals as one
   /// [`ActorCreationError`](crate::kernel::actor::ActorCreationError).
   ///
   /// # Errors
   ///
   /// Returns [`ActorCreationError`](crate::kernel::actor::ActorCreationError)
-  /// when the name or the configuration is refused.
+  /// when the name, system state, or configuration is refused.
   pub fn actor_of_named(
     &mut self,
     props: Props,
@@ -244,14 +245,14 @@ impl ActorSystem {
   /// the name checks and the configuration checks.
   ///
   /// This is the combined entry point the two Pekko `actorOf` forms
-  /// share (design of #194, M5): both checks always run, the name
-  /// checks first. [`actor_of`](Self::actor_of) is this call with no
-  /// name, panicking on a refusal as Pekko throws.
+  /// share: both checks always run, the name checks first.
+  /// [`actor_of`](Self::actor_of) is this call with no name, panicking
+  /// on a refusal as Pekko throws.
   ///
   /// # Errors
   ///
   /// Returns [`ActorCreationError`](crate::kernel::actor::ActorCreationError)
-  /// when the name or the configuration is refused.
+  /// when the name, system state, or configuration is refused.
   pub fn try_actor_of(
     &mut self,
     props: Props,
@@ -270,23 +271,6 @@ impl ActorSystem {
   /// belongs to another system resolves to the dead letters.
   pub fn resolve_actor_ref(&self, path: &ActorPath) -> ActorRef {
     lock(&self.executor).resolve_actor_ref(path)
-  }
-
-  /// Starts a top-level actor below `/user` with the given `name` and
-  /// returns a handle to it.
-  ///
-  /// Mirrors `ActorSystem.actorOf(props, name)`, whose documentation
-  /// promises `InvalidActorNameException` when the name is invalid or
-  /// already in use by a live top-level actor; the port returns it as
-  /// `Err`, as [`ActorContext::actor_of`](crate::kernel::actor::ActorContext::actor_of)
-  /// already does. A name is invalid when
-  /// `ActorPath::validate_path_element` rejects it, and the error carries
-  /// that message unchanged. The name is free again once the actor that
-  /// holds it has stopped. On a terminated system the answer is
-  /// `InvalidActorNameException::terminating()`. [`actor_of`](Self::actor_of)
-  /// keeps handing out generated names; this is the named form.
-  pub fn actor_of_with_name(&mut self, props: Props, name: &str) -> Result<ActorRef, InvalidActorNameException> {
-    lock(&self.executor).spawn_user_named(props, name)
   }
 
   /// Creates a running actor system as [`new`](Self::new) does, and then
@@ -436,7 +420,7 @@ impl ActorSystem {
   /// `Terminated` of `target` as a message to its function.
   ///
   /// Mirrors `FunctionRef.watch`, lent through the system because the
-  /// handle itself holds no executor reference (design of #192, H1).
+  /// handle itself holds no executor reference.
   pub fn function_ref_watch(&mut self, watcher: &FunctionRef, target: &ActorRef) -> ActorRef {
     lock(&self.executor).function_ref_watch(watcher, target)
   }
@@ -495,7 +479,7 @@ impl ActorSystem {
     // released: subscribing registers the listener with the unsubscriber,
     // whose watch locks the executor again and would panic on the
     // lock the executor's own start still holds. With the limit `Off`
-    // the listener is not subscribed at all (design L7): Pekko's listener
+    // the listener is not subscribed at all: Pekko's listener
     // with dead letter logging off never receives an event, so the handle
     // is created and returned without a subscription.
     let limit = settings.limit();

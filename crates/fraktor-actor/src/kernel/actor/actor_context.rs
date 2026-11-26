@@ -292,7 +292,7 @@ impl<'a> ActorContext<'a> {
   /// `Terminated` of `target` as a message to its function.
   ///
   /// Mirrors `FunctionRef.watch`, lent through the context because the
-  /// handle itself holds no executor reference (design of #192, H1).
+  /// handle itself holds no executor reference.
   /// The registration survives the notice until
   /// [`function_ref_unwatch`](Self::function_ref_unwatch) or the
   /// reference's own stop.

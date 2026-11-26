@@ -63,10 +63,9 @@ impl FunctionBoundary {
   /// wraps it naming the handle itself as the recipient, as Pekko's
   /// `deadLetterMessageHandler` receives the messages of a stopped
   /// function reference. The route is fixed at creation and read
-  /// without a lock, so the post path stays as cheap as it was
-  /// (re-review N3 of #192).
-  pub(crate) fn new_with_dead_letters(handler: Handler, dead_letters: Option<ActorRef>) -> Self {
-    Self { handler, open: AtomicBool::new(true), dead_letters }
+  /// without a lock, so the post path stays lock-free.
+  pub(crate) fn new_with_dead_letters(handler: Handler, dead_letters: ActorRef) -> Self {
+    Self { handler, open: AtomicBool::new(true), dead_letters: Some(dead_letters) }
   }
 }
 
@@ -85,14 +84,13 @@ impl ShardBoundary for FunctionBoundary {
         // The raw message goes to the dead letters handle, as Pekko's
         // `deadLetterMessageHandler` tells `system.deadLetters` the
         // message itself: the dead letters route then wraps it naming
-        // the handle itself as the recipient (re-review 2, middle 1
-        // of #192), not the stopped function reference.
+        // the handle itself as the recipient, not the stopped function
+        // reference.
         Envelope::new(dead_letters.clone(), message, sender).post_to_boundary();
       }
       return;
     }
-    let (recipient, message, sender) = envelope.into_parts();
-    let _ = recipient;
+    let (_, message, sender) = envelope.into_parts();
     (self.handler)(&sender, message);
   }
 

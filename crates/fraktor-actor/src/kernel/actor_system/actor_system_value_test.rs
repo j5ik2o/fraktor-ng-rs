@@ -2628,11 +2628,9 @@ fn named_top_level_creation_verifies_dispatcher_configuration() {
   let mut system = system("PekkoCustomSpec");
   let props = Props::empty().with_dispatcher("does not exist");
 
-  let named_err = system.actor_of_named(props.clone(), "missing-a").expect_err("unknown dispatcher must be refused");
+  let named_err = system.actor_of_named(props, "missing-a").expect_err("unknown dispatcher must be refused");
   assert!(matches!(named_err, crate::kernel::actor::ActorCreationError::Configuration(_)));
-  let with_name_err =
-    system.actor_of_with_name(props, "missing-b").expect_err("actor_of_with_name must also verify dispatcher");
-  assert!(with_name_err.to_string().contains("does not exist"));
+  assert!(named_err.to_string().contains("does not exist"));
 
   // A refused creation must not reserve the name.
   let created = system.actor_of_named(Props::empty(), "missing-a").expect("refused name stays free");
@@ -2657,36 +2655,20 @@ fn named_top_level_creation_applies_router_verification_and_head() {
     nr_of_instances: 2,
     router_dispatcher: Some("balancing-dispatcher".to_string()),
   });
-  let named_err =
-    system.actor_of_named(bad_router.clone(), "bad-router-a").expect_err("balancing router head must be refused");
+  let named_err = system.actor_of_named(bad_router, "bad-router-a").expect_err("balancing router head must be refused");
   assert!(matches!(named_err, crate::kernel::actor::ActorCreationError::Configuration(_)));
-  assert!(
-    system.actor_of_with_name(bad_router, "bad-router-b").is_err(),
-    "actor_of_with_name must also refuse a balancing router head"
-  );
 
   // Valid router starts the router head rather than running the routee factory directly.
-  let seen_a = Arc::new(Mutex::new(Vec::new()));
-  let router_props_a = Props::new({
-    let seen = Arc::clone(&seen_a);
+  let seen = Arc::new(Mutex::new(Vec::new()));
+  let router_props = Props::new({
+    let seen = Arc::clone(&seen);
     move || Sink { received: Arc::clone(&seen) }
   })
   .with_router(RouterConfig { pool: PoolKind::Broadcast, nr_of_instances: 2, router_dispatcher: None });
-  let head_a = system.actor_of_named(router_props_a, "router-a").expect("valid router starts");
-  head_a.tell("ping", system.dead_letters());
+  let head = system.actor_of_named(router_props, "router-a").expect("valid router starts");
+  head.tell("ping", system.dead_letters());
   system.run_until_idle();
-  assert!(seen_a.lock().unwrap().is_empty(), "router head must not invoke routee receive directly");
-
-  let seen_b = Arc::new(Mutex::new(Vec::new()));
-  let router_props_b = Props::new({
-    let seen = Arc::clone(&seen_b);
-    move || Sink { received: Arc::clone(&seen) }
-  })
-  .with_router(RouterConfig { pool: PoolKind::Broadcast, nr_of_instances: 2, router_dispatcher: None });
-  let head_b = system.actor_of_with_name(router_props_b, "router-b").expect("valid router starts");
-  head_b.tell("ping", system.dead_letters());
-  system.run_until_idle();
-  assert!(seen_b.lock().unwrap().is_empty(), "actor_of_with_name must also install the router head");
+  assert!(seen.lock().unwrap().is_empty(), "router head must not invoke routee receive directly");
 }
 
 #[test]

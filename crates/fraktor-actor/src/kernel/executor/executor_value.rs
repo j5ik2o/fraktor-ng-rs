@@ -170,10 +170,9 @@ struct PendingTermination {
   custom: Option<Message>,
 }
 
-/// The head of a router, in the minimal router of issue #194: it has no
-/// routees and routes nothing, so every message it receives is reported
-/// as unhandled, as the design's condition (a) decides. Routing itself
-/// is issue #269 (https://github.com/j5ik2o/fraktor-ng-rs/issues/269).
+/// The head of a minimal router: it has no routees and routes nothing,
+/// so every message it receives is reported as unhandled. Routing itself
+/// is issue #269 (<https://github.com/j5ik2o/fraktor-ng-rs/issues/269>).
 struct RouterHeadActor;
 
 impl crate::kernel::actor::Actor for RouterHeadActor {
@@ -514,9 +513,6 @@ impl Executor {
     self.event_sink.lock().clone()
   }
 
-  /// Installs the dispatcher and mailbox definitions that spawn-time
-  /// resolution reads, from the system's
-  /// [`DispatchSettings`](crate::kernel::actor::dispatch_settings::DispatchSettings) setup.
   /// Installs the dispatcher registry that creation verifies against.
   pub(crate) fn set_dispatchers(&mut self, dispatchers: Dispatchers) {
     self.dispatchers = dispatchers;
@@ -537,12 +533,11 @@ impl Executor {
   }
 
   /// Verifies the configuration of a creation at `path`, in Pekko's
-  /// order (design of #194, section 2.3): without a router, the
-  /// recipe's dispatcher must be configured; with a router, the
-  /// routees' dispatcher is checked first, then the head's, and a
-  /// balancing head is refused. The head message names the head
-  /// dispatcher; Pekko's body puts the routee name there by mistake,
-  /// and the port does not copy the mistake.
+  /// order: without a router, the recipe's dispatcher must be
+  /// configured; with a router, the routees' dispatcher is checked
+  /// first, then the head's, and a balancing head is refused. The head
+  /// message names the head dispatcher; Pekko's body puts the routee
+  /// name there by mistake, and the port does not copy the mistake.
   fn verify_configuration(&self, props: &Props, path: &ActorPath) -> Result<(), ConfigurationException> {
     let routee_dispatcher = props.dispatcher().unwrap_or(DEFAULT_DISPATCHER_ID);
     match props.router() {
@@ -619,6 +614,8 @@ impl Executor {
     }
   }
 
+  /// Installs the dispatcher and mailbox definitions that spawn-time
+  /// resolution reads, from the system's [`DispatchSettings`] setup.
   pub(crate) fn set_dispatch_settings(&mut self, settings: DispatchSettings) {
     self.dispatch_settings = Some(settings);
   }
@@ -639,7 +636,7 @@ impl Executor {
   /// clean-up both publishes and delivers.
   fn publish_dead_letter(&mut self, message: Message, sender: ActorRef, recipient: &ActorRef) {
     // The dead letters handle publishes the wrapped event as it is, as
-    // the mailbox clean-up paths of the dead letter port (#191) do.
+    // Pekko's mailbox clean-up paths do.
     let wrapped = DeadLetter::from_message(message, sender.clone(), recipient.clone());
     let dead_letters = self.dead_letters();
     self.send(sender, &dead_letters, Message::new(wrapped));
@@ -647,31 +644,51 @@ impl Executor {
 
   /// Records a top-level name in the user guardian's registry, the
   /// same registry `spawn_named_child_under` keeps for one parent, so
-  /// a name taken at the top level is taken for `actor_of_named` too
-  /// (design of #194, L6).
+  /// a name taken at the top level is taken for `actor_of_named` too.
   fn record_user_child(&mut self, name: String, reference: ActorRef) {
     self.user_children.push((name, reference));
+  }
+
+  /// Removes entries from `user_children` whose actors have already
+  /// terminated, freeing their names for reuse.
+  fn prune_user_children(&mut self) {
+    let mut index = 0;
+    while index < self.user_children.len() {
+      if self.is_actor_terminated(&self.user_children[index].1) {
+        self.user_children.remove(index);
+      } else {
+        index += 1;
+      }
+    }
   }
 
   /// Starts a top-level actor after both the name checks and the
   /// configuration checks, as `ActorSystem.actorOf` does in Pekko,
   /// which throws both refusal kinds from the one call.
   ///
-  /// With a router, the head that starts is the minimal router head:
-  /// verification has passed, no routees are created, and a message to
-  /// the head is reported as unhandled (design of #194, section 1.5).
+  /// The name is checked first (`Children.checkName`), then system
+  /// liveness and name uniqueness, then dispatcher and router
+  /// configuration. With a router, the head that starts is the minimal
+  /// router head: verification has passed, no routees are created, and
+  /// a message to the head is reported as unhandled. A top-level actor
+  /// that stops during `pre_start` or later frees its name for reuse.
   pub(crate) fn try_spawn_user(&mut self, props: Props, name: Option<&str>) -> Result<ActorRef, ActorCreationError> {
-    self.assert_running();
     if let Some(name) = name {
       validate_actor_name(name)?;
+    }
+    if self.terminated {
+      return Err(InvalidActorNameException::terminating().into());
     }
     let label = match name {
       | Some(name) => name.to_string(),
       | None => alloc::format!("${}", next_spawn_name()),
     };
     let path = self.root.with_child("user").with_child(&label);
-    if name.is_some() && self.user_children.iter().any(|(used, _)| used == &label) {
-      return Err(InvalidActorNameException::name_taken(&label).into());
+    if name.is_some() {
+      self.prune_user_children();
+      if self.user_children.iter().any(|(used, _)| used == &label) {
+        return Err(InvalidActorNameException::name_taken(&label).into());
+      }
     }
     self.verify_configuration(&props, &path)?;
     let head_props = match props.router() {
@@ -682,47 +699,10 @@ impl Executor {
       | None => props,
     };
     let reference = self.spawn_at(head_props, path, None, SupervisorStrategy::default_strategy(), false);
-    self.record_user_child(label, reference.clone());
+    if self.cells.iter().any(|cell| cell.accepts(&reference)) {
+      self.record_user_child(label, reference.clone());
+    }
     Ok(reference)
-  }
-
-  /// Starts a top-level actor below `/user` with a caller-chosen `name`.
-  ///
-  /// Mirrors `ActorSystem.actorOf(props, name)`, whose documentation
-  /// promises `InvalidActorNameException` when the name is invalid or
-  /// already in use. The name goes through the one validation every
-  /// creation entry point shares (`validate_actor_name`). The registry
-  /// of live top-level names is the one `try_spawn_user` keeps: an entry
-  /// is forgotten when its actor stops, and this call also prunes
-  /// entries whose actor has terminated, so the name of an actor that
-  /// has stopped is free again, as a child's name is once its parent
-  /// unreserves it. A terminated system refuses with
-  /// `InvalidActorNameException::terminating()`. The generated names of
-  /// [`Executor::spawn_user`] are recorded in the same registry: a
-  /// caller-chosen name can never collide with them, because the
-  /// validation refuses a leading `$`.
-  pub(crate) fn spawn_user_named(&mut self, props: Props, name: &str) -> Result<ActorRef, InvalidActorNameException> {
-    if self.terminated {
-      return Err(InvalidActorNameException::terminating());
-    }
-    validate_actor_name(name)?;
-    let mut index = 0;
-    while index < self.user_children.len() {
-      if self.is_actor_terminated(&self.user_children[index].1) {
-        self.user_children.remove(index);
-      } else {
-        index += 1;
-      }
-    }
-    if self.user_children.iter().any(|(used, _)| used == name) {
-      return Err(InvalidActorNameException::name_taken(name));
-    }
-    let path = self.root.with_child("user").with_child(name);
-    let child = self.spawn_at(props, path, None, SupervisorStrategy::default_strategy(), false);
-    if self.cells.iter().any(|cell| cell.accepts(&child)) {
-      self.record_user_child(name.to_string(), child.clone());
-    }
-    Ok(child)
   }
 
   /// Starts an actor below `parent`, using `name` when one is given.
@@ -778,7 +758,7 @@ impl Executor {
     // dispatcher and mailbox configuration when the actor is created:
     // a broken alias chain is a configuration error and panics, as the
     // original's `ConfigurationException` does, while an undefined name
-    // keeps the unlimited behaviour (design of #192, H2).
+    // keeps the unlimited behaviour.
     let (mailbox_capacity, stash_capacity) = match &self.dispatch_settings {
       | Some(settings) => match settings.resolve_capacities(props.dispatcher(), props.mailbox()) {
         | Ok(capacities) => capacities,
@@ -790,9 +770,9 @@ impl Executor {
     // Only a bounded actor needs an entry: an actor whose capacities
     // both resolved to unlimited reads as unlimited without one, so
     // a system without bounded definitions does not grow the table
-    // on every spawn (re-review 2, low 5 of #192). Moving the
-    // capacities onto the cell itself waits for the per-actor
-    // mailbox of #234, where the mailbox moves there too.
+    // on every spawn. Moving the capacities onto the cell itself waits
+    // for the per-actor mailbox of #234, where the mailbox moves there
+    // too.
     if mailbox_capacity != CapacityLimit::Unlimited || stash_capacity != CapacityLimit::Unlimited {
       self.actor_capacities.push((self_ref.clone(), mailbox_capacity, stash_capacity));
     }
@@ -1215,10 +1195,7 @@ impl Executor {
     let parent_of_target = self.cells.iter().find(|cell| cell.accepts(target)).and_then(|cell| cell.parent());
     self.stop_children_of(target);
     self.stop_function_refs_of(target);
-    if let Some(index) = self.function_refs.iter().position(|reference| reference == target) {
-      let reference = self.function_refs.remove(index);
-      reference.boundary().close();
-    }
+    self.close_function_ref(target);
     if let Some(index) = self.cells.iter().position(|cell| cell.accepts(target)) {
       let mut cell = self.cells.remove(index);
       if !cell.post_stop_suppressed() {
@@ -1231,16 +1208,9 @@ impl Executor {
     // this second pass never notifies a watcher twice.
     self.stop_function_refs_of(target);
     self.forget_child(target);
-    self.function_watching.retain(|(watcher, _)| watcher != target);
     self.stash_to_dead_letters(target);
     self.queued_to_dead_letters(target);
-    self.watchers.retain(|(watcher, _)| watcher != target);
-    self.watch_messages.retain(|(watcher, _, _)| watcher != target);
-    self.pending_terminations.retain(|pending| &pending.watcher != target);
-    self.notify_watchers(target, true, false);
-    for callback in &self.termination_callbacks {
-      callback(target);
-    }
+    self.finish_termination(target);
     self.flush_deferred_replies(target);
     self.actor_capacities.retain(|(held, _, _)| held != target);
     if let Some(parent) = parent_of_target {
@@ -1370,7 +1340,6 @@ impl Executor {
     self.exit_frame();
   }
 
-  /// Registers a reply to `reply_to` after `target` stops.
   /// Returns a number that tells one delivery apart from every other.
   pub(crate) fn next_delivery_id(&mut self) -> u64 {
     self.next_delivery += 1;
@@ -1395,8 +1364,7 @@ impl Executor {
   /// with [`StashOverflowException`] instead of panicking when the
   /// owner's stash is already at its resolved capacity; the state does
   /// not change in that case. The double-stash contract still panics,
-  /// as it is a contract violation rather than a capacity one (design
-  /// of #192, L4).
+  /// as it is a contract violation rather than a capacity one.
   pub(crate) fn try_stash(
     &mut self,
     owner: ActorRef,
@@ -1420,6 +1388,34 @@ impl Executor {
     Ok(())
   }
 
+  /// Publishes every envelope in `envelopes` as a dead letter for
+  /// `recipient`, preserving each envelope's original sender.
+  fn publish_envelopes_to_dead_letters(&mut self, envelopes: impl IntoIterator<Item = Envelope>, recipient: &ActorRef) {
+    for envelope in envelopes {
+      let (_, message, sender) = envelope.into_parts();
+      self.publish_dead_letter(message, sender, recipient);
+    }
+  }
+
+  /// Applies `owner`'s bounded mailbox capacity to a returning stash:
+  /// the oldest excess envelopes go to dead letters (newest victim
+  /// first), and the newest envelopes that fit are returned in stash
+  /// order.
+  fn discard_stash_overflow(&mut self, owner: &ActorRef, stash: Vec<(u64, Envelope)>) -> Vec<Envelope> {
+    let (mailbox_capacity, _) = self.capacities_of(owner);
+    let room = mailbox_capacity
+      .bound()
+      .map(|bound| bound.saturating_sub(self.queue.count_addressed_to(owner)))
+      .unwrap_or(usize::MAX);
+    let total = stash.len();
+    let mut envelopes = stash.into_iter().map(|(_, envelope)| envelope);
+    if total > room {
+      let victims: Vec<_> = envelopes.by_ref().take(total - room).collect();
+      self.publish_envelopes_to_dead_letters(victims.into_iter().rev(), owner);
+    }
+    envelopes.collect()
+  }
+
   /// Sends `owner`'s stash to dead letters, each message with its original
   /// sender and in the order it was stashed.
   ///
@@ -1432,33 +1428,12 @@ impl Executor {
     if let Some(index) = self.stashes.iter().position(|(held, _)| held == owner) {
       let (_, stash) = self.stashes.swap_remove(index);
       // Pekko's postStop returns the stash to the bounded mailbox: the
-      // newest messages that fit stay in the mailbox and are cleaned up
-      // in order, and the oldest excess goes to dead letters first,
-      // newest victim first (design of #192, B4). An unlimited mailbox
-      // keeps the previous behaviour of sending everything in order.
-      let (mailbox_capacity, _) = self.capacities_of(owner);
-      let queued = self.queue.count_addressed_to(owner);
-      let bound = mailbox_capacity.bound().unwrap_or(usize::MAX).saturating_sub(queued);
-      let total = stash.len();
-      if total > bound {
-        let excess = total - bound;
-        let mut envelopes = stash.into_iter();
-        let victims: Vec<_> = envelopes.by_ref().take(excess).collect();
-        let rest: Vec<_> = envelopes.collect();
-        for (_, envelope) in victims.into_iter().rev() {
-          let (_, message, sender) = envelope.into_parts();
-          self.publish_dead_letter(message, sender, owner);
-        }
-        for (_, envelope) in rest {
-          let (_, message, sender) = envelope.into_parts();
-          self.publish_dead_letter(message, sender, owner);
-        }
-      } else {
-        for (_, envelope) in stash {
-          let (_, message, sender) = envelope.into_parts();
-          self.publish_dead_letter(message, sender, owner);
-        }
-      }
+      // oldest excess goes to dead letters first (newest victim first),
+      // and the newest messages that fit stay in the mailbox and are
+      // cleaned up in order. An unlimited mailbox sends everything in
+      // order.
+      let remaining = self.discard_stash_overflow(owner, stash);
+      self.publish_envelopes_to_dead_letters(remaining, owner);
     }
   }
 
@@ -1497,23 +1472,10 @@ impl Executor {
       // `enqueueFirst` into a bounded deque does: the messages already
       // queued for the owner keep their room, the newest stashed
       // messages that fit are prepended, and the oldest excess goes to
-      // dead letters, newest victim first (design of #192, B3). An
-      // unlimited mailbox returns everything, as before.
-      let (mailbox_capacity, _) = self.capacities_of(owner);
-      let room = mailbox_capacity
-        .bound()
-        .map(|bound| bound.saturating_sub(self.queue.count_addressed_to(owner)))
-        .unwrap_or(usize::MAX);
-      let total = stash.len();
-      let mut envelopes = stash.into_iter();
-      if total > room {
-        let victims: Vec<_> = envelopes.by_ref().take(total - room).collect();
-        for (_, envelope) in victims.into_iter().rev() {
-          let (_, message, sender) = envelope.into_parts();
-          self.publish_dead_letter(message, sender, owner);
-        }
-      }
-      let stash = envelopes.map(|(_, envelope)| self.requeue_notice(envelope)).collect();
+      // dead letters, newest victim first. An unlimited mailbox returns
+      // everything.
+      let remaining = self.discard_stash_overflow(owner, stash);
+      let stash = remaining.into_iter().map(|envelope| self.requeue_notice(envelope)).collect();
       self.queue.prepend_locally(stash);
     }
   }
@@ -1541,6 +1503,7 @@ impl Executor {
     Envelope::new(recipient, message, sender)
   }
 
+  /// Registers a reply to `reply_to` after `target` stops.
   pub(crate) fn stop_and_reply(&mut self, target: &ActorRef, reply_to: ActorRef, message: Message) {
     self.deferred_replies.push((target.clone(), DeferredReply { reply_to, message }));
   }
@@ -1580,7 +1543,7 @@ impl Executor {
     self.assert_running();
     let name = alloc::format!("${}", next_spawn_name());
     let path = parent.path().with_child(&name);
-    let dead_letters = Some(self.dead_letters());
+    let dead_letters = self.dead_letters();
     let boundary: Arc<dyn crate::kernel::executor::ShardBoundary> =
       Arc::new(FunctionBoundary::new_with_dead_letters(Arc::new(handler), dead_letters));
     let reference = next_actor_ref(path, boundary);
@@ -1602,7 +1565,7 @@ impl Executor {
     // The original's `require(ref.path.parent eq self.path)` compares
     // paths, so the refusal does not depend on the registry: a
     // reference that was already removed still refuses a removal by
-    // another cell (re-review 2, low 4 of #192).
+    // another cell.
     assert!(
       target.path().parent() == parent.path(),
       "removeFunctionRef: {} is not a function ref of {}",
@@ -1614,14 +1577,19 @@ impl Executor {
     }
   }
 
-  /// Ends one live function reference: closes its boundary, clears the
-  /// watches it held, and tells its watchers, as a stop does.
-  fn stop_function_ref(&mut self, target: &ActorRef) {
+  /// Removes `target` from the live function reference table and closes
+  /// its boundary.
+  fn close_function_ref(&mut self, target: &ActorRef) {
     if let Some(index) = self.function_refs.iter().position(|reference| reference == target) {
       let reference = self.function_refs.remove(index);
       reference.boundary().close();
     }
     self.function_parents.retain(|(held, _)| held != target);
+  }
+
+  /// Clears every watch `target` held, notifies its watchers, and runs
+  /// the registered termination callbacks.
+  fn finish_termination(&mut self, target: &ActorRef) {
     self.function_watching.retain(|(watcher, _)| watcher != target);
     self.watchers.retain(|(watcher, _)| watcher != target);
     self.watch_messages.retain(|(watcher, _, _)| watcher != target);
@@ -1630,6 +1598,13 @@ impl Executor {
     for callback in &self.termination_callbacks {
       callback(target);
     }
+  }
+
+  /// Ends one live function reference: closes its boundary, clears the
+  /// watches it held, and tells its watchers, as a stop does.
+  fn stop_function_ref(&mut self, target: &ActorRef) {
+    self.close_function_ref(target);
+    self.finish_termination(target);
   }
 
   /// Ends every function reference `parent` created, as the parent's
@@ -1652,8 +1627,8 @@ impl Executor {
   ///
   /// Mirrors `FunctionRef.watch`: the registration is kept apart from
   /// the delivery watchers table, because it survives the notice until
-  /// the reference unwatches or stops (design of #192, F3). A target
-  /// that is not live is reported at once, as `watch` does.
+  /// the reference unwatches or stops. A target that is not live is
+  /// reported at once, as `watch` does.
   pub(crate) fn function_ref_watch(&mut self, watcher: &FunctionRef, target: &ActorRef) -> ActorRef {
     let watcher = watcher.as_actor_ref();
     if target.is_detached() || self.is_live(target) {
@@ -1729,16 +1704,10 @@ impl Executor {
         self.watchers.push((watcher.clone(), target.clone()));
       }
     } else {
-      self.enqueue_to(watcher.clone(), Terminated::new(target.clone(), false, false));
+      self.enqueue_termination(watcher.clone(), Terminated::new(target.clone(), false, false), None);
     }
   }
 
-  /// Stops `watcher` from receiving the notice of `target`.
-  ///
-  /// Mirrors `ActorContext.unwatch`, which Pekko's event stream unsubscriber
-  /// calls once a subscriber holds no subscription. Removing a watch that is
-  /// not registered changes nothing. A local notice still queued for the
-  /// removed watch is also cancelled.
   /// Registers `watcher` for `target` with a custom notice message,
   /// as `ActorContext.watchWith` does. One pair carries one notice:
   /// a different message for a pair that is already registered, in
@@ -1772,7 +1741,7 @@ impl Executor {
     if target.is_detached() || self.is_live(target) {
       self.watchers.push((watcher.clone(), target.clone()));
     } else {
-      self.enqueue_notice(watcher.clone(), target, Some(message));
+      self.enqueue_termination(watcher.clone(), Terminated::new(target.clone(), false, false), Some(message));
     }
   }
 
@@ -1781,6 +1750,12 @@ impl Executor {
     self.watchers.iter().any(|(existing, watched)| existing == watcher && Self::same_watch_target(watched, target))
   }
 
+  /// Stops `watcher` from receiving the notice of `target`.
+  ///
+  /// Mirrors `ActorContext.unwatch`, which Pekko's event stream unsubscriber
+  /// calls once a subscriber holds no subscription. Removing a watch that is
+  /// not registered changes nothing. A local notice still queued for the
+  /// removed watch is also cancelled.
   pub(crate) fn unwatch(&mut self, watcher: &ActorRef, target: &ActorRef) {
     self.watchers.retain(|(existing, watched)| existing != watcher || !Self::same_watch_target(watched, target));
     self
@@ -1849,6 +1824,7 @@ impl Executor {
     self.stashes.clear();
     self.deferred_replies.clear();
     self.parents.clear();
+    self.user_children.clear();
     self.pending_stops.clear();
     self.pending_decider_failures.clear();
     self.pending_child_terminated.clear();
@@ -1894,8 +1870,6 @@ impl Executor {
     assert!(!self.terminated, "{TERMINATED_MESSAGE}");
   }
 
-  /// Returns whether `target` can still be watched for its end.
-  ///
   /// Delivers the message a selection envelope carries, resolving its
   /// path now.
   ///
@@ -1924,6 +1898,8 @@ impl Executor {
     self.dead_letters_shared.route_unresolved(message, sender, empty);
   }
 
+  /// Returns whether `target` can still be watched for its end.
+  ///
   /// The cell table does not hold the actor that is currently executing it, so
   /// a frame that is running counts as live as well; otherwise an actor would
   /// see itself as terminated from inside `receive`, `pre_start`,
@@ -2518,15 +2494,11 @@ impl Executor {
   }
 
   fn notify_watchers(&mut self, target: &ActorRef, existence_confirmed: bool, address_terminated: bool) {
-    // Function references that watch through the dedicated table are
-    // told apart by that table, not by the delivery branch (re-review
-    // N4 of #192): they receive the notice as a message whose sender
-    // is the ended target itself (design M5), and their registration
-    // survives the notice until they unwatch or stop (design F3). A
-    // watcher registered in both tables is told once, through this
-    // table, so the notice keeps the original's sender (the ended
-    // target) instead of the delivery table's (re-review 2, low 3
-    // of #192).
+    // Function references that watch through the dedicated table receive
+    // the notice as a message whose sender is the ended target itself,
+    // and their registration survives the notice until they unwatch or
+    // stop. A watcher registered in both tables is told once, through
+    // this table, so the notice keeps the ended target as its sender.
     let function_watchers: Vec<ActorRef> = self
       .function_watching
       .iter()
@@ -2551,12 +2523,8 @@ impl Executor {
     for watcher in &watchers {
       let message =
         custom.iter().find(|(custom_watcher, _)| custom_watcher == watcher).map(|(_, message)| message.clone());
-      match message {
-        | Some(message) => self.enqueue_notice(watcher.clone(), target, Some(message)),
-        | None => {
-          self.enqueue_to(watcher.clone(), Terminated::new(target.clone(), existence_confirmed, address_terminated))
-        },
-      }
+      let notice = Terminated::new(target.clone(), existence_confirmed, address_terminated);
+      self.enqueue_termination(watcher.clone(), notice, message);
     }
     for watcher in function_watchers {
       let notice = Terminated::new(target.clone(), existence_confirmed, address_terminated);
@@ -2570,10 +2538,9 @@ impl Executor {
     watched == target && watched.shares_boundary_with(target.boundary())
   }
 
-  /// Enqueues a custom DeathWatch notice, cancellable like the plain
-  /// one until it is delivered.
-  fn enqueue_notice(&mut self, recipient: ActorRef, target: &ActorRef, custom: Option<Message>) {
-    let notice = Terminated::new(target.clone(), true, false);
+  /// Enqueues a DeathWatch notice (plain `Terminated` or custom
+  /// message), cancellable until it is delivered locally.
+  fn enqueue_termination(&mut self, recipient: ActorRef, notice: Terminated, custom: Option<Message>) {
     let sender = recipient.clone();
     if recipient.shares_boundary_with(self.queue.boundary()) {
       let pending = Arc::new(PendingTermination { watcher: recipient.clone(), notice, custom });
@@ -2582,17 +2549,6 @@ impl Executor {
     } else {
       let message = custom.unwrap_or_else(|| Message::new(notice));
       Envelope::new(recipient, message, sender).post_to_boundary();
-    }
-  }
-
-  fn enqueue_to(&mut self, recipient: ActorRef, message: Terminated) {
-    let sender = recipient.clone();
-    if recipient.shares_boundary_with(self.queue.boundary()) {
-      let pending = Arc::new(PendingTermination { watcher: recipient.clone(), notice: message, custom: None });
-      self.pending_terminations.push(pending.clone());
-      self.queue.enqueue_locally(Envelope::new(recipient, Message::new(pending), sender));
-    } else {
-      Envelope::new(recipient, Message::new(message), sender).post_to_boundary();
     }
   }
 }

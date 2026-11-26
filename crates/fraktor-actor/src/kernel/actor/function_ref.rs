@@ -20,7 +20,7 @@
 //!
 //! Mirrors `org.apache.pekko.actor.FunctionRef`: sending runs the
 //! function while the ref is registered, and removing the ref or
-//! stopping its parent ends it (design of #192, section 2.4).
+//! stopping its parent ends it.
 
 use core::any::Any;
 
@@ -45,8 +45,8 @@ mod tests;
 /// on [`ActorSystem`](crate::kernel::actor_system::ActorSystem) and
 /// [`ActorContext`](crate::kernel::actor::ActorContext), which lend the
 /// executor at the call site; this keeps the handle independent of the
-/// executor's `Rc`/`Arc` choice (design of #192, H1). `Copy` is not
-/// derived: `ActorRef` is not `Copy` (re-review N2 of #192).
+/// executor's `Rc`/`Arc` choice. `Copy` is not derived because
+/// `ActorRef` is not `Copy`.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct FunctionRef {
   inner: ActorRef,

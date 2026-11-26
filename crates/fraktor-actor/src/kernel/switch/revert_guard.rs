@@ -21,8 +21,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 /// Reverts the state in `on` back to `from` on drop, unless defused.
 ///
 /// The guard is declared after the switch's lock guard, so it drops while
-/// the lock is still held (the design of #186,
-/// docs/design/issue-186-util-specs.md §2.3). The revert itself is the
+/// the lock is still held. The revert itself is the
 /// original's `compareAndSet(!from, from)`: under the lock a store would
 /// give the same result, but the original's form is kept. Because the
 /// revert runs on drop, it covers both an action that returns `Err` and an

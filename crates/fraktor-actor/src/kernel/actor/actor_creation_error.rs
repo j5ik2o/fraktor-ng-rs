@@ -27,8 +27,8 @@ use crate::kernel::actor::InvalidActorNameException;
 /// raise `InvalidActorNameException` and the configuration checks
 /// raise `ConfigurationException`. The port's combined entry points
 /// ([`ActorSystem::try_actor_of`](crate::kernel::actor_system::ActorSystem::try_actor_of)
-/// and `actor_of_named`) return this one error so a caller matches a
-/// single value (design of #194, M5).
+/// and [`ActorSystem::actor_of_named`](crate::kernel::actor_system::ActorSystem::actor_of_named))
+/// return this one error so a caller matches a single value.
 #[derive(Clone, PartialEq, Eq)]
 pub enum ActorCreationError {
   /// The name failed the name checks.
