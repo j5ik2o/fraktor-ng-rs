@@ -51,7 +51,7 @@ Rust では、ケース1からケース4は実質的に同じ形（引数を捕�
 
 ケース5の原典は、Java API の `Props.create(classOf[Actor], creator)` であり、`creator` は `pekko.japi.function.Creator[Actor]` を実装したオブジェクトである。移植は、`create()` に当たるメソッドを持つ構造体をテストの中に置き、そのメソッドの戻り値を `Props::new` のクロージャから返す形にする。Java のインターフェースそのものは作らない。
 
-検査の形は次のとおりにする。原典の検査は `system.actorOf(p)` が例外を出さずに終わることだけである。移植は、生成が終わることに加えて、作り手が捕まえた引数を観測する。作り手は、呼ばれたときに捕まえた値をテスト側の共有の記録（`Arc<Mutex<..>>`）へ書き、テストは `actor_of` と `run_until_idle` のあとでその記録を読み、与えた引数（`None` の場合は `None` であること）と一致することを確かめる。これが §3 の性質 I8 を実際に確かめる方法である。検査を足す方向であり、原典より弱める部分は無い。
+検査の形は次のとおりにする。原典の検査は `system.actorOf(p)` が例外を出さずに終わることだけである。移植は、生成が終わることに加えて、作り手が捕まえた引数を観測する。作り手は、呼ばれたときに捕まえた値をテスト側の共有の記録（`Arc<Mutex<..>>`）へ書き、テストは `actor_of` と `run_until_idle` のあとでその記録を読み、与えた引数（`None` の場合は `None` であること）と一致することを確かめる。これが §3 の性質 I8 を実際に確かめる方法である。作り手が捕まえた値の観測については、検査を足す方向であり、弱める部分は無い（JVM に固有の検査を移さないことは、上の段落のとおりオーナーの判断待ちである）。
 
 ### 対応表：ActorSystemDispatcherSpec（7件）
 
@@ -69,7 +69,7 @@ Rust では、ケース1からケース4は実質的に同じ形（引数を捕�
 | 6 | use the default dispatcher by a user provided user guardian | #256（段5）の後 ＋ 計画外の前提（ガーディアンを与える構築子、ガーディアンの dispatcher を読む口） |
 | 7 | provide a good error on an dispatcher alias loop in the config | #256（段5）の後。別名の解決は #234 の設計 §3.2 の `Dispatchers` に含まれる |
 
-計画外の前提をどの issue が受け持つかは、#268 の側で決める事項である。この設計では受け持ちを決めない。
+計画外の前提は、[Issue #267](https://github.com/j5ik2o/fraktor-ng-rs/issues/267) が受け持つ（起票済み）。#268 は #256 と #267 に依存する。
 
 ### 対応表：ExtensionSpec（8件）
 
@@ -98,7 +98,7 @@ Rust では、ケース1からケース4は実質的に同じ形（引数を捕�
 
 | 原典の対象 | fraktor-ng-rs の現状 | この issue で足すもの |
 |:---|:---|:---|
-| `org.apache.pekko.actor.Props`（作り手、`classOf` と引数、Java の `Creator`） | `crates/fraktor-actor/src/kernel/actor/props.rs` の `Props` がすでにある。`Props::new<F, A>(factory: F) -> Self`（`F: Fn() -> A + Send + Sync`、`A: Actor`）、`Props::empty()`、`with_dispatcher(name)`、`dispatcher()` を持つ。型の文書に書かれているとおり、移植は作り手だけを保持し、クラスと引数の列は保持しない。単体テスト `props_test.rs` もすでにある | 名前付きでトップレベルのアクターを作る口（`ActorSystem::actor_of_with_name`）だけを足す。`Props` 自体は変えない |
+| `org.apache.pekko.actor.Props`（作り手、`classOf` と引数、Java の `Creator`） | `crates/fraktor-actor/src/kernel/actor/props.rs` の `Props` がすでにある。`Props::new<F, A>(factory: F) -> Self`（`F: Fn() -> A + Send + Sync`、`A: Actor`）、`Props::empty()`、`with_dispatcher(name)`、`dispatcher()` を持つ。型の文書に書かれているとおり、移植は作り手だけを保持し、クラスと引数の列は保持しない。単体テスト `props_test.rs` もすでにある | 名前付きでトップレベルのアクターを作る口（`ActorSystem::actor_of_with_name`。`Result` を返す形）と、トップレベルの名前の登録表と名前の検証の接続を足す（下の節）。`Props` 自体は変えない |
 | `org.apache.pekko.actor.ActorSystem` の dispatcher（`Dispatchers.lookup`、別名、内部 dispatcher、ガーディアン） | 無い。`ActorSystem`（`crates/fraktor-actor/src/kernel/actor_system/actor_system_value.rs`）の型の文書は「Dispatchers, guardians, and extensions belong to later goals」と明記する。`Props::with_dispatcher` は名前を記録するだけで、解釈はしない。実行は `Executor`（`crates/fraktor-actor/src/kernel/executor/executor_value.rs`）が1つのシャードの列を持ち、テストのスレッドが回す形であり、dispatcher の登録表も、id の解決も、ガーディアンという概念も無い | 無し（#268 の担当であり、この issue では足さない） |
 | `org.apache.pekko.actor.Extension`、`ExtensionId`、`ExtensionIdProvider`、システムの拡張の登録表（`registerExtension`、`extension`、`hasExtension`） | 無い。`crates/` の全体に `Extension` を名前に含む型は、testkit の `TestKitSettings`（文書では `TestKitExtension` の設定と説明されるが、型としてはシステムから取得する形ではなく `TestKitSettings::from_system(&system)` で直接作る）と、event の購読まわりだけであり、拡張の登録表は無い。型で引く表の前例は `ActorSystemSetup`（`crates/fraktor-actor/src/kernel/setup/actor_system_setup.rs`）であり、具体型の `TypeId` をキーにして setup を保持する | 拡張の登録表と公開 API を新しく足す（下の節） |
 | testkit（`PekkoSpec`、`TestProbe`、`EventFilter`、暗黙の送信者） | `crates/fraktor-testkit` に `FraktorSpec`、`TestKit`、`TestProbe`、`EventFilter` がすでにある。台帳の `needs` は、PropsCreationSpec が `extends-pekko-spec` と `pekko-spec`、ActorSystemDispatcherSpec がそれらに加えて `test-actor`、`implicit-sender`、`expect-msg`、`expect-no-message`、`test-probe`、ExtensionSpec が `test-kit` と `event-filter` である。ExtensionSpec の移植6件は `EventFilter` を使わない。原典が `EventFilter` を使うのは、作らない区分を提案するケース4だけである | 無し |
@@ -190,9 +190,20 @@ impl ActorSystem {
   pub fn has_extension<E: ExtensionId>(&self, id: &E) -> bool;
 
   /// Starts a top-level actor under `/user` with `name`. Mirrors
-  /// `ActorSystem.actorOf(props, name)`. `actor_of` keeps handing out
-  /// generated names; this is the named form.
-  pub fn actor_of_with_name(&mut self, props: Props, name: &str) -> ActorRef;
+  /// `ActorSystem.actorOf(props, name)`, whose documentation promises
+  /// `InvalidActorNameException` when the name is invalid or already in
+  /// use; the port returns it as `Err`, as `ActorContext::actor_of`
+  /// already does. A name is invalid when
+  /// `ActorPath::validate_path_element` rejects it, and already in use
+  /// when a live top-level actor holds it; the name is free again once
+  /// that actor stops. On a terminated system the answer is
+  /// `InvalidActorNameException::terminating()`. `actor_of` keeps handing
+  /// out generated names; this is the named form.
+  pub fn actor_of_with_name(
+    &mut self,
+    props: Props,
+    name: &str,
+  ) -> Result<ActorRef, InvalidActorNameException>;
 }
 
 /// The extensions a system creates at startup, as typed values.
@@ -214,16 +225,28 @@ impl ExtensionStartup {
 1. **キーは識別子の具体型の `TypeId` である。** Pekko は識別子のオブジェクトの同一性で引く。Rust には単一の実体を表すオブジェクトの慣習が無いため、`ActorSystemSetup` の前例どおり具体型で引く。同じ型の識別子の値は、値が違っても同じ識別子である。このことを API の文書に書く。
 2. **登録表は `ActorSystem` の通常のフィールド `BTreeMap<TypeId, ExtensionEntry>` であり、`Rc` も `RefCell` も使わない。** `ExtensionEntry` は `Creating`、`Created(Arc<dyn Any + Send + Sync>)`、`Failed(ExtensionError)` の3通りを持つ非公開の enum である。生成と登録が `&mut` であるため、内側の可変性は要らない。#234 の設計 §2.4 が段1で `Arc` にすると決めた4か所には触れず、所有権モデルの「極力、単独所有」にも合う。保持する値が `Arc<dyn Any + Send + Sync>` であるため、表そのものは `Send + Sync` の条件を満たし、段1の置き換えの対象にも入らない。取得のときに `E::Ext` へ `downcast` して返す。
 3. **生成の手順は「印を入れてから生成を呼ぶ」順にする。** 登録は、表に無ければ `Creating` を入れてから `create_extension` を呼び、結果で `Created` か `Failed` へ置き換える。生成の途中で同じ識別子が再入してきた場合は、`Creating` を見て、生成中の要求であることを示す `ExtensionError` を返す。生成の途中で別の識別子を取得することはできる（入れ子の登録がそのまま動く）。
-4. **生成の途中で panic した場合は、panic をそのまま伝え、`Creating` の印は残る。** kernel は panic を捕まえる仕組みを持たないため、失敗として保存することはできない（捕まえるのは adaptor の `UnwindCatcher` で、監督の経路だけが使う）。印が残った識別子への後の要求は、生成中の要求と同じ `Err` を返す。Pekko は例外を受け止めて失敗として保存するため、ここは原典と違う。この違いを API の文書に書く。巻き戻しと再入の振る舞いは、台帳の外の単体テスト（`crates/fraktor-actor/src/kernel/extension/` の下の `*_test.rs`）で確かめる。再入した生成が `Err` を返し、外側の生成がその `Err` を伝えて `Failed` になることと、panic が伝わり、印が残って後の要求が `Err` になることの2件である。
+4. **生成の途中で panic した場合は、panic をそのまま伝え、`Creating` の印は残る。** kernel は panic を捕まえる仕組みを持たないため、失敗として保存することはできない（捕まえるのは adaptor の `UnwindCatcher` で、監督の経路だけが使う）。印が残った識別子への後の要求は、最初の panic の中身ではなく、生成中を示す `Err` を返す。Pekko は例外を受け止めて失敗として保存し、後の要求でも同じ例外を投げ直すため、利用者が見る失敗の中身はここだけ原典と違う。この違いを、API の文書にこの文面まで含めて書く。巻き戻しと再入の振る舞いは、台帳の外の単体テスト（`crates/fraktor-actor/src/kernel/extension/` の下の `*_test.rs`）で確かめる。再入した生成が `Err` を返し、外側の生成がその `Err` を伝えて `Failed` になることと、panic が伝わり、印が残って後の要求が `Err` になることの2件である。
 5. **開始時の読み込みは、システムの値を組み立てたあとに、ライブラリ側の列から先に行う。** 拡張の生成は `&mut ActorSystem` を受け取り、`actor_of` と `actor_of_with_name` を呼べる必要があるためである。`with_extensions` は、既存の生成の手順でシステムを作り、次に `ExtensionStartup` の列を順に `register_extension` し、失敗したらシステムを `terminate` してから `Err` を返す。列の中で同じ識別子が重なった場合は、列の種類（通常かライブラリか）を問わず、作るのは1回だけである（ケース6の性質）。
 6. **失敗は値で保存し、生成はやり直さない。** 生成が `Err` を返した識別子については、その `ExtensionError` を保存し、後の `register_extension` と `extension` はすべて同じ値を返す。原典が同じ例外を2回出すことの写しである。
 7. **回数を数える識別子は、数え手を識別子の値の中に持つ。** `static` の数え手は使わない。Rust のテストは同じバイナリの中で並行して走るため、原典の `InstanceCountingExtension` のような大域の数え手は、テストの間で数が混ざる。識別子が `Arc<AtomicUsize>` を持ち、テストは識別子を渡す前にその `Arc` の複製を手元に残して、後で回数を読む。性質テスト（§5）も同じ持ち方にする。
+
+### 名前付きでトップレベルのアクターを作る口（`actor_of_with_name`）
+
+名前が重なったときと、名前が使えないときの振る舞いを決める。Pekko の `ActorRefFactory.actorOf(props, name)` の文書は、名前が不正な場合と使われている場合に `InvalidActorNameException` を投げることを約束しており、意味論優先の指針では守るべき約束である。
+
+- **署名は `Result` を返す形にする。** 前例の `ActorContext::actor_of(&mut self, props, name) -> Result<ActorRef, InvalidActorNameException>` に合わせる。
+- **名前の検証は、既存の `ActorPath::validate_path_element` をそのまま使う。** この検証は main にすでにある（`crates/fraktor-actor/src/kernel/actor_path/actor_path_value.rs`）。空文字も、先頭の `$`、不正な `%` エスケープ、非 ASCII、禁止文字とその位置も、すべてこの1本の文面で足りる。検証に失敗した場合は、その文面をそのまま持つ `InvalidActorNameException` を返す。文面を持つ生成子が `InvalidActorNameException` に無ければ、この issue で足す。[Issue #194](https://github.com/j5ik2o/fraktor-ng-rs/issues/194) の設計 §2.2 も、同じ検証を生成の経路へつなぐ計画であり、生成子と接続の置き場所は、先に実装した側の形に合わせる。
+- **トップレベルの名前の登録表を executor に置く。** 今の executor が名前の重なりを断るのは、親ごとの登録表（`spawn_named_child_under` が見る `parents` の `children`）だけであり、トップレベルのアクター（親が `None`）には登録表が無い。そこで、生きているトップレベルのアクターの名前を数える登録表を足す。名前は、生成が成功したあとに登録し、そのアクターが停止したら返す（止まったアクターの名前は再び使える。`InvalidActorNameException::name_taken` の文書が子の名前について書いている扱いと同じである）。生きているアクターと同じ名前は `InvalidActorNameException::name_taken(name)` で断り、アクターは作らない。
+- **終了済みのシステムで呼んだ場合は、`InvalidActorNameException::terminating()` を返す。** panic にはしない。`spawn_named_child_under` の前例に合わせた。
+- **自動生成の名前（`actor_of` の `$` で始まる名前）は、この登録表に入れない。** 利用者が付けた名前と重なることは、検証が先頭の `$` を断るため起きない。
 
 `ExtensionStartup` を `ActorSystemSetup` に入れる `Setup` の値にする形（Pekko の `BootstrapSetup` と同じ置き場所）は、レビューで検討を求められたため検討した。採らない。理由は、開始時の拡張の失敗は `Result` で返さなければならず、`Setup` を読む既存の構築子 `with_setup` は失敗しない形で、型の文書も「setup は開始の仕方を変えない」と明記しているためである。`Setup` の形にすると、失敗を panic に変えるか、`with_setup` の署名を壊すかのどちらかになる。構築子が増える欠点は残るが、失敗の返し方を守ることを優先する。
 
 ### no_std
 
 新しく足す型はすべて kernel に置き、`core` と `alloc` だけで書ける。使うのは `BTreeMap`、`Arc`、`TypeId`、`Any` であり、どれも今の kernel がすでに使っている。時刻、スケジューリング、IO には触れないため、port は要らない。`ExtensionStartup` の列の保持も `alloc` の `Vec` で足りる。
+
+基点のあとに、段0（[PR #262](https://github.com/j5ik2o/fraktor-ng-rs/pull/262)）が main に入った。kernel は no_std で build する形になり、kernel の `Arc` は `crate::kernel::sync::Arc`（#234 の C3 の別名）を使う決まりになった。第2段は main を取り込んで行うため、この設計の `Arc` はすべて `kernel::sync::Arc` を指す。登録表が保持する `Arc<dyn Any + Send + Sync>` も同じである。
 
 ## 3. 守る性質（不変条件）
 
@@ -249,7 +272,8 @@ dispatcher についての性質（別名の解決が循環で止まること、
 | 拡張の生成が、同じ識別子の拡張を再入して取得する | 生成の循環である。印が無ければ、際限なく再帰して落ちる | §2 の要点3のとおり `Creating` の印で検出し、生成中の要求であることを示す `ExtensionError` を返す。台帳の外の単体テストで確かめる（§2 の要点4） |
 | 拡張の生成が panic する | Pekko では生成の例外が、そのまま開始の失敗と失敗の保存になる。Rust の panic を失敗として保存するには、kernel が panic を捕まえる必要があり、kernel は捕まえる仕組みを持たない | §2 の要点4のとおり、panic は保存せずに伝え、印は残る。原典との差として、API の文書に書く。台帳の外の単体テストで確かめる |
 | まだ登録されていない識別子での `extension` の呼び出し | Pekko の文書は失敗を約束している。生成する形にまとめると、その約束から外れる | `extension` は探すだけにし、未登録は `Err` を返す（§2）。ケース1のテストは、登録の前に `extension` が `Err` になることも確かめる |
-| 拡張の生成が、名前の重なるアクターを作ってから失敗する（ケース2の `uniqueName`） | 生成をやり直すと、名前の重なりで2回目の失敗の原因が変わる | I2 のとおり生成はやり直さない。ケース2のテストは、作られた回数が1であることまで確かめる |
+| 拡張の生成が、名前の重なるアクターを作ってから失敗する（ケース2の `uniqueName`） | 生成をやり直すと、名前の重なりで2回目の失敗の原因が変わる | I2 のとおり生成はやり直さない。ケース2のテストは、作られた回数が1であることまで確かめる。名前の重なりそのものは、`actor_of_with_name` がトップレベルの名前の登録表で断る（§2 の名前付きの生成の節） |
+| `actor_of_with_name` に、生きているアクターと同じ名前、または使えない名前（空文字、先頭の `$`、非 ASCII など）を渡す | 登録表が無ければ、同じパスのアクターが2つでき、パスで引く経路の宛先が決まらなくなる。Pekko の文書は `InvalidActorNameException` を約束している | `Result` を返す形にし、検証は既存の `ActorPath::validate_path_element` で行い、重なりは登録表で断る。アクターは作らない（§2 の名前付きの生成の節）。単体テストで確かめる（§10 の手順3） |
 | 回数を数える拡張を、並行して走るテストが共有する | 大域の数え手は、テストの間で数が混ざり、テストが不安定になる | §2 の要点7のとおり、数え手は識別子の値の中に持つ。`static` の数え手は使わない |
 | 別のスレッドからの、同時の拡張の要求 | 今の形は `&mut` であり、同時に要求することはできない。#234 の段5で複数のスレッドから使えるようになると、Pekko の文書が約束する「初期化の完了を待つ」振る舞いとの差が出る | この issue では扱わない。§9 の引き継ぎに書く。段5で待つ形に直すときに、Quint の仕様を書く（§6） |
 | 作り手（`Props` の factory）が panic するアクター生成 | 既存の振る舞いである。`FraktorSpec` のシステムでは捕まえる仕組みが監督の判断に変え、素のシステムでは panic が伝わる | この issue では変えない。PropsCreationSpec のケースは、panic しない作り手だけを使う |
@@ -286,7 +310,7 @@ PropsCreationSpec には PBT を足さない。作り手は入力の空間を持
 | ノード | 総数 | 移植 | 作らない区分の提案 | 承認後の状態の見込み |
 |:---|---:|---:|---:|:---|
 | `actor-tests/src/test/scala/org/apache/pekko/actor/PropsCreationSpec.scala` | 5 | 5 | 0 | `green` |
-| `actor-tests/src/test/scala/org/apache/pekko/actor/ExtensionSpec.scala` | 8 | 6 | 2（オーナーの判断待ち） | `green`（作らない区分の提案が承認された場合） |
+| `actor-tests/src/test/scala/org/apache/pekko/actor/ExtensionSpec.scala` | 8 | 5（ケース5を除く）＋ケース5はオーナーの判断待ち | 2（オーナーの判断待ち） | `green`（作らない区分の提案が承認され、ケース5の扱いが決まった場合） |
 | `actor-tests/src/test/scala/org/apache/pekko/actor/ActorSystemDispatcherSpec.scala` | 7 | — | — | #193 では変えない（#268 の対象） |
 
 PropsCreationSpec の移植5件は、ケース2からケース5について JVM に固有の検査（直列化の検証と、リフレクションでのコンストラクタの検索）を移さない形である。その扱いは**オーナーの判断待ち**であり（§8 の判断材料1）、オーナーが認めない場合はケース2からケース5が作らない区分の提案に変わり、このノードの見込みも変わる。
@@ -310,16 +334,17 @@ PropsCreationSpec と ExtensionSpec の2ノードが green になると、`docs/
 
 1. **PropsCreationSpec のケース2からケース5を、クロージャが引数を捕まえる形で移す立場でよいか。あわせて、JVM に固有の検査（`serialize-creators` の直列化の検証と、リフレクションでのコンストラクタの検索）を移さないことでよいか。** レビューは、条件つきで移植を認めるよう推奨した。条件は、JVM に固有の検査を判断材料に足してオーナーに伺うこと（足した）、作り手が捕まえた値を観測して I8 を実際に確かめること（§1 の検査の形に入れた）、ケース1からケース4が実質的に同じ形になることを台帳の記録に書くこと（§1 に書いた）の3つである。この件は元帥がオーナーに伺っている途中であり、**オーナーの判断待ち**である。オーナーが移植を認めない場合は、ケース2からケース5は作らない区分の提案に変える。その場合、ノードは移植1件と作らない区分4件の混在になる。
 2. **ExtensionSpec のケース4とケース8の作らない区分の提案を認めるか。** レビューは、代替例を `compile_fail` の doctest にすることを条件に、認めるよう推奨した（§7 に反映した）。決めるのはオーナーであり、**オーナーの判断待ち**である。認めない場合の代案は、開始時の列に「読み込めない拡張」を表す値を入れられる形にすることである。たとえば、名前の文字列と生成の関数を組にした登録の口を別に足す案がある。ただしその案は、型付きの入力にするという #154 の決定 D1 と #234 の設計の方針に反するうえ、利用者が実際に使うことのない失敗の形を公開 API に残すことになる。この設計はその案を採らない。
-3. **ActorSystemDispatcherSpec の7件の扱い。** 元帥の判断（2026-11-26）で、7件は #193 から外し、[Issue #268](https://github.com/j5ik2o/fraktor-ng-rs/issues/268) へ移した。#193 の完了条件は、PropsCreationSpec と ExtensionSpec の2ノードである。前提の対応は、レビューの指摘 M7 のとおりに直した（§1 の対応表）。計画外の前提（実行の場所を渡す口、ガーディアンの口）をどの issue が受け持つかは、#268 の側で決める。
+3. **ActorSystemDispatcherSpec の7件の扱い。** 元帥の判断（2026-11-26）で、7件は #193 から外し、[Issue #268](https://github.com/j5ik2o/fraktor-ng-rs/issues/268) へ移した。#193 の完了条件は、PropsCreationSpec と ExtensionSpec の2ノードである。前提の対応は、レビューの指摘 M7 のとおりに直した（§1 の対応表）。計画外の前提（実行の場所を渡す口、ガーディアンの口）は、[Issue #267](https://github.com/j5ik2o/fraktor-ng-rs/issues/267) が受け持つ。
 4. **新しく足す拡張の API の形でよいか。** レビューの推奨に沿って、`&mut` の形に直した（§2）。あわせて、生成する経路（`register_extension`）と探すだけの経路（`extension`）を分け、登録表から `Rc` と `RefCell` を外し、開始時の順序（ライブラリ側の列が先）を契約に書いた。レビューが認めた点は、識別子のキーを具体型の `TypeId` にすること、失敗を値の型 `ExtensionError` で返すこと、開始時の拡張を受ける構築子が `Result` を返すこと（既存の構築子は変えないこと）の3つである。再レビューで、この形でよいかを確かめてほしい。
-5. **ExtensionSpec のケース5を、弱めた形で移すか、除外の提案にするか。** 原典が確かめるのは、ライブラリが `reference.conf` に書いた拡張が、利用者が何も渡さないシステムでも作られることである。型付きの入力では「利用者が何も渡さない」形が作れない。この設計の案は、弱めた形で移すことである。テストの中で、ライブラリ側の列を組み立てる関数を分けて置き（ライブラリの申し出に当たる部分）、利用者側のコードはその拡張に触れない形にし、開始時に作られていることと回数が1であることを確かめる。弱める点は、申し出の経路（設定ファイルと classpath）が値の受け渡しに変わることである。もう1つの案は、ケース5を除外の提案にすることである。その場合、このノードは移植5件、作らない区分2件、除外1件になる。決めるのはオーナーであり、**オーナーの判断待ち**として置く。第2段は、この判断が出るまでケース5を除いた形で進められる。
+5. **ExtensionSpec のケース5を、弱めた形で移すか、除外の提案にするか。** 原典が確かめるのは、ライブラリが `reference.conf` に書いた拡張が、利用者が何も渡さないシステムでも作られることである。型付きの入力では「利用者が何も渡さない」形が作れない。この設計の案は、弱めた形で移すことである。テストの中で、ライブラリ側の列を組み立てる関数を分けて置き（ライブラリの申し出に当たる部分）、利用者側のコードはその拡張に触れない形にし、開始時に作られていることと回数が1であることを確かめる。弱める点は、申し出の経路（設定ファイルと classpath）が値の受け渡しに変わることである。もう1つの案は、ケース5を除外の提案にすることである。その場合、このノードは移植5件、作らない区分2件、除外1件になる。決めるのはオーナーであり、**オーナーの判断待ち**として置く。第2段は、この判断が出るまでケース5を除いた5件で進める（§10 の手順2にそろえた）。なお、[Issue #193](https://github.com/j5ik2o/fraktor-ng-rs/issues/193) のコメントに挙がっているオーナーの判断待ちは、作らない2件と JVM に固有の検査の2点であり、ケース5がオーナーへの伺いに含まれているかは、coordinator の側で確かめる事項として残す。
 
 ## 9. 影響
 
 - **公開 API**：追加だけである。`fraktor_actor::kernel::extension` の型4つと、`ActorSystem` のメソッド4つ（`with_extensions`、`register_extension`、`extension`、`has_extension`）と、名前付きの生成の口（`actor_of_with_name`）を足す。既存の型、関数、構築子の署名と振る舞いは変えない。
 - **台帳**：対象の3ノードのうち2ノード（PropsCreationSpec、ExtensionSpec）の状態、件数、`verified_against: v2.0.0` を更新する。ActorSystemDispatcherSpec のノードは #193 では変えない（#268 の対象）。
 - **台帳のツール**：変更が必ず入る。ExtensionSpec のノードは移植6件と作らない区分2件の混在になり、レビューが現物で確かめたとおり、混在の勘定は `ledger/tools/verify_green.py` と `verify_red.py` に未実装である（`not_built` の語が0件）。第2段の範囲に、ツールの変更とその Python テストを含める。PropsCreationSpec の判断（§8 の判断材料1）の結果によっては、そちらのノードも混在になる。
-- **#234 への引き継ぎ**：2件ある。第1に、拡張の登録表は段1（[PR #266](https://github.com/j5ik2o/fraktor-ng-rs/pull/266)）の `Arc` への置き換えの対象には入らない。登録表は通常のフィールドであり、保持する値は `Arc<dyn Any + Send + Sync>` であるためである。第2に、段5（[Issue #256](https://github.com/j5ik2o/fraktor-ng-rs/issues/256)）で `ActorSystem` が複数のスレッドから使えるようになったら、生成中の識別子への要求は、Pekko の文書の約束どおり完了を待つ形に直す。そのときに、Quint の仕様 `crates/fraktor-actor/specs/extension_registry.qnt` を書く（§6 の条件）。
+- **#234 への引き継ぎ**：3件ある。第1に、拡張の登録表は段1（[PR #266](https://github.com/j5ik2o/fraktor-ng-rs/pull/266)）の `Arc` への置き換えの対象には入らない。登録表は通常のフィールドであり、保持する値は `Arc<dyn Any + Send + Sync>` であるためである。第2に、段5（[Issue #256](https://github.com/j5ik2o/fraktor-ng-rs/issues/256)）で `ActorSystem` が複数のスレッドから使えるようになったら、生成中の識別子への要求は、Pekko の文書の約束どおり完了を待つ形に直す。そのときに、Quint の仕様 `crates/fraktor-actor/specs/extension_registry.qnt` を書く（§6 の条件）。第3に、段0b（[Issue #243](https://github.com/j5ik2o/fraktor-ng-rs/issues/243)。CAS の無い target）の範囲に、拡張の登録表が新しく加わる。CAS の無い target（thumbv6m）では、`Arc<E::Ext>` を `Arc<dyn Any + Send + Sync>` へ変える箇所が `portable_atomic_util::Arc` で書けない（再レビューが試作で確かめた E0308）。今の CI（thumbv7em）は落ちない。#243 が直す「`Arc<dyn …>` を作る所」の一覧に、登録表のこの箇所を加える。
+- **構築子の組み合わせ**：`with_extensions` は、setup とも失敗の受け手（failure catcher）とも組み合わせられない。段1の [PR #266](https://github.com/j5ik2o/fraktor-ng-rs/pull/266) は `with_setup_and_failure_catcher` を足すため、構築子の組み合わせはさらに増える。今回のケースは組み合わせを必要としないため、この issue では扱わない。
 - **アクターの中から拡張を取る経路**：Pekko の `context.system.extension` に当たる経路は、この issue の範囲の外である。今回のケースはどれも使わない。必要になったときに、別の issue で扱う。
 - **保存済みのデータと上流**：影響は無い。保存済みの形式は変えず、Pekko の上流へ送るものも無い。
 - **守りの仕組み**：CI の必須チェックは変えない。第2段で、移植したテストと性質テストが必須チェックの中で動くようになる。Quint の仕様は足さないため、quint のジョブの対象も変わらない。
@@ -328,8 +353,8 @@ PropsCreationSpec と ExtensionSpec の2ノードが green になると、`docs/
 ## 10. 第2段の進め方（設計レビューが通ってから）
 
 1. `crates/fraktor-actor/tests/props_creation_spec.rs` に移植する5件を書き、台帳の PropsCreationSpec を red にして、失敗を確認する（red）。本体は既存であるため、テストは最初の実行から通る可能性がある。その場合は #185 の DurationSpec と同じく、red が立たないことをそのまま記録する。オーナーの判断（§8 の判断材料1）が出ていない場合は、判断が出るまでケース2からケース5の台帳の記録に「オーナーの判断待ち」と書く。
-2. `crates/fraktor-actor/tests/extension_spec.rs` に移植する6件を書き、台帳の ExtensionSpec を red にして、失敗を確認する（red）。新しい API が無いため、コンパイルの失敗（E0432、E0599）が red になる。
-3. §2 の拡張の API と `actor_of_with_name` を実装し、テストを通す（green）。あわせて、登録表の単体テスト（再入と巻き戻し）を `crates/fraktor-actor/src/kernel/extension/` の下に置き、`ExtensionStartup` の rustdoc に代替例の `compile_fail` の doctest を置く。実装の途中で設計と違う形が必要になった場合は、実装でごまかさず、設計への差し戻しとして報告する。
+2. `crates/fraktor-actor/tests/extension_spec.rs` に移植する5件（ケース5を除く）を書き、台帳の ExtensionSpec を red にして、失敗を確認する（red）。新しい API が無いため、コンパイルの失敗（E0432、E0599）が red になる。ケース5は、オーナーの判断（§8 の判断材料5）が出てから足す。
+3. §2 の拡張の API と `actor_of_with_name` を実装し、テストを通す（green）。あわせて、登録表の単体テスト（再入と巻き戻し）を `crates/fraktor-actor/src/kernel/extension/` の下に置き、`ExtensionStartup` の rustdoc に代替例の `compile_fail` の doctest を置く。`actor_of_with_name` の単体テストも置く。重なった名前が断られること、止まったアクターの名前が再び使えること、不正な名前（空文字、先頭の `$`、非 ASCII）が `validate_path_element` の文面で断られ、アクターが作られないこと、終了済みのシステムでは `terminating()` が返ることの4点を確かめる。実装の途中で設計と違う形が必要になった場合は、実装でごまかさず、設計への差し戻しとして報告する。
 4. `crates/fraktor-actor/tests/extension_property_test.rs` に §5 の性質を足す。
 5. 台帳のツールの混在の勘定（§9）を実装し、その Python テストを足す。台帳の2ノードを §7 の見込みどおりに更新し、`docs/baseline/v2.0.0-undocumented-nodes.tsv` を作り直す。
 6. CI と同じ検査を流す。`cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、台帳の Python テスト（`ledger/tools`）、ライセンスヘッダーの検査（`python3 tools/license-headers/license_headers.py --check --manifest docs/design/issue-206-file-origin.tsv`）である。Quint の仕様は無いので、Quint の検査は無い。
@@ -360,3 +385,16 @@ PropsCreationSpec と ExtensionSpec の2ノードが green になると、`docs/
 | 低 L9（構築子が増えすぎる） | 検討して採らなかった | `ExtensionStartup` を `ActorSystemSetup` に入れる `Setup` の形を検討したが、開始の失敗を `Result` で返す必要があり、`with_setup` の署名と文書を壊すため採らなかった。理由を §2 に書いた。アクターの中から拡張を取る経路は範囲の外として §9 に書いた |
 | Quint の条件（巻き戻しの単体テストと、段5での仕様の引き継ぎ） | 直した | 単体テストを §2 の要点4と §10 に入れ、段5で `extension_registry.qnt` を書く引き継ぎを §9 に書いた |
 | §8 の4点への推奨 | 反映した | 判断材料1と判断材料2は、元帥がオーナーに伺っている途中であり、設計では**オーナーの判断待ち**とした。判断材料3は、元帥の判断で #268 への移管に決まった。判断材料4は、`&mut` の形への直しを反映した（§8） |
+## 12. 設計の再レビューへの回答
+
+固定 `647a312` への再レビュー（判定は要修正（軽微）。中1件、低6件）への回答である。前回の高1件と中7件は、どれも直っていることを再レビューが試作で確かめた。採らなかった指摘は無い。
+
+| 指摘 | 対応 | 内容 |
+|:---|:---|:---|
+| 中 N1（`actor_of_with_name` で、名前が重なったときと使えないときの振る舞いが決まっていない） | 直した | 署名を `Result<ActorRef, InvalidActorNameException>` を返す形にし、前例の `ActorContext::actor_of` に合わせた。名前の検証は、main にすでにある `ActorPath::validate_path_element` をそのまま使うことを確かめた（空文字、先頭の `$`、不正な `%` エスケープ、非 ASCII、禁止文字とその位置が、この1本の文面で足りる。[Issue #194](https://github.com/j5ik2o/fraktor-ng-rs/issues/194) の設計 §2.2 も同じ検証を生成の経路へつなぐ計画であり、生成子と接続の置き場所は先に実装した側に合わせる）。トップレベルの名前の登録表を executor に置き、停止したら名前を返すこと、終了済みのシステムでは `InvalidActorNameException::terminating()` を返すことを決めた。重なりと再利用と不正な名前の単体テストを §10 の手順3に足した（§2 の名前付きの生成の節、§4） |
+| 低 L1（panic のあとに返る `Err` は、循環のときの `Err` と区別できない） | 直した | API の文書に「後の要求は、最初の panic の中身ではなく、生成中を示す `Err` を返す」ことまで書く形にし、Pekko が同じ例外を投げ直すこととの違いを §2 の要点4に明記した |
+| 低 L2（段0が main に入ったことが §2 に入っていない） | 直した | §2 の no_std の節に、段0（[PR #262](https://github.com/j5ik2o/fraktor-ng-rs/pull/262)）が main に入り、kernel の `Arc` は `kernel::sync::Arc` を使うことを足した。thumbv6m で `Arc<dyn Any + Send + Sync>` へ変える箇所が書けない件は、[Issue #243](https://github.com/j5ik2o/fraktor-ng-rs/issues/243) への引き継ぎとして §9 に足した |
+| 低 L3（ケース5の扱いが §8 と §10 で食い違う） | 直した | 判断が出るまではケース5を除いた5件で進めることにそろえ、§7 の表と §10 の手順2を直した。ケース5がオーナーへの伺いに含まれているかは、coordinator の側で確かめる事項として §8 の判断材料5に残した |
+| 低 L4（計画外の前提の受け持ちを指す） | 直した | 受け持ちは [Issue #267](https://github.com/j5ik2o/fraktor-ng-rs/issues/267) であることを、§1 の対応表の後の段落と §8 の判断材料3に書いた |
+| 低 L5（「原典より弱める部分は無い」の範囲） | 直した | 作り手が捕まえた値の観測についての文であることを、範囲を限って書き直した（§1） |
+| 低 L6（構築子の組み合わせへの一言） | 直した | `with_extensions` が setup とも失敗の受け手とも組み合わせられないことと、[PR #266](https://github.com/j5ik2o/fraktor-ng-rs/pull/266) で組み合わせがさらに増えることを、§9 に書いた |
