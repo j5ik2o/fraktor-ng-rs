@@ -32,6 +32,14 @@
 //   LateEnqueue     : a sender checks `closed` and enqueues in two steps.
 //   DropSystemOnClose : closing throws away the system messages that are left,
 //                     as the first version of this model did (design review H2).
+//   MessagesBeforeSystem : a run takes the next normal message without first
+//                     handling the system messages that are waiting.
+//
+// A run handles every waiting system message before it takes a normal message,
+// at its start and again after each normal message (Mailbox.run calls
+// processAllSystemMessages, then processMailbox, which calls it again after
+// each message). A system message that arrives after that drain may still be
+// overtaken by the one normal message taken next, but never by two.
 module mailbox_scheduling {
   pure val SENDERS = Set("s1", "s2")
   pure val WORKERS = Set("w1", "w2")
@@ -40,7 +48,10 @@ module mailbox_scheduling {
   pure val CONTROL_BUDGET = 2
 
   type Mode = Fixed | LostWakeup | CheckThenAct | ExternalSuspend | LateEnqueue | DropSystemOnClose
+    | MessagesBeforeSystem
   type SysMsg = Suspend | Resume | Terminate
+  // mark: how many normal messages had been taken when the system message arrived.
+  type SysEntry = { kind: SysMsg, mark: int }
   // SChecked: under CheckThenAct, the sender saw the bit clear and will set it.
   // SEnqueuing: under LateEnqueue, the sender saw the mailbox open and will enqueue.
   type SenderPhase = SReady | SRegistering | SChecked | SEnqueuing
@@ -53,7 +64,7 @@ module mailbox_scheduling {
     scheduled: bool,
     suspendCount: int,
     queue: int,
-    sys: List[SysMsg],
+    sys: List[SysEntry],
     submitted: int,
     controlLeft: int,
     pendingDecision: int,
@@ -64,10 +75,13 @@ module mailbox_scheduling {
     sysSent: int,
     sysProcessed: int,
     sysDeadLettered: int,
-    // Ghost: whether anybody has asked from outside to suspend the actor.
-    externalSuspendIssued: bool,
+    // How many normal messages runs have taken (started handling) so far.
+    started: int,
+    // Ghost: suspends asked for from outside that no outside resume has answered yet.
+    externalSuspendsPending: int,
   }
-  type Worker = { phase: WorkerPhase, batch: int }
+  // drained: the run has handled every waiting system message since it last took a normal message.
+  type Worker = { phase: WorkerPhase, batch: int, drained: bool }
   type Sender = { phase: SenderPhase, left: int }
 
   var mode: Mode
@@ -132,11 +146,14 @@ module mailbox_scheduling {
   val settledMeansIdle =
     (settled and not(st.closed)) implies
       (st.sys.length() == 0 and (st.suspendCount == 0 implies st.queue == 0)
-        and (st.suspendCount > 0 implies st.externalSuspendIssued))
+        and (st.suspendCount > 0 implies st.externalSuspendsPending > 0))
+  // A system message is overtaken by at most one normal message: the one a run
+  // took right after its last drain, before the system message arrived.
+  val systemBeforeNormal = st.sys.foldl(true, (ok, e) => ok and st.started <= e.mark + 1)
 
   val invariant = atMostOneRunner and scheduledMatchesTheRun and noStrandedMessage and noInvokeWhileSuspended
     and noInvokeAfterClose and closedHoldsNothing and throughputRespected and messagesConserved
-    and systemMessagesConserved and submittedOnlyWithWork and settledMeansIdle
+    and systemMessagesConserved and submittedOnlyWithWork and settledMeansIdle and systemBeforeNormal
 
   // ---- initial states ----------------------------------------------------
 
@@ -145,9 +162,9 @@ module mailbox_scheduling {
     st' = {
       closed: false, scheduled: false, suspendCount: 0, queue: 0, sys: [], submitted: 0,
       controlLeft: CONTROL_BUDGET, pendingDecision: 0, sent: 0, processed: 0, deadLettered: 0,
-      sysSent: 0, sysProcessed: 0, sysDeadLettered: 0, externalSuspendIssued: false,
+      sysSent: 0, sysProcessed: 0, sysDeadLettered: 0, started: 0, externalSuspendsPending: 0,
     },
-    workers' = WORKERS.mapBy(_ => { phase: Free, batch: 0 }),
+    workers' = WORKERS.mapBy(_ => { phase: Free, batch: 0, drained: false }),
     senders' = SENDERS.mapBy(_ => { phase: SReady, left: SENDS_PER_SENDER }),
   }
 
@@ -214,13 +231,16 @@ module mailbox_scheduling {
       ...st,
       controlLeft: st.controlLeft - 1,
       sysSent: st.sysSent + 1,
-      externalSuspendIssued: st.externalSuspendIssued or k == Suspend,
+      externalSuspendsPending:
+        if (k == Suspend) st.externalSuspendsPending + 1
+        else if (k == Resume and st.externalSuspendsPending > 0) st.externalSuspendsPending - 1
+        else st.externalSuspendsPending,
     }
     if (st.closed)
       setState(if (mode == DropSystemOnClose) spent else { ...spent, sysDeadLettered: spent.sysDeadLettered + 1 })
     else if (mode == ExternalSuspend and k == Suspend)
       setState({ ...spent, suspendCount: spent.suspendCount + 1, sysProcessed: spent.sysProcessed + 1 })
-    else setState(registered({ ...spent, sys: spent.sys.append(k) })),
+    else setState(registered({ ...spent, sys: spent.sys.append({ kind: k, mark: st.started }) })),
   }
 
   // The parent's supervisor decides to resume the failed child.
@@ -230,15 +250,22 @@ module mailbox_scheduling {
     setState(registered({
       ...st,
       pendingDecision: st.pendingDecision - 1,
-      sys: st.sys.append(Resume),
+      sys: st.sys.append({ kind: Resume, mark: st.started }),
       sysSent: st.sysSent + 1,
     })),
   }
 
   // ---- workers -----------------------------------------------------------
 
+  action setWorkerDrained(w: str, phase: WorkerPhase, batch: int, drained: bool, after: State): bool = all {
+    workers' = workers.set(w, { phase: phase, batch: batch, drained: drained }),
+    st' = after,
+    senders' = senders,
+    mode' = mode,
+  }
+
   action setWorker(w: str, phase: WorkerPhase, batch: int, after: State): bool = all {
-    workers' = workers.set(w, { phase: phase, batch: batch }),
+    workers' = workers.set(w, { phase: phase, batch: batch, drained: workers.get(w).drained }),
     st' = after,
     senders' = senders,
     mode' = mode,
@@ -248,7 +275,7 @@ module mailbox_scheduling {
   action take(w: str): bool = all {
     phaseOf(w) == Free,
     st.submitted > 0,
-    setWorker(w, Running, 0, { ...st, submitted: st.submitted - 1 }),
+    setWorkerDrained(w, Running, 0, false, { ...st, submitted: st.submitted - 1 }),
   }
 
   // processAllSystemMessages, one message at a time. Terminate closes the
@@ -259,7 +286,7 @@ module mailbox_scheduling {
     not(st.closed),
     st.sys.length() > 0,
     val rest = { ...st, sys: st.sys.tail(), sysProcessed: st.sysProcessed + 1 }
-    val after = match st.sys.head() {
+    val after = match st.sys.head().kind {
       | Suspend => { ...rest, suspendCount: rest.suspendCount + 1 }
       | Resume => { ...rest, suspendCount: if (rest.suspendCount > 0) rest.suspendCount - 1 else 0 }
       | Terminate => {
@@ -276,11 +303,23 @@ module mailbox_scheduling {
     setWorker(w, Running, workers.get(w).batch, after),
   }
 
-  // processMailbox: dequeue one message and hand it to `receive`.
+  // The run has handled every waiting system message (processAllSystemMessages
+  // returned with nothing left), so it may take a normal message.
+  action drainDone(w: str): bool = all {
+    phaseOf(w) == Running,
+    not(st.closed),
+    not(workers.get(w).drained),
+    st.sys.length() == 0,
+    setWorkerDrained(w, Running, workers.get(w).batch, true, st),
+  }
+
+  // processMailbox: dequeue one message and hand it to `receive`. The fixed run
+  // takes it only right after a drain; MessagesBeforeSystem does not wait.
   action startInvoke(w: str): bool = all {
     phaseOf(w) == Running,
     canInvoke(w),
-    setWorker(w, Invoking, workers.get(w).batch, { ...st, queue: st.queue - 1 }),
+    workers.get(w).drained or mode == MessagesBeforeSystem,
+    setWorkerDrained(w, Invoking, workers.get(w).batch, false, { ...st, queue: st.queue - 1, started: st.started + 1 }),
   }
 
   action endInvoke(w: str): bool = all {
@@ -311,7 +350,7 @@ module mailbox_scheduling {
   // setAsIdle. The fixed run asks to be scheduled again; LostWakeup does not.
   action finishIdle(w: str): bool = all {
     phaseOf(w) == Finishing,
-    setWorker(w, if (mode == LostWakeup) Free else Rescheduling, 0, { ...st, scheduled: false }),
+    setWorkerDrained(w, if (mode == LostWakeup) Free else Rescheduling, 0, false, { ...st, scheduled: false }),
   }
 
   // registerForExecution(this, false, false) at the end of Mailbox.run.
@@ -327,7 +366,7 @@ module mailbox_scheduling {
     any {
       send(s), enqueueLate(s), register(s), act(s),
       control(k), decide,
-      take(w), processSystem(w), startInvoke(w), endInvoke(w), failInvoke(w),
+      take(w), processSystem(w), drainDone(w), startInvoke(w), endInvoke(w), failInvoke(w),
       decideFinish(w), finishIdle(w), finishRegister(w),
     }
   }
@@ -338,7 +377,7 @@ module mailbox_scheduling {
   // run's own second registration.
   run lateMessageIsRescheduledTest =
     initWith(Fixed).then(send("s1")).then(register("s1")).then(take("w1"))
-      .then(startInvoke("w1")).then(endInvoke("w1")).then(decideFinish("w1"))
+      .then(drainDone("w1")).then(startInvoke("w1")).then(endInvoke("w1")).then(decideFinish("w1"))
       .then(send("s2")).then(register("s2")).then(finishIdle("w1")).then(finishRegister("w1"))
       .expect(st.scheduled and st.submitted == 1 and noStrandedMessage)
 
@@ -355,39 +394,39 @@ module mailbox_scheduling {
   run throughputYieldsTheThreadTest =
     initWith(Fixed).then(send("s1")).then(register("s1")).then(send("s1")).then(register("s1"))
       .then(send("s2")).then(register("s2")).then(take("w1"))
-      .then(startInvoke("w1")).then(endInvoke("w1")).then(startInvoke("w1")).then(endInvoke("w1"))
-      .then(startInvoke("w1")).fail()
+      .then(drainDone("w1")).then(startInvoke("w1")).then(endInvoke("w1")).then(drainDone("w1")).then(startInvoke("w1")).then(endInvoke("w1"))
+      .then(drainDone("w1")).then(startInvoke("w1")).fail()
 
   run throughputReschedulesTheRestTest =
     initWith(Fixed).then(send("s1")).then(register("s1")).then(send("s1")).then(register("s1"))
       .then(send("s2")).then(register("s2")).then(take("w1"))
-      .then(startInvoke("w1")).then(endInvoke("w1")).then(startInvoke("w1")).then(endInvoke("w1"))
+      .then(drainDone("w1")).then(startInvoke("w1")).then(endInvoke("w1")).then(drainDone("w1")).then(startInvoke("w1")).then(endInvoke("w1"))
       .then(decideFinish("w1")).then(finishIdle("w1")).then(finishRegister("w1"))
-      .then(take("w2")).then(startInvoke("w2")).then(endInvoke("w2"))
+      .then(take("w2")).then(drainDone("w2")).then(startInvoke("w2")).then(endInvoke("w2"))
       .expect(st.processed == 3 and st.queue == 0)
 
   // A suspend from outside waits for the runner; `receive` is not interrupted.
   run suspendWaitsForTheRunnerTest =
-    initWith(Fixed).then(send("s1")).then(register("s1")).then(take("w1")).then(startInvoke("w1"))
+    initWith(Fixed).then(send("s1")).then(register("s1")).then(take("w1")).then(drainDone("w1")).then(startInvoke("w1"))
       .then(control(Suspend))
       .expect(st.suspendCount == 0 and noInvokeWhileSuspended)
 
   run suspendedActorHandlesNoMessageTest =
     initWith(Fixed).then(control(Suspend)).then(take("w1")).then(processSystem("w1"))
-      .then(send("s1")).then(register("s1")).then(startInvoke("w1")).fail()
+      .then(send("s1")).then(register("s1")).then(drainDone("w1")).then(startInvoke("w1")).fail()
 
   // A failure suspends the actor until the parent's Resume arrives.
   run failureWaitsForTheParentTest =
     initWith(Fixed).then(send("s1")).then(register("s1")).then(send("s1")).then(register("s1"))
-      .then(take("w1")).then(startInvoke("w1")).then(failInvoke("w1"))
+      .then(take("w1")).then(drainDone("w1")).then(startInvoke("w1")).then(failInvoke("w1"))
       .then(decideFinish("w1")).then(finishIdle("w1")).then(finishRegister("w1"))
       .expect(not(st.scheduled) and st.queue == 1 and noStrandedMessage)
 
   run resumeAfterFailureHandlesTheRestTest =
     initWith(Fixed).then(send("s1")).then(register("s1")).then(send("s1")).then(register("s1"))
-      .then(take("w1")).then(startInvoke("w1")).then(failInvoke("w1"))
+      .then(take("w1")).then(drainDone("w1")).then(startInvoke("w1")).then(failInvoke("w1"))
       .then(decideFinish("w1")).then(finishIdle("w1")).then(finishRegister("w1"))
-      .then(decide).then(take("w2")).then(processSystem("w2")).then(startInvoke("w2")).then(endInvoke("w2"))
+      .then(decide).then(take("w2")).then(processSystem("w2")).then(drainDone("w2")).then(startInvoke("w2")).then(endInvoke("w2"))
       .expect(st.processed == 2 and st.queue == 0 and st.suspendCount == 0)
 
   // A message to a closed mailbox is a dead letter.
@@ -406,7 +445,26 @@ module mailbox_scheduling {
     initWith(Fixed).then(control(Terminate)).then(take("w1")).then(processSystem("w1")).then(control(Suspend))
       .expect(st.sysDeadLettered == 1 and systemMessagesConserved and closedHoldsNothing)
 
+  // An outside suspend followed by an outside resume lets the actor go on.
+  run externalSuspendThenResumeHandlesTheMessageTest =
+    initWith(Fixed).then(control(Suspend)).then(take("w1")).then(processSystem("w1"))
+      .then(send("s1")).then(register("s1")).then(control(Resume)).then(processSystem("w1"))
+      .then(drainDone("w1")).then(startInvoke("w1")).then(endInvoke("w1"))
+      .expect(st.processed == 1 and st.suspendCount == 0 and st.externalSuspendsPending == 0)
+
+  // A system message that arrives during a run is handled before the next
+  // normal message.
+  run systemMessageGoesBeforeTheNextMessageTest =
+    initWith(Fixed).then(send("s1")).then(register("s1")).then(send("s1")).then(register("s1"))
+      .then(take("w1")).then(control(Resume)).then(drainDone("w1")).fail()
+
   // ---- runs: the mistakes (negative controls) ----------------------------
+
+  run messagesBeforeSystemOvertakesTest =
+    initWith(MessagesBeforeSystem).then(send("s1")).then(register("s1")).then(send("s1")).then(register("s1"))
+      .then(take("w1")).then(control(Resume)).then(startInvoke("w1")).then(endInvoke("w1"))
+      .then(startInvoke("w1"))
+      .expect(not(systemBeforeNormal))
 
   run dropSystemOnCloseLosesAWatchTest =
     initWith(DropSystemOnClose).then(control(Terminate)).then(control(Resume)).then(take("w1"))
@@ -415,7 +473,7 @@ module mailbox_scheduling {
 
   run lostWakeupStrandsAMessageTest =
     initWith(LostWakeup).then(send("s1")).then(register("s1")).then(take("w1"))
-      .then(startInvoke("w1")).then(endInvoke("w1")).then(decideFinish("w1"))
+      .then(drainDone("w1")).then(startInvoke("w1")).then(endInvoke("w1")).then(decideFinish("w1"))
       .then(send("s2")).then(register("s2")).then(finishIdle("w1"))
       .expect(not(noStrandedMessage))
 
@@ -425,7 +483,7 @@ module mailbox_scheduling {
       .expect(not(atMostOneRunner) and not(scheduledMatchesTheRun))
 
   run externalSuspendInterruptsReceiveTest =
-    initWith(ExternalSuspend).then(send("s1")).then(register("s1")).then(take("w1")).then(startInvoke("w1"))
+    initWith(ExternalSuspend).then(send("s1")).then(register("s1")).then(take("w1")).then(drainDone("w1")).then(startInvoke("w1"))
       .then(control(Suspend))
       .expect(not(noInvokeWhileSuspended))
 
