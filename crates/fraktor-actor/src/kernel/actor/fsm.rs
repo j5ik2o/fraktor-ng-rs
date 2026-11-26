@@ -21,7 +21,12 @@ use alloc::vec::Vec;
 
 use crate::kernel::actor::Actor;
 use crate::kernel::actor::ActorContext;
+use crate::kernel::actor::CurrentState;
 use crate::kernel::actor::FsmState;
+use crate::kernel::actor::FsmView;
+use crate::kernel::actor::SubscribeTransitionCallBack;
+use crate::kernel::actor::Transition;
+use crate::kernel::actor::UnsubscribeTransitionCallBack;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::message::Message;
 
@@ -34,77 +39,12 @@ type StateFunction<S, D> =
 /// with the data before and after the move.
 type TransitionHandler<S, D> = Box<dyn FnMut(&mut ActorContext<'_>, &S, &S, &D, &D) + Send>;
 
-/// The message that asks the machine to report its transitions to a listener.
-///
-/// Mirrors `FSM.SubscribeTransitionCallBack`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SubscribeTransitionCallBack(pub ActorRef);
-
-/// The message that asks the machine to stop reporting to a listener.
-///
-/// Mirrors `FSM.UnsubscribeTransitionCallBack`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UnsubscribeTransitionCallBack(pub ActorRef);
-
-/// The first report a new listener receives: the state the machine is in.
-///
-/// Mirrors `FSM.CurrentState`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CurrentState<S> {
-  /// The machine that sent the report.
-  pub fsm: ActorRef,
-  /// The state the machine was in when it was subscribed.
-  pub state: S,
-}
-
-/// A report of one transition, sent to every listener.
-///
-/// Mirrors `FSM.Transition`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Transition<S> {
-  /// The machine that sent the report.
-  pub fsm: ActorRef,
-  /// The state the machine left.
-  pub from: S,
-  /// The state the machine entered.
-  pub to: S,
-}
-
 /// The internal message the machine receives when a listener it watches
 /// stops, through `watch_with`. It is not part of the public protocol:
 /// a listener's stop is the machine's own bookkeeping, kept apart from
 /// the `Terminated` a user's own watch would receive (design of #194, M4).
 #[derive(Clone, Debug)]
 struct ListenerTerminated(ActorRef);
-
-/// A read-only view of the machine, handed to state functions.
-///
-/// Mirrors what an FSM subclass reads from itself while it handles an
-/// event: the number of transition listeners and the current state
-/// name. The view is a snapshot taken just before the function runs;
-/// subscriptions and listener stops are handled before or after a
-/// state function within one delivery, never during it, so the counts
-/// are exact for the delivery being handled (design of #194, H1).
-pub struct FsmView<S> {
-  listener_count: usize,
-  state_name: S,
-}
-
-impl<S> FsmView<S> {
-  /// Returns how many listeners the machine currently reports to.
-  ///
-  /// Mirrors `listeners.size` read inside an FSM subclass.
-  pub fn listener_count(&self) -> usize {
-    self.listener_count
-  }
-
-  /// Returns the name of the state the machine is handling an event in.
-  ///
-  /// Mirrors `stateName`.
-  pub fn state_name(&self) -> &S {
-    &self.state_name
-  }
-}
 
 /// An actor whose behaviour is a state name `S`, the data `D` it carries, and a
 /// state function per state.
@@ -247,7 +187,7 @@ where
 
   fn view(&self) -> Option<FsmView<S>> {
     let (state, _) = self.current.as_ref()?;
-    Some(FsmView { listener_count: self.listeners.len(), state_name: state.clone() })
+    Some(FsmView::new(self.listeners.len(), state.clone()))
   }
 
   fn apply_event(&mut self, context: &mut ActorContext<'_>, event: &Message) -> Option<FsmState<S, D>> {

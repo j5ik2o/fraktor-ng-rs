@@ -16,33 +16,7 @@
 
 //! The router configuration a recipe can carry, as verification sees it.
 
-use core::time::Duration;
-
-/// The pool kinds of `org.apache.pekko.routing`, as typed values.
-///
-/// The original selects a pool by the class name in a configuration
-/// string; the port names the kind with this enum instead (precedents:
-/// #154 D1, G0b decision E). The cases of
-/// `ActorConfigurationVerificationSpec` guard the meaning — which pool
-/// combined with which dispatcher is refused — not the class loading.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum PoolKind {
-  /// Mirrors `RoundRobinPool`: routees take turns.
-  RoundRobin,
-  /// Mirrors `BroadcastPool`: every routee receives every message.
-  Broadcast,
-  /// Mirrors `RandomPool`: one routee is chosen at random.
-  Random,
-  /// Mirrors `SmallestMailboxPool`: the routee with the emptiest
-  /// mailbox is chosen.
-  SmallestMailbox,
-  /// Mirrors `ScatterGatherFirstCompletedPool`: every routee receives
-  /// the message and the first reply wins, within `within`.
-  ScatterGatherFirstCompleted {
-    /// The time the head waits for the first reply.
-    within: Duration,
-  },
-}
+use crate::kernel::actor::PoolKind;
 
 /// A router configuration, as the verification rules see it: a pool,
 /// the number of routees, and the dispatcher of the router head.

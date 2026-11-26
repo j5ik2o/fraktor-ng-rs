@@ -16,9 +16,11 @@
 
 //! Dispatcher definitions and the registry that verifies against them.
 
+mod dispatcher_config;
+mod dispatcher_kind;
 mod dispatchers;
 
-pub use dispatchers::DispatcherConfig;
-pub use dispatchers::DispatcherKind;
+pub use dispatcher_config::DispatcherConfig;
+pub use dispatcher_kind::DispatcherKind;
 pub use dispatchers::Dispatchers;
 pub use dispatchers::DEFAULT_DISPATCHER_ID;

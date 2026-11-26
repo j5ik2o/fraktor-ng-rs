@@ -19,46 +19,14 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use crate::kernel::dispatch::DispatcherConfig;
+use crate::kernel::dispatch::DispatcherKind;
 use crate::kernel::setup::Setup;
 
 /// The id of the dispatcher Pekko uses when none is named.
 ///
 /// Mirrors `Dispatchers.DefaultDispatcherId`.
 pub const DEFAULT_DISPATCHER_ID: &str = "pekko.actor.default-dispatcher";
-
-/// The kind of a dispatcher, as the design of #234 (section 3.5)
-/// defines it.
-///
-/// The verification rules of this issue only ask whether a kind is
-/// `Balancing`; the execution of a dispatcher belongs to #234.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum DispatcherKind {
-  /// The default dispatcher.
-  Default,
-  /// A fork-join pool dispatcher.
-  ForkJoin,
-  /// A dispatcher that pins its actors to one thread.
-  Pinned,
-  /// A dispatcher that shares one mailbox between its actors.
-  Balancing,
-  /// A dispatcher that runs on the calling thread.
-  CallingThread,
-  /// A dispatcher the test kit drives by hand.
-  Manual,
-}
-
-/// One dispatcher definition, built in code (no config file).
-///
-/// Mirrors one entry of the `pekko.actor.dispatchers` configuration in
-/// `org.apache.pekko.dispatch.Dispatchers`, with the configurator class
-/// name replaced by the [`DispatcherKind`] enum.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct DispatcherConfig {
-  /// The id actors name through `Props::with_dispatcher`.
-  pub id: String,
-  /// The kind of dispatcher the id stands for.
-  pub kind: DispatcherKind,
-}
 
 /// The table of dispatcher ids a system knows, with the default id.
 ///
