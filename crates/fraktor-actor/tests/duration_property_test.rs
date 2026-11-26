@@ -107,7 +107,7 @@ fn scalar_multiplication_of_in_range_durations_divides_back() {
       | 0 => random.next_u64() as u32,
       | _ => random.below(17) as u32,
     };
-    assert_eq!(d * 0, Duration::ZERO, "seed {seed:#x}: {d:?} * 0");
+    assert_eq!(d.checked_mul(0), Some(Duration::ZERO), "seed {seed:#x}: {d:?} * 0");
     if let Some(product) = d.checked_mul(n) {
       valid += 1;
       if n >= 1 {

@@ -65,13 +65,17 @@ fn time_left(deadline: Duration, clock: &ManualClock) -> Duration {
   deadline.saturating_sub(clock.monotonic())
 }
 
+// The original's `0 * one`: written with a named factor because clippy's
+// `erasing_op` lint forbids the literal form.
+const ZERO_FACTOR: u32 = 0;
+
 #[test]
 fn duration_forms_a_one_dimensional_vector_field() {
   let zero = Duration::ZERO;
   let one = Duration::from_secs(1);
   let two = one + one;
   let three = one * 3;
-  assert_eq!(one * 0, zero);
+  assert_eq!(one * ZERO_FACTOR, zero);
   assert_eq!(one * 2, two);
   assert_eq!(three - two, one);
   assert_eq!(three / 3, one);
