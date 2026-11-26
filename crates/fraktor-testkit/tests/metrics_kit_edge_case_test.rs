@@ -103,10 +103,17 @@ const PROMPT: Duration = Duration::from_secs(10);
 fn timed_with_known_ops_stops_the_timer_when_the_block_panics() {
   let kit = MetricsKit::new(MetricsKitSettings::default());
 
-  let outcome =
-    panic::catch_unwind(AssertUnwindSafe(|| kit.timed_with_known_ops(&kit_key(), 10, || -> i32 { panic!("boom") })));
+  // The block's own payload, so a panic raised anywhere else does not pass.
+  struct BlockPanic;
 
-  assert!(outcome.is_err(), "the panic propagates out of timed_with_known_ops");
+  let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
+    kit.timed_with_known_ops(&kit_key(), 10, || -> i32 { panic::panic_any(BlockPanic) })
+  }));
+
+  let Err(payload) = outcome else {
+    panic!("the panic of the block propagates out of timed_with_known_ops");
+  };
+  assert!(payload.is::<BlockPanic>(), "the propagated panic is the one the block raised");
   let metrics = kit.registered_metrics();
   let Some(Metric::KnownOpsInTimespanTimer(timer)) = metrics.get("metrics-kit") else {
     panic!("no KnownOpsInTimespanTimer is registered under metrics-kit");
