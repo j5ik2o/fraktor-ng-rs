@@ -40,6 +40,7 @@ Rust へ移植する際の、全ステップ共通の規約。`docs/decisions/` 
 - ライブラリ本体の Pekko モジュールは 1 対 1 で `crates/` のクレートにする
 - 移植テストは検証対象クレートの `tests/` 配下に、ノード1件＝ファイル1件で置く。
   ファイル冒頭に出典（Pekko v2.0.0 のファイルパス）をコメントで残す
+  例外：内部 API を呼ぶケースは単体テストに置き、台帳の `rust.cases_outside_test_file` に書く
 - 各クレート内部は kernel（プラットフォーム非依存）と adaptor（std 実装）に
   分ける。kernel は時刻・スケジューリング・IO に Clock や Scheduler の
   port（トレイト）越しで触れ、具体実装は adaptor が持つ

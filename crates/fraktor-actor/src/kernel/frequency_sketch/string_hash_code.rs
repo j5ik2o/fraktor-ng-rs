@@ -15,7 +15,7 @@ mod tests;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StringHashCode;
 
-impl HasherSeal for StringHashCode {}
+impl HasherSeal<str> for StringHashCode {}
 
 impl FrequencySketchHasher<str> for StringHashCode {
   fn hash(&self, value: &str) -> i32 {

@@ -67,6 +67,15 @@ fn a_capacity_of_zero_or_below_is_accepted_as_the_original() {
   negative.increment("foo");
   assert_eq!(negative.frequency("foo"), 1);
 
+  // -1 * 4294967295.0 is negative, but its low 32 bits are 1: the reset runs
+  // on every update.
+  let settings = FastFrequencySketchSettings { reset_multiplier: 4_294_967_295.0, ..Default::default() };
+  let mut truncated = FastFrequencySketch::<str>::new(-1, settings).expect("the original accepts -1");
+  for _ in 0..4 {
+    truncated.increment("foo");
+    assert_eq!((truncated.frequency("foo"), truncated.size()), (0, 0));
+  }
+
   let result = FastFrequencySketch::<str>::new(i32::MIN, FastFrequencySketchSettings::default());
   assert!(matches!(result, Err(FrequencySketchError::WidthNotPositive { width: 0 })));
 }

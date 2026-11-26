@@ -44,6 +44,7 @@
   rust:
     crate: null                    # 移植先クレート（決まり次第）
     test_file: null                # 移植した Rust テストのパス
+    cases_outside_test_file: []    # test_file の外（crate の中の単体テスト）に置いたケース（下記）。要素は {case, file}。欄が無いときは空と同じ
   goal: null                       # TAKT manager のゴール識別子（割り当て時に記入）
   verified_against: null           # 照合に使った Pekko の基準タグ。判定済みの status で必須（下記）
 ```
@@ -237,6 +238,15 @@
 - 行の位置はノードの最上位、`goal` の次である。欄が無いノードに書くときは、ノードの末尾に足す
 - 検査は `uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger --ledger ledger/nodes.yaml`
   で、違反があれば終了コード 1 になる。CI でも実行する
+
+## 単体テストに置いたケース（`rust.cases_outside_test_file`、2026-11-26 追加）
+
+原典のケースが package の内側の API（`private[pekko]` など）を直接呼ぶとき、移植でその API を `pub(crate)` にすると、`tests/` の結合テスト（crate の外）からは呼べない。そのケースは crate の中の単体テスト（`src/` の `*_test.rs`）に置き、この欄に記録する。最初の例は `FrequencySketchSpec`（PR #223）である。
+
+- 要素は `case`（Pekko 側のケース名。`<見出し>: <ケース名>` の形。例：`FrequencySketch must: detect width overflow that would have been missed by Int arithmetic`）と `file`（そのケースを置いた Rust のファイルのパス）である。置いたテストの直前に、原典のケース名をコメントで残す
+- 件数：`cases.ported` と `cases.passing` は、`rust.test_file` のケースとこの欄のケースの和である。`total` は原典のケース数で、承認済みの除外があれば合わせて total になる
+- 実行：`verify_red` と `verify_green` は `rust.test_file` だけを実行するので、この欄のケースを数えない。そのため、この欄を持つノードの遷移は TAKT の already_green では記録しない（`cases.carried` と同じ扱い）。`cargo test -p <crate> --test <test_file の stem>` と、この欄のケースを流す `cargo test -p <crate> --lib <テストの名前>` の両方の結果を根拠にして、台帳を更新する
+- 検査：どの検査も、まだこの欄を読まない（#225）。欄の型、`file` の実在、件数の和、ケース名の重複は、それまで人間とレビューが確かめる
 
 ## 退役と引き継ぎ（`retired`、`cases.carried`、2026-11-25 追加）
 

@@ -54,8 +54,8 @@ kernel に、TinyLFU のための count-min sketch を 2 つ足した。Pekko v2
 - 原典が幅 0 以下を受け付けて最初の更新で配列の範囲外になるのに対し、移植は作成時に `WidthNotPositive` を返す。2 の冪の検査は 0 と `i32::MIN` を通るので、その後ろに置いた。
 - 容量が `2^30` を超えると、`ceiling_power_of_two` は原典どおり `i32::MIN` になる。既定の倍率では 64 ビットの積が負になり、下位 32 ビットが 0 になる。原典のあふれの検査もこれを通すので、`WidthOverflow` ではなく `WidthNotPositive { width: 0 }` を返す。
 - 深さ 0 は原典どおり受け付ける。`frequency` は `i32::MAX`、`size` は 0。
-- 容量 0 以下も原典どおり受け付ける。幅は `width_multiplier`、リセットは無効（リセットの倍率も負なら有効になりうる。§5）。`i32::MIN` だけは `WidthNotPositive`（§8）。
-- 原典の `Hasher[A]` は暗黙引数なので、`FrequencySketchHasher<A>` の trait にし、`with_hasher` で渡せるようにした。既定はそれぞれ `StringHasher` と `StringHashCode`。原典の `Hasher` は `sealed trait` で、利用者は実装できない。移植の trait も封じた（§8）。
+- 容量 0 以下も原典どおり受け付ける。幅は `width_multiplier`。リセットは、積を原典どおり `i32` に切り詰めた値が正のときだけ走る。容量 0 では走らず、容量が負なら倍率しだいで走りうる（§5）。`i32::MIN` だけは `WidthNotPositive`（§8）。
+- 原典の `Hasher[A]` は暗黙引数なので、`FrequencySketchHasher<A>` の trait にし、`with_hasher` で渡せるようにした。既定はそれぞれ `StringHasher` と `StringHashCode`。原典の `Hasher` は `sealed trait` で、利用者は実装できない。移植の trait も、ハッシュ型と値の型の組ごとに封じた（§8）。
 - 深さは `SketchDepth` という検証済みの型にした。`rows: usize` を設定から直接持ち回らず、負の検査と 0 の扱いを 1 箇所に閉じるためである。
 - クラス名は原典のまま（`FrequencySketch`、`FastFrequencySketch`）。製品名の改名の規則は Pekko という製品名が対象で、原典のクラス名は対象外である（#126・#136・#139 と同じ判断）。
 
@@ -178,7 +178,7 @@ PBT は、固定 seed の SplitMix64 で設定と入力を選び、ランダム�
 
 | 入力 | 何が起きうるか | 確かめているもの |
 |:---|:---|:---|
-| 容量 `0`、負 | `ceiling_power_of_two` が 1 になり、幅は `width_multiplier`（既定で 4）で、構築は成功する。リセットの倍率が負でなければ、リセットの大きさは 0 以下なので無効（I4）。容量が負でリセットの倍率も負なら、積が正になり、リセットが走りうる（再レビュー N2。例：容量 -1、倍率 -2.0 は 2 で、2 回目の更新で走る）。原典と同じく受け付ける（副元帥の決定、§8） | P7、単体テスト `a_capacity_of_zero_or_below_is_accepted_as_the_original`（両方の sketch） |
+| 容量 `0`、負 | `ceiling_power_of_two` が 1 になり、幅は `width_multiplier`（既定で 4）で、構築は成功する。リセットの大きさは、積を原典どおり `i32` に切り詰めた値（`i64` への飽和、`i32::MAX` での頭打ち、下位 32 ビット）で、それが正のときだけリセットが走る（I4）。容量 0 では積が 0 なので走らない。容量が負なら、切り詰めた値が正になりうる。倍率が負なら積が正になる（再レビュー N2。例：容量 -1、倍率 -2.0 は 2 で、2 回目の更新で走る）。倍率が正でも、負の積の下位 32 ビットが正になりうる（PR #223 の設計レビュー F2。例：容量 -1、倍率 4294967295.0 は積が -4294967295 で、下位 32 ビットが 1 なので、更新のたびに走る）。原典と同じく受け付ける（副元帥の決定、§8） | P7、単体テスト `a_capacity_of_zero_or_below_is_accepted_as_the_original`（両方の sketch。倍率 -2.0 と 4294967295.0 の両方） |
 | 容量 `i32::MIN` | `ceiling_power_of_two` が `i32::MIN` になり、幅が 0 以下になる（`WidthNotPositive`） | P7 |
 | 容量 `2^30`、`2^30 + 1`、`i32::MAX` | 幅が `2^30` か、`i32::MIN` への丸めで 0 になる（`WidthNotPositive { 0 }`） | P7、単体テスト（`2^30 + 1`） |
 | 幅の倍率 `0`、負、`i32::MIN`、`i32::MAX` | 幅 0（`WidthNotPositive`）、2 の冪でない幅、64 ビットの積のあふれ（`WidthOverflow`） | P7、単体テスト |
@@ -224,17 +224,22 @@ PR #205 のマージの後、設計レビューで保留にした 3 点を副元
 
 ### 容量 0 以下は受け付ける
 
-原典どおり受け付ける。コードは変えず、`FrequencySketch::new` と `FastFrequencySketch::new` の API 文書に書いた。容量は 1 に切り上がるので、幅は `width_multiplier` になる。リセットの大きさは 0 以下なのでリセットは無効になるが、リセットの倍率も負なら積が正になり、リセットが走りうる（§5、再レビュー N2）。`i32::MIN` だけは `ceiling_power_of_two` が `i32::MIN` になるので、正の幅の倍率では `WidthNotPositive` を返す（偶数の倍率では幅 0、奇数では幅 `i32::MIN`）。両方の sketch の単体テスト `a_capacity_of_zero_or_below_is_accepted_as_the_original` で、容量 0 でリセットが走らないこと、容量 -1 と倍率 -2.0 で 2 回目の更新でリセットが走ること、`i32::MIN` の誤りを確かめる。
+原典どおり受け付ける。コードは変えず、`FrequencySketch::new` と `FastFrequencySketch::new` の API 文書に書いた。容量は 1 に切り上がるので、幅は `width_multiplier` になる。リセットの大きさは、積を原典どおり `i32` に切り詰めた値で、それが正のときだけリセットが走る（§5）。容量 0 では積が 0 なので走らない。容量が負なら、倍率が負で積が正になる場合（再レビュー N2）と、倍率が正で負の積の下位 32 ビットが正になる場合（PR #223 の設計レビュー F2）に走る。`i32::MIN` だけは `ceiling_power_of_two` が `i32::MIN` になるので、正の幅の倍率では `WidthNotPositive` を返す（偶数の倍率では幅 0、奇数では幅 `i32::MIN`）。両方の sketch の単体テスト `a_capacity_of_zero_or_below_is_accepted_as_the_original` で、容量 0 でリセットが走らないこと、容量 -1 と倍率 -2.0 で 2 回目の更新でリセットが走ること、容量 -1 と倍率 4294967295.0 で 1 回目の更新からリセットが走ること（4 回の更新のどの後も `frequency` と `size` が 0）、`i32::MIN` の誤りを確かめる。
 
 ### `FrequencySketchHasher` を封じた
 
-原典の `Hasher` は `sealed trait` で、実装は `StringHasher` だけである。移植の trait も、非公開のモジュール `hasher_seal` にある `HasherSeal` を supertrait にして封じた。`HasherSeal` は公開の trait の上界に使うので `pub` だが、モジュールが非公開なので、crate の外からは名前を書けず、実装もできない。`StringHasher` と `StringHashCode` だけが実装する。trait の API 文書の `compile_fail` の例が、crate の外の実装がコンパイルされないことを確かめる（誤りは `HasherSeal` が満たされないという E0277）。
+原典の `Hasher` は `sealed trait` で、実装は `StringHasher` だけである。移植の trait も、非公開のモジュール `hasher_seal` にある `HasherSeal<A>` を supertrait にして封じた（`FrequencySketchHasher<A: ?Sized>: HasherSeal<A>`）。`HasherSeal` は公開の trait の上界に使うので `pub` だが、モジュールが非公開なので、crate の外からは名前を書けず、実装もできない。実装は `impl HasherSeal<str> for StringHasher` と `impl HasherSeal<str> for StringHashCode` の 2 つだけである。
+
+`HasherSeal` に値の型を持たせたのは、PR #223 の設計レビュー F1（Cursor と Devin の指摘も同じ）による。前の版の `HasherSeal` は値の型を持たなかったので、`StringHasher` と `StringHashCode` はどの `A` についても supertrait を満たした。Rust の孤児規則では、trait の型引数に自分の crate の型があれば、外の trait を外の型に実装できる。そのため、crate の外で `impl FrequencySketchHasher<MyKey> for StringHashCode` が書け、両方の sketch がその値を数えた。今の形では、その実装は `StringHashCode: HasherSeal<MyKey>` が満たされない E0277 で落ちる（`StringHasher` も同じ。`fraktor-actor` に path で依存する外部の crate で確かめた）。
+
+trait の API 文書の例は 4 つで、コンパイルされる例と `compile_fail` の例を 2 組並べる。1 組目は新しいハッシュ型 `ByLength` で `str` を数える形、2 組目は既存のハッシュ型 `StringHashCode` で crate の外の値の型 `Key` を数える形である。各組は、封じた実装の有無のほかは同じ import、同じ型、同じ sketch の呼び出しを使う。stable の rustdoc は `compile_fail,E0277` の誤りの番号を照合しないので、import や綴りの誤りで落ちても doctest は通ってしまう。直前のコンパイルされる例が同じパスを使うので、その誤りはそちらで落ちる。外部の crate で 4 つを build すると、`compile_fail` の 2 つはどちらも `HasherSeal` が満たされない E0277 だけで落ち、ほかの 2 つはコンパイルされて動いた。
 
 **Fast 版の扱い。** 原典の `FastFrequencySketch[A]` は `Hasher` を取らず、任意の `A` を `hashCode` で数える。封じた trait では「任意の型」を写せないので、封じる前に原典の契約と利用者を確かめた。
 
 - 原典の `FastFrequencySketch` は `@InternalApi private[pekko]` で、Pekko の外の利用者への公開の契約は無い。
 - Pekko の中の利用者が数える型は 2 つである。cluster-sharding の `EntityPassivationStrategy`（`EntityId`、つまり `String`）と、remote の artery の `InboundCompressions`（`FastFrequencySketchWrapper[T]` の `T` は `ActorRef` と、クラスのマニフェストの `String`。`InboundCompressions.scala` の 67・68 行、237 行、282 行、399 行）。
 - `String` は `StringHashCode` が写す。`ActorRef` は fraktor-actor の中の型なので、remote の圧縮を移植するときに、`ActorRef.hashCode` を写したハッシュをこの crate の中に足せる。workspace の crate は `fraktor-actor` と `fraktor-testkit` だけである。
+- `ActorRef` のハッシュはまだ無い（#226）。原典の `hashCode` は path の uid から作り、移植の `ActorRef` の等価性は id と世代で決まるので、何を写すかは足すときに決める。
 
 したがって、crate の中の実装で原典の利用者の型をすべて写せるので、封じた。Fast 版の公開面は変えていない（`with_hasher` の `H` は封じた trait を満たす型だけになる）。
 
@@ -242,5 +247,5 @@ PR #205 のマージの後、設計レビューで保留にした 3 点を副元
 
 原典の `Bits` は `private[pekko]` で、spec から呼べるのは同じ package だからである。Rust では、それは crate の中の単体テストにあたる。狭いほうで出せば、後から互換を壊さずに広げられる。
 
-- 原典の spec の 2 件（「FrequencySketch must」と「FastFrequencySketch must」の「detect width overflow that would have been missed by Int arithmetic」）は、本番の `Bits::ceiling_power_of_two` を直接呼ぶ形のまま、`frequency_sketch_value_test.rs` と `fast_frequency_sketch_test.rs` に移した。写しの関数にはしていない。`tests/frequency_sketch_spec.rs` は 20 件になった。台帳の `rust.cases_outside_test_file` と、ゴール文書の対応表に、ケースごとの置き場所を書いた。台帳の件数（22/22/22）は変わらない。
+- 原典の spec の 2 件（「FrequencySketch must」と「FastFrequencySketch must」の「detect width overflow that would have been missed by Int arithmetic」）は、本番の `Bits::ceiling_power_of_two` を直接呼ぶ形のまま、`frequency_sketch_value_test.rs` と `fast_frequency_sketch_test.rs` に移した。写しの関数にはしていない。`tests/frequency_sketch_spec.rs` は 20 件になった。台帳の `rust.cases_outside_test_file` と、ゴール文書の対応表に、ケースごとの置き場所を書いた。台帳の件数（22/22/22）は変わらない。欄の定義（要素は `case` と `file`、件数は `test_file` との和）は `docs/decisions/ledger-schema-draft.md` に、移植の規約の例外は `.takt/facets/knowledge/fraktor-porting-rules.md` に書いた（PR #223 の設計レビュー F3、Devin の指摘）。検査はまだこの欄を読まない（#225）。`verify_red` と `verify_green` は `test_file` だけを流すので、このノードの遷移は TAKT の already_green では記録しない（定義の文書に書いた）。
 - PBT の P6 は `bits_test.rs` の `bits_follow_their_definitions` に移した。性質、seed（`0xB175`）、境界 11 件、20,000 件の抽選は変えていない。SplitMix64 と `reference_ceiling_power_of_two` は、同じ定義を単体テストの側にも置いた（P7 が `tests/` の側で使い続けるため）。

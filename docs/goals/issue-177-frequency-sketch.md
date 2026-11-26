@@ -8,7 +8,7 @@
 |:---|:---|---:|
 | `actor-tests/src/test/scala/org/apache/pekko/util/FrequencySketchSpec.scala` | `crates/fraktor-actor/tests/frequency_sketch_spec.rs` | 22 |
 
-ケースの置き場所は、22件のうち20件が `crates/fraktor-actor/tests/frequency_sketch_spec.rs`、残る2件が `src/` の単体テストである。2件は、どちらも「detect width overflow that would have been missed by Int arithmetic」（「FrequencySketch must」と「FastFrequencySketch must」の下に1件ずつ）で、原典の `FrequencySketch.Bits.ceilingPowerOfTwo` を直接呼ぶ。原典の `Bits` は `private[pekko]` で、同じ package の spec からだけ呼べる。移植の `Bits` は `pub(crate)` なので、2件は crate の中の単体テストにした（副元帥の決定、PR #205 の後の追従）。台帳では `rust.cases_outside_test_file` に置き場所を書いた。
+ケースの置き場所は、22件のうち20件が `crates/fraktor-actor/tests/frequency_sketch_spec.rs`、残る2件が `src/` の単体テストである。2件は、どちらも「detect width overflow that would have been missed by Int arithmetic」（「FrequencySketch must」と「FastFrequencySketch must」の下に1件ずつ）で、原典の `FrequencySketch.Bits.ceilingPowerOfTwo` を直接呼ぶ。原典の `Bits` は `private[pekko]` で、同じ package の spec からだけ呼べる。移植の `Bits` は `pub(crate)` なので、2件は crate の中の単体テストにした（副元帥の決定、PR #205 の後の追従）。台帳では `rust.cases_outside_test_file` に置き場所を書いた（欄の定義は `docs/decisions/ledger-schema-draft.md`。検査はまだこの欄を読まない、#225）。
 
 | 原典のケース | 移植の置き場所 |
 |:---|:---|
@@ -47,7 +47,7 @@ TAKT は使わず、担当が直接進めた。前の担当がテストを先に
 - 幅が 0 以下（幅の倍率 0 や、容量 `i32::MIN`）のときは `WidthNotPositive` を返す。原典は作成を通し、最初の更新で配列の範囲外になる。2 の冪の検査は 0 と `i32::MIN` を通すので、その後ろに置いた。
 - 容量が `2^30` を超えると、`ceiling_power_of_two` は原典どおり `i32::MIN` になる。64 bit の積は負になって原典のあふれの検査を通り、既定の倍率では下位 32 bit が 0 になる。そのため `WidthOverflow` ではなく `WidthNotPositive { width: 0 }` を返す（PR #205 の Devin の指摘で単体テストに足した）。
 - 深さ 0 は原典どおり受け付け、`frequency` は `i32::MAX`、`size` は 0 になる。
-- 容量 0 以下も原典どおり受け付ける。幅は `width_multiplier` になり、リセットは無効になる（リセットの倍率も負なら積が正になり、リセットが走りうる）。`i32::MIN` だけは `ceiling_power_of_two` が `i32::MIN` になり、正の幅の倍率では `WidthNotPositive` を返す（副元帥の決定。`new` の API 文書にも書いた）。
+- 容量 0 以下も原典どおり受け付ける。幅は `width_multiplier` になる。リセットは、積を原典どおり `i32` に切り詰めた値が正のときだけ走る。容量 0 では走らない。容量が負なら、倍率が負で積が正になるとき（例：倍率 -2.0）と、倍率が正で負の積の下位 32 bit が正になるとき（例：倍率 4294967295.0 で下位 32 bit が 1）に走る。`i32::MIN` だけは `ceiling_power_of_two` が `i32::MIN` になり、正の幅の倍率では `WidthNotPositive` を返す（副元帥の決定。`new` の API 文書にも書いた）。
 
 ### 作らないもの
 

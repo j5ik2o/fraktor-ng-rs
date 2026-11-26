@@ -35,7 +35,7 @@ impl Default for StringHasher {
   }
 }
 
-impl HasherSeal for StringHasher {}
+impl HasherSeal<str> for StringHasher {}
 
 impl FrequencySketchHasher<str> for StringHasher {
   fn hash(&self, value: &str) -> i32 {
