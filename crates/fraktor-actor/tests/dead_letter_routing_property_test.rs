@@ -32,15 +32,20 @@
 
 use core::time::Duration;
 use std::string::String;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::vec::Vec;
 
+use fraktor_actor::kernel::actor::Actor;
+use fraktor_actor::kernel::actor::ActorContext;
 use fraktor_actor::kernel::actor::AnyDeadLetter;
 use fraktor_actor::kernel::actor::DeadLetter;
 use fraktor_actor::kernel::actor::DeadLetterLogLimit;
 use fraktor_actor::kernel::actor::DeadLetterSettings;
 use fraktor_actor::kernel::actor::DeadLetterSuppression;
+use fraktor_actor::kernel::actor::Props;
 use fraktor_actor::kernel::actor::SuppressedDeadLetter;
 use fraktor_actor::kernel::actor::Terminated;
 use fraktor_actor::kernel::actor_path::ActorPath;
@@ -441,4 +446,99 @@ fn listener_with_no_suspend_duration_stops_itself_after_an_unresolved_selection(
   let terminated: Terminated = spec.expect_msg_type();
   assert_eq!(terminated.target(), &listener);
   spec.terminate();
+}
+
+/// The listener's handler runs on the sender's stack, outside any
+/// delivery, when a message is told straight to the dead letters handle.
+/// The stop the handler records there must still reach the watchers once
+/// the queue drains.
+#[test]
+fn listener_with_no_suspend_duration_stops_itself_after_a_direct_tell_to_dead_letters() {
+  let mut spec = FraktorSpec::new("DeadLetterDirectTellSelfStop");
+  let sender = spec.test_actor();
+  let limit = DeadLetterLogLimit::Count(core::num::NonZeroU32::new(1).expect("the limit is not zero"));
+  let listener = spec.system_mut().start_dead_letter_listener(DeadLetterSettings::new(limit, None));
+  spec.test_kit_mut().watch(&listener);
+
+  spec.system().dead_letters().tell("lost", sender.clone());
+  spec.system_mut().run_until_idle();
+
+  let terminated: Terminated = spec.expect_msg_type();
+  assert_eq!(terminated.target(), &listener);
+  spec.terminate();
+}
+
+/// Stashes the message it is told to hold, and stops itself when told
+/// to stop, so the stop releases the stash to the dead letters.
+struct StashAndStop;
+
+impl Actor for StashAndStop {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    let Some(text) = message.downcast_ref::<&'static str>() else {
+      return;
+    };
+    match *text {
+      | "hold" => context.stash(),
+      | "stop" => {
+        let me = context.self_ref();
+        context.stop(&me);
+      },
+      | _ => {},
+    }
+  }
+}
+
+/// A stop releases the actor's stash to the dead letters while the
+/// boundary work drains the stop. When that release is the event that
+/// reaches the listener's limit, the listener's stop must still be
+/// carried out, even though the limit was reached in the middle of the
+/// boundary work rather than at its start.
+#[test]
+fn listener_with_no_suspend_duration_stops_itself_when_a_stopped_actors_stash_reaches_the_limit() {
+  let mut spec = FraktorSpec::new("DeadLetterStashSelfStop");
+  let sender = spec.test_actor();
+  let limit = DeadLetterLogLimit::Count(core::num::NonZeroU32::new(1).expect("the limit is not zero"));
+  let listener = spec.system_mut().start_dead_letter_listener(DeadLetterSettings::new(limit, None));
+  spec.test_kit_mut().watch(&listener);
+
+  let stasher = spec.system_mut().actor_of(Props::new(|| StashAndStop));
+  stasher.tell("hold", sender.clone());
+  stasher.tell("stop", sender.clone());
+  spec.system_mut().run_until_idle();
+
+  let terminated: Terminated = spec.expect_msg_type();
+  assert_eq!(terminated.target(), &listener);
+  spec.terminate();
+}
+
+/// After the system terminates, the dead letters handle drops what it
+/// is told without publishing: the handle sits in the executor's
+/// function references, and closing them at the stop is what makes the
+/// post return before the handler runs.
+#[test]
+fn telling_the_dead_letters_handle_after_terminate_publishes_nothing() {
+  let mut spec = FraktorSpec::new("DeadLettersAfterTerminate");
+  let sender = spec.test_actor();
+  let published = Arc::new(AtomicUsize::new(0));
+  let counter = spec.system_mut().function_ref("counter", {
+    let published = Arc::clone(&published);
+    move |_: &ActorRef, message: Message| {
+      if message.downcast_ref::<DeadLetter>().is_some() {
+        published.fetch_add(1, Ordering::SeqCst);
+      }
+    }
+  });
+  spec
+    .system()
+    .event_stream()
+    .subscribe(Some(counter), EventClass::of::<DeadLetter>())
+    .expect("the counter subscribes");
+
+  let dead_letters = spec.system().dead_letters();
+  dead_letters.tell("before", sender.clone());
+  assert_eq!(published.load(Ordering::SeqCst), 1, "the tell before terminate must publish one dead letter");
+
+  spec.terminate();
+  dead_letters.tell("after", sender.clone());
+  assert_eq!(published.load(Ordering::SeqCst), 1, "the tell after terminate must publish nothing");
 }

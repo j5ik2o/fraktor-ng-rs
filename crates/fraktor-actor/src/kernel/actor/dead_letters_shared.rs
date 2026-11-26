@@ -37,11 +37,14 @@ use crate::kernel::message::Message;
 /// finds no actor, so the two keep their shared facts here instead of in
 /// the executor: the weak handle of the event stream's subscription table,
 /// which is filled in once the system has built its stream, and the table
-/// of payload types registered for suppression. The fields sit behind a
-/// spin mutex because a function reference must be `Send + Sync`, and the
-/// handler never borrows the executor.
+/// of payload types registered for suppression. The bus is filled in
+/// once, when the system is built, so it sits in a `spin::Once` that
+/// publishing reads without a lock. The suppression table sits behind a
+/// spin mutex because a function reference must be `Send + Sync`, the
+/// handler never borrows the executor, and payload types can be
+/// registered at any time.
 pub(crate) struct DeadLettersShared {
-  bus: Mutex<Option<EventStreamBusWeak>>,
+  bus: spin::Once<EventStreamBusWeak>,
   suppression: Mutex<BTreeSet<TypeId>>,
 }
 
@@ -59,12 +62,15 @@ impl DeadLettersShared {
     suppression.insert(TypeId::of::<Terminated>());
     suppression.insert(TypeId::of::<DeadLetter>());
     suppression.insert(TypeId::of::<SuppressedDeadLetter>());
-    Self { bus: Mutex::new(None), suppression: Mutex::new(suppression) }
+    Self { bus: spin::Once::new(), suppression: Mutex::new(suppression) }
   }
 
   /// Records the subscription table the routing rules publish to.
+  ///
+  /// The system calls this once, when it builds its event stream; a
+  /// later call keeps the first table.
   pub(crate) fn set_bus(&self, bus: EventStreamBusWeak) {
-    *self.bus.lock() = Some(bus);
+    let _ = self.bus.call_once(|| bus);
   }
 
   /// Registers the payload type `id` for suppression.
@@ -168,8 +174,7 @@ impl DeadLettersShared {
   }
 
   fn publish<E: core::any::Any + Send + Sync>(&self, event: E) {
-    let bus = self.bus.lock().clone();
-    if let Some(bus) = bus {
+    if let Some(bus) = self.bus.get() {
       bus.publish(event);
     }
   }

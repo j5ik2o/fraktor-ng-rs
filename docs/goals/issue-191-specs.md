@@ -86,7 +86,7 @@ ConsistencySpec は、このゴールには含めていない。fraktor の `Act
 |:---|:---|
 | `cargo test -p fraktor-actor --test dead_letter_supression_spec` | 2 passed |
 | `cargo test -p fraktor-actor --test dead_letter_suspension_spec` | 1 passed |
-| `cargo test -p fraktor-actor --test dead_letter_routing_property_test` | 6 passed（モデル 2 件と、レビュー対応の回帰 4 件） |
+| `cargo test -p fraktor-actor --test dead_letter_routing_property_test` | 9 passed（モデル 2 件と、レビュー対応の回帰 7 件） |
 | `cargo test -p fraktor-actor --lib` | 542 passed / 0 failed（レビュー対応の回帰 3 件を含む） |
 | `cargo test --workspace` | 全スイートで失敗なし |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功 |

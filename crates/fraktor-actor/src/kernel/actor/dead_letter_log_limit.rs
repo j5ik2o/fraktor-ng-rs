@@ -33,5 +33,11 @@ pub enum DeadLetterLogLimit {
   /// Log at most this many dead letters in one logging period.
   Count(NonZeroU32),
   /// Log every dead letter.
+  ///
+  /// With no unsubscriber running, an `Info` subscriber that stopped
+  /// while subscribed makes the listener's own log line come back as a
+  /// dead letter for ever: the listener counts it and logs again. Start
+  /// the system's unsubscriber to give the circulation its exit, as
+  /// Pekko's default setup does.
   Unlimited,
 }

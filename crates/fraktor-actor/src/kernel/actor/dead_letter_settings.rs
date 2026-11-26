@@ -30,6 +30,15 @@ use crate::kernel::actor::DeadLetterLogLimit;
 /// [`ActorSystem::start_dead_letter_listener`](crate::kernel::actor_system::ActorSystem::start_dead_letter_listener)
 /// directly. Pekko's default suspend duration is 5 minutes; the default
 /// here states it.
+///
+/// A finite suspend duration is measured on the shard boundary's
+/// monotonic time, or on the clock installed with
+/// `ActorSystem::set_clock`. On a custom boundary that returns no time,
+/// with no clock installed, a suspension never lifts: the listener keeps
+/// counting and never logs again, and because it does not stop either,
+/// no `Terminated` reaches its watchers. The default boundary returns a
+/// time, so this only bites a boundary that chooses to have no clock.
+
 #[derive(Clone, Copy)]
 pub struct DeadLetterSettings {
   limit: DeadLetterLogLimit,

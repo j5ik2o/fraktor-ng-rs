@@ -143,6 +143,17 @@ struct ParentEntry {
 /// One callback that the executor runs with the handle of a stopped actor.
 type TerminationCallback = Box<dyn Fn(&ActorRef)>;
 
+/// The notice the dead letter listener's handler posts to the shard
+/// boundary when its state machine stops itself.
+///
+/// The handler runs on a sender's stack and must not borrow the
+/// executor, so it cannot stop its own reference there. It posts this
+/// envelope to the boundary instead, and the delivery of the notice is
+/// what carries the stop out, so a limit reached outside any delivery
+/// (a direct tell to the dead letters handle, a stash a stop releases)
+/// is not lost.
+struct StopDeadLetterListener;
+
 /// A DeathWatch notice that can still be cancelled before local delivery.
 struct PendingTermination {
   watcher: ActorRef,
@@ -180,7 +191,7 @@ pub(crate) struct Executor {
   termination_callbacks: Vec<TerminationCallback>,
   dead_letters: ActorRef,
   dead_letters_shared: Arc<DeadLettersShared>,
-  dead_letter_listener: Option<(ActorRef, Arc<spin::Mutex<DeadLetterListener>>)>,
+  dead_letter_listener: Option<ActorRef>,
   boundary_active: bool,
   hook_child_creation_refused: bool,
   terminated: bool,
@@ -257,15 +268,17 @@ impl Executor {
     // handler rebuilds it from the identifier, the path, and the boundary.
     // The boundary is held weakly: a strong slot would cycle handle ->
     // boundary -> handler -> handle, and dropping a system would leak the
-    // boundary, the handler, and the shared routing state with it.
-    type HandleParts = (u64, ActorPath, alloc::sync::Weak<dyn crate::kernel::executor::ShardBoundary>);
-    let slot: Arc<spin::Mutex<Option<HandleParts>>> = Arc::new(spin::Mutex::new(None));
+    // boundary, the handler, and the shared routing state with it. The
+    // slot is filled in once, here, so it sits in a `spin::Once` that the
+    // handler reads without a lock, and it holds the path in an `Arc`, so
+    // rebuilding the handle for one message clones no path.
+    type HandleParts = (u64, Arc<ActorPath>, alloc::sync::Weak<dyn crate::kernel::executor::ShardBoundary>);
+    let slot: Arc<spin::Once<HandleParts>> = Arc::new(spin::Once::new());
     let slot_in_handler = slot.clone();
     let handler = Arc::new(move |sender: &ActorRef, message: Message| {
-      let parts = slot_in_handler.lock().clone();
-      if let Some((id, path, boundary)) = parts {
+      if let Some((id, path, boundary)) = slot_in_handler.get() {
         if let Some(boundary) = boundary.upgrade() {
-          let dead_letters = ActorRef::new(id, 0, Arc::new(path), boundary);
+          let dead_letters = ActorRef::new(*id, 0, path.clone(), boundary);
           shared.route_at_dead_letters(message, sender.clone(), &dead_letters);
         }
       }
@@ -273,8 +286,9 @@ impl Executor {
     let boundary: Arc<dyn crate::kernel::executor::ShardBoundary> =
       Arc::new(crate::kernel::executor::FunctionBoundary::new(handler));
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let reference = ActorRef::new(id, 0, Arc::new(path.clone()), boundary.clone());
-    *slot.lock() = Some((id, path, Arc::downgrade(&boundary)));
+    let path = Arc::new(path);
+    let reference = ActorRef::new(id, 0, path.clone(), boundary.clone());
+    slot.call_once(|| (id, path, Arc::downgrade(&boundary)));
     reference
   }
 
@@ -332,14 +346,19 @@ impl Executor {
     });
     let bus = self.event_stream.as_ref().map(|stream| stream.downgrade());
     let sink = self.event_sink.clone();
-    let state = Arc::new(spin::Mutex::new(DeadLetterListener::new(settings, dead_letters)));
-    let kept_state = state.clone();
+    let state = Arc::new(spin::Mutex::new(DeadLetterListener::new(settings, dead_letters.clone())));
+    let post_boundary = self.queue.boundary().clone();
     let listener = self.function_ref("DeadLetterListener", move |_: &ActorRef, message: Message| {
       let Some(event) = AnyDeadLetter::from_message(&message) else {
         return;
       };
       let is_suppressed = |candidate: &Message| shared.is_suppressed(candidate);
-      let text = state.lock().on_event(&event, now_of(), &is_suppressed);
+      let (text, stopped) = {
+        let mut state = state.lock();
+        let text = state.on_event(&event, now_of(), &is_suppressed);
+        let stopped = text.is_some() && state.is_stopped();
+        (text, stopped)
+      };
       if let Some(text) = text {
         let info = Info::new(event.recipient().path().to_string(), 0, &text);
         if let Some(bus) = bus.as_ref() {
@@ -349,8 +368,20 @@ impl Executor {
           current.publish(&info);
         }
       }
+      if stopped {
+        // The state machine stopped itself with this event: Pekko's
+        // listener calls `context.stop(self)` here. This handler runs on
+        // a sender's stack and must not borrow the executor, so it posts
+        // the stop notice to the shard boundary instead, and the
+        // delivery of that notice carries the stop out.
+        post_boundary.post(Envelope::new(
+          dead_letters.clone(),
+          Message::new(StopDeadLetterListener),
+          dead_letters.clone(),
+        ));
+      }
     });
-    self.dead_letter_listener = Some((listener.clone(), kept_state));
+    self.dead_letter_listener = Some(listener.clone());
     listener
   }
 
@@ -640,15 +671,6 @@ impl Executor {
       return;
     }
     self.boundary_active = true;
-    // Pekko's listener stops itself when the count reaches the limit with
-    // no suspend duration. The handler only records that in the state
-    // machine (it runs on a sender's stack and must not borrow the
-    // executor), so the stop is carried out here, at the next boundary.
-    if self.dead_letter_listener.as_ref().is_some_and(|(_, state)| state.lock().is_stopped()) {
-      if let Some((listener, _)) = self.dead_letter_listener.take() {
-        self.request_stop(listener);
-      }
-    }
     loop {
       self.flush_ready_child_terminated();
       let applied = self.apply_pending_decider_failures();
@@ -1384,6 +1406,17 @@ impl Executor {
   /// carries out a stop-after-reply once the actor returns.
   fn deliver(&mut self, envelope: Envelope) {
     let (recipient, message, sender) = envelope.into_parts();
+    if message.downcast_ref::<StopDeadLetterListener>().is_some() {
+      // The dead letter listener's handler posted this notice when its
+      // state machine stopped itself. Carry the stop out here, where the
+      // executor can be borrowed, and run the boundary work so this same
+      // pass drains the stop.
+      if let Some(listener) = self.dead_letter_listener.take() {
+        self.request_stop(listener);
+      }
+      self.finish_boundary();
+      return;
+    }
     if let Some(selection) = message.downcast_ref::<ActorSelectionMessage>() {
       let selection = selection.clone();
       self.deliver_selection(selection.path(), selection.message().clone(), selection.sender().clone());

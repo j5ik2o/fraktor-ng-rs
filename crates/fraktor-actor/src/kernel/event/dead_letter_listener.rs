@@ -60,9 +60,10 @@ impl DeadLetterListener {
 
   /// Returns whether the listener has stopped itself: the count reached
   /// the limit while no suspend duration was set, which is where Pekko's
-  /// listener stops its own actor. The executor reads this at a delivery
-  /// boundary and carries out the stop, because the handler that runs
-  /// this state machine must not borrow the executor.
+  /// listener stops its own actor. The handler reads this right after
+  /// feeding the event that stopped the machine and posts the stop
+  /// notice to the shard boundary, because the handler must not borrow
+  /// the executor; the delivery of the notice carries the stop out.
   pub fn is_stopped(&self) -> bool {
     self.stopped
   }
