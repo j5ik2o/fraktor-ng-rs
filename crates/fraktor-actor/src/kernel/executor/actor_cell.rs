@@ -49,6 +49,19 @@ pub(crate) struct ActorCell {
   strategy_inherited: bool,
   restart_history: RestartHistory,
   post_stop_suppressed: bool,
+  start_failure: Option<StartFailure>,
+  failed_sender: Option<ActorRef>,
+}
+
+/// What the cell keeps of a start that failed, until a `Create` starts it
+/// again (design of #234, section 11.12.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StartFailure {
+  /// The parent has not decided for the failure yet.
+  Undecided,
+  /// The parent has decided for the failure (Pekko's `Failed` has reached
+  /// the parent and been handled).
+  Decided,
 }
 
 impl ActorCell {
@@ -71,6 +84,8 @@ impl ActorCell {
       strategy_inherited,
       restart_history: RestartHistory::new(),
       post_stop_suppressed: false,
+      start_failure: None,
+      failed_sender: None,
     }
   }
 
@@ -82,15 +97,6 @@ impl ActorCell {
   /// Returns the handle of the actor that this cell runs.
   pub(crate) fn self_ref(&self) -> ActorRef {
     self.self_ref.clone()
-  }
-
-  /// Returns whether this cell was started by `parent`.
-  ///
-  /// A child is told apart by the handle of its parent, not by the shape of its
-  /// path: two different parents may give a child the same name, and a path
-  /// prefix would then match the wrong actor.
-  pub(crate) fn is_child_of(&self, parent: &ActorRef) -> bool {
-    self.parent.as_ref() == Some(parent)
   }
 
   /// Returns the handle of the actor that started this actor, when it has one.
@@ -255,5 +261,40 @@ impl ActorCell {
   /// Returns whether the stop path must skip this instance's `post_stop`.
   pub(crate) fn post_stop_suppressed(&self) -> bool {
     self.post_stop_suppressed
+  }
+
+  /// Returns what the cell keeps of a start that failed, if one did.
+  pub(crate) fn start_failure(&self) -> Option<StartFailure> {
+    self.start_failure
+  }
+
+  /// Records that the start failed and the parent has not decided yet.
+  pub(crate) fn record_start_failure(&mut self) {
+    self.start_failure = Some(StartFailure::Undecided);
+  }
+
+  /// Records that the parent has decided for the failed start.
+  pub(crate) fn mark_start_failure_decided(&mut self) {
+    if self.start_failure.is_some() {
+      self.start_failure = Some(StartFailure::Decided);
+    }
+  }
+
+  /// Forgets the failed start, as a `Create` that starts the actor again
+  /// does, and returns whether there was one.
+  pub(crate) fn take_start_failure(&mut self) -> bool {
+    self.start_failure.take().is_some()
+  }
+
+  /// Returns the sender of the message whose handling failed, which
+  /// `post_stop` and `pre_restart` see as `sender()` (Pekko's
+  /// `currentMessage`, which a failure leaves on the failed envelope).
+  pub(crate) fn failed_sender(&self) -> Option<ActorRef> {
+    self.failed_sender.clone()
+  }
+
+  /// Records or clears the sender of the failed message.
+  pub(crate) fn set_failed_sender(&mut self, sender: Option<ActorRef>) {
+    self.failed_sender = sender;
   }
 }

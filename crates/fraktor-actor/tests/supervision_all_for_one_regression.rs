@@ -369,6 +369,9 @@ fn decider_panics_on_kill_and_initialization_fail_the_supervisor() {
           }
         }),
       );
+      // The child starts, and the supervisor decides for its failed start,
+      // in the runs after the spawn (Pekko's `Create` and `Failed`).
+      spec.system_mut().run_until_idle();
       if failure == FailureKind::Killed {
         child.tell("Kill", spec.test_actor());
         spec.system_mut().run_until_idle();
@@ -494,6 +497,8 @@ fn post_stop_cannot_create_an_explicitly_supervised_child() {
     move || SpawnFromStop(Arc::clone(&starts))
   }));
   spec.system_mut().stop(&parent);
+  // The parent stops in its own run (Pekko's `Terminate`).
+  spec.system_mut().run_until_idle();
   assert!(spec.system().is_actor_terminated(&parent));
   assert_eq!(starts.load(Ordering::SeqCst), 0);
   spec.terminate();

@@ -153,12 +153,13 @@ impl WeakActorSystem {
     Executor::lend(&self.upgrade(), |executor| executor.unwatch(watcher, target));
   }
 
-  /// Stops `target`, telling its watchers that it is gone.
+  /// Asks `target` to stop. Its watchers are told once it has stopped.
   ///
   /// Mirrors `ActorSystem.stop` reached through a non-owning handle, which is
   /// how a probe or a test that only holds a `Weak` back-edge stops an actor.
+  /// The stop takes effect once the dispatcher has run the target.
   pub fn stop(&self, target: &ActorRef) {
-    Executor::lend(&self.upgrade(), |executor| executor.stop_at_boundary(target));
+    Executor::lend(&self.upgrade(), |executor| executor.stop(target));
   }
 
   /// Returns whether `target` no longer has a running actor behind it.
