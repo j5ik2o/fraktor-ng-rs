@@ -106,9 +106,7 @@ fn later_registration_wins_between_definition_and_alias() {
   settings.define_dispatcher("d", MailboxDefinition::bounded(7, 7));
   assert_eq!(settings.resolve_dispatcher("d"), Ok(Some(MailboxDefinition::bounded(7, 7))));
 
-  // Mailboxes have no aliases in the original (re-review 2, low 1
-  // of #192): a later mailbox definition simply replaces the
-  // earlier one, and an undefined mailbox name resolves to none.
+  // Mailboxes have no aliases in the original (re-review 2, low 1 of #192).
   let mut settings = DispatchSettings::new();
   settings.define_mailbox("m", MailboxDefinition::bounded(3, 3));
   settings.define_mailbox("m", MailboxDefinition::bounded(7, 7));

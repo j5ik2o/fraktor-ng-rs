@@ -293,7 +293,7 @@ impl ActorSelection {
 
 | 番号 | 不変条件 |
 |:---|:---|
-| D1 | 停止したアクターへの通常のメッセージ 1 件は、`DeadLetter(message, sender, そのアクター)` をちょうど 1 件 publish する。二重にも、ゼロにもならない。ここでいう停止したアクターはセルのアクターに限る。停止した function ref は境界が閉じられ、`post` が黙って捨てるため、dead letter にならない（再レビューの低 7）。注記（#192 で追加）：`ActorSystem::function_ref` で作るシステム直下の function ref だけがこの扱いであり、`add_function_ref` で作る FunctionRef は #192 で dead letter になる（原典の `deadLetterMessageHandler`。境界が包まずに生のまま dead letters へ渡し、recipient は deadLetters 自身になる） |
+| D1 | 停止したアクターへの通常のメッセージ 1 件は、`DeadLetter(message, sender, そのアクター)` をちょうど 1 件 publish する。二重にも、ゼロにもならない。ここでいう停止したアクターはセルのアクターに限る。停止した function ref は境界が閉じられ、`post` が黙って捨てるため、dead letter にならない（再レビューの低 7）。注記（#192 で追加）：`ActorSystem::function_ref` で作るシステム直下の function ref だけがこの扱いであり、`add_function_ref` で作る FunctionRef は #192 で dead letter になる（原典の `deadLetterMessageHandler`。境界が包まずに生のまま dead letters へ渡し、recipient は deadLetters 自身になる）。この保証は、システムが稼働中で deadLetters が受けられる場合の通常のメッセージに限る。`ActorSystem::terminate()` のあとは対象外であり、抑制対象のメッセージは D2 に従い、すでに `DeadLetter`／`SuppressedDeadLetter` であるメッセージは閉じた境界が破棄する |
 | D2 | 抑制対象のメッセージ 1 件は、`SuppressedDeadLetter(message, sender, 処理した参照)` をちょうど 1 件 publish し、`DeadLetter` は publish しない。宛先は処理した参照であり、deadLetters の参照が処理した場合は `system.deadLetters`、空の参照が処理した場合はその空の参照になる（M1） |
 | D3 | `deadLetters` へ送られた `DeadLetter` は、特別扱いに当たらない限り宛先を保ったまま publish される。中身が抑制対象の場合は、その `DeadLetter` は publish されず、中身について D2 が起きる |
 | D4 | `AllDeadLetters` の購読者は、D1 と D2 の両方を送った順に受ける。`DeadLetter` の購読者は D2 を受けず、`SuppressedDeadLetter` の購読者は D1 を受けない |

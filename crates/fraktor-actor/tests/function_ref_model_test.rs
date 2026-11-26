@@ -76,15 +76,15 @@ impl Actor for Parent {
       let probe = self.probe.clone();
       let index = self.refs.len();
       let reference = context.add_function_ref(move |sender, forwarded| {
-        let description = if forwarded.downcast_ref::<Terminated>().is_some() {
-          String::from("Terminated")
+        let (description, target_path) = if let Some(notice) = forwarded.downcast_ref::<Terminated>() {
+          (String::from("Terminated"), notice.target().path().to_string())
         } else if let Some(text) = forwarded.downcast_ref::<String>() {
-          text.clone()
+          (text.clone(), String::new())
         } else {
-          String::from("other")
+          (String::from("other"), String::new())
         };
         let from = sender.path().to_string();
-        probe.tell((description, from, index), sender.clone());
+        probe.tell((description, from, index, target_path), sender.clone());
       });
       self.refs.push(reference.clone());
       context.tell(&sender, reference);
@@ -125,8 +125,9 @@ enum Observed {
   ProbeTerminated(usize),
   // A Terminated forwarded by a watching ref: (watcher, target).
   ForwardedTerminated(usize, usize),
-  // A payload forwarded by a ref: the payload text.
-  Forwarded(String),
+  // A payload forwarded by a ref: the payload text and the index
+  // of the ref whose handler forwarded it.
+  Forwarded(String, usize),
   // A dead letter: the payload text. The recipient is the dead
   // letters handle itself, as the original's `DeadLetterActorRef`
   // names it, so the payload (unique per send) identifies it.
@@ -171,15 +172,20 @@ fn classify(refs: &[FunctionRef], parent: &ActorRef, dead_letters: &ActorRef, me
     let index = refs.iter().position(|reference| reference.as_actor_ref() == *ended).expect("known ref");
     return Observed::ProbeTerminated(index);
   }
-  if let Some((description, from, watcher)) = message.downcast_ref::<(String, String, usize)>() {
+  if let Some((description, from, watcher, target_path)) = message.downcast_ref::<(String, String, usize, String)>() {
     if description == "Terminated" {
+      // The notice's own target and its sender are checked apart:
+      // the target comes from `Terminated::target()` as the handler
+      // forwarded it, and the sender must be that same ended ref
+      // (design M5), not a value rebuilt from the sender.
       let target =
-        refs.iter().position(|reference| reference.path().to_string() == *from).expect("the sender is the ended ref");
+        refs.iter().position(|reference| reference.path().to_string() == *target_path).expect("known target ref");
+      assert_eq!(*from, refs[target].path().to_string(), "the notice's sender is the ended ref itself");
       // The handler captured its own index when the parent created
       // it, so the watcher is known exactly.
       return Observed::ForwardedTerminated(*watcher, target);
     }
-    return Observed::Forwarded(description.clone());
+    return Observed::Forwarded(description.clone(), *watcher);
   }
   if let Some(dead) = message.downcast_ref::<DeadLetter>() {
     let payload = dead.message().downcast_ref::<String>().cloned().unwrap_or_default();
@@ -284,8 +290,11 @@ fn function_ref_matches_the_registry_model() {
           sends += 1;
           let payload = format!("ping-{round}-{sends}");
           parent.tell(format!("send:{target}:{payload}"), test_actor.clone());
-          let expected =
-            if model.registered[target] { vec![Observed::Forwarded(payload)] } else { vec![Observed::Dead(payload)] };
+          let expected = if model.registered[target] {
+            vec![Observed::Forwarded(payload, target)]
+          } else {
+            vec![Observed::Dead(payload)]
+          };
           let observed = drain(&mut kit, &refs, &parent, 1);
           assert_eq!(sorted(&observed), sorted(&expected), "seed {seed} round {round} step {step} send {target}");
         },
@@ -302,5 +311,8 @@ fn function_ref_matches_the_registry_model() {
     kit.system_mut().stop(&parent);
     let observed = drain(&mut kit, &refs, &parent, expected.len());
     assert_eq!(sorted(&observed), sorted(&expected), "seed {seed} round {round} parent stop");
+    // Exactly once (design F2): nothing further may arrive after
+    // the predicted deliveries of the parent's stop.
+    kit.expect_no_message(Duration::from_millis(300));
   }
 }
