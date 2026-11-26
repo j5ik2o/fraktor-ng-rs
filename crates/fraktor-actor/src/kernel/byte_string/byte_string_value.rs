@@ -16,10 +16,11 @@
 
 //! An immutable sequence of bytes, kept as one or more shared byte arrays.
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 
 use super::{ByteStringBuilder, ByteStringInputStream};
 use crate::kernel::byte_iterator::ByteIterator;
+use crate::kernel::sync::Arc;
 
 #[cfg(test)]
 #[path = "byte_string_value_test.rs"]

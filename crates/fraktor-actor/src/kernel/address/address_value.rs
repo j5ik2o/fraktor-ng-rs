@@ -16,6 +16,9 @@
 
 //! Immutable value describing where an actor system listens.
 
+use alloc::format;
+use alloc::string::String;
+use alloc::string::ToString;
 use core::{cmp::Ordering, fmt};
 
 use crate::kernel::address::uri_parts::UriParts;

@@ -23,7 +23,8 @@
 //! An actor system and its lifecycle.
 
 use alloc::rc::Rc;
-use alloc::sync::Arc;
+use alloc::string::String;
+use alloc::string::ToString;
 use core::cell::RefCell;
 use core::fmt;
 use core::time::Duration;
@@ -51,6 +52,7 @@ use crate::kernel::executor::Executor;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::setup::ActorSystemSetup;
 use crate::kernel::supervision::FailureCatcher;
+use crate::kernel::sync::Arc;
 
 #[cfg(test)]
 #[path = "actor_system_value_test.rs"]

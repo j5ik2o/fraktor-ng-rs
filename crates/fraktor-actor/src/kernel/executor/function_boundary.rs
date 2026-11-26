@@ -16,7 +16,6 @@
 
 //! A boundary that hands each envelope to a function right away.
 
-use alloc::sync::Arc;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering;
 use core::time::Duration;
@@ -27,6 +26,7 @@ use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
+use crate::kernel::sync::Arc;
 
 /// The handler that a function reference runs for each delivered message.
 pub(crate) type Handler = Arc<dyn Fn(&ActorRef, Message) + Send + Sync>;

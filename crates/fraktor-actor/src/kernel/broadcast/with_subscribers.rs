@@ -17,6 +17,7 @@
 //! The message that applies an operation to each current subscriber.
 
 use crate::kernel::actor_ref::ActorRef;
+use alloc::boxed::Box;
 
 /// Runs a closure once for each actor in the broadcaster's subscriber set.
 ///

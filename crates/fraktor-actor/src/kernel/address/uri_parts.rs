@@ -1,6 +1,8 @@
 //! Parsed components of an absolute or relative URI as understood by
 //! `java.net.URI`.
 
+use alloc::vec::Vec;
+
 #[cfg(test)]
 #[path = "uri_parts_test.rs"]
 mod tests;

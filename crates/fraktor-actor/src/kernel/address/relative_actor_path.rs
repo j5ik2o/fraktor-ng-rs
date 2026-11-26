@@ -17,6 +17,9 @@
 //! Extracts the path elements of a relative actor path.
 
 use crate::kernel::address::uri_parts::RelativeUriParts;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 /// Entry point for splitting a relative actor path into its name elements.
 #[derive(Clone, Copy, Debug, Default)]

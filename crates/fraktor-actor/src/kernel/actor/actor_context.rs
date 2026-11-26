@@ -33,6 +33,7 @@ use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::Executor;
 use crate::kernel::message::Message;
 use crate::kernel::supervision::SupervisorStrategy;
+use alloc::boxed::Box;
 
 /// What an actor may do while it handles a message: address itself, name its
 /// sender, send messages, start children, swap behaviour, and stop itself after

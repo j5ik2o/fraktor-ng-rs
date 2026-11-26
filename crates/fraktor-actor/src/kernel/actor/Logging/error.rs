@@ -19,7 +19,6 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::sync::Arc;
 use core::any::Any;
 use core::fmt;
 
@@ -28,6 +27,7 @@ use crate::kernel::actor::Logging::log_event::LogEvent;
 use crate::kernel::actor::Logging::log_level::LogLevel;
 use crate::kernel::actor::Logging::LogMarker;
 use crate::kernel::actor::Logging::Mdc;
+use crate::kernel::sync::Arc;
 
 /// An error event.
 ///

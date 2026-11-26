@@ -17,12 +17,12 @@
 //! The queue of one shard and the boundary of the shard that follows it.
 
 use alloc::collections::VecDeque;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
+use crate::kernel::sync::Arc;
 
 /// The place a message sent from inside a shard lands, and the escape out of
 /// it.

@@ -16,6 +16,10 @@
 
 //! The root of the actor hierarchy, carrying the address and the leading name.
 
+use alloc::format;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::fmt;
 
 use crate::kernel::actor_path::actor_path_value::ActorPath;
