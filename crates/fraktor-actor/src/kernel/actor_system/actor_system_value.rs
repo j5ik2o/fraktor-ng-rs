@@ -44,6 +44,7 @@ use crate::kernel::actor::UnhandledMessage;
 use crate::kernel::actor_path::ActorPath;
 use crate::kernel::actor_path::RootActorPath;
 use crate::kernel::actor_ref::ActorRef;
+use crate::kernel::actor_system::actor_name_arg::ActorNameArg;
 use crate::kernel::actor_system::weak_actor_system::WeakActorSystem;
 use crate::kernel::address::Address;
 use crate::kernel::event::EventClass;
@@ -228,16 +229,24 @@ impl ActorSystem {
   /// has stopped. The port returns these refusals as one
   /// [`ActorCreationError`](crate::kernel::actor::ActorCreationError).
   ///
+  /// The name is taken as an [`ActorNameArg`]: a `&str` or a
+  /// `&String` is the name, and `None` (an `Option` spelling) stands
+  /// for Pekko's `null` name, which is refused as an invalid name
+  /// whose message mentions `null`.
+  ///
   /// # Errors
   ///
   /// Returns [`ActorCreationError`](crate::kernel::actor::ActorCreationError)
   /// when the name, system state, or configuration is refused.
-  pub fn actor_of_named(
+  pub fn actor_of_named<'name>(
     &mut self,
     props: Props,
-    name: &str,
+    name: impl ActorNameArg<'name>,
   ) -> Result<ActorRef, crate::kernel::actor::ActorCreationError> {
-    self.try_actor_of(props, Some(name))
+    match name.into_option() {
+      | Some(name) => self.try_actor_of(props, Some(name)),
+      | None => Err(crate::kernel::actor::InvalidActorNameException::null_name().into()),
+    }
   }
 
   /// Starts a top-level actor, named when `name` is given, after both
