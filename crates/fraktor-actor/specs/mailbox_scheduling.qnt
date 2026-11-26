@@ -62,6 +62,30 @@
 //                     handled all of them (Devin's review on PR #236).
 //   ClearFlagAfterDrain : the run empties the system queue first and lowers
 //                     the flag afterwards (design section 3.8, idea 5).
+//   CloseDuringRun  : the executor closes the mailbox from outside while a run
+//                     still holds the actor (stage 3, design section 11.11).
+//   KeepQueuedRun   : closing from outside leaves the run that was already
+//                     submitted in the pool (stage 3).
+//   PanicKeepsScheduled : a run that unwinds puts the actor back but leaves
+//                     the scheduled bit set (design 11.6 L5).
+//   PanicDropsSysFlag : a run that unwinds in the middle of the system
+//                     messages does not raise the flag again (design 11.6 L5).
+//
+// Stage 3 of #234 (design section 11.11) adds three transitions that hold
+// until stage 4a turns a stop into a Terminate system message:
+//   closeOutside : the executor stops an actor synchronously and closes its
+//                  mailbox outside every run. Under the executor's lock it
+//                  never stops an actor whose run is in progress (it defers
+//                  that stop until the run has returned), and it takes the
+//                  run that is still waiting in the pool out with it.
+//   yieldRun     : a run gives the thread back right after a message whose
+//                  handling left work that needs the actor in its slot (a
+//                  failure, a stop, Kill, PoisonPill); the executor does that
+//                  work after the run returns.
+//   panicInvoke, panicSystem : `receive` or a system message panics with no
+//                  catcher. The guard puts the actor back, raises the flag
+//                  again when system messages wait, clears the scheduled bit
+//                  and reserves the mailbox again.
 //
 // A run handles every waiting system message before it takes a normal message,
 // at its start and again after each normal message (Mailbox.run calls
@@ -88,7 +112,8 @@ module mailbox_scheduling {
   pure val CONTROL_BUDGET = 2
 
   type Mode = Fixed | LostWakeup | CheckThenAct | ExternalSuspend | LateEnqueue | DropSystemOnClose
-    | MessagesBeforeSystem | PartialDrain | ClearFlagAfterDrain
+    | MessagesBeforeSystem | PartialDrain | ClearFlagAfterDrain | CloseDuringRun | KeepQueuedRun
+    | PanicKeepsScheduled | PanicDropsSysFlag
   type SysMsg = Suspend | Resume | Terminate
   // mark: how many normal messages had been taken when the system message arrived.
   type SysEntry = { kind: SysMsg, mark: int }
@@ -133,6 +158,9 @@ module mailbox_scheduling {
     // Ghost: the submission in the pool was made by a caller that read work in
     // its first step, and the work was gone by its fetch_or.
     staleSubmission: bool,
+    // Ghost: system messages whose handling panicked with no catcher. The run
+    // had already taken them off the queue, so their effect is lost.
+    panickedSystemMessages: int,
   }
   // drained: the run has handled every waiting system message since it last took a normal message.
   // drainMark: how many system messages had been handled when the run last saw the queue empty.
@@ -213,7 +241,8 @@ module mailbox_scheduling {
   val submittedWithWorkOrStaleRead = st.submitted > 0 implies (not(st.closed) and (hasWork or st.staleSubmission))
   // When nothing is in flight (no sender between its steps, no run, no
   // submission, no decision owed by the parent), an open mailbox has handled
-  // everything it may handle, and it is suspended only if somebody asked for it.
+  // everything it may handle, and it is suspended only if somebody asked for it,
+  // or a system message that would have resumed it panicked (panicSystem).
   def settled: bool =
     SENDERS.forall(s => senders.get(s).phase == SReady) and countIn(Set(Free)) == WORKERS.size()
       and regs.keys().forall(r => regs.get(r).phase == RIdle)
@@ -221,7 +250,7 @@ module mailbox_scheduling {
   val settledMeansIdle =
     (settled and not(st.closed)) implies
       (st.sys.length() == 0 and (st.suspendCount == 0 implies st.queue == 0)
-        and (st.suspendCount > 0 implies st.externalSuspendsPending > 0))
+        and (st.suspendCount > 0 implies (st.externalSuspendsPending > 0 or st.panickedSystemMessages > 0)))
   // A system message is overtaken by at most one normal message: the one a run
   // took right after its last drain, before the system message arrived.
   val systemBeforeNormal = st.sys.foldl(true, (ok, e) => ok and st.started <= e.mark + 1)
@@ -248,7 +277,7 @@ module mailbox_scheduling {
       closed: false, scheduled: false, suspendCount: 0, sysFlag: false, queue: 0, sys: [], submitted: 0,
       controlLeft: CONTROL_BUDGET, pendingDecision: 0, sent: 0, processed: 0, deadLettered: 0,
       sysSent: 0, sysProcessed: 0, sysDeadLettered: 0, started: 0, externalSuspendsPending: 0,
-      staleSubmission: false,
+      staleSubmission: false, panickedSystemMessages: 0,
     },
     workers' = WORKERS.mapBy(_ => { phase: Free, batch: 0, drained: false, drainMark: 0, drain: DNone, sawWork: false }),
     senders' = SENDERS.mapBy(_ => { phase: SReady, left: SENDS_PER_SENDER, sawWork: false }),
@@ -534,6 +563,82 @@ module mailbox_scheduling {
     setWorkerTo(w, { ...workers.get(w), phase: Free, sawWork: false }, fetchedOr(st, workers.get(w).sawWork)),
   }
 
+  // ---- stage 3 (design section 11.11) ------------------------------------
+
+  // The executor's synchronous stop (Executor::stop, until stage 4a): it
+  // closes the mailbox outside every run, moves what the mailbox held to dead
+  // letters, and takes the run still waiting in the pool out of the pool. It
+  // never closes a mailbox a worker holds; CloseDuringRun does, and
+  // KeepQueuedRun leaves the waiting run in the pool.
+  action closeOutside: bool = all {
+    not(st.closed),
+    mode == CloseDuringRun or countIn(Set(Free)) == WORKERS.size(),
+    setState({
+      ...st,
+      closed: true,
+      queue: 0,
+      sys: [],
+      deadLettered: st.deadLettered + st.queue,
+      sysDeadLettered: st.sysDeadLettered + st.sys.length(),
+      submitted: if (mode == KeepQueuedRun) st.submitted else 0,
+      staleSubmission: if (mode == KeepQueuedRun) st.staleSubmission else false,
+    }),
+  }
+
+  // The run ends early after a message whose handling left work for the
+  // executor that needs the actor back in its slot. It ends the way a run that
+  // spent its throughput does: with the flag down and no drain under way.
+  action yieldRun(w: str): bool = all {
+    phaseOf(w) == Running,
+    not(st.closed),
+    workers.get(w).batch > 0,
+    not(st.sysFlag),
+    workers.get(w).drain == DNone,
+    setWorker(w, Finishing, workers.get(w).batch, st),
+  }
+
+  // The guard of MailboxRun::run when the run unwinds: the actor goes back,
+  // the flag goes up again when system messages are still queued, and the
+  // scheduled bit comes down before the mailbox is reserved again
+  // (finishRegister). PanicKeepsScheduled leaves the bit set and the thread
+  // gone; PanicDropsSysFlag leaves the flag as the drain left it.
+  action unwind(w: str, after: State): bool = setWorkerTo(
+    w,
+    {
+      ...workers.get(w),
+      phase: if (mode == PanicKeepsScheduled) Free else Rescheduling,
+      batch: 0,
+      drained: false,
+      drain: DNone,
+    },
+    {
+      ...after,
+      scheduled: if (mode == PanicKeepsScheduled) after.scheduled else false,
+      sysFlag: if (mode == PanicDropsSysFlag) after.sysFlag else after.sysFlag or after.sys.length() > 0,
+    },
+  )
+
+  // `receive` panics with no catcher: the message it was handling is spent.
+  action panicInvoke(w: str): bool = all {
+    phaseOf(w) == Invoking,
+    unwind(w, { ...st, processed: st.processed + 1 }),
+  }
+
+  // A system message panics while the run empties the system queue: that
+  // message is spent without its effect, the rest stay queued.
+  action panicSystem(w: str): bool = all {
+    phaseOf(w) == Running,
+    not(st.closed),
+    workers.get(w).drain == DDraining,
+    st.sys.length() > 0,
+    unwind(w, {
+      ...st,
+      sys: st.sys.tail(),
+      sysProcessed: st.sysProcessed + 1,
+      panickedSystemMessages: st.panickedSystemMessages + 1,
+    }),
+  }
+
   action step = {
     nondet s = SENDERS.oneOf()
     nondet w = WORKERS.oneOf()
@@ -545,6 +650,7 @@ module mailbox_scheduling {
       control(c, k), decide, regRead(r), regFetchOr(r),
       take(w), clearSysFlag(w), beginDrain(w), processSystem(w), drainDone(w), startInvoke(w), endInvoke(w),
       failInvoke(w), decideFinish(w), finishIdle(w), finishRegister(w), finishFetchOr(w),
+      closeOutside, yieldRun(w), panicInvoke(w), panicSystem(w),
     }
   }
 
@@ -677,7 +783,65 @@ module mailbox_scheduling {
       .then(control("c1", Resume)).then(control("c2", Suspend)).then(clearSysFlag("w1")).then(processSystem("w1"))
       .then(startInvoke("w1")).fail()
 
+  // ---- runs: stage 3 ------------------------------------------------------
+
+  // The executor stops an actor whose run waits in the pool: the run goes
+  // with the stop, and what the mailbox held goes to dead letters.
+  run closeOutsideTakesTheWaitingRunTest =
+    initWith(Fixed).then(send("s1")).then(register("s1")).then(fetchOr("s1")).then(send("s2"))
+      .then(closeOutside)
+      .expect(st.closed and st.submitted == 0 and st.deadLettered == 2 and invariant)
+
+  // The executor does not close the mailbox of a run in progress.
+  run closeOutsideWaitsForTheRunTest =
+    initWith(Fixed).then(send("s1")).then(register("s1")).then(fetchOr("s1")).then(take("w1"))
+      .then(closeOutside).fail()
+
+  // A run that ends early after a message is reserved again for the rest.
+  run yieldedRunReschedulesTheRestTest =
+    initWith(Fixed).then(send("s1")).then(register("s1")).then(fetchOr("s1"))
+      .then(send("s1")).then(register("s1")).then(fetchOr("s1"))
+      .then(take("w1")).then(drainDone("w1")).then(startInvoke("w1")).then(endInvoke("w1"))
+      .then(yieldRun("w1")).then(finishIdle("w1")).then(finishRegister("w1")).then(finishFetchOr("w1"))
+      .expect(st.submitted == 1 and st.scheduled and st.queue == 1 and invariant)
+
+  // A panic out of `receive` leaves the mailbox reserved for what is left.
+  run panicInReceiveReschedulesTheRestTest =
+    initWith(Fixed).then(send("s1")).then(register("s1")).then(fetchOr("s1"))
+      .then(send("s1")).then(register("s1")).then(fetchOr("s1"))
+      .then(take("w1")).then(drainDone("w1")).then(startInvoke("w1")).then(panicInvoke("w1"))
+      .then(finishRegister("w1")).then(finishFetchOr("w1"))
+      .expect(st.submitted == 1 and st.scheduled and st.processed == 1 and st.queue == 1 and invariant)
+
+  // A panic in the middle of the system messages raises the flag again, so
+  // the next run handles the rest before any normal message.
+  run panicInTheDrainRaisesTheFlagAgainTest =
+    initWith(Fixed).then(control("c1", Resume)).then(control("c2", Suspend)).then(regRead("c1")).then(regFetchOr("c1"))
+      .then(take("w1")).then(clearSysFlag("w1")).then(panicSystem("w1"))
+      .then(finishRegister("w1")).then(finishFetchOr("w1"))
+      .expect(st.sysFlag and st.sys.length() == 1 and st.submitted == 1 and invariant)
+
   // ---- runs: the mistakes (negative controls) ----------------------------
+
+  run closeDuringRunInvokesAClosedActorTest =
+    initWith(CloseDuringRun).then(send("s1")).then(register("s1")).then(fetchOr("s1")).then(take("w1"))
+      .then(drainDone("w1")).then(startInvoke("w1")).then(closeOutside)
+      .expect(not(noInvokeAfterClose))
+
+  run keepQueuedRunSubmitsAClosedMailboxTest =
+    initWith(KeepQueuedRun).then(send("s1")).then(register("s1")).then(fetchOr("s1")).then(closeOutside)
+      .expect(not(submittedWithWorkOrStaleRead))
+
+  run panicKeepsTheBitAndStrandsTheMailboxTest =
+    initWith(PanicKeepsScheduled).then(send("s1")).then(register("s1")).then(fetchOr("s1"))
+      .then(send("s1")).then(register("s1")).then(fetchOr("s1"))
+      .then(take("w1")).then(drainDone("w1")).then(startInvoke("w1")).then(panicInvoke("w1"))
+      .expect(not(scheduledMatchesTheRun))
+
+  run panicDropsTheFlagAndHidesASystemMessageTest =
+    initWith(PanicDropsSysFlag).then(control("c1", Resume)).then(control("c2", Suspend))
+      .then(regRead("c1")).then(regFetchOr("c1")).then(take("w1")).then(clearSysFlag("w1")).then(panicSystem("w1"))
+      .expect(not(noHiddenSystemMessage))
 
   run clearFlagAfterDrainHidesASystemMessageTest =
     initWith(ClearFlagAfterDrain).then(send("s1")).then(register("s1")).then(fetchOr("s1"))
