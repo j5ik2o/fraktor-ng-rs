@@ -121,6 +121,152 @@ class Decisions(unittest.TestCase):
         self.assertEqual(out["crates/a/src/ported.rs"][0], "Apache-2.0 AND Unlicense")
 
 
+class DecisionFile(unittest.TestCase):
+    """決定のファイルの検査（設計レビュー 3 回目の M2、L1 (c)）。"""
+
+    HEADER = "\t".join(d.DECISION_HEADER) + "\n"
+
+    def load(self, *lines):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "decisions.tsv"
+            path.write_text(self.HEADER + "".join(line + "\n" for line in lines), encoding="utf-8")
+            return d.load_decisions(path)
+
+    def test_accepts_the_three_forms_only(self):
+        for spdx in (d.SPDX_APACHE, d.SPDX_DUAL, "Apache-2.0 AND Unlicense", "Apache-2.0 AND BSD-2-Clause"):
+            self.assertEqual(self.load(f"crates/a.rs\t{spdx}\t元帥\t2026-11-26\tx")[0][2], spdx)
+        for spdx in (
+            "Apache-2.0 OR MIT",
+            "MIT",
+            "MIT  OR Apache-2.0",
+            "mit or apache-2.0",
+            "(MIT OR Apache-2.0)",
+            "GPL-3.0-only",
+            "Apache-2.0 AND MIT",
+            "Apache-2.0 AND GPL-2.0-only",
+        ):
+            with self.assertRaises(SystemExit, msg=spdx) as raised:
+                self.load(f"crates/a.rs\t{spdx}\t元帥\t2026-11-26\tx")
+            self.assertIn(":2:", str(raised.exception), "行番号を出す")
+
+    def test_date_must_be_a_real_iso_date(self):
+        for date in ("YYYY-MM-DD", "2026-11-31", "2026/11/26", "26-11-26"):
+            with self.assertRaises(SystemExit, msg=date):
+                self.load(f"crates/a.rs\t{d.SPDX_APACHE}\t元帥\t{date}\tx")
+
+    def test_a_proposal_cannot_become_a_decision_by_dropping_the_hash(self):
+        proposal = f"crates/a.rs\tApache-2.0 AND Unlicense\t\t\t提案"
+        self.assertEqual(self.load("# " + proposal), [])
+        with self.assertRaises(SystemExit):
+            self.load(proposal)
+        with self.assertRaises(SystemExit):
+            self.load(f"# crates/a.rs\tApache-2.0 AND Unlicense\t元帥\tYYYY-MM-DD\t提案")
+
+    def test_the_committed_file_loads(self):
+        root = Path(__file__).resolve().parents[2]
+        rows = d.load_decisions(root / d.DECISIONS_DEFAULT)
+        self.assertEqual([(target, spdx) for _n, target, spdx, *_ in rows], [(d.DECISION_FLAGGED, d.SPDX_APACHE)])
+
+
+def manifest_row(number, path, spdx, source, verdict="Pekko 由来", kind="Mirrors", flag="", scope="crates"):
+    return (number, {
+        "path": path, "判定": verdict, "根拠の種類": kind, "根拠の中身": "", "要確認": flag,
+        "要確認の理由": "", "走査範囲": scope, "付けるSPDX": spdx, "決定の出典": source,
+    })
+
+
+class ManifestCheck(unittest.TestCase):
+    """`--check --manifest` の原典の要らない部分。設計レビュー 3 回目の試作 M-b、M-c、M-f、M-j、M-k が落ちる。"""
+
+    BATCH = (2, "@要確認", d.SPDX_APACHE, "元帥", "2026-11-26", "決定 2")
+    BATCH_SOURCE = "d.tsv:2（元帥 2026-11-26）"
+    ASK = "crates/a/src/adaptor/ask_driver.rs"
+    PORTED = "crates/a/tests/frequency_sketch_spec.rs"
+    OWN = "crates/a/src/own.rs"
+
+    def manifest(self):
+        return [
+            manifest_row(2, self.ASK, d.SPDX_APACHE, self.BATCH_SOURCE, kind="原典同名", flag="要確認"),
+            manifest_row(3, self.PORTED, d.SPDX_APACHE, "判定", kind="移植マーカー"),
+            manifest_row(4, self.OWN, d.HELD, "", verdict="自分で書いた", kind="なし"),
+        ]
+
+    def files(self, **spdx):
+        files = {self.ASK: d.SPDX_APACHE, self.PORTED: d.SPDX_APACHE, self.OWN: None}
+        files.update({key.replace("__", "/"): value for key, value in spdx.items()})
+        return files
+
+    def errors(self, manifest, files, decisions=(BATCH,)):
+        return d.manifest_errors(manifest, list(decisions), "d.tsv", files)
+
+    def kinds(self, errors):
+        return {error.split()[0] for error in errors}
+
+    def test_the_stage_a_state_passes(self):
+        self.assertEqual(self.errors(self.manifest(), self.files()), [])
+
+    def test_m_b_hand_edited_spdx_cell(self):
+        manifest = self.manifest()
+        manifest[0][1]["付けるSPDX"] = d.SPDX_DUAL
+        files = self.files()
+        files[self.ASK] = d.SPDX_DUAL
+        self.assertTrue({"manifest-tampered", "mit-without-decision"} <= self.kinds(self.errors(manifest, files)))
+
+    def test_m_c_row_removed_from_the_manifest(self):
+        files = self.files()
+        files[self.ASK] = d.SPDX_DUAL
+        self.assertIn("mit-without-decision", self.kinds(self.errors(self.manifest()[1:], files)))
+
+    def test_m_f_pekko_file_copied_to_a_new_path(self):
+        files = self.files()
+        files["crates/a/src/adaptor/ask_driver_copy.rs"] = d.SPDX_DUAL
+        self.assertIn("mit-without-decision", self.kinds(self.errors(self.manifest(), files)))
+
+    def test_m_j_moved_and_old_row_removed(self):
+        files = self.files()
+        del files[self.ASK]
+        files["crates/a/src/adaptor/moved/ask_driver.rs"] = d.SPDX_DUAL
+        self.assertIn("mit-without-decision", self.kinds(self.errors(self.manifest()[1:], files)))
+        self.assertIn("manifest-missing-file", self.kinds(self.errors(self.manifest(), files)))
+
+    def test_m_k_misspelled_mit_on_a_ported_file(self):
+        files = self.files()
+        files[self.PORTED] = "Apache-2.0 OR MIT"
+        self.assertTrue({"spdx-grammar", "mit-without-decision"} <= self.kinds(self.errors(self.manifest(), files)))
+        with self.assertRaises(SystemExit):
+            DecisionFile().load(f"{self.PORTED}\tApache-2.0 OR MIT\t元帥\t2026-11-26\tx")
+
+    def test_new_files_take_apache_only(self):
+        files = self.files()
+        files["crates/a/src/new.rs"] = "Apache-2.0 AND Unlicense"
+        self.assertIn("new-file-not-apache", self.kinds(self.errors(self.manifest(), files)))
+
+    def test_a_per_file_decision_allows_mit_and_the_recomputed_cells(self):
+        decision = (3, self.OWN, d.SPDX_DUAL, "元帥", "2026-12-01", "照合済み")
+        manifest = self.manifest()
+        manifest[2][1].update({"付けるSPDX": d.SPDX_DUAL, "決定の出典": "d.tsv:3（元帥 2026-12-01）"})
+        files = self.files()
+        files[self.OWN] = d.SPDX_DUAL
+        self.assertEqual(self.errors(manifest, files, (self.BATCH, decision)), [])
+
+    def test_mit_on_strong_evidence_stops_whatever_the_spelling(self):
+        with self.assertRaises(SystemExit):
+            d.apply_decisions(
+                [(self.PORTED, "crates", "Pekko 由来", "移植マーカー", "", "", "")],
+                [(2, self.PORTED, "Apache-2.0 OR MIT", "元帥", "2026-11-26", "x")],
+                "d.tsv",
+            )
+
+    def test_the_committed_manifest_recomputes_from_the_decisions(self):
+        root = Path(__file__).resolve().parents[2]
+        manifest = d.read_manifest(root / "docs" / "design" / "issue-206-file-origin.tsv")
+        decisions = d.load_decisions(root / d.DECISIONS_DEFAULT)
+        files = {cells["path"]: None for _n, cells in manifest}
+        self.assertEqual(d.manifest_errors(manifest, decisions, d.DECISIONS_DEFAULT.name, files), [])
+
+
 class LeadingBlocks(unittest.TestCase):
     def test_keeps_every_block_before_package_verbatim(self):
         source = (

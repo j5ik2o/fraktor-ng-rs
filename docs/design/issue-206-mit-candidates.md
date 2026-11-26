@@ -1,5 +1,6 @@
 # #206：`MIT OR Apache-2.0` の候補（照合前）
 
+- **段 B は当面行わない**（オーナーの指示、2026-11-26。[設計](./issue-206-license-policy.md) の前提の 7.5）。55 件は当面 `保留`（ヘッダーなし、クレートの `license = "Apache-2.0"`）のままにする。
 - 状態: **照合前。この一覧のファイルには、まだ何も付けない。** 1 件ずつの照合は、実装に関わっていない別の担当が行う。照合の結果を元帥が読んでから、`MIT OR Apache-2.0` を push する（[設計](./issue-206-license-policy.md) §8.1 の段 B）
 - 対象: [Issue #206](https://github.com/j5ik2o/fraktor-ng-rs/issues/206)、[PR #215](https://github.com/j5ik2o/fraktor-ng-rs/pull/215)
 - 原典: Apache Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）
@@ -32,6 +33,8 @@ awk -F'\t' 'NR > 1 && $7 == "crates" && $8 == "保留" {print $1}' docs/design/i
 - Pekko 2.0.x（上の固定 SHA）の**どのファイルにも**、そのファイルの型・関数・テストの形に対応するものが無い。
 - 見るもの: 原典で同じ役割の型と spec、テストケースの名前と並び、コメントで引いている名前、エラーの文言（例：`"Malformed URL"` は `MalformedURLException` から来ていた）。
 
+「Pekko に対応が無い」と 1 件ずつ決めるのは、muse か Claude の 1 本が行う。pi は材料を集めるところまでで、決めない（元帥の決定、2026-11-26 第 2 回。設計の前提の 7.4）。
+
 照合する担当は、表の「照合の結果」に `自分で書いた` / `Pekko 由来` / `迷う` のどれかを、「見た原典と根拠」に見た原典のパスと理由を書く。迷ったら `迷う` にする。`迷う` は `Pekko 由来` と同じ扱い（`Apache-2.0`）になる。
 
 表の「宣言する公開型」と「名前の近い原典」は機械が出した手がかりで、照合の結果ではない。「レビュー 2 回目の標本」は、設計レビュー 2 回目（`pr215-design-review2.md`）が 20 件の標本で見た結果である。標本で「自分で書いた」と見たものも、照合を省かない。
@@ -47,7 +50,7 @@ awk -F'\t' 'NR > 1 && $7 == "crates" && $8 == "保留" {print $1}' docs/design/i
 
 | 対象 | 宣言 | 確かめること |
 |:---|:---|:---|
-| `tools/syn-check`（`src/**/*.rs` 33 件。`Cargo.toml` に `license` を足す） | `MIT OR Apache-2.0` | Pekko・Akka・Lightbend への言及は 0 件（設計 §1.1）。`src/rules/*.rs` の「Ported from the old `*-lint`」の移植元が、オーナーが自分で書いたもので、他人の貢献を含まないこと（設計レビュー 2 回目の L1） |
+| `tools/syn-check`（`src/**/*.rs` 33 件。`Cargo.toml` に `license` を足す） | `MIT OR Apache-2.0` | Pekko・Akka・Lightbend への言及は 0 件（設計 §1.1）。`src/rules/*.rs` の「Ported from the old `*-lint`」の移植元が、オーナーが自分で書いたもので、他人の貢献を含まないこと（設計レビュー 2 回目の L1）。**確かめた**（設計の前提の 7.3）：移植元はオーナーの公開リポジトリ `j5ik2o/fraktor-rs` の `lints/`（`LICENSE-MIT` あり）。`lints/` へのコミットは j5ik2o 52、renovate[bot] 9（依存の更新）、Copilot のエージェント 1（j5ik2o との共著）。このリポジトリの `tools/syn-check` のコミットは 15 件すべて Junichi Kato。MIT のまま進める |
 
 ## 候補の一覧（55 件）
 
