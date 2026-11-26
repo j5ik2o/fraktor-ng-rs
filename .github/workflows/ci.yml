@@ -82,6 +82,12 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo fmt
         run: cargo fmt --check
+      # The kernel builds without std (#234 stage 0). thumbv7em has 32-bit CAS;
+      # thumbv6m, which has none, is added after stage 0b (#243).
+      - name: cargo check (no_std, thumbv7em)
+        run: |
+          rustup target add thumbv7em-none-eabihf
+          cargo check -p fraktor-actor --no-default-features --target thumbv7em-none-eabihf
       - name: syn checker
         id: syn_checker
         run: |

@@ -17,12 +17,12 @@
 //! The queue of one shard and the boundary of the shard that follows it.
 
 use alloc::collections::VecDeque;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
+use crate::kernel::sync::Arc;
 
 /// The place a message sent from inside a shard lands, and the escape out of
 /// it.
@@ -113,6 +113,11 @@ impl ShardQueue {
     }
     self.local = kept;
     taken
+  }
+
+  /// Counts the locally queued envelopes addressed to `recipient`.
+  pub(crate) fn count_addressed_to(&self, recipient: &ActorRef) -> usize {
+    self.local.iter().filter(|envelope| envelope.is_addressed_to(recipient)).count()
   }
 
   /// Pops the oldest queued envelope.

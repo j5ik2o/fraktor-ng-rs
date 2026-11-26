@@ -16,10 +16,12 @@
 
 //! A type-erased message sent to an actor.
 
-use alloc::sync::Arc;
+use alloc::boxed::Box;
 use core::any::Any;
 use core::any::TypeId;
 use core::fmt;
+
+use crate::kernel::sync::Arc;
 
 #[cfg(test)]
 #[path = "message_value_test.rs"]

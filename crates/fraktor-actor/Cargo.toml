@@ -6,9 +6,19 @@ edition = "2021"
 license = "Apache-2.0"
 publish = false
 
+[features]
+default = ["std"]
+std = ["dep:getrandom"]
+
 [dependencies]
-getrandom = "0.3"
-spin = { version = "0.9", default-features = false, features = ["spin_mutex", "once"] }
+getrandom = { version = "0.3", optional = true }
+portable-atomic = { version = "1", default-features = false, features = ["fallback", "critical-section"] }
+spin = { version = "0.9", default-features = false, features = ["spin_mutex", "once", "portable_atomic"] }
+
+# The kernel's `Arc` (kernel/sync.rs) comes from here only on targets without
+# pointer-sized atomics.
+[target.'cfg(not(target_has_atomic = "ptr"))'.dependencies]
+portable-atomic-util = { version = "0.2", default-features = false, features = ["alloc"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

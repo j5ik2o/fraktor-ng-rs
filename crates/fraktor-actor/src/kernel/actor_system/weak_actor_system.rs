@@ -22,6 +22,7 @@
 
 use alloc::rc::Rc;
 use alloc::rc::Weak;
+use alloc::string::String;
 use core::cell::RefCell;
 use core::time::Duration;
 

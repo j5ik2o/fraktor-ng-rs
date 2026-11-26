@@ -17,9 +17,10 @@
 //! A mutable recency list whose values move up through segments as they are
 //! updated again.
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::time::Duration;
 
+use crate::kernel::sync::Arc;
 use crate::kernel::Clock;
 
 #[cfg(test)]

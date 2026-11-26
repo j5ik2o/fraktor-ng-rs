@@ -11,6 +11,8 @@
 //
 // Copyright (C) 2009-2022 Lightbend Inc. <https://www.lightbend.com>
 //
+// Copyright (C) 2018-2022 Lightbend Inc. <https://www.lightbend.com>
+//
 // Copyright (C) 2014-2022 Lightbend Inc. <https://www.lightbend.com>
 //
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE and NOTICE
@@ -22,13 +24,16 @@
 
 use crate::kernel::actor::Actor;
 use crate::kernel::actor::BehaviorStack;
+use crate::kernel::actor::FunctionRef;
 use crate::kernel::actor::InvalidActorNameException;
 use crate::kernel::actor::Props;
 use crate::kernel::actor::Running;
+use crate::kernel::actor::StashOverflowException;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::Executor;
 use crate::kernel::message::Message;
 use crate::kernel::supervision::SupervisorStrategy;
+use alloc::boxed::Box;
 
 /// What an actor may do while it handles a message: address itself, name its
 /// sender, send messages, start children, swap behaviour, and stop itself after
@@ -182,9 +187,14 @@ impl<'a> ActorContext<'a> {
   /// letters with each message's original sender, as Pekko's mailbox clean-up
   /// does after `UnrestrictedStash.postStop`; so does a stash that the stop
   /// hook or a restart whose replacement fails returned to the mailbox. The
-  /// port's dead letters do not publish a `DeadLetter` event yet. Terminating the system releases every
-  /// stash with the other queues. The stash has no capacity limit: Pekko's
-  /// `stash-capacity` setting and `StashOverflowException` are not ported.
+  /// executor publishes a `DeadLetter` event for those messages.
+  /// Terminating the system releases every stash with the other queues.
+  /// The stash capacity comes from the actor's dispatcher and mailbox
+  /// definitions in the system's
+  /// [`DispatchSettings`](crate::kernel::actor::dispatch_settings::DispatchSettings): when a
+  /// capacity is set and the stash is full, `stash` panics with
+  /// [`StashOverflowException`], as Pekko's throw reaches the supervisor;
+  /// [`try_stash`](Self::try_stash) answers with the error instead.
   ///
   /// # Panics
   ///
@@ -219,6 +229,89 @@ impl<'a> ActorContext<'a> {
   pub fn unstash_all(&mut self) {
     let self_ref = self.self_ref();
     self.executor.unstash_all(&self_ref);
+  }
+
+  /// Puts the message being handled aside, as [`stash`](Self::stash)
+  /// does, answering with [`StashOverflowException`] when the stash is
+  /// already at the capacity the actor's definitions set.
+  ///
+  /// Mirrors catching Pekko's `StashOverflowException` around `stash()`:
+  /// the original's overflow actor counts the calls and reacts to the
+  /// exception itself, which a panic cannot do in this port because
+  /// `receive` has no return value and a panic becomes a supervisor
+  /// decision. The state does not change when this answers with the
+  /// error. The double-stash contract of [`stash`](Self::stash) still
+  /// panics, as it is a contract violation rather than a capacity one.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`StashOverflowException`] when the stash is at capacity.
+  ///
+  /// # Panics
+  ///
+  /// Panics outside the handling of a message, and on a double stash,
+  /// as [`stash`](Self::stash) documents.
+  pub fn try_stash(&mut self) -> Result<(), StashOverflowException> {
+    let (message, delivery) = self.current_message.clone().expect("Can't stash outside of message handling");
+    let self_ref = self.self_ref();
+    let sender = self.sender();
+    self.executor.try_stash(self_ref, delivery, message, sender)
+  }
+
+  /// Registers a function on this actor's cell and returns its handle.
+  ///
+  /// Mirrors `ActorCell.addFunctionRef`: the reference lives below this
+  /// actor's path, runs `handler` for each message sent to it with the
+  /// message's sender, ends when this actor ends, and can be removed
+  /// with [`remove_function_ref`](Self::remove_function_ref).
+  pub fn add_function_ref<H>(&mut self, handler: H) -> FunctionRef
+  where
+    H: Fn(&ActorRef, Message) + Send + Sync + 'static,
+  {
+    let parent = self.self_ref();
+    self.executor.add_function_ref(&parent, handler)
+  }
+
+  /// Removes a function reference this actor created with
+  /// [`add_function_ref`](Self::add_function_ref).
+  ///
+  /// Mirrors `ActorCell.removeFunctionRef`: the reference's watchers
+  /// receive `Terminated` and later messages to it go to dead letters.
+  /// Removing one's own reference again changes nothing.
+  ///
+  /// # Panics
+  ///
+  /// Panics when `target` is a function reference of another actor, as
+  /// the original's `require` fails the actor in that case.
+  pub fn remove_function_ref(&mut self, target: &FunctionRef) {
+    let parent = self.self_ref();
+    self.executor.remove_function_ref(&parent, target);
+  }
+
+  /// Registers the function reference `watcher` to receive the
+  /// `Terminated` of `target` as a message to its function.
+  ///
+  /// Mirrors `FunctionRef.watch`, lent through the context because the
+  /// handle itself holds no executor reference (design of #192, H1).
+  /// The registration survives the notice until
+  /// [`function_ref_unwatch`](Self::function_ref_unwatch) or the
+  /// reference's own stop.
+  pub fn function_ref_watch(&mut self, watcher: &FunctionRef, target: &ActorRef) -> ActorRef {
+    self.executor.function_ref_watch(watcher, target)
+  }
+
+  /// Stops the function reference `watcher` from watching `target`.
+  ///
+  /// Mirrors `FunctionRef.unwatch`, which is idempotent.
+  pub fn function_ref_unwatch(&mut self, watcher: &FunctionRef, target: &ActorRef) -> ActorRef {
+    self.executor.function_ref_unwatch(watcher, target)
+  }
+
+  /// Returns whether the function reference `watcher` watches `target`.
+  ///
+  /// Mirrors `FunctionRef.isWatching`.
+  pub fn function_ref_is_watching(&self, watcher: &FunctionRef, target: &ActorRef) -> bool {
+    self.executor.function_ref_is_watching(watcher, target)
   }
 
   /// Starts a child of this actor with `props` and `strategy` and returns its

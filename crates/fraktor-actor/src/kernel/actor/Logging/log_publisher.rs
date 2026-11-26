@@ -19,12 +19,12 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::sync::Arc;
 use core::fmt;
 
 use crate::kernel::actor::Logging::{empty_mdc, Debug, Error, Info, LogClass, LogEvent, LogLevel, Mdc, Warning};
 use crate::kernel::event::EventStream;
 use crate::kernel::event::EventStreamBusWeak;
+use crate::kernel::sync::Arc;
 
 /// Publishes a formatted log event on an event stream.
 ///

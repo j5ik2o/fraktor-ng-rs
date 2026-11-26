@@ -16,6 +16,11 @@
 
 //! A path identifying an actor below the root of an actor system.
 
+use alloc::format;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::fmt;
 
 use crate::kernel::actor_path::root_actor_path::RootActorPath;
