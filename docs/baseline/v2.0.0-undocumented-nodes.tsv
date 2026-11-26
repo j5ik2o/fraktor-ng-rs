@@ -41,8 +41,13 @@ actor-tests/src/test/scala/org/apache/pekko/util/ByteStringInputStreamSpec.scala
 actor-tests/src/test/scala/org/apache/pekko/util/DoubleLinkedListSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/FrequencyListSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/FrequencySketchSpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/util/GlobSpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/util/ImmutableIntMapSpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/util/PrettyDurationSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/RecencyListSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/SegmentedRecencyListSpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/util/SwitchSpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/util/TokenBucketSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/util/VersionSpec.scala	no-report
 testkit/src/test/scala/org/apache/pekko/testkit/AbstractSpec.scala	no-report
 testkit/src/test/scala/org/apache/pekko/testkit/CoronerSpec.scala	no-report
