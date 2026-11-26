@@ -96,6 +96,7 @@ fn a_mailbox_on_std_locks_handles_every_message_from_many_senders_once() {
   use crate::kernel::dispatch::Mailbox;
   use crate::kernel::dispatch::MailboxCell;
   use crate::kernel::dispatch::MailboxRun;
+  use crate::kernel::dispatch::Next;
   use crate::kernel::dispatch::RunLimits;
   use crate::kernel::dispatch::RunOutcome;
   use crate::kernel::dispatch::SystemMessage;
@@ -111,13 +112,16 @@ fn a_mailbox_on_std_locks_handles_every_message_from_many_senders_once() {
   }
 
   impl MailboxCell for Counter {
-    fn invoke(&mut self, _mailbox: &Mailbox<Self>, envelope: Envelope) {
+    type Env = ();
+
+    fn invoke(&mut self, _env: &mut (), _mailbox: &Mailbox<Self>, envelope: Envelope) -> Next {
       assert!(!self.running.swap(true, Ordering::SeqCst), "two runs of one mailbox overlap");
       self.seen.lock().unwrap().push(*envelope.message().downcast_ref::<u32>().unwrap());
       self.running.store(false, Ordering::SeqCst);
+      Next::Continue
     }
 
-    fn system_invoke(&mut self, _mailbox: &Mailbox<Self>, _message: SystemMessage) {}
+    fn system_invoke(&mut self, _env: &mut (), _mailbox: &Mailbox<Self>, _message: SystemMessage) {}
   }
 
   const SENDERS: u32 = 4;
@@ -139,7 +143,7 @@ fn a_mailbox_on_std_locks_handles_every_message_from_many_senders_once() {
         let next = submitted.lock().unwrap().recv_timeout(Duration::from_millis(10));
         match next {
           | Ok(run) => {
-            if let RunOutcome::Again(run) = run.run() {
+            if let RunOutcome::Again(run) = run.run(&mut (), None).outcome {
               again.send(run).unwrap();
             }
           },

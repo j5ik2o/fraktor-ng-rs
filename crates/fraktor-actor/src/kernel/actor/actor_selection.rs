@@ -21,10 +21,12 @@ use core::any::Any;
 
 use crate::kernel::actor_path::ActorPath;
 use crate::kernel::actor_ref::ActorRef;
+use crate::kernel::executor::LiveActors;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
 use crate::kernel::sync::Arc;
+use crate::kernel::sync::Weak;
 
 /// The envelope a selection posts to its shard.
 ///
@@ -59,25 +61,32 @@ impl ActorSelectionMessage {
 /// An address that names its target by path.
 ///
 /// Mirrors `org.apache.pekko.actor.ActorSelection` for the local scope of
-/// this port. The selection captures the shard boundary and the dead
-/// letters handle of its system when it is created, so `tell` only posts
-/// an envelope to the boundary: it never borrows the executor, which is
-/// what makes a selection safe to use from inside an actor's `receive`,
-/// and it keeps the selection `Send`.
+/// this port. The selection never borrows the executor, which is what makes
+/// it safe to use from inside an actor's `receive`, and it keeps the
+/// selection `Send`.
 ///
-/// Resolution happens in the executor at delivery time. A path that names
-/// a live actor or a function reference is delivered to it; a path that
-/// names a stopped actor or nothing is routed by the dead letter rules
-/// with an empty reference for that path as the recipient.
+/// A path that names a live actor is resolved when `tell` is called, on the
+/// sender's thread, as Pekko's `deliverSelection` does, so the message is in
+/// the actor's mailbox before `tell` returns. Any other path is resolved by
+/// the executor when it delivers the envelope `tell` posts to the shard
+/// boundary: a function reference receives the message, and a path that
+/// names a stopped actor or nothing is routed by the dead letter rules with
+/// an empty reference for that path as the recipient.
 pub struct ActorSelection {
   boundary: Arc<dyn ShardBoundary>,
   carrier: ActorRef,
   path: ActorPath,
+  actors: Weak<LiveActors>,
 }
 
 impl ActorSelection {
-  pub(crate) fn new(boundary: Arc<dyn ShardBoundary>, carrier: ActorRef, path: ActorPath) -> Self {
-    Self { boundary, carrier, path }
+  pub(crate) fn new(
+    boundary: Arc<dyn ShardBoundary>,
+    carrier: ActorRef,
+    path: ActorPath,
+    actors: Weak<LiveActors>,
+  ) -> Self {
+    Self { boundary, carrier, path, actors }
   }
 
   /// Returns the path this selection resolves.
@@ -88,6 +97,10 @@ impl ActorSelection {
   /// Sends `message` to the actor this selection resolves to, naming
   /// `sender` as the sender.
   pub fn tell<M: Any + Send + Sync>(&self, message: M, sender: ActorRef) {
+    if let Some(target) = self.actors.upgrade().and_then(|actors| actors.find(&self.path)) {
+      target.tell(message, sender);
+      return;
+    }
     let selection = ActorSelectionMessage { path: self.path.clone(), message: Message::new(message), sender };
     let envelope = Envelope::new(self.carrier.clone(), Message::new(selection), self.carrier.clone());
     self.boundary.post(envelope);

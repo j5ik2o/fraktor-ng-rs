@@ -36,8 +36,8 @@ fn reference(id: u64, generation: u32, name: &str) -> ActorRef {
 fn a_clone_still_shares_the_delivery_handle() {
   let original = reference(7, 0, "child");
   let cloned = original.clone();
-  assert!(original.shares_boundary_with(cloned.boundary()), "a clone posts through the same handle");
-  assert!(cloned.shares_boundary_with(original.boundary()), "a clone posts through the same handle both ways");
+  assert!(original.shares_endpoint_with(&cloned), "a clone posts through the same handle");
+  assert!(cloned.shares_endpoint_with(&original), "a clone posts through the same handle both ways");
   assert_eq!(cloned.path(), original.path(), "a clone carries the same path");
   assert!(cloned == original, "a clone carries the same identity");
 }
@@ -70,10 +70,31 @@ fn a_detached_noop_keeps_the_identity_and_path_over_a_separate_delivery() {
   assert!(detached == original, "the detached reference must keep the identity it was made from");
   assert_eq!(detached.path(), original.path(), "the detached reference must carry the original path");
   assert!(
-    !detached.shares_boundary_with(original.boundary()),
+    !detached.shares_endpoint_with(&original),
     "the detached reference must post into a separate delivery entity"
   );
   assert!(detached.is_detached(), "the detached reference must be tagged as no-op for the watch boundary");
   assert!(!original.is_detached(), "the original handle must not be tagged as no-op");
   assert!(!original.clone().is_detached(), "a clone of the original must not become no-op");
+}
+
+// What the tests of stage 3 read of a handle's mailbox (#252).
+impl ActorRef {
+  /// Returns a weak handle to the actor's mailbox, for a test that the
+  /// mailbox goes away.
+  pub(crate) fn mailbox_weak(&self) -> crate::kernel::sync::Weak<Mailbox<ActorCell>> {
+    match &self.endpoint {
+      | Endpoint::Mailbox(mailbox) => Arc::downgrade(mailbox),
+      | Endpoint::Boundary(_) => panic!("{self:?} has no mailbox"),
+    }
+  }
+
+  /// Returns how many strong handles the actor's mailbox has, for a test
+  /// that no clone leaks.
+  pub(crate) fn mailbox_strong_count(&self) -> usize {
+    match &self.endpoint {
+      | Endpoint::Mailbox(mailbox) => Arc::strong_count(mailbox),
+      | Endpoint::Boundary(_) => panic!("{self:?} has no mailbox"),
+    }
+  }
 }

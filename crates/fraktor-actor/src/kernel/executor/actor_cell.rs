@@ -24,8 +24,11 @@ use crate::kernel::actor::ActorContext;
 use crate::kernel::actor::BehaviorStack;
 use crate::kernel::actor::Props;
 use crate::kernel::actor_ref::ActorRef;
+use crate::kernel::executor::Executor;
 use crate::kernel::message::Message;
+use crate::kernel::supervision::FailureCatcher;
 use crate::kernel::supervision::RestartHistory;
+use crate::kernel::supervision::RunOutcome;
 use crate::kernel::supervision::SupervisorStrategy;
 
 /// An actor that the executor owns and drives.
@@ -71,9 +74,9 @@ impl ActorCell {
     }
   }
 
-  /// Returns whether this cell is the actor that `recipient` addresses.
-  pub(crate) fn accepts(&self, recipient: &ActorRef) -> bool {
-    &self.self_ref == recipient
+  /// Returns the key of the actor's entry in the executor.
+  pub(crate) fn key(&self) -> (u64, u32) {
+    self.self_ref.key()
   }
 
   /// Returns the handle of the actor that this cell runs.
@@ -165,11 +168,37 @@ impl ActorCell {
     self.behavior = Some(behavior);
   }
 
-  /// Hands one message to the current behaviour.
-  pub(crate) fn deliver(&mut self, context: &mut ActorContext<'_>, message: Message) {
-    if let Some(behavior) = self.behavior.as_mut() {
-      context.run_behavior(behavior.as_mut(), message);
-    }
+  /// Hands one message from `sender` to the current behaviour, under
+  /// `catcher` when there is one, and returns how it ended with the sender.
+  ///
+  /// The context borrows the cell's own handle and behaviour stack, so the
+  /// delivery copies neither, and a panic that unwinds out of it leaves the
+  /// stack in the cell.
+  pub(crate) fn receive(
+    &mut self,
+    executor: &mut Executor,
+    message: Message,
+    sender: ActorRef,
+    catcher: Option<&dyn FailureCatcher>,
+  ) -> (RunOutcome, ActorRef) {
+    let Self { behavior, stack, self_ref, .. } = self;
+    let mut context = ActorContext::new(self_ref, sender, executor, stack);
+    let outcome = match (behavior.as_mut(), catcher) {
+      | (Some(behavior), Some(catcher)) => {
+        let mut message = Some(message);
+        catcher.run(&mut || {
+          if let Some(message) = message.take() {
+            context.run_behavior(behavior.as_mut(), message);
+          }
+        })
+      },
+      | (Some(behavior), None) => {
+        context.run_behavior(behavior.as_mut(), message);
+        RunOutcome::Completed
+      },
+      | (None, _) => RunOutcome::Completed,
+    };
+    (outcome, context.into_sender())
   }
 
   /// Runs `pre_restart` on the current behaviour.
