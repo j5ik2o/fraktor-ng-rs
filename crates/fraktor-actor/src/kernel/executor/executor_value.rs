@@ -276,6 +276,55 @@ impl ParentEntry {
       resume_after_restart: Vec::new(),
     }
   }
+
+  /// Returns whether `child` is in the table, by the identifier and the
+  /// generation of its handle (Pekko's `getChildByRef`).
+  fn holds(&self, child: &ActorRef) -> bool {
+    self.children.iter().any(|(_, held)| held == child)
+  }
+
+  /// Returns whether the parent stops (Pekko's `isTerminating`).
+  fn is_terminating(&self) -> bool {
+    matches!(self.waiting, Some(WaitReason::Termination))
+  }
+
+  /// Counts `child` among the children that are to die, when the table holds
+  /// it (Pekko's `Children.stop`, which calls `shallDie` for a child only).
+  fn mark_dying(&mut self, child: &ActorRef) {
+    if self.holds(child) && !self.dying.contains(child) {
+      self.dying.push(child.clone());
+    }
+  }
+
+  /// Asks every child to die and waits for them for `reason`. A parent that
+  /// stops is marked stopping even without children. Returns the children.
+  fn wait_for_all_children(&mut self, reason: WaitReason) -> Vec<ActorRef> {
+    let children: Vec<ActorRef> = self.children.iter().map(|(_, child)| child.clone()).collect();
+    if matches!(reason, WaitReason::Termination) || !children.is_empty() {
+      self.dying = children.clone();
+      self.waiting = Some(reason);
+    }
+    children
+  }
+
+  /// Takes `child` out of the table once it has ended (Pekko's
+  /// `removeChildAndGetStateChange`). Returns `None` when the table does not
+  /// hold that handle, which leaves the table as it was. Otherwise returns
+  /// what the parent waited for when `child` was the last dying child: the
+  /// wait ends there, except a stop, which stays marked while it finishes.
+  fn remove_child(&mut self, child: &ActorRef) -> Option<Option<WaitReason>> {
+    let index = self.children.iter().position(|(_, held)| held == child)?;
+    self.children.remove(index);
+    self.dying.retain(|held| held != child);
+    if !self.dying.is_empty() {
+      return Some(None);
+    }
+    let ended = self.waiting.clone();
+    if !matches!(ended, Some(WaitReason::Termination) | None) {
+      self.waiting = None;
+    }
+    Some(ended)
+  }
 }
 
 /// One callback that the executor runs with the handle of a stopped actor.
@@ -495,13 +544,18 @@ impl Executor {
   /// Returns whether `child` is in the table of `parent`, by the identifier
   /// and the generation of its handle (Pekko's `getChildByRef`).
   fn is_child_in_table(&self, parent: &ActorRef, child: &ActorRef) -> bool {
-    self.parent_entry(parent).is_some_and(|entry| entry.children.iter().any(|(_, held)| held == child))
+    self.parent_entry(parent).is_some_and(|entry| entry.holds(child))
   }
 
   /// Returns whether `parent` is stopping: it has handled its `Terminate`
   /// (Pekko's `isTerminating`). It refuses every new child.
   fn is_terminating(&self, parent: &ActorRef) -> bool {
-    self.parent_entry(parent).is_some_and(|entry| matches!(entry.waiting, Some(WaitReason::Termination)))
+    self.parent_entry(parent).is_some_and(ParentEntry::is_terminating)
+  }
+
+  /// Returns whether `target` waits for its children, for any reason.
+  fn is_waiting(&self, target: &ActorRef) -> bool {
+    self.parent_entry(target).is_some_and(|entry| entry.waiting.is_some())
   }
 
   /// Sends `message` to the mailbox of `target`. A closed mailbox, or a
@@ -1181,7 +1235,7 @@ impl Executor {
     }
     match self.parent_entry(parent) {
       | Some(entry) => {
-        if matches!(entry.waiting, Some(WaitReason::Termination)) {
+        if entry.is_terminating() {
           return Err(InvalidActorNameException::terminating().into());
         }
         if let Some(name) = name {
@@ -1296,7 +1350,7 @@ impl Executor {
   /// attempt, and starts once they have gone.
   fn handle_create(&mut self, cell: &mut ActorCell, mailbox: &Mailbox<ActorCell>) {
     let self_ref = cell.self_ref();
-    if cell.is_created() || self.parent_entry(&self_ref).is_some_and(|entry| entry.waiting.is_some()) {
+    if cell.is_created() || self.is_waiting(&self_ref) {
       return;
     }
     match cell.start_failure() {
@@ -1357,14 +1411,7 @@ impl Executor {
   /// parent that stops is marked stopping even without children, so its own
   /// `post_stop` cannot start one.
   fn stop_children_and_wait(&mut self, parent: &ActorRef, reason: WaitReason) -> bool {
-    let children = self.children_of(parent);
-    let stopping = matches!(reason, WaitReason::Termination);
-    if let Some(entry) = self.parent_entry_mut(parent) {
-      if stopping || !children.is_empty() {
-        entry.dying = children.clone();
-        entry.waiting = Some(reason);
-      }
-    }
+    let children = self.parent_entry_mut(parent).map(|entry| entry.wait_for_all_children(reason)).unwrap_or_default();
     for child in &children {
       self.stop(child);
     }
@@ -1427,12 +1474,8 @@ impl Executor {
       return;
     };
     let mailbox = Arc::clone(&entry.mailbox);
-    if let Some(parent) = entry.parent.clone() {
-      if let Some(record) = self.parent_entry_mut(&parent) {
-        if record.children.iter().any(|(_, held)| held == target) && !record.dying.contains(target) {
-          record.dying.push(target.clone());
-        }
-      }
+    if let Some(record) = entry.parent.clone().and_then(|parent| self.parent_entry_mut(&parent)) {
+      record.mark_dying(target);
     }
     let _ = Mailbox::system_send(&mailbox, SystemMessage::Terminate);
   }
@@ -1507,15 +1550,8 @@ impl Executor {
   /// in the stop of the child itself (section 11.12.4). A function reference
   /// that waits for its children tells its watchers once the last has gone.
   fn child_ended_under(&mut self, parent: &ActorRef, child: &ActorRef) {
-    let finished = match self.parent_entry_mut(parent) {
-      | Some(entry) => {
-        entry.children.retain(|(_, held)| held != child);
-        entry.dying.retain(|held| held != child);
-        matches!(entry.waiting, Some(WaitReason::Termination)) && entry.dying.is_empty()
-      },
-      | None => false,
-    };
-    if finished {
+    let ended = self.parent_entry_mut(parent).and_then(|entry| entry.remove_child(child)).flatten();
+    if matches!(ended, Some(WaitReason::Termination)) {
       self.notify_watchers(parent, true, false);
       self.run_termination_callbacks(parent);
       self.ref_parents.retain(|entry| &entry.parent != parent);
@@ -1531,18 +1567,9 @@ impl Executor {
   /// the parent waited for goes on once the last dying child has gone.
   fn handle_child_terminated(&mut self, cell: &mut ActorCell, mailbox: &Mailbox<ActorCell>, child: &ActorRef) {
     let self_ref = cell.self_ref();
-    let Some(entry) = self.parent_entry_mut(&self_ref) else {
+    let Some(next) = self.parent_entry_mut(&self_ref).and_then(|entry| entry.remove_child(child)) else {
       return;
     };
-    let Some(index) = entry.children.iter().position(|(_, held)| held == child) else {
-      return;
-    };
-    entry.children.remove(index);
-    entry.dying.retain(|held| held != child);
-    let next = if entry.dying.is_empty() { entry.waiting.clone() } else { None };
-    if !matches!(next, Some(WaitReason::Termination) | None) {
-      entry.waiting = None;
-    }
     self.run_child_terminated_hook(cell, child);
     match next {
       | Some(WaitReason::Termination) => self.finish_terminate(cell),
@@ -2427,9 +2454,14 @@ impl Executor {
   /// The cell table does not hold the actor that is currently executing it, so
   /// a frame that is running counts as live as well; otherwise an actor would
   /// see itself as terminated from inside `receive`, `pre_start`,
-  /// `post_restart`, or a child-terminated hook.
+  /// `post_restart`, or a child-terminated hook. A function reference that
+  /// has been stopped but waits for its children counts as live too: its
+  /// watchers are told once the last child has gone.
   fn is_live(&self, target: &ActorRef) -> bool {
-    self.has_cell(target) || self.function_refs.contains(target) || self.is_running(target)
+    self.has_cell(target)
+      || self.function_refs.contains(target)
+      || self.is_running(target)
+      || self.ref_parents.iter().any(|entry| &entry.parent == target && entry.is_terminating())
   }
 
   /// Returns the handle of the live actor at `path`, counting the one that
@@ -2638,7 +2670,9 @@ impl Executor {
   /// start is retried by a `Create`; a failed instance is restarted here.
   fn restart_child(&mut self, failure: &Failure) {
     let child = &failure.child;
-    if !self.has_cell(child) {
+    // Pekko's `faultRecreate` restarts only an actor that is not terminating
+    // (`isNormal`); a stopping actor goes on with its stop.
+    if !self.has_cell(child) || self.is_terminating(child) {
       return;
     }
     if !self.grant_restart_of(child) {
@@ -2741,9 +2775,23 @@ impl Executor {
     let was_active = core::mem::replace(&mut self.boundary_active, true);
     if permitted {
       for sibling in siblings {
-        if &sibling == target && failure.kind == FailureKind::Initialization {
-          self.send_system(&sibling, SystemMessage::Create);
+        // A sibling that waits for its children (it stops, its start is
+        // retried, or its restart already runs) is left to that work. A
+        // sibling without an instance has nothing to restart: one that has
+        // not handled its first `Create` is left to it, and one whose failed
+        // start was decided is started again, as Pekko's `faultRecreate`
+        // falls back to `faultCreate`.
+        if self.is_waiting(&sibling) {
           continue;
+        }
+        let state = self.with_cell(&sibling, |cell| (cell.is_created(), cell.start_failure()));
+        match state {
+          | Some((true, _)) => {},
+          | Some((false, Some(StartFailure::Decided))) => {
+            self.send_system(&sibling, SystemMessage::Create);
+            continue;
+          },
+          | _ => continue,
         }
         let Some(cell) = self.take_cell(&sibling) else {
           continue;
@@ -2806,8 +2854,15 @@ impl Executor {
       return;
     };
     if resume_failed {
-      if let Some(entry) = self.parent_entry_mut(&supervisor) {
-        entry.resume_after_restart.push(failed.clone());
+      // A deciding actor without a cell (a function reference, a guardian,
+      // or one that has stopped) is never restarted, so nothing would resume
+      // the child: it is resumed at once, as in stage 3.
+      if self.is_running(&supervisor) || self.has_cell(&supervisor) {
+        if let Some(entry) = self.parent_entry_mut(&supervisor) {
+          entry.resume_after_restart.push(failed.clone());
+        }
+      } else {
+        self.send_system(failed, SystemMessage::Resume);
       }
     }
     if self.is_running(&supervisor) {
@@ -2926,7 +2981,11 @@ impl Executor {
       self
         .open_children_of(&target)
         .into_iter()
-        .filter(|child| !dying.contains(child) && self.with_cell(child, ActorCell::is_created) == Some(true))
+        .filter(|child| {
+          !dying.contains(child)
+            && !self.is_waiting(child)
+            && self.with_cell(child, ActorCell::is_created) == Some(true)
+        })
         .collect()
     } else {
       Vec::new()
