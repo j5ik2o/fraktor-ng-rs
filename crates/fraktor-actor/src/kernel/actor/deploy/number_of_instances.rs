@@ -13,6 +13,7 @@
 // at the repository root.
 //
 // This file has been modified from the Apache Pekko original.
+
 //! The number-of-instances value of a deployment section.
 
 use alloc::string::String;

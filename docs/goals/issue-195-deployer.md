@@ -19,6 +19,7 @@ Pekko v2.0.0 の `actor-tests` の `DeployerSpec`（16件）を Rust へ移植�
 - F1（ケース5）：原典は HOCON の値の型を Typesafe Config が検査し `ConfigException.WrongType` を投げることを見る。移植は `NumberOfInstances::NotANumber` という未解釈の値を解釈の段で誤りにする形に写した。誤りになるのは件数を読む種類（全プール）だけであり、数の範囲は原典の `getInt` に合わせた（`i32`、範囲外は `NotANumber` で渡す）。
 - F3（ケース16）：原典は短い名前から JVM のクラス名への対応表を見る。移植は #192 の `ProviderSelection` と同じ形（`RouterSelection::from_setting` と `fqcn`、定数の FQCN）に写した。受ける FQCN は14件であり、NoRouter の FQCN は原典どおり生成の段で誤りになる。
 - 原典より強い確認：ケース9〜12の件数、ケース11の `within`、ケース14の `within`（既定の5秒）は、原典の `assertRouting` が比べない値まで確かめている。テストのコメントに明記した。
+- 節の `within` と `tail-chopping-router.interval` は解釈の段でミリ秒未満を切り捨てる（原典の `getMillisDuration`）。`pressure-threshold` は符号付き（`i32`）で保持し、検証しない（原典は負の値を受け入れ、1未満を同じ分岐で扱う）。
 
 ## 判断待ちの項目
 

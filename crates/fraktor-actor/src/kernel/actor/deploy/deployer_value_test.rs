@@ -13,14 +13,18 @@
 // at the repository root.
 //
 // This file has been modified from the Apache Pekko original.
+
 //! Unit tests for the boundaries of the deployer that the ported
 //! cases do not reach (design of #195, section 3).
 
+use core::time::Duration;
+
 use super::split_deployment_path;
 use crate::kernel::actor::deploy::{
-  Deploy, DeployError, DeployedRouter, Deployer, DeploymentSection, NumberOfInstances, ResizerSection, RouterSelection,
-  Scope,
+  Deploy, DeployError, DeployedRouter, Deployer, DeploymentSection, GroupKind, NumberOfInstances, ResizerSection,
+  RouterSelection, Scope,
 };
+use crate::kernel::actor::PoolKind;
 use crate::kernel::wildcard_index::WildcardIndexError;
 
 fn deploy_value(path: &str) -> Deploy {
@@ -130,8 +134,55 @@ fn a_resizer_section_with_a_lower_bound_only_keeps_the_other_defaults() {
   match &deployer.lookup_path("/svc").expect("deployed").router {
     | DeployedRouter::Pool { resizer, .. } => {
       let resizer = resizer.as_ref().expect("the resizer is on");
-      assert_eq!(resizer.lower_bound, 2);
-      assert_eq!(resizer.upper_bound, 10);
+      assert_eq!(resizer.lower_bound(), 2);
+      assert_eq!(resizer.upper_bound(), 10);
+    },
+    | other => panic!("expected a pool, got {other:?}"),
+  }
+}
+
+#[test]
+fn durations_of_a_section_are_read_as_whole_milliseconds() {
+  let tail_chopping = DeploymentSection {
+    router: RouterSelection::TailChoppingPool,
+    within: Duration::from_micros(1_500),
+    tail_chopping_interval: Duration::from_micros(2_500),
+    ..DeploymentSection::default()
+  };
+  let deployer = Deployer::from_sections([("/svc".to_string(), tail_chopping)]).expect("valid");
+  match &deployer.lookup_path("/svc").expect("deployed").router {
+    | DeployedRouter::Pool { kind: PoolKind::TailChopping { within, interval }, .. } => {
+      assert_eq!(*within, Duration::from_millis(1));
+      assert_eq!(*interval, Duration::from_millis(2));
+    },
+    | other => panic!("expected a tail-chopping pool, got {other:?}"),
+  }
+  let scatter_gather = DeploymentSection {
+    router: RouterSelection::ScatterGatherGroup,
+    routees_paths: vec!["/a".to_string()],
+    within: Duration::from_micros(1_999),
+    ..DeploymentSection::default()
+  };
+  let deployer = Deployer::from_sections([("/grp".to_string(), scatter_gather)]).expect("valid");
+  match &deployer.lookup_path("/grp").expect("deployed").router {
+    | DeployedRouter::Group { kind: GroupKind::ScatterGatherFirstCompleted { within }, .. } => {
+      assert_eq!(*within, Duration::from_millis(1));
+    },
+    | other => panic!("expected a scatter-gather group, got {other:?}"),
+  }
+}
+
+#[test]
+fn a_negative_pressure_threshold_is_held_as_written() {
+  let section = DeploymentSection {
+    router: RouterSelection::RoundRobinPool,
+    resizer: Some(ResizerSection { pressure_threshold: -1, ..ResizerSection::default() }),
+    ..DeploymentSection::default()
+  };
+  let deployer = Deployer::from_sections([("/svc".to_string(), section)]).expect("a negative threshold builds");
+  match &deployer.lookup_path("/svc").expect("deployed").router {
+    | DeployedRouter::Pool { resizer, .. } => {
+      assert_eq!(resizer.as_ref().expect("the resizer is on").pressure_threshold(), -1);
     },
     | other => panic!("expected a pool, got {other:?}"),
   }

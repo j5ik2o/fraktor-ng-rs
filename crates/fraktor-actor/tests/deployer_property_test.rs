@@ -156,8 +156,9 @@ fn deployer_with_only_a_double_wildcard_section_matches_every_extension() {
   }
 }
 
-// P4: registration of arbitrary path strings never panics; the outcome
-// is a registration or one of the two documented errors.
+// P4: registration of arbitrary path strings never panics; a refused
+// path is not registered and keeps the deployments already held, and
+// an accepted path is found by its own lookup.
 #[test]
 fn deployer_registration_of_arbitrary_paths_never_panics() {
   let pieces = ["a", "*", "**", "***", "a**", "", "ubåt", "$bad", "a b"];
@@ -169,10 +170,20 @@ fn deployer_registration_of_arbitrary_paths_never_panics() {
       path.push('/');
       path.push_str(rng.pick(&pieces));
     }
-    let mut deployer = Deployer::from_sections([]).expect("an empty deployer builds");
-    match deployer.deploy(deploy_value(&path)) {
-      | Ok(()) => {},
-      | Err(DeployError::InvalidName(_)) | Err(DeployError::Index(_)) => {},
+    let mut deployer =
+      Deployer::from_sections([("/sentinel".to_string(), DeploymentSection::default())]).expect("the sentinel builds");
+    let sentinel = deployer.lookup_path("/sentinel").expect("the sentinel is in").clone();
+    let value = deploy_value(&path);
+    match deployer.deploy(value.clone()) {
+      | Ok(()) => {
+        if !path.contains('*') && !split_like_java(&path).is_empty() {
+          assert_eq!(deployer.lookup_path(&path), Some(&value), "an accepted path is found: {path:?}");
+        }
+      },
+      | Err(DeployError::InvalidName(_)) | Err(DeployError::Index(_)) => {
+        assert_eq!(deployer.lookup_path(&path), None, "a refused path is not registered: {path:?}");
+        assert_eq!(deployer.lookup_path("/sentinel"), Some(&sentinel), "a refusal keeps the existing deployments");
+      },
       | Err(other) => panic!("an unexpected error for {path:?}: {other:?}"),
     }
   }
@@ -243,8 +254,8 @@ fn deployer_resizer_reading_pools_validate_the_resizer() {
     match &deployer.lookup_path("/svc").expect("deployed").router {
       | DeployedRouter::Pool { resizer, .. } => {
         let resizer = resizer.as_ref().expect("the resizer is kept");
-        assert_eq!(resizer.lower_bound, 2);
-        assert_eq!(resizer.upper_bound, 5);
+        assert_eq!(resizer.lower_bound(), 2);
+        assert_eq!(resizer.upper_bound(), 5);
       },
       | other => panic!("expected a pool, got {other:?}"),
     }

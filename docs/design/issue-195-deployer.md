@@ -196,13 +196,13 @@ pub enum NumberOfInstances {
   NotANumber(String),
 }
 
-型で表せない値（入力の型による狭め。中将（2026-11-26）が意図した狭めとして決定した）：負の `within`（`Duration` で表す）と、resizer の負の下限と上限（`u32` で表す）は、型付きの入力では利用者がそもそも書けない。原典ではどちらも誤りになる値だが、入口が型である以上、観察できる入力としては存在しない。件数だけを原典の `Int` に合わせて `i32` にした理由は、ケース5と F1 の条件が件数の範囲を検証の対象にしているためである。
+型で表せない値（入力の型による狭め。中将（2026-11-26）が意図した狭めとして決定した）：負の `within`（`Duration` で表す）と、resizer の負の下限と上限（`u32` で表す）は、型付きの入力では利用者がそもそも書けない。原典ではどちらも誤りになる値だが、入口が型である以上、観察できる入力としては存在しない。件数だけを原典の `Int` に合わせて `i32` にした理由は、ケース5と F1 の条件が件数の範囲を検証の対象にしているためである。`pressure-threshold` も原典の `Int` のまま `i32` で保持する。原典のコンストラクタはこの値を検証せず、`pressure` の判定では 1 未満（負と0）を同じ分岐で扱うため、符号付きで保持することが原典どおりになる（実装の段で §2.2 と §2.4 のスケッチの `u32` を `i32` に直した。§10）。
 
 pub struct ResizerSection {
   // `enabled` の欄は持たない。節に resizer があれば常に有効である（§2.5）。
   pub lower_bound: u32,         // 既定は 1
   pub upper_bound: u32,         // 既定は 10
-  pub pressure_threshold: u32,  // 既定は 1
+  pub pressure_threshold: i32,  // 既定は 1
   pub rampup_rate: f64,         // 既定は 0.2
   pub backoff_threshold: f64,   // 既定は 0.3
   pub backoff_rate: f64,        // 既定は 0.1
@@ -364,7 +364,7 @@ pub enum GroupKind {
 pub struct DefaultResizer {
   pub lower_bound: u32,
   pub upper_bound: u32,
-  pub pressure_threshold: u32,
+  pub pressure_threshold: i32,
   pub rampup_rate: f64,
   pub backoff_threshold: f64,
   pub backoff_rate: f64,
@@ -613,3 +613,6 @@ FQCN は定数として持つ（例：`ROUND_ROBIN_POOL_FQCN = "org.apache.pekko
 - Java の `split` の挙動は写す形で実装した。オーナーの判断は元帥経由で待ちのままであり、承認済みとは書かない（§6 の6、§9 の決定1）。
 - 台帳の `needs.testkit`（`extends-pekko-spec`／`pekko-spec`）は元のままにした。移植は testkit を使わないため、実態との差としてゴール文書（`docs/goals/issue-195-deployer.md`）に記録した。
 - `docs/baseline/v2.0.0-undocumented-nodes.tsv` は `report_ledger_1to1.py list-undocumented` で作り直し、本ノードを一覧へ足した（#194 の前例と同じ扱い）。
+- 節の `within` と `tail-chopping-router.interval` は、解釈の段でミリ秒未満を切り捨てる。原典の `Config` コンストラクタ（scatter-gather と tail-chopping のプールとグループ）は `getMillisDuration` で整数ミリ秒に丸めて読むためである。節そのものと、コードから直接構築したルーター値には適用しない。境界の単体テストで確かめた。
+- `pressure-threshold` は `i32` で保持し、検証しない（§2.2 の追記）。設計のスケッチでは `u32` と書いていたが、原典が負の値を受け入れるため、実装の段で `i32` に直した。
+- `DefaultResizer` のフィールドは非公開にした。構築は検証を行う `new` と `defaults` だけであり、値はいつも検証済みの状態を表す。未検証の入力は `ResizerSection` に残る。読み取りは同名のメソッドで行う。

@@ -13,6 +13,7 @@
 // at the repository root.
 //
 // This file has been modified from the Apache Pekko original.
+
 //! The resizer part of a deployment section.
 
 /// The `resizer` part of a section, without an `enabled` field: the
@@ -24,8 +25,11 @@ pub struct ResizerSection {
   pub lower_bound: u32,
   /// The `upper-bound`; the default is ten.
   pub upper_bound: u32,
-  /// The `pressure-threshold`; the default is one.
-  pub pressure_threshold: u32,
+  /// The `pressure-threshold`; the default is one. Signed, as in the
+  /// original: its pressure test treats every value below one (zero
+  /// and the negatives alike) by the same branch, so the value is
+  /// held as written.
+  pub pressure_threshold: i32,
   /// The `rampup-rate`; the default is 0.2.
   pub rampup_rate: f64,
   /// The `backoff-threshold`; the default is 0.3.

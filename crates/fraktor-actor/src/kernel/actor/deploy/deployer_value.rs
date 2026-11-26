@@ -13,10 +13,12 @@
 // at the repository root.
 //
 // This file has been modified from the Apache Pekko original.
+
 //! The deployer: typed sections in, deployments out, lookup by path.
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::time::Duration;
 
 use super::default_resizer::DefaultResizer;
 use super::deploy_error::DeployError;
@@ -207,6 +209,15 @@ fn read_resizer(section: &DeploymentSection) -> Result<Option<DefaultResizer>, D
   }
 }
 
+/// Reads a duration of a section the way the original's `Config`
+/// constructors do: as whole milliseconds, dropping any part below
+/// one millisecond (`getMillisDuration`). This applies only while a
+/// section is interpreted; a router value built from code keeps the
+/// duration it was given.
+fn whole_millis(duration: Duration) -> Duration {
+  Duration::from_millis(duration.as_secs().saturating_mul(1_000).saturating_add(u64::from(duration.subsec_millis())))
+}
+
 /// Interprets a section into the router of its deployment.
 ///
 /// Mirrors `Deployer.createRouterConfig` with the `Config`
@@ -232,12 +243,15 @@ fn interpret(section: &DeploymentSection, key: &str) -> Result<DeployedRouter, D
       pool(PoolKind::Broadcast, read_resizer(section)?, section.pool_dispatcher_given)
     },
     | RouterSelection::ScatterGatherPool => pool(
-      PoolKind::ScatterGatherFirstCompleted { within: section.within },
+      PoolKind::ScatterGatherFirstCompleted { within: whole_millis(section.within) },
       read_resizer(section)?,
       section.pool_dispatcher_given,
     ),
     | RouterSelection::TailChoppingPool => pool(
-      PoolKind::TailChopping { within: section.within, interval: section.tail_chopping_interval },
+      PoolKind::TailChopping {
+        within: whole_millis(section.within),
+        interval: whole_millis(section.tail_chopping_interval),
+      },
       read_resizer(section)?,
       section.pool_dispatcher_given,
     ),
@@ -250,11 +264,15 @@ fn interpret(section: &DeploymentSection, key: &str) -> Result<DeployedRouter, D
     | RouterSelection::RandomGroup => Ok(group(GroupKind::Random, section)),
     | RouterSelection::BroadcastGroup => Ok(group(GroupKind::Broadcast, section)),
     | RouterSelection::ScatterGatherGroup => {
-      Ok(group(GroupKind::ScatterGatherFirstCompleted { within: section.within }, section))
+      Ok(group(GroupKind::ScatterGatherFirstCompleted { within: whole_millis(section.within) }, section))
     },
-    | RouterSelection::TailChoppingGroup => {
-      Ok(group(GroupKind::TailChopping { within: section.within, interval: section.tail_chopping_interval }, section))
-    },
+    | RouterSelection::TailChoppingGroup => Ok(group(
+      GroupKind::TailChopping {
+        within: whole_millis(section.within),
+        interval: whole_millis(section.tail_chopping_interval),
+      },
+      section,
+    )),
     | RouterSelection::ConsistentHashingGroup => {
       Ok(group(GroupKind::ConsistentHashing { virtual_nodes_factor: 0 }, section))
     },

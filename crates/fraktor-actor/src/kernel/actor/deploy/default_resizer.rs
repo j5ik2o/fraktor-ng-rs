@@ -13,6 +13,7 @@
 // at the repository root.
 //
 // This file has been modified from the Apache Pekko original.
+
 //! The default resizer, as a value.
 
 use super::deploy_error::DeployError;
@@ -21,23 +22,18 @@ use super::deploy_error::DeployError;
 ///
 /// Mirrors `org.apache.pekko.routing.DefaultResizer`. The dynamic
 /// behaviour (when to resize, by how much) is not built in this port;
-/// the value and the constructor's validation are.
+/// the value and the constructor's validation are. The fields are
+/// not public, so a value of this type has always passed that
+/// validation; unverified input stays in `ResizerSection`.
 #[derive(Clone, PartialEq, Debug)]
 pub struct DefaultResizer {
-  /// The lower bound of the pool size.
-  pub lower_bound: u32,
-  /// The upper bound of the pool size.
-  pub upper_bound: u32,
-  /// The pressure threshold.
-  pub pressure_threshold: u32,
-  /// The ramp-up rate.
-  pub rampup_rate: f64,
-  /// The backoff threshold.
-  pub backoff_threshold: f64,
-  /// The backoff rate.
-  pub backoff_rate: f64,
-  /// The number of messages between resizes.
-  pub messages_per_resize: u32,
+  lower_bound: u32,
+  upper_bound: u32,
+  pressure_threshold: i32,
+  rampup_rate: f64,
+  backoff_threshold: f64,
+  backoff_rate: f64,
+  messages_per_resize: u32,
 }
 
 impl DefaultResizer {
@@ -49,8 +45,10 @@ impl DefaultResizer {
   /// most 1.0, and the messages per resize must be positive. The
   /// non-negativity of the bounds is not checked: the fields are
   /// unsigned, so a negative bound cannot be written (a narrowing by
-  /// the input types, recorded in the design of #195). `NaN` rates
-  /// pass, as in the original.
+  /// the input types, recorded in the design of #195). The pressure
+  /// threshold is signed and unchecked, as in the original, whose
+  /// pressure test treats every value below one by the same branch.
+  /// `NaN` rates pass, as in the original.
   ///
   /// # Errors
   ///
@@ -59,7 +57,7 @@ impl DefaultResizer {
   pub fn new(
     lower_bound: u32,
     upper_bound: u32,
-    pressure_threshold: u32,
+    pressure_threshold: i32,
     rampup_rate: f64,
     backoff_threshold: f64,
     backoff_rate: f64,
@@ -99,6 +97,48 @@ impl DefaultResizer {
       backoff_rate,
       messages_per_resize,
     })
+  }
+
+  /// The lower bound of the pool size.
+  #[must_use]
+  pub fn lower_bound(&self) -> u32 {
+    self.lower_bound
+  }
+
+  /// The upper bound of the pool size.
+  #[must_use]
+  pub fn upper_bound(&self) -> u32 {
+    self.upper_bound
+  }
+
+  /// The pressure threshold.
+  #[must_use]
+  pub fn pressure_threshold(&self) -> i32 {
+    self.pressure_threshold
+  }
+
+  /// The ramp-up rate.
+  #[must_use]
+  pub fn rampup_rate(&self) -> f64 {
+    self.rampup_rate
+  }
+
+  /// The backoff threshold.
+  #[must_use]
+  pub fn backoff_threshold(&self) -> f64 {
+    self.backoff_threshold
+  }
+
+  /// The backoff rate.
+  #[must_use]
+  pub fn backoff_rate(&self) -> f64 {
+    self.backoff_rate
+  }
+
+  /// The number of messages between resizes.
+  #[must_use]
+  pub fn messages_per_resize(&self) -> u32 {
+    self.messages_per_resize
   }
 
   /// The resizer with every value at its default.
