@@ -830,10 +830,7 @@ fn record_dead_letters(executor: &mut Executor) -> DeadLetterLog {
   let inbox = delivered.clone();
   executor.dead_letters = executor.function_ref("recordedDeadLetters", move |_: &ActorRef, message: Message| {
     let dead = message.downcast_ref::<crate::kernel::actor::DeadLetter>().unwrap();
-    inbox
-      .lock()
-      .unwrap()
-      .push((dead.sender().clone(), *dead.message().downcast_ref::<&'static str>().unwrap()));
+    inbox.lock().unwrap().push((dead.sender().clone(), *dead.message().downcast_ref::<&'static str>().unwrap()));
   });
   delivered
 }
