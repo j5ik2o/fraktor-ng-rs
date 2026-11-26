@@ -16,7 +16,7 @@
 
 //! The metrics a registry holds.
 
-use crate::metrics_kit::{AveragingGauge, HdrHistogram, KnownOpsInTimespanTimer};
+use crate::metrics_kit::{AveragingGauge, FileDescriptorGauge, HdrHistogram, KnownOpsInTimespanTimer};
 
 /// A registered metric: a handle that shares its state with the registry.
 #[derive(Clone)]
@@ -27,4 +27,6 @@ pub enum Metric {
   HdrHistogram(HdrHistogram),
   /// A [`KnownOpsInTimespanTimer`].
   KnownOpsInTimespanTimer(KnownOpsInTimespanTimer),
+  /// A [`FileDescriptorGauge`].
+  FileDescriptorGauge(FileDescriptorGauge),
 }

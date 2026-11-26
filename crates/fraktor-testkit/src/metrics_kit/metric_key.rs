@@ -21,8 +21,20 @@ use core::fmt;
 /// A metric name built from parts, each sanitized as the original does.
 ///
 /// Mirrors `MetricKeyDSL.MetricKey`.
+#[derive(Clone)]
 pub struct MetricKey {
-  _private: (),
+  path: String,
+}
+
+/// Sanitizes one part of a key, in the original's order.
+///
+/// Mirrors `MetricKey.sanitizeMetricKeyPart`.
+fn sanitize_part(part: &str) -> String {
+  part
+    .replace("...", "\u{2026}")
+    .replace('.', "-")
+    .replace(['[', ']', '(', ')', '<', '>'], "|")
+    .replace([' ', '/'], "-")
 }
 
 impl MetricKey {
@@ -30,27 +42,24 @@ impl MetricKey {
   ///
   /// Mirrors `MetricKey.fromString`.
   pub fn from_string(root: &str) -> Self {
-    let _ = root;
-    todo!()
+    Self { path: sanitize_part(root) }
   }
 
   /// Appends a sanitized part after a `.`.
   ///
   /// Mirrors the original's `/` operator.
   pub fn child(&self, part: &str) -> Self {
-    let _ = part;
-    todo!()
+    Self { path: format!("{}.{}", self.path, sanitize_part(part)) }
   }
 
   /// Returns the path.
   pub fn as_str(&self) -> &str {
-    todo!()
+    &self.path
   }
 }
 
 impl fmt::Display for MetricKey {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let _ = f;
-    todo!()
+    f.write_str(&self.path)
   }
 }

@@ -19,6 +19,7 @@
 use core::fmt;
 
 /// An error of the metrics kit.
+#[derive(Debug)]
 pub enum MetricsError {
   /// The key is registered for a different kind of metric.
   KindConflict {
@@ -33,6 +34,10 @@ pub enum MetricsError {
   HistogramValueOutOfRange {
     /// The value.
     value: i64,
+    /// The lowest discernible value of the histogram.
+    lowest_discernible_value: i64,
+    /// The highest trackable value of the histogram.
+    highest_trackable_value: i64,
   },
   /// An argument is outside what the metric accepts.
   InvalidArgument {
@@ -43,7 +48,19 @@ pub enum MetricsError {
 
 impl fmt::Display for MetricsError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let _ = f;
-    todo!()
+    match self {
+      | Self::KindConflict { key, existing, requested } => {
+        write!(f, "Key: [{key}] is already for different kind of metric! Was [{existing}], expected [{requested}]")
+      },
+      | Self::HistogramValueOutOfRange { value, lowest_discernible_value, highest_trackable_value } => {
+        write!(
+          f,
+          "Given value {value} can not be stored in this histogram (min: {lowest_discernible_value}, max: {highest_trackable_value})"
+        )
+      },
+      | Self::InvalidArgument { reason } => f.write_str(reason),
+    }
   }
 }
+
+impl std::error::Error for MetricsError {}

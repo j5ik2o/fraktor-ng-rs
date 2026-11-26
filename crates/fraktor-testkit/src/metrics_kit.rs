@@ -21,7 +21,10 @@
 //! tests (`MetricsKit`, `MetricsKitOps`, `MetricKeyDSL` and the metric types).
 
 mod averaging_gauge;
+mod console_reporter;
 mod console_reporter_settings;
+mod file_descriptor_gauge;
+mod file_descriptor_metric_set;
 mod hdr_histogram;
 mod known_ops_in_timespan_timer;
 mod metric;
@@ -32,7 +35,10 @@ mod metrics_kit_value;
 mod metrics_reporter_kind;
 
 pub use averaging_gauge::AveragingGauge;
+pub use console_reporter::ConsoleReporter;
 pub use console_reporter_settings::ConsoleReporterSettings;
+pub use file_descriptor_gauge::FileDescriptorGauge;
+pub use file_descriptor_metric_set::FileDescriptorMetricSet;
 pub use hdr_histogram::HdrHistogram;
 pub use known_ops_in_timespan_timer::KnownOpsInTimespanTimer;
 pub use metric::Metric;

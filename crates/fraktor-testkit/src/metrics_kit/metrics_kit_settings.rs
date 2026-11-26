@@ -16,6 +16,8 @@
 
 //! The settings of a metrics kit.
 
+use core::time::Duration;
+
 use crate::metrics_kit::{ConsoleReporterSettings, MetricsReporterKind};
 
 /// The settings of a metrics kit, typed in place of the original's config.
@@ -31,6 +33,9 @@ pub struct MetricsKitSettings {
 impl Default for MetricsKitSettings {
   /// The values of the testkit tests' `reference.conf`.
   fn default() -> Self {
-    todo!()
+    Self {
+      reporters: vec![MetricsReporterKind::Console],
+      console: ConsoleReporterSettings { scheduled_report_interval: Duration::ZERO, verbose: false },
+    }
   }
 }

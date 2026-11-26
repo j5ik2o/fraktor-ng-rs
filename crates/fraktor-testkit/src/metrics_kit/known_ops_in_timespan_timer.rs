@@ -17,6 +17,14 @@
 //! A timer of a known number of operations, stopped once.
 
 use core::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+/// The state the clones of a [`KnownOpsInTimespanTimer`] share.
+struct TimerState {
+  started_at: Instant,
+  stopped_at: Mutex<Option<Instant>>,
+}
 
 /// Measures the time a known number of operations take. Clones share the
 /// state.
@@ -24,44 +32,50 @@ use core::time::Duration;
 /// Mirrors `org.apache.pekko.testkit.metrics.KnownOpsInTimespanTimer`.
 #[derive(Clone)]
 pub struct KnownOpsInTimespanTimer {
-  _private: (),
+  expected_ops: i64,
+  state: Arc<TimerState>,
 }
 
 impl KnownOpsInTimespanTimer {
   /// Starts a timer of `expected_ops` operations.
   pub fn new(expected_ops: i64) -> Self {
-    let _ = expected_ops;
-    todo!()
+    Self { expected_ops, state: Arc::new(TimerState { started_at: Instant::now(), stopped_at: Mutex::new(None) }) }
   }
 
   /// Stops the timer. Only the first call returns `true`.
   pub fn stop(&self) -> bool {
-    todo!()
+    let mut stopped_at = self.state.stopped_at.lock().expect("timer lock");
+    if stopped_at.is_some() {
+      return false;
+    }
+    *stopped_at = Some(Instant::now());
+    true
   }
 
   /// Returns the expected number of operations.
   ///
   /// Mirrors `getCount`.
   pub fn count(&self) -> i64 {
-    todo!()
+    self.expected_ops
   }
 
   /// Returns the time between the start and the stop, `None` until stopped.
   pub fn elapsed(&self) -> Option<Duration> {
-    todo!()
+    let stopped_at = self.state.stopped_at.lock().expect("timer lock");
+    stopped_at.map(|stopped| stopped.duration_since(self.state.started_at))
   }
 
   /// Returns the average nanoseconds per operation, `None` until stopped.
   ///
   /// Mirrors `avgDuration`.
   pub fn avg_duration_nanos(&self) -> Option<i64> {
-    todo!()
+    self.elapsed().map(|elapsed| (elapsed.as_nanos() as f64 / self.expected_ops as f64) as i64)
   }
 
   /// Returns the operations per second, `None` until stopped.
   ///
   /// Mirrors `opsPerSecond`.
   pub fn ops_per_second(&self) -> Option<f64> {
-    todo!()
+    self.elapsed().map(|elapsed| self.expected_ops as f64 / (elapsed.as_nanos() as f64 / 1_000_000_000.0))
   }
 }
