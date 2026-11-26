@@ -1241,16 +1241,21 @@ mod stage3 {
     *to_b.lock().unwrap() = None;
   }
 
-  // The refused path: messages to a stopped actor take its handle along to the
-  // executor, which needs the way back. Condition 1 is not met here (design of
-  // #234, section 11.11.7).
+  // The refused path: a message to a stopped actor goes to dead letters on the
+  // sender's thread, as Pekko's dead letter mailbox sends it on (#286). The
+  // `DeadLetter` names the actor it was addressed to, as Pekko's
+  // `DeadLetter(message, sender, receiver)` does, so the handle is cloned
+  // once (its path and its endpoint); with the sender, 4 clones. Nothing goes
+  // to the executor, so there is no walk back (design of #234, section
+  // 11.11.7). Condition 1's (1-2) is met; (1-1) is not, by the endpoint clone.
   #[test]
-  fn a_send_to_a_stopped_actor_clones_four_and_walks_back_once() {
+  fn a_send_to_a_stopped_actor_clones_the_sender_and_the_recipient_and_does_not_walk_back() {
     let mut system = system("ConditionOneRefused");
     let target = system.actor_of(Props::new(|| Sink));
     let sender = system.dead_letters();
     system.stop(&target);
     system.run_until_idle();
+    let strong_before = target.mailbox_strong_count();
 
     let before = counts::snapshot();
     for _ in 0..N {
@@ -1263,7 +1268,12 @@ mod stage3 {
     report("refused, to a stopped actor (the tell)", sent, N);
     report("refused, the tell and the routing to dead letters", routed, N);
     assert_eq!(sent.arc_clones(), 4 * N, "{sent:?}");
-    assert_eq!(sent.atomic_ops(), 5 * N, "{sent:?}");
+    assert_eq!(sent.atomic_ops(), 4 * N, "{sent:?}");
+    assert_eq!(sent.upgrades, 0, "{sent:?}");
+    // The tell routed every message, so the executor has none left to route.
+    assert_eq!(routed.arc_clones(), sent.arc_clones(), "the executor routed a refused message: {routed:?}");
+    assert_eq!(routed.upgrades, sent.upgrades, "{routed:?}");
+    assert_eq!(target.mailbox_strong_count(), strong_before, "a clone of the mailbox leaked");
   }
 
   // ----- condition 4: the mailbox goes once the actor stops, or the system ends
