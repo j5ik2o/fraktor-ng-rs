@@ -27,11 +27,11 @@ use crate::kernel::message::Message;
 
 /// A state function: answers an event in one state, or returns `None` when it
 /// does not handle the event.
-type StateFunction<S, D> = Box<dyn FnMut(&mut ActorContext<'_>, &FsmView<S>, &Message, &D) -> Option<FsmState<S, D>>>;
+type StateFunction<S, D> = Box<dyn FnMut(&mut ActorContext<'_>, &FsmView<S>, &Message, &D) -> Option<FsmState<S, D>> + Send>;
 
 /// A transition handler: hears every reported move from one state to another,
 /// with the data before and after the move.
-type TransitionHandler<S, D> = Box<dyn FnMut(&mut ActorContext<'_>, &S, &S, &D, &D)>;
+type TransitionHandler<S, D> = Box<dyn FnMut(&mut ActorContext<'_>, &S, &S, &D, &D) + Send>;
 
 /// The message that asks the machine to report its transitions to a listener.
 ///
@@ -135,7 +135,7 @@ pub struct Fsm<S, D> {
 impl<S, D> Fsm<S, D>
 where
   S: Clone + PartialEq + Send + Sync + 'static,
-  D: 'static,
+  D: Send + 'static,
 {
   /// Creates a machine with no state, no state functions, and no handlers.
   pub fn new() -> Self {
@@ -171,7 +171,7 @@ where
   /// from itself.
   pub fn when<F>(&mut self, state: S, function: F)
   where
-    F: FnMut(&mut ActorContext<'_>, &FsmView<S>, &Message, &D) -> Option<FsmState<S, D>> + 'static,
+    F: FnMut(&mut ActorContext<'_>, &FsmView<S>, &Message, &D) -> Option<FsmState<S, D>> + Send + 'static,
   {
     self.state_functions.push((state, Box::new(function)));
   }
@@ -184,7 +184,7 @@ where
   /// `whenUnhandled` does after it logs a warning.
   pub fn when_unhandled<F>(&mut self, function: F)
   where
-    F: FnMut(&mut ActorContext<'_>, &FsmView<S>, &Message, &D) -> Option<FsmState<S, D>> + 'static,
+    F: FnMut(&mut ActorContext<'_>, &FsmView<S>, &Message, &D) -> Option<FsmState<S, D>> + Send + 'static,
   {
     self.unhandled_function = Some(Box::new(function));
   }
@@ -199,7 +199,7 @@ where
   /// order they were added.
   pub fn on_transition<F>(&mut self, handler: F)
   where
-    F: FnMut(&mut ActorContext<'_>, &S, &S) + 'static,
+    F: FnMut(&mut ActorContext<'_>, &S, &S) + Send + 'static,
   {
     let mut handler = handler;
     self.transition_handlers.push(Box::new(move |context, from, to, _previous, _next| {
@@ -217,7 +217,7 @@ where
   /// `FSMTransitionSpec` checks.
   pub fn on_transition_with_data<F>(&mut self, handler: F)
   where
-    F: FnMut(&mut ActorContext<'_>, &S, &S, &D, &D) + 'static,
+    F: FnMut(&mut ActorContext<'_>, &S, &S, &D, &D) + Send + 'static,
   {
     self.transition_handlers.push(Box::new(handler));
   }
@@ -372,7 +372,7 @@ where
 impl<S, D> Default for Fsm<S, D>
 where
   S: Clone + PartialEq + Send + Sync + 'static,
-  D: 'static,
+  D: Send + 'static,
 {
   fn default() -> Self {
     Self::new()
@@ -382,7 +382,7 @@ where
 impl<S, D> Actor for Fsm<S, D>
 where
   S: Clone + PartialEq + Send + Sync + 'static,
-  D: 'static,
+  D: Send + 'static,
 {
   fn pre_start(&mut self, context: &mut ActorContext<'_>) {
     if self.initialized {

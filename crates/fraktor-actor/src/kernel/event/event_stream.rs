@@ -21,12 +21,10 @@
 //! The stream that delivers events to their subscribers.
 
 use alloc::format;
-use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::any::Any;
-use core::cell::RefCell;
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 
@@ -41,6 +39,8 @@ use crate::kernel::event::EventClass;
 use crate::kernel::event::EventStreamBus;
 use crate::kernel::event::NullSubscriber;
 use crate::kernel::message::Message;
+use crate::kernel::sync::lock;
+use crate::kernel::sync::Arc;
 
 /// The source that the stream reports in its own debug events.
 const LOG_SOURCE: &str = "EventStream";
@@ -81,7 +81,7 @@ pub struct EventStream {
   system: WeakActorSystem,
   bus: EventStreamBus,
   debug: bool,
-  setup: Rc<RefCell<StreamSetup>>,
+  setup: Arc<spin::Mutex<StreamSetup>>,
 }
 
 impl EventStream {
@@ -90,7 +90,7 @@ impl EventStream {
   /// Mirrors `EventStream(sys, debug)`: `debug` decides whether the stream
   /// publishes a debug event for the life cycle of its subscribers.
   pub fn new(system: WeakActorSystem, debug: bool) -> Self {
-    Self { system, bus: EventStreamBus::new(), debug, setup: Rc::new(RefCell::new(StreamSetup::new())) }
+    Self { system, bus: EventStreamBus::new(), debug, setup: Arc::new(spin::Mutex::new(StreamSetup::new())) }
   }
 
   /// Publishes `event` to every subscriber of the class of `E`.
@@ -188,7 +188,7 @@ impl EventStream {
   /// `Terminated` for each subscriber it watches and removes that subscriber
   /// from the stream. Starting it a second time changes nothing.
   pub fn start_unsubscriber(&self) {
-    if self.setup.borrow().unsubscriber.is_some() {
+    if lock(&self.setup).unsubscriber.is_some() {
       return;
     }
     let bus = self.bus.clone();
@@ -218,7 +218,7 @@ impl EventStream {
   /// and `false` when a handle is already installed, which is the state the
   /// double-initialization case observes.
   pub fn init_unsubscriber(&self, unsubscriber: ActorRef) -> bool {
-    if self.setup.borrow().unsubscriber.is_some() {
+    if lock(&self.setup).unsubscriber.is_some() {
       return false;
     }
     self.activate_unsubscriber(unsubscriber);
@@ -240,7 +240,7 @@ impl EventStream {
   /// the saved level keeps a `set_log_level` made before any logger started
   /// from leaving the loggers subscribed to nothing.
   pub fn start_default_loggers(&self, loggers: &[ActorRef], level: LogLevel) {
-    self.setup.borrow_mut().loggers = loggers.to_vec();
+    lock(&self.setup).loggers = loggers.to_vec();
     for logger in loggers {
       logger.tell(InitializeLogger::new(self.bus.clone()), logger.clone());
     }
@@ -257,7 +257,7 @@ impl EventStream {
         }
       }
     }
-    self.setup.borrow_mut().log_level = Some(level);
+    lock(&self.setup).log_level = Some(level);
   }
 
   /// Changes the level that the default loggers listen to.
@@ -268,7 +268,7 @@ impl EventStream {
   /// Info < Debug`, so a higher setting also accepts the less severe levels.
   pub fn set_log_level(&self, level: LogLevel) {
     let (previous, loggers) = {
-      let setup = self.setup.borrow();
+      let setup = lock(&self.setup);
       (setup.log_level, setup.loggers.clone())
     };
     for candidate in LOG_LEVELS {
@@ -284,7 +284,7 @@ impl EventStream {
         }
       }
     }
-    self.setup.borrow_mut().log_level = Some(level);
+    lock(&self.setup).log_level = Some(level);
   }
 
   /// Starts the handle that turns unhandled messages into debug events.
@@ -294,10 +294,10 @@ impl EventStream {
   /// [`UnhandledMessage`](crate::kernel::actor::UnhandledMessage) and publishes
   /// a `Debug` that names the sender, the message, and the recipient.
   pub fn start_unhandled_message_forwarder(&self) {
-    if self.setup.borrow().forwarder_started {
+    if lock(&self.setup).forwarder_started {
       return;
     }
-    self.setup.borrow_mut().forwarder_started = true;
+    lock(&self.setup).forwarder_started = true;
     let bus = self.bus.downgrade();
     let forwarder = self.system.function_ref(UNHANDLED_FORWARDER_NAME, move |_sender: &ActorRef, message: Message| {
       let Some(unhandled) = message.downcast_ref::<crate::kernel::actor::UnhandledMessage>() else {
@@ -311,14 +311,14 @@ impl EventStream {
   }
 
   fn activate_unsubscriber(&self, unsubscriber: ActorRef) {
-    self.setup.borrow_mut().unsubscriber = Some(unsubscriber);
+    lock(&self.setup).unsubscriber = Some(unsubscriber);
     for subscriber in self.bus.subscribers() {
       self.register_with_unsubscriber(&subscriber);
     }
   }
 
   fn register_with_unsubscriber(&self, subscriber: &ActorRef) {
-    let unsubscriber = self.setup.borrow().unsubscriber.clone();
+    let unsubscriber = lock(&self.setup).unsubscriber.clone();
     let Some(unsubscriber) = unsubscriber else {
       return;
     };
@@ -334,7 +334,7 @@ impl EventStream {
     if self.bus.has_subscriptions(subscriber) {
       return;
     }
-    let unsubscriber = self.setup.borrow().unsubscriber.clone();
+    let unsubscriber = lock(&self.setup).unsubscriber.clone();
     let Some(unsubscriber) = unsubscriber else {
       return;
     };

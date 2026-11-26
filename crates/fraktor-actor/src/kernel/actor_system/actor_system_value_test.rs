@@ -1851,7 +1851,7 @@ fn a_panicking_decider_on_a_start_failure_stops_the_idle_supervisor_and_frees_it
     "the supervising parent was not stopped by the grandparent's strategy"
   );
   assert_eq!(
-    system.executor.borrow().parent_entry_count(),
+    crate::kernel::sync::lock(&system.executor).parent_entry_count(),
     1,
     "a stopped supervisor left an entry in the parent registry"
   );
@@ -2265,7 +2265,7 @@ fn an_empty_pre_restart_recovers_only_the_uninitialized_child_and_keeps_the_heal
   assert_eq!(*observations.lock().unwrap(), alloc::vec![(healthy.clone(), 1), (healthy, 1)]);
   assert_eq!(*received.lock().unwrap(), alloc::vec!["recovered"], "the retained child still has no behavior");
   assert_eq!(attempts.load(Ordering::SeqCst), 2, "only the failed child must be created again");
-  let duplicate = system.executor.borrow_mut().spawn_named_child(&parent, Props::new(|| NoOp), "bob");
+  let duplicate = crate::kernel::sync::lock(&system.executor).spawn_named_child(&parent, Props::new(|| NoOp), "bob");
   assert!(duplicate.is_err(), "a recovered live child must still reserve bob");
 }
 
@@ -2402,7 +2402,11 @@ fn a_stopped_actor_leaves_no_parent_entry_behind() {
     system.stop(&actor);
   }
 
-  assert_eq!(system.executor.borrow().parent_entry_count(), 0, "the parent registry kept stopped actors");
+  assert_eq!(
+    crate::kernel::sync::lock(&system.executor).parent_entry_count(),
+    0,
+    "the parent registry kept stopped actors"
+  );
 }
 
 /// Counts its `post_restart` calls so a test can tell a restart from a stop.

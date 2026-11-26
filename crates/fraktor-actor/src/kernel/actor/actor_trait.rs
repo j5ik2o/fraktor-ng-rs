@@ -28,11 +28,14 @@ use crate::kernel::supervision::SupervisorStrategy;
 /// a partial function. The port makes it a method so that the executor can call
 /// it with the actor's context lent out for the duration of the call.
 ///
+/// An actor must be `Send`: which thread runs it is the dispatcher's
+/// choice, not the actor's (stage 1 of #234).
+///
 /// The lifecycle hooks mirror `Actor.preStart`, `Actor.postStop`,
 /// `Actor.preRestart`, and `Actor.postRestart`. Pekko's defaults are kept:
 /// `pre_restart` stops all children and runs `post_stop` unless an actor overrides it, and
 /// `post_restart` runs `pre_start` unless an actor overrides it.
-pub trait Actor {
+pub trait Actor: Send {
   /// Handles one message.
   fn receive(&mut self, context: &mut ActorContext<'_>, message: Message);
 
