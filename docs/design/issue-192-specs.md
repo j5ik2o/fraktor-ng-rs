@@ -1,6 +1,6 @@
 # 設計：#192 ProviderSelectionSpec／ActorWithBoundedStashSpec／FunctionRefSpec
 
-> 2026-11-26 修正：独立レビュー（高3・中11・低7、全21件）と、元帥の決定（E1・E2 の扱い、E3 の判断待ち、H1 の方向）を受けて本書を直した。指摘への対応は末尾の §8 回答表に1件ずつ書く。
+> 2026-11-26 修正：独立レビュー（高3・中11・低7、全21件）と、元帥の決定（E1・E2 の扱い、E3 の扱い、H1 の方向）を受けて本書を直した。E3 は当初判断待ちとしたが、その後オーナーが除外として承認した（元帥の項目426、2026-11-26）ため、本書の E3 の記述は承認済みの除外として直した。指摘への対応は末尾の §8 回答表に1件ずつ書く。
 
 [Issue #192](https://github.com/j5ik2o/fraktor-ng-rs/issues/192) の設計の記録である。Pekko v2.0.0 の actor-tests にある actor の `ProviderSelectionSpec`、`ActorWithBoundedStashSpec`、`FunctionRefSpec` を Rust へ移植し、台帳の対象ノード3件を green にする。本書は第1段（設計）であり、実装は設計レビューが通ってから第2段で行う。本書の段では台帳を触らない。
 
@@ -56,7 +56,7 @@ Rust のテスト関数は実行件数に合わせて立てる（FunctionRefSpec
 
 ### 1.3 FunctionRefSpec の対応表
 
-置き場所は `crates/fraktor-actor/tests/function_ref_spec.rs`。9件のうち8件を移し、1件（ケース9）は除外かどうかを上司がオーナーに伺い中のため**判断待ち**とする（§5 の E3）。残りの8件は E3 の判断を待たずに進めてよい。
+置き場所は `crates/fraktor-actor/tests/function_ref_spec.rs`。9件のうち8件を移し、1件（ケース9）は除外としてオーナーが承認した（§5 の E3）。
 
 原典の補助型: `Super` は `GetForwarder` を受けると自セルの `addFunctionRef` で転送関数を登録して FunctionRef を返し、`DropForwarder` で `removeFunctionRef` する。`SupSuper` は `Super` を子に持ち、すべてを転送する（non-toplevel の生成経路）。
 
@@ -70,7 +70,7 @@ Rust のテスト関数は実行件数に合わせて立てる（FunctionRefSpec
 | 6 | （non-toplevel）be watchable | `function_ref_created_by_a_non_toplevel_actor_is_watchable` | 移す（ケース2と同じ） |
 | 7 | （non-toplevel）be able to watch | `function_ref_created_by_a_non_toplevel_actor_can_watch` | 移す（ケース3と同じ） |
 | 8 | （non-toplevel）terminate when their parent terminates | `function_ref_created_by_a_non_toplevel_actor_terminates_when_its_parent_terminates` | 移す。原典は `SupSuper`（`s`）へ PoisonPill を送る。PoisonPill は転送されず `SupSuper` 自身が止まり、その子 `Super` が止まり、それで `Super` が作った FunctionRef が終わる、という**祖先の停止の連鎖**を確かめる（レビュー M8 で読み違いを修正） |
-| 9 | （not registered）not be found | — | **判断待ち（E3）**。除外として認めるかは上司がオーナーに伺い中であり、判断が出るまで台帳には書かない。理由の文は §5 の E3 に直してある |
+| 9 | （not registered）not be found | — | **除外（E3、オーナーの承認済み）**。理由の文は §5 の E3 にある |
 
 
 ## 2. 本体の有無と、新しく足すもの
@@ -407,11 +407,11 @@ E1（ProviderSelection の Settings／HOCON の部分）と E2（bounded stash �
 | E1 | ProviderSelectionSpec の全4ケースのうち、設定読み取りの部分 | 除外にしない。HOCON の設定文字列と Typesafe Config の `Settings.ProviderClass`、クラスローダ経由の解決は作らず、キーと FQCN を受ける型付きの入口 `from_setting`（原典の `apply` の写し）に置き換えて、ケース自体は移す。忠実さの判断としてゴールの文書と PR 本文に書く | fraktor-ng-rs には設定ファイルの仕組みが無く、provider の選択はプログラム的に与える設計である。fqcn は JVM のクラス名であり、Rust では識別子の文字列として保持する以上の意味を持たない |
 | E2 | ActorWithBoundedStashSpec の設定方法と、ケースに出ない振る舞い | 除外にしない。HOCON の文字列による dispatcher／mailbox の定義、クラス名（FQCN）による mailbox 型の生成（`Bounded10`／`Bounded100`）は作らず、定義は Rust の値（`DispatchSettings`）で与える。push timeout（500ms）と、通常の tell のあふれの扱い（M10）は、ケースに出てこない振る舞いとして移さず、その旨をゴールの文書と PR 本文に1行で書く | 設定ファイルとリフレクションによる型生成は JVM 固有である。timeout は同期的な kernel の実行系に対応が無く、ケースの観測（あふれの行き先と順序）には現れない |
 
-### E3 は判断待ち（上司がオーナーに伺い中）
+### E3 は除外として承認済み（オーナーの承認、2026-11-26）
 
 | 番号 | 対象 | 扱い | 理由 |
 |:---|:---|:---|:---|
-| E3 | FunctionRefSpec のケース9「not be found」 | **判断待ち。** ケースの除外なのでオーナーの承認が要る。上司（元帥）がオーナーに伺い中であり、それまで**台帳には書かない**。PR の中では「判断待ち」と書く。残りの8件は判断を待たずに進めてよい | 原典が確かめているのは、登録されていない FunctionRef をパスから解決しても FunctionRef には戻らないことであり、それを `serialize-messages = on` の往復で観測している。fraktor-ng-rs にはパスの解決も直列化も無い。言語の補助を確かめるケースではないので not_built には当たらず、ノード単位でもないので do_not_port でもない。以前の設計の理由文「登録されていない FunctionRef は型で表せない」は誤りであり取り下げる（除去した FunctionRef がまさに登録されていない FunctionRef である）。パスの解決か直列化が入ったら見直す、と書き添える |
+| E3 | FunctionRefSpec のケース9「not be found」 | **除外として承認済み。** ケースの除外なのでオーナーの承認が要り、オーナー本人（j5ik2o）が元帥の項目426で「今は除外として承認する」と回答した（2026-11-26）。台帳の FunctionRefSpec ノードに、承認者と承認日を添えて除外1件として記録する | 原典は、登録されていない FunctionRef をパスから解決しても FunctionRef に戻らないことを、Java の直列化（serialize-messages = on）の往復で確かめている。fraktor には宛先のパスからの解決もメッセージの直列化も無い。言語の補助を確かめるケースではないので not_built には当たらず、ノード単位でもないので do_not_port でもない。以前の設計の理由文「登録されていない FunctionRef は型で表せない」は誤りであり取り下げる（除去した FunctionRef がまさに登録されていない FunctionRef である）。宛先のパスからの解決か、メッセージの直列化が入ったら見直す |
 
 自作だと思うファイルについて：本 issue で新しく作るファイルは、すべて Pekko の原典を参照する移植であり、自作と判断するファイルは無い。第2段で判断が変わるファイルが出たら、パスと理由を PR 本文と報告に書く。
 
@@ -423,7 +423,7 @@ E1（ProviderSelection の Settings／HOCON の部分）と E2（bounded stash �
 |:---|:---|:---|:---|
 | `actor-tests/src/test/scala/org/apache/pekko/actor/ProviderSelectionSpec.scala` | 4／4／4、excluded []（E1 は除外ではなく忠実さの判断） | `crates/fraktor-actor/tests/provider_selection_spec.rs` | green |
 | `actor-tests/src/test/scala/org/apache/pekko/actor/ActorWithBoundedStashSpec.scala` | 5／5／5、excluded []（E2 は除外ではなく忠実さの判断） | `crates/fraktor-actor/tests/actor_with_bounded_stash_spec.rs` | green |
-| `actor-tests/src/test/scala/org/apache/pekko/actor/FunctionRefSpec.scala` | 9／8／8 を見込むが、**E3 の判断が出るまで台帳には書かない**。判断が出たら、承認されれば除外1件（`cases.excluded` に `approved_by` と `approved_at`）として記録する | `crates/fraktor-actor/tests/function_ref_spec.rs` | E3 の判断後に green |
+| `actor-tests/src/test/scala/org/apache/pekko/actor/FunctionRefSpec.scala` | 9／8／8、除外1件（`cases.excluded` に `approved_by: j5ik2o` と `approved_at: 2026-11-26` を記録する） | `crates/fraktor-actor/tests/function_ref_spec.rs` | green（除外1件を含む） |
 
 あわせて `rust.crate` に `fraktor-actor`、`verified_against: v2.0.0` を書き、`docs/baseline/v2.0.0-undocumented-nodes.tsv` を作り直して対象ノードの記載をそろえる（#188 の前例と同じ）。内部 API を呼ぶ単体テスト（ProviderSelection の対応、DispatchSettings の解決、FunctionRef の除去の範囲）は `rust.cases_outside_test_file` に記録する。ゴールの完了判定は `ledger/tools/rollup.py --goal <ゴールID>` の終了コードで行う。
 
@@ -432,7 +432,7 @@ E1（ProviderSelection の Settings／HOCON の部分）と E2（bounded stash �
 ## 7. 第2段ですること（本書の範囲の外）
 
 - red（失敗するテスト）→ green の順に実装する。先に3つの spec ファイルを書き、コンパイルの失敗かテストの失敗で red を確認してから本体を足す。ノードは1件ずつ処理する（ProviderSelection → bounded stash → FunctionRef の順を推奨する。前の2件の基盤（DeadLetter の発行）が FunctionRef の観測にも効くため）。
-- §5 の E1・E2 は、第2段でゴールの文書（`docs/goals/issue-192-specs.md`）と PR 本文に忠実さの判断として書く。E3 は、上司から判断が出たことを確かめてから台帳へ記録する。判断が無い間は台帳に書かず、FunctionRef の残り8件を先に進める。
+- §5 の E1・E2 は、第2段でゴールの文書（`docs/goals/issue-192-specs.md`）と PR 本文に忠実さの判断として書く。E3 は、オーナーの承認（元帥の項目426、2026-11-26）を受けて、台帳へ除外1件として記録する。
 - CI と同じ検査を流す（`cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、ledger/tools の Python テスト、Quint は `scripts/quint-check-specs.sh` をそのまま流し、`bounded_stash.qnt` と `function_ref.qnt` が対象に入っていることを確かめる）。
 - 既存の公開 API との互換を壊さない。変更は §2 に挙げた追加と、`stash()` の文書の更新、executor の内部（容量の保持と DeadLetter の発行）だけである。
 - **PR 本文の1行目の扱い**：実装を終えてドラフトから外すときは、PR 本文の1行目を `Refs #192` から `Closes #192` に変える（マージで issue が閉じるように）。ただし、E3 の除外が判断待ちの間は、承認が出るまで `Refs #192` のままにする（E1・E2 は除外ではないので、この保留の理由にはならない）。

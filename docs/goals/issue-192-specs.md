@@ -12,9 +12,8 @@ Pekko v2.0.0 の `actor-tests` の3つの Spec（ProviderSelectionSpec、ActorWi
 |:---|:---|---:|
 | `actor-tests/src/test/scala/org/apache/pekko/actor/ProviderSelectionSpec.scala` | `crates/fraktor-actor/tests/provider_selection_spec.rs` | 4 |
 | `actor-tests/src/test/scala/org/apache/pekko/actor/ActorWithBoundedStashSpec.scala` | `crates/fraktor-actor/tests/actor_with_bounded_stash_spec.rs` | 5 |
-FunctionRefSpec（`actor-tests/src/test/scala/org/apache/pekko/actor/FunctionRefSpec.scala`、原典9件）は9件のうち8件を移植して green 相当の状態にあるが、残り1件（下記の E3）がオーナーの判断待ちであるため、台帳には書いていない。そのため、この表には台帳へ書いた2ノードだけを載せる。
-
-ProviderSelectionSpec と ActorWithBoundedStashSpec は green である。
+| `actor-tests/src/test/scala/org/apache/pekko/actor/FunctionRefSpec.scala` | `crates/fraktor-actor/tests/function_ref_spec.rs` | 9 |
+3ノードとも green である。FunctionRefSpec は9件のうち8件を移植し、残り1件（下記の E3）を除外として台帳へ記録した。
 
 ## 移植の忠実さの判断
 
@@ -22,9 +21,9 @@ ProviderSelectionSpec と ActorWithBoundedStashSpec は green である。
 - E2（ActorWithBoundedStashSpec）：原典のケースは dispatcher と mailbox の定義を HOCON で与える。移植は設定ファイルを持たないため、数えている5件すべてを、HOCON の代わりの型付き入力（`DispatchSettings` と `MailboxDefinition`）で、原典と同じ容量の解決と振る舞いを確かめる形にした。ケースの除外ではない。
 - ケースに出てこない振る舞い（bounded mailbox への通常の tell のあふれの扱い、FunctionRef の登録表の push timeout 相当）は移していない。
 
-## 判断待ち
+## 除外の承認
 
-- E3（FunctionRefSpec の「not be found」）：原典が確かめているのは、登録されていない FunctionRef をパスから解決しても FunctionRef に戻らないことであり、fraktor にはパスの解決も直列化も無い。このケースはケースの除外にあたるため、オーナーの承認が出るまで台帳に書かず、PR の中で「判断待ち」と書く。残りの8件は進めてよいという前提で実装した。
+- E3（FunctionRefSpec の「not be found」）：原典は、登録されていない FunctionRef をパスから解決しても FunctionRef に戻らないことを、Java の直列化（serialize-messages = on）の往復で確かめている。fraktor には宛先のパスからの解決もメッセージの直列化も無い。宛先のパスからの解決か、メッセージの直列化が入ったら見直す。 このケースはケースの除外にあたり、オーナー本人（j5ik2o）が元帥の項目426で「今は除外として承認する」と回答した（2026-11-26）。台帳の FunctionRefSpec ノードに、承認者と承認日を添えて除外1件として記録した。
 
 ## 成果物
 
@@ -32,7 +31,7 @@ ProviderSelectionSpec と ActorWithBoundedStashSpec は green である。
 - 移植テスト：`provider_selection_spec.rs`（4件）、`actor_with_bounded_stash_spec.rs`（5件）、`function_ref_spec.rs`（8件）
 - 原典の外のテスト：`provider_selection_property_test.rs`（任意文字列とモデルの照合）、`bounded_stash_property_test.rs`（VecDeque の参照モデルとの照合）、`function_ref_model_test.rs`（登録表モデルとの照合）、本体の単体テスト3件
 - Quint：`crates/fraktor-actor/specs/bounded_stash.qnt`、`crates/fraktor-actor/specs/function_ref.qnt`（ProviderSelection には書かない。設計の判断）
-- 台帳：ProviderSelectionSpec と ActorWithBoundedStashSpec を green にした。FunctionRefSpec は E3 の判断が出るまで書かない
+- 台帳：3ノードを green にした。FunctionRefSpec は E3 の除外1件を含む
 
 ## 進め方
 
