@@ -76,7 +76,7 @@ TokenBucketSpec の最後のケース「behave exactly as the ideal (naive) toke
 | `crates/fraktor-actor/tests/immutable_int_map_spec.rs` | 原典10ケース |
 | `crates/fraktor-actor/tests/token_bucket_spec.rs` | 原典12ケース |
 | `crates/fraktor-actor/tests/immutable_int_map_property_test.rs` | PBT（§3。原典外で、台帳の件数に含めない） |
-| `crates/fraktor-actor/tests/token_bucket_property_test.rs` | PBT（§3。原典外で、台帳の件数に含めない） |
+| `crates/fraktor-actor/tests/token_bucket_property_test.rs` | PBT の性質1（§3。原典外で、台帳の件数に含めない）。性質2は単体テスト `token_bucket_value_test.rs` に置く（再レビュー N1） |
 | `crates/fraktor-actor/specs/token_bucket.qnt` | Quint のモデル（1モジュール。§4。CI の `scripts/quint-check-specs.sh` の対象 `crates/*/specs/*.qnt` に載せる） |
 | `ledger/nodes.yaml` | 第2段で対象ノード2件を green にする（本書の段では触らない） |
 
@@ -110,7 +110,7 @@ impl core::fmt::Debug for ImmutableIntMap;   // Display と同じ形にする
 原典と違える点:
 
 - 原典の `toString` は `Display` で受ける（ケース5）。
-- 原典の `hashCode` は `java.util.Arrays.hashCode(kvs)` で、値は JVM 固有である。ケース6が確かめるのは「等しいマップは等しいハッシュを持つ」ことだけなので、`Hash` の derive（`Vec<i32>` のハッシュ）で満たす。JVM のハッシュ値そのものは再現しない。
+- 原典の `hashCode` は `java.util.Arrays.hashCode(kvs)` で、値は JVM 固有である。ケース6が確かめるのは「等しいマップは等しいハッシュを持つ」ことだけなので、`Hash` の derive（`Vec<[i32; 2]>` のハッシュ）で満たす。JVM のハッシュ値そのものは再現しない。
 - 原典の `updateIfAbsent` の値は名前渡し（`=> Int`）で、キーが有るときは評価されない。ケース4はリテラルしか渡さないので遅延評価は観測できない。移植は値渡しとし、遅延が要る利用が出たら `update_if_absent_with(FnOnce)` を足す、と API 文書に書く。
 - 原典の二分探索は、半分の大きさに対する添字の工夫（`lohi & ~1` 等）を含む。観測できる振る舞いは「ソート済みのキー列に対する二分探索の結果」だけなので、内部はキー列に対する通常の二分探索でよい。工夫の写しはしない。
 - 原典が同じ値での `updated` で `this` を返す（コピーしない）点は、移植では再現しない。`&self -> Self` で `Vec` を持つ限り、戻り値を作る複製は必ず要り、この分岐で省けるのは要素の書き込みだけである（F7）。値の等価としては観測できないので、移植は常に複製して新しいマップを返す。
@@ -153,7 +153,7 @@ pub enum TokenBucketError {
 
 - 原典の `require`（容量が負、周期が0以下）と `offer` の負のコストの `IllegalArgumentException` は、`FrequencySketch` の前例（PR #205）と同じく、例外ではなく `TokenBucketError` の値で返し、最初に失敗した検査を返す。構築は `new` の `Result`、`offer` は `Result<i64, TokenBucketError>` である。原典のケースには不正な入力のケースが無いので、この変更はケースの移植に影響しない。
 - 原典は `init()` を呼ぶ前の使用を契約にしている（呼ばなければ `availableTokens = 0`、`lastUpdate = 0` で動く）。移植も同じ状態で作り、`init` の呼び忘れを型では防がない。API 文書に「使う前に `init` を呼ぶこと」と書く。
-- テストの `TestBucket` は、テストファイルの中で `kernel::Clock` を実装する手動時計にする。`Clock` は `Send + Sync` を求めるので、時計は `Rc<Cell<i64>>` ではなく `AtomicU64` でナノ秒のビット列を持ち、`monotonic()` は `Duration::from_nanos` で返す（前例の FrequencyList と RecencyList のテストの時計と同じ形）。負の時刻と折り返しは、ビット列として `t as u64` を入れることで作る。時刻の set／加算は `wrapping_add` で行う（F2）。
+- テストの `TestBucket` は、テストファイルの中で、複製できる手動時計の型 `ManualClock(Arc<AtomicU64>)` を作り、それに `kernel::Clock` を実装する（再レビュー N2）。複製の片方をバケットに渡し、もう片方で時刻を動かす。`Clock` は `Send + Sync` を求めるので `Rc<Cell<i64>>` は使えない。ジェネリックな `C: Clock` には `Arc<Local>` の実装（孤児規則で E0117）も `Arc<dyn Clock>`（`Clock` を実装していないので E0277）も渡せないことが、再レビューの試作で確かめられている。`monotonic()` は `Duration::from_nanos` で返し、負の時刻と折り返しは、ビット列として `t as u64` を入れることで作る。時刻の set／加算は wrapping で行う（F2）。`Arc<dyn Clock>` を渡す使い道が出たら、そのときに `clock: Arc<dyn Clock>` に変えるか、既存の `Clock` に `Arc` への実装を足すかを決める。
 - 算術は原典の `Long` の折り返しを写す。`now - last_update`、`last_update += nanos_between_tokens`、`last_update += tokens_arrived * nanos_between_tokens`、`tokens_arrived * nanos_between_tokens`、`nanos_between_tokens * 2`（1ティックだけの近道の判定）、`remaining_cost * nanos_between_tokens`、`now + delay` は、すべて `wrapping_*` で書く。`last_update` と時刻の加減はすべて wrapping であると言い切る（F2。`last_update +=` を素の加算にすると、ケース8と12が debug で panic することが設計レビューで試作により確かめられた）。割り算 `time_elapsed / nanos_between_tokens` は、周期が正であることが構築時に保証されるので、通常の `/` でよい（`i64::MIN / -1` の形にならない）。
 - 残りへの到着分の加算だけは折り返しにしない。`available_tokens = min(available_tokens.saturating_add(tokens_arrived), capacity)` とする（F1）。原典は `math.min(availableTokens + tokensArrived, capacity)` であり、`tokens_arrived` は最大で `i64::MAX` になるため、和があふれる入力（例：容量10、周期1、時刻0で `init`、残り9の状態で時刻を `i64::MAX` にしてコスト0の `offer`）では、素の `+` は debug で panic し、wrapping では残りが負になって T1 が崩れる。saturating にすると、この入力でも残りは容量どおり10、戻り値は0になる（設計レビューの試作で、原典12ケースが12件とも通ることも確かめられた）。原典と違うのは、和が `i64` に収まらない入力のときだけである。この差は「原典と違える点」として記録し、上の入力の単体テストを `token_bucket_value_test.rs` に1件足す。なお `cost - available_tokens` は、F1 により残りが常に対象範囲（0以上）にあるのであふれない。
 
@@ -194,7 +194,7 @@ PBT は足す。原典のケース10（ランダムな操作1000手と参照マ�
 
 - 固定 seed の SplitMix64 で、`updated`、`remove`、`update_if_absent` の操作列を流し、毎手の後で `BTreeMap<i32, i32>` のモデルと比べる（M1〜M8 のうち観測できるもの：`size`、`keys` の列、各プローブキーの `get` と `contains`、モデルとの等価）。
 - キー域は2通り（0..100 で衝突が多くなる設定と、`i32::MIN`、`i32::MAX`、負を含む広い設定）。値は `i32::MIN` を含む境界値の組から選ぶ。
-- M2（不変性）は、`&self` の API が借用の規則で受け手の変更を保証するので、PBT の対象から外し「型で保証」とする（F7）。そのうえで、操作の後に受け手そのものが操作前のモデルと一致することも PBT で比べる（複製した別の値ではなく、受け手そのものを比べる）。
+- M2（不変性）は型で保証するので PBT の対象から外し、念のため、受け手そのものを操作の後に操作前のモデルと比べる（F7、再レビュー N4）。
 - 外部の依存は足さない（`proptest` を足すかは [#212](https://github.com/j5ik2o/fraktor-ng-rs/issues/212) で決める。前例と同じ）。
 
 ### TokenBucket
@@ -228,10 +228,10 @@ PBT は足す。原典のケース10（ランダムな操作1000手と参照マ�
 | 遅延が経過する前の再呼び出し | 契約の外（T8）。本体は検出しない | 範囲の外（原典どおり） |
 | `init` を呼ばない使用 | 残り0、`last_update = 0` で動き始める（原典どおり） | 範囲の外。API 文書に契約を書く |
 
-PBT は足す。`token_bucket_property_test.rs` に置く。
+PBT は足す。性質1は `token_bucket_property_test.rs` に置く。性質2は、確かめる T1、T2、T9 が private のフィールド（`available_tokens` と `last_update`）を読むため、`tests/` の統合テストからは書けない。公開 API は増やさず、性質2は単体テスト `token_bucket_value_test.rs` に置く（再レビュー N1）。
 
 - 性質1（理想バケットとの一致）：ケース12を一般化し、容量、周期、開始時刻（`i64::MIN`、負、0、`i64::MAX` の近傍を含む）、到着の間隔、コストの上限の組み合わせで、素朴な理想バケット（ティックごとに1トークン、容量で頭打ち）と発出時刻が一致することを確かめる。
-- 性質2（不変条件）：ランダムな時刻の進み方とコストの列（コスト0と容量超えを含む）で、各 `offer` の後に T1 と T3 を確かめ、`last_update` が格子の上にあること（T2）を確かめる。時刻の跳びには、`i64::MAX` の近くまで一気に進める手を含める（F1 の和のあふれを踏むため）。
+- 性質2（不変条件。単体テスト `token_bucket_value_test.rs` に置く。再レビュー N1）：ランダムな時刻の進み方とコストの列（コスト0と容量超えを含む）で、各 `offer` の後に T1、T2、T3、T9 を確かめる。時刻の跳びには、`i64::MAX` の近くまで一気に進める手を含める（F1 の和のあふれを踏むため）。呼び出しは T8 の契約を守る（遅延が経過する前に再び呼ばない）。
 - 性質1の一般化では、到着の間隔の式はケース12の字面どおりの式と変えてもよいが、その場合は別の式であることをテストに明記する（F6）。ケース12の写し自体は原典の式のままにする。
 - 乱数は固定 seed の SplitMix64。失敗時は seed、手の番号、設定を表示する。外部の依存は足さない。
 
@@ -248,7 +248,7 @@ TokenBucket に書く理由:
 
 - 置き場所は `crates/fraktor-actor/specs/token_bucket.qnt` の1ファイル、1モジュールにする。CI（`scripts/quint-check-specs.sh`）が見るのは `crates/*/specs/*.qnt` だけであり、初版が置いた `docs/design/specs/` は対象の外で、検査が手作業のまま残る。`docs/design/specs/` の前例（FrequencySketch、DoubleLinkedList）の形（本体とテストを分けた複数モジュール）をそのまま `crates/*/specs/` へ移しても、モジュール名とファイル名の決まりで CI の script を通らない。TokenBucket のモデルは小さいので、CI の形に収める。設計レビューの試作では、この置き場所と形で CI の script がそのまま通り、typecheck、`4 passing`、`quint run` の `No violation found` が確かめられている。
 - 設定は `pure val`（`Capacity`、`Period`、開始時刻の集合）に置く。`const` を持つ本体は `quint run` が通らないため使わない。
-- 状態：`available: int`、`lastUpdate: int`、`now: int`、ゴースト `lastDelay: int` と `lastRemaining: int`（直前の `offer` の遅延と、その時点の不足分。`delayIsEarliest` のため。F4）、設定は上の `pure val`、`t0`（init の時刻）。
+- 状態：`available: int`、`lastUpdate: int`、`now: int`、ゴースト `lastDelay: int` と `lastRemaining: int`（直前の `offer` の遅延と、その時点の不足分。`delayIsEarliest` のため。F4）と、`lastElapsed: int` と `lastArrived: int`（直前の `offer` の経過時間と到着の数。`arrivalCountMatchesElapsed` を書くために要る。再レビュー N3）、設定は上の `pure val`、`t0`（init の時刻）。
 - 遷移：`init`、`advanceTime(d)`（d は0以上）、`offer(cost)`（戻り値の遅延も観測する）。`step` は `"none"` だけを使う。負の対照は `offerWith(bug, cost)` の引数で選び、対照は名前が `Test` で終わる `run` にして `.expect(not(...))` で、誤りが不変条件を崩すことを確かめる。全体の不変条件は `val invariant = ...` にまとめる（CI の決まり：`invariant` があること、`Test` で終わる `run` が1本以上あること、`step` が進むこと）。
 - 不変条件：`availableWithinCapacity`（T1）、`delayNonNegative`（T3）、`lastUpdateOnGrid`（T2。`(lastUpdate - t0)` が `period` で割り切れる）、`arrivalCountMatchesElapsed`（T4 のうち割り算の形）、`delayIsEarliest`（T9。`lastDelay > 0` なら `(lastRemaining - 1) * Period < lastDelay <= lastRemaining * Period`。F4）。
 - T8 の扱い：モデルの `offer` に `now >= lastUpdate` のガードを置く（F4）。置かないと、遅延が経過する前の早い呼び出し（契約の外）で遅延が `remaining * Period` を超え、`delayIsEarliest` が契約の外で崩れる。
@@ -281,3 +281,14 @@ ImmutableIntMap に書かない理由:
 | F7（低） | ImmutableIntMap の「複製を避ける分岐」は実現できない約束であり、M2 の PBT は受け手を確かめていない | 直した。同じ値での `updated` について、省けるのは書き込みだけで複製は必ず要る、と文言を直した（§2）。M2 は「型で保証」として PBT の対象から外し、受け手そのものを操作前のモデルと比べることを §3 に書いた |
 | F8（低） | 表現は `Vec<[i32; 2]>` にすると、二分探索を core のものにできる（提案） | 採った。表現を `Vec<[i32; 2]>` に変え、`binary_search_by_key` を使う形にし、M1 を組の列の形に書き直した（§2、§3） |
 | F9（低） | ファイルの表と型の細目が足りない | 直した。単体テストのファイル `token_bucket_value_test.rs` を表に足し、`TokenBucketError` の derive（`Debug, Clone, Copy, PartialEq, Eq`）と `Display`、`core::error::Error` の実装を §2 に書いた。ケース10の操作の比率（更新が3分の2、削除が3分の1）を §1 に書いた |
+
+## 7. 設計の再レビュー（PR #231、HEAD 9bb150a）への回答
+
+判定は「承認」だった。実装と一緒に反映してほしい指摘4件（中1・低3）があり、4件すべてを反映した。採らなかった指摘は無い。
+
+| 番号 | 指摘 | 回答 |
+|:---|:---|:---|
+| N1（中） | 性質2が確かめる T1、T2、T9 は、private のフィールドを読むため `tests/` からは書けない | 性質2を単体テスト `token_bucket_value_test.rs` に移し、T1、T2、T3、T9 を確かめる形にした。性質1（理想のバケットとの照合）は戻り値だけで書けるので `tests/token_bucket_property_test.rs` のままにした。公開 API は増やしていない（§2 の表、§3） |
+| N2（低） | テストの手動時計は `ManualClock(Arc<AtomicU64>)` の形にする。`Arc<Local>` は E0117、`Arc<dyn Clock>` は E0277 になる | その形にした。複製の片方をバケットに渡し、もう片方で時刻を動かす。`Arc<dyn Clock>` を渡す使い道が出たときの決め方も1行添えた（§2） |
+| N3（低） | `arrivalCountMatchesElapsed` のためのゴーストが列挙されていない | ゴーストに `lastElapsed` と `lastArrived` を足した（§4） |
+| N4（低） | 古い言い回しが2か所残っている | 直した。ハッシュの文を `Vec<[i32; 2]>` にし、M2 の文を1文の流れにした（§2、§3） |
