@@ -14,6 +14,10 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # About 3x the slowest recent successful run. This bounds the job's run time
+    # instead of the 6-hour default; a test that runs out of memory before then
+    # is still killed with exit code 137 (#221).
+    timeout-minutes: 18
     outputs:
       last-step-result: ${{ steps.syn_checker.outcome }}
     steps:
@@ -165,6 +169,8 @@ jobs:
   # and its real-host test runs only on Windows.
   windows:
     runs-on: windows-latest
+    # About 3x the slowest recent successful run (#221).
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v6
       - uses: Swatinem/rust-cache@v2
