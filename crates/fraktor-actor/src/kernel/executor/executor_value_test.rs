@@ -2641,6 +2641,144 @@ mod stage4a {
     assert!(log.contains(&String::from("b:after")), "the parent's restart did not resume b: {log:?}");
   }
 
+  // ----- a restart and a stop of the same actor
+
+  // Asks to stop itself on "stop and fail", then fails the same message.
+  struct StopsItselfThenFails {
+    log: Log,
+  }
+
+  impl Actor for StopsItselfThenFails {
+    fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+      context.actor_of(Props::empty(), "kid").expect("the name is free");
+    }
+
+    fn receive(&mut self, context: &mut ActorContext<'_>, _message: Message) {
+      let me = context.self_ref();
+      context.stop(&me);
+      panic!("fails after asking to stop");
+    }
+
+    fn post_stop(&mut self) {
+      self.log.lock().unwrap().push(String::from("post_stop"));
+    }
+
+    fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
+      self.log.lock().unwrap().push(String::from("post_restart"));
+    }
+  }
+
+  #[test]
+  fn a_stopping_actor_that_fails_is_not_restarted() {
+    let mut system = with_catcher("Stage4aStopThenFail");
+    let log = new_log();
+    let observed = Arc::clone(&log);
+    let actor = system.actor_of(Props::new(move || StopsItselfThenFails { log: Arc::clone(&observed) }));
+    system.run_until_idle();
+
+    actor.tell("stop and fail", actor.clone());
+    system.run_until_idle();
+
+    // Pekko's `faultRecreate` restarts only an actor that is not terminating
+    // (`isNormal`): the stop goes on and finishes.
+    assert_eq!(entries(&log), ["post_stop"]);
+    assert!(system.is_actor_terminated(&actor));
+  }
+
+  #[test]
+  fn an_all_for_one_restart_leaves_a_stopping_sibling_to_its_stop() {
+    let mut system = with_catcher("Stage4aAllForOneStopping");
+    let log = new_log();
+    let guardian = system.actor_of(Props::empty());
+    let all_for_one = SupervisorStrategy::all_for_one(3, RestartWindow::Unbounded);
+    let failing = spawn(&system, &guardian, &Node::new("a", &log).failing_on("boom"), all_for_one.clone());
+    let stopping = spawn(&system, &guardian, &Node::new("b", &log), all_for_one);
+    spawn(&system, &stopping, &Node::new("b-child", &log), SupervisorStrategy::default_strategy());
+    system.run_until_idle();
+
+    // `b` waits for its child to stop when `a` fails.
+    system.stop(&stopping);
+    failing.tell("boom", failing.clone());
+    system.run_until_idle();
+
+    let log = entries(&log);
+    assert!(log.contains(&String::from("a:post_restart")), "{log:?}");
+    assert!(!log.contains(&String::from("b:post_restart")), "the stopping sibling was restarted: {log:?}");
+    assert!(system.is_actor_terminated(&stopping));
+  }
+
+  #[test]
+  fn an_all_for_one_restart_leaves_a_sibling_that_has_not_started_to_its_create() {
+    let mut system = with_catcher("Stage4aAllForOneUnborn");
+    let log = new_log();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let guardian = system.actor_of(Props::empty());
+    system.run_until_idle();
+    let all_for_one =
+      SupervisorStrategy::all_for_one(3, RestartWindow::Unbounded).with_decider(|_, _| Directive::Restart);
+    // `a` fails its first start, and its parent decides before `b` has
+    // handled its `Create`.
+    system.downgrade().spawn_child(&guardian, fails_to_start(&attempts, 1, &log), Some("a"), all_for_one.clone());
+    let unborn = spawn(&system, &guardian, &Node::new("b", &log), all_for_one);
+    system.run_until_idle();
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(entries(&log), ["b:pre_start"], "the sibling that had not started was restarted");
+    assert!(!system.is_actor_terminated(&unborn));
+  }
+
+  // ----- a function reference as a parent
+
+  #[test]
+  fn watching_a_function_reference_that_waits_for_its_child_gives_one_notice() {
+    let mut system = with_catcher("Stage4aFunctionRefWatch");
+    let notices = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&notices);
+    let watcher = system.function_ref("watcher", move |_: &ActorRef, message: Message| {
+      if message.downcast_ref::<Terminated>().is_some() {
+        counted.fetch_add(1, Ordering::SeqCst);
+      }
+    });
+    let parent = system.function_ref("parent", |_: &ActorRef, _: Message| {});
+    system.downgrade().spawn_child(&parent, Props::empty(), Some("kid"), SupervisorStrategy::default_strategy());
+    system.run_until_idle();
+    system.watch(&watcher, &parent);
+
+    // The function reference waits for its child: a watch now is the same
+    // watch, and the end of the last child tells it once.
+    system.stop(&parent);
+    system.watch(&watcher, &parent);
+    system.run_until_idle();
+
+    assert_eq!(notices.load(Ordering::SeqCst), 1);
+    assert!(system.is_actor_terminated(&parent));
+  }
+
+  #[test]
+  fn a_child_of_a_function_reference_whose_decider_panics_is_resumed() {
+    let mut system = with_catcher("Stage4aFunctionRefDecider");
+    let log = new_log();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let parent = system.function_ref("parent", |_: &ActorRef, _: Message| {});
+    let child = system.downgrade().spawn_child(
+      &parent,
+      Node::new("c", &log).failing_on("boom").props(),
+      Some("c"),
+      panicking_decider(&asked),
+    );
+    system.run_until_idle();
+
+    child.tell("boom", child.clone());
+    child.tell("ping", child.clone());
+    system.run_until_idle();
+
+    // A function reference cannot fail in its turn, so nothing restarts it
+    // to resume the child: the child is resumed at once, as in stage 3.
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+    assert_eq!(entries(&log), ["c:pre_start", "c:ping"]);
+    assert!(!system.is_actor_terminated(&child));
+  }
+
   #[test]
   fn a_held_failure_of_a_child_that_has_left_the_table_is_dropped() {
     let mut system = with_catcher("Stage4aDroppedDecision");

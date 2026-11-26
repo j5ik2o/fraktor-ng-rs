@@ -2475,8 +2475,12 @@ fn a_stopped_actor_leaves_no_parent_entry_behind() {
   let mut system = with_catcher("PekkoCustomSpec");
   for _ in 0..3 {
     let actor = system.actor_of(Props::new(|| NoOp));
+    // The actor registers as a parent in its own run (Pekko's `Create`),
+    // and stops in its own run (Pekko's `Terminate`).
+    system.run_until_idle();
     system.stop(&actor);
   }
+  system.run_until_idle();
 
   assert_eq!(
     crate::kernel::sync::lock(&system.executor).parent_entry_count(),
