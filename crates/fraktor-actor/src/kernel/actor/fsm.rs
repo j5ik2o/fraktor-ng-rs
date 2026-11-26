@@ -27,7 +27,8 @@ use crate::kernel::message::Message;
 
 /// A state function: answers an event in one state, or returns `None` when it
 /// does not handle the event.
-type StateFunction<S, D> = Box<dyn FnMut(&mut ActorContext<'_>, &FsmView<S>, &Message, &D) -> Option<FsmState<S, D>> + Send>;
+type StateFunction<S, D> =
+  Box<dyn FnMut(&mut ActorContext<'_>, &FsmView<S>, &Message, &D) -> Option<FsmState<S, D>> + Send>;
 
 /// A transition handler: hears every reported move from one state to another,
 /// with the data before and after the move.

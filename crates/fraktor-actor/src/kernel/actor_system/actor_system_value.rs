@@ -265,7 +265,6 @@ impl ActorSystem {
   /// belongs to another system resolves to the dead letters.
   pub fn resolve_actor_ref(&self, path: &ActorPath) -> ActorRef {
     lock(&self.executor).resolve_actor_ref(path)
-
   }
 
   /// Stops `target`, telling its watchers that it is gone.
