@@ -140,6 +140,42 @@ impl OneParamActorCreator {
   }
 }
 
+/// Builds the recipe of a `OneParamActor` whose creator records the
+/// argument it captured into `creator_log` at the moment it is called,
+/// then builds the actor from a clone of that same captured value. The
+/// actor records what it was built with into `actor_log` from
+/// `pre_start`, so a test can compare the creator's record with the
+/// actor's record.
+fn one_param_props_recording_captured(
+  captured: Option<A>,
+  creator_log: &Arc<Mutex<Vec<Observed>>>,
+  actor_log: &Arc<Mutex<Vec<Observed>>>,
+) -> Props {
+  let creator_log = Arc::clone(creator_log);
+  let actor_log = Arc::clone(actor_log);
+  Props::new(move || {
+    creator_log.lock().expect("observation log").push(Observed::One(captured.is_some()));
+    OneParamActor::new(captured.clone(), Arc::clone(&actor_log))
+  })
+}
+
+/// The two-argument counterpart of `one_param_props_recording_captured`:
+/// the creator records both captured arguments when it is called.
+fn two_param_props_recording_captured(
+  first: Option<A>,
+  second: Option<B>,
+  creator_log: &Arc<Mutex<Vec<Observed>>>,
+  actor_log: &Arc<Mutex<Vec<Observed>>>,
+) -> Props {
+  let creator_log = Arc::clone(creator_log);
+  let actor_log = Arc::clone(actor_log);
+  Props::new(move || {
+    let observed = Observed::Two(first.is_some(), second.is_some());
+    creator_log.lock().expect("observation log").push(observed);
+    TwoParamActor::new(first.clone(), second.clone(), Arc::clone(&actor_log))
+  })
+}
+
 fn new_system() -> ActorSystem {
   ActorSystem::new("props-creation", Arc::new(ChannelBoundary::new()))
 }
