@@ -140,6 +140,25 @@ fn the_adapter_list_is_read_in_order() {
   );
 }
 
+// The list walk passes each node's reported length on: a node whose
+// reported length is too short is skipped, and the walk goes on to the
+// next node.
+#[test]
+fn a_dns_server_whose_reported_length_is_too_short_is_skipped_in_the_list() {
+  let mut short_v4 = ipv4([192, 0, 2, 1], 0);
+  let mut valid_v4 = ipv4([192, 0, 2, 2], 0);
+  let mut valid_node = dns_server(ptr::from_mut(&mut valid_v4).cast(), size_of::<SOCKADDR_IN>());
+  let mut short_node = dns_server(ptr::from_mut(&mut short_v4).cast(), size_of::<SOCKADDR_IN>() - 1);
+  short_node.Next = ptr::from_mut(&mut valid_node);
+  let first = IP_ADAPTER_ADDRESSES_LH {
+    OperStatus: IfOperStatusUp,
+    FirstDnsServerAddress: ptr::from_mut(&mut short_node),
+    ..Default::default()
+  };
+
+  assert_eq!(unsafe { adapters(ptr::from_ref(&first)) }, vec![WindowsAdapter::new(true, vec![addr("192.0.2.2:0")])]);
+}
+
 #[test]
 fn an_empty_adapter_list_has_no_adapters() {
   assert_eq!(unsafe { adapters(ptr::null()) }, vec![]);

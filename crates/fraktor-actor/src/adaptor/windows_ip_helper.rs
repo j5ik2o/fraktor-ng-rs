@@ -102,12 +102,14 @@ unsafe fn adapters(mut adapter: *const IP_ADAPTER_ADDRESSES_LH) -> Vec<WindowsAd
 // as `GetAdaptersAddresses` writes it.
 #[cfg(windows)]
 unsafe fn socket_address(sockaddr: *const SOCKADDR, length: usize) -> Option<SocketAddr> {
-  if length < size_of::<u16>() {
+  if sockaddr.is_null() || length < size_of::<u16>() {
     return None;
   }
-  // SAFETY: the caller's contract and the length check above; the family
-  // says which layout follows, and each arm checks its own length first.
-  let family = unsafe { sockaddr.as_ref() }?.sa_family;
+  // SAFETY: `sockaddr` is not null and at least the family is readable, so
+  // only the family is read here, without a reference to the whole socket
+  // address. Each arm checks its own length before it reads any more, and
+  // the pointer the IP Helper writes is aligned for its family's layout.
+  let family = unsafe { ptr::read_unaligned(sockaddr.cast::<u16>()) };
   match family {
     | AF_INET => {
       if length < size_of::<SOCKADDR_IN>() {
