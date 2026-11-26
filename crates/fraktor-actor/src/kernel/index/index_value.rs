@@ -32,10 +32,13 @@ mod tests;
 /// `Arc`. The `map_size` given to [`new`](Self::new) is only a capacity hint,
 /// as in the original; it is not observable.
 pub struct Index<K, V> {
-  values:     Mutex<BTreeMap<K, Vec<V>>>,
-  comparator: Box<dyn Fn(&V, &V) -> Ordering + Send + Sync>,
-  map_size:   usize,
+  values: Mutex<BTreeMap<K, Vec<V>>>,
+  comparator: Box<Comparator<V>>,
+  map_size: usize,
 }
+
+/// The comparator an Index orders and deduplicates its values by.
+type Comparator<V> = dyn Fn(&V, &V) -> Ordering + Send + Sync;
 
 /// The name Pekko's type alias gives this multi-map.
 pub type ConcurrentMultiMap<K, V> = Index<K, V>;
@@ -47,7 +50,8 @@ impl<K, V> Index<K, V> {
   /// each key's values and decides when two values are the same set member.
   pub fn new<F>(map_size: usize, comparator: F) -> Self
   where
-    F: Fn(&V, &V) -> Ordering + Send + Sync + 'static, {
+    F: Fn(&V, &V) -> Ordering + Send + Sync + 'static,
+  {
     Self { values: Mutex::new(BTreeMap::new()), comparator: Box::new(comparator), map_size }
   }
 
@@ -181,7 +185,8 @@ impl<K: Ord + Clone, V: Clone> Index<K, V> {
   /// each group in comparator order; the original's order is unspecified.
   pub fn for_each<F>(&self, mut f: F)
   where
-    F: FnMut(&K, &V), {
+    F: FnMut(&K, &V),
+  {
     let snapshot: Vec<(K, V)> = {
       let guard = self.values.lock();
       guard.iter().flat_map(|(key, values)| values.iter().map(move |value| (key.clone(), value.clone()))).collect()
@@ -199,7 +204,8 @@ impl<K: Ord + Clone, V: Clone> Index<K, V> {
   /// snapshot, not later writes.
   pub fn find_value<F>(&self, key: &K, mut f: F) -> Option<V>
   where
-    F: FnMut(&V) -> bool, {
+    F: FnMut(&V) -> bool,
+  {
     let snapshot = self.value_iterator(key);
     snapshot.into_iter().find(|value| f(value))
   }

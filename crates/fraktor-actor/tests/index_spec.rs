@@ -164,7 +164,7 @@ fn be_able_to_be_accessed_in_parallel() {
           | _ => {
             let key = random.below(nr_of_keys as u64) as i32;
             let values = index.value_iterator(&key);
-            if key >= (nr_of_keys / 2) as i32 {
+            if key >= nr_of_keys / 2 {
               assert!(!values.is_empty());
             }
           },

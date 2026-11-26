@@ -38,7 +38,7 @@ mod tests;
 /// decides the fallback to the double-wildcard tree is the original's.
 #[derive(Debug, Clone)]
 pub struct WildcardIndex<T> {
-  wildcard_tree:        WildcardTree<T>,
+  wildcard_tree: WildcardTree<T>,
   double_wildcard_tree: WildcardTree<T>,
 }
 
@@ -50,8 +50,8 @@ impl<T> Default for WildcardIndex<T> {
 
 #[derive(Debug, Clone)]
 struct WildcardTree<T> {
-  data:                   Option<T>,
-  children:               BTreeMap<String, WildcardTree<T>>,
+  data: Option<T>,
+  children: BTreeMap<String, WildcardTree<T>>,
   wildcard_suffix_children: BTreeMap<String, WildcardTree<T>>,
 }
 
@@ -118,11 +118,7 @@ impl<T: Clone> WildcardIndex<T> {
     let mut node = tree;
     for elem in elems {
       node = if *elem != "*" && *elem != "**" && elem.ends_with('*') {
-        // Intentional difference 1: the child is looked up by the stripped
-        // key it is also stored under. The original stores it under the
-        // stripped key but looks it up by the unstripped element, so a
-        // second insert of the same suffix pattern replaces the first
-        // subtree instead of extending it.
+        // The lookup key is the stripped key (intentional difference 1).
         let key = elem.strip_suffix('*').unwrap_or(elem);
         node.wildcard_suffix_children.entry(key.into()).or_default()
       } else {
@@ -148,9 +144,7 @@ impl<T: Clone> WildcardIndex<T> {
     }
     match self.wildcard_tree.find_with_single_wildcard(elems) {
       | Some(tree) if !tree.is_structurally_empty() => tree.data.as_ref(),
-      | _ => {
-        self.double_wildcard_tree.find_with_terminal_double_wildcard(elems).and_then(|tree| tree.data.as_ref())
-      },
+      | _ => self.double_wildcard_tree.find_with_terminal_double_wildcard(elems).and_then(|tree| tree.data.as_ref()),
     }
   }
 }
@@ -182,7 +176,11 @@ impl<T> WildcardTree<T> {
   /// answers and the alternative is discarded, as in the original. Suffix
   /// children are never consulted here, also as in the original.
   fn find_with_terminal_double_wildcard(&self, elems: &[&str]) -> Option<&Self> {
-    fn go<'a, T>(node: &'a WildcardTree<T>, elems: &[&str], alternative: Option<&'a WildcardTree<T>>) -> Option<&'a WildcardTree<T>> {
+    fn go<'a, T>(
+      node: &'a WildcardTree<T>,
+      elems: &[&str],
+      alternative: Option<&'a WildcardTree<T>>,
+    ) -> Option<&'a WildcardTree<T>> {
       let Some((elem, rest)) = elems.split_first() else {
         return Some(node);
       };

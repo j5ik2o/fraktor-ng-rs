@@ -64,7 +64,8 @@ impl<M, S> MessageBuffer<M, S> {
   /// Calls `f` once for every entry, in the order they were appended.
   pub fn for_each<F>(&self, mut f: F)
   where
-    F: FnMut(&M, &S), {
+    F: FnMut(&M, &S),
+  {
     for (message, sender) in &self.entries {
       f(message, sender);
     }
@@ -74,7 +75,8 @@ impl<M, S> MessageBuffer<M, S> {
   /// the rest.
   pub fn filter_not<F>(&mut self, mut f: F)
   where
-    F: FnMut(&M, &S) -> bool, {
+    F: FnMut(&M, &S) -> bool,
+  {
     self.entries.retain(|(message, sender)| !f(message, sender));
   }
 }

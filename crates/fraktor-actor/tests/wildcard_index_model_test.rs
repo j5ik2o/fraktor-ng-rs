@@ -39,8 +39,8 @@ enum Branch {
 #[derive(Clone)]
 struct Route {
   branches: Vec<(Branch, String)>,
-  value:    i32,
-  double:   bool,
+  value: i32,
+  double: bool,
 }
 
 fn classify(elem: &str) -> (Branch, String) {
@@ -58,7 +58,11 @@ fn classify(elem: &str) -> (Branch, String) {
 }
 
 fn exact_branch(elem: &str) -> (Branch, String) {
-  if elem == "**" { (Branch::Double, "**".to_string()) } else { (Branch::Exact, elem.to_string()) }
+  if elem == "**" {
+    (Branch::Double, "**".to_string())
+  } else {
+    (Branch::Exact, elem.to_string())
+  }
 }
 
 fn model_insert(routes: &mut Vec<Route>, elems: &[&str], value: i32) {
@@ -145,8 +149,11 @@ fn walk_double(routes: &[Route], elems: &[&str]) -> Option<Vec<(Branch, String)>
       return Some(prefix.to_vec());
     };
     let double_child = (Branch::Double, "**".to_string());
-    let new_alternative =
-      if node_exists(routes, &with(prefix, &double_child), true) { Some(with(prefix, &double_child)) } else { alternative };
+    let new_alternative = if node_exists(routes, &with(prefix, &double_child), true) {
+      Some(with(prefix, &double_child))
+    } else {
+      alternative
+    };
     let exact = exact_branch(elem);
     let star = (Branch::Star, String::new());
     if node_exists(routes, &with(prefix, &exact), true) {

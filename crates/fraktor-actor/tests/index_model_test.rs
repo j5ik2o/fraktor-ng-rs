@@ -12,8 +12,8 @@
 use std::{
   collections::{BTreeMap, BTreeSet},
   sync::{
-    Arc, Barrier,
     mpsc::{channel, RecvTimeoutError},
+    Arc, Barrier,
   },
   thread,
   time::Duration,
@@ -52,8 +52,7 @@ fn assert_matches_model(index: &Index<i32, i32>, model: &BTreeMap<i32, BTreeSet<
     assert_eq!(index.value_iterator(&key), expected);
     for probe in 0..4 {
       let found = index.find_value(&key, |value| *value == probe);
-      let expected_found =
-        model.get(&key).and_then(|set| if set.contains(&probe) { Some(probe) } else { None });
+      let expected_found = model.get(&key).and_then(|set| if set.contains(&probe) { Some(probe) } else { None });
       assert_eq!(found, expected_found);
     }
   }
@@ -87,8 +86,8 @@ fn index_matches_the_model_over_random_operation_sequences() {
         },
         | 2 => {
           let removed = index.remove(&key, &value);
-          let existed = model.get_mut(&key).map_or(false, |set| set.remove(&value));
-          if model.get(&key).map_or(false, |set| set.is_empty()) {
+          let existed = model.get_mut(&key).is_some_and(|set| set.remove(&value));
+          if model.get(&key).is_some_and(|set| set.is_empty()) {
             model.remove(&key);
           }
           assert_eq!(removed, existed);

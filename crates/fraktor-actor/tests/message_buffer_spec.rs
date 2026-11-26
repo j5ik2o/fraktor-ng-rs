@@ -151,19 +151,19 @@ fn filter_not_of_several_entries() {
 fn message_buffer_map_supports_contains_add_append_and_remove() {
   let mut map: BufferMap = MessageBufferMap::new();
   assert!(!map.contains(&"id1"));
-  assert!(map.get(&"id1").map_or(true, |buffer| buffer.is_empty()));
+  assert!(map.get(&"id1").is_none_or(|buffer| buffer.is_empty()));
   assert_eq!(map.total_size(), 0);
   map.add("id1");
   assert!(map.contains(&"id1"));
-  assert!(map.get(&"id1").map_or(true, |buffer| buffer.is_empty()));
+  assert!(map.get(&"id1").is_none_or(|buffer| buffer.is_empty()));
   assert_eq!(map.total_size(), 0);
   map.append("id1", "m1", "s1");
   assert!(map.contains(&"id1"));
-  assert!(map.get(&"id1").map_or(false, |buffer| !buffer.is_empty()));
+  assert!(map.get(&"id1").is_some_and(|buffer| !buffer.is_empty()));
   assert_eq!(map.total_size(), 1);
   map.remove(&"id1");
   assert!(!map.contains(&"id1"));
-  assert!(map.get(&"id1").map_or(true, |buffer| buffer.is_empty()));
+  assert!(map.get(&"id1").is_none_or(|buffer| buffer.is_empty()));
   assert_eq!(map.total_size(), 0);
 }
 

@@ -66,7 +66,8 @@ impl<I: Ord, M, S> MessageBufferMap<I, M, S> {
   pub fn remove<Q>(&mut self, id: &Q)
   where
     I: Borrow<Q>,
-    Q: Ord + ?Sized, {
+    Q: Ord + ?Sized,
+  {
     self.buffers.remove(id);
   }
 
@@ -75,7 +76,8 @@ impl<I: Ord, M, S> MessageBufferMap<I, M, S> {
   pub fn contains<Q>(&self, id: &Q) -> bool
   where
     I: Borrow<Q>,
-    Q: Ord + ?Sized, {
+    Q: Ord + ?Sized,
+  {
     self.buffers.contains_key(id)
   }
 
@@ -87,7 +89,8 @@ impl<I: Ord, M, S> MessageBufferMap<I, M, S> {
   pub fn get<Q>(&self, id: &Q) -> Option<&MessageBuffer<M, S>>
   where
     I: Borrow<Q>,
-    Q: Ord + ?Sized, {
+    Q: Ord + ?Sized,
+  {
     self.buffers.get(id)
   }
 
@@ -95,7 +98,8 @@ impl<I: Ord, M, S> MessageBufferMap<I, M, S> {
   /// append order within a buffer.
   pub fn for_each<F>(&self, mut f: F)
   where
-    F: FnMut(&I, &M, &S), {
+    F: FnMut(&I, &M, &S),
+  {
     for (id, buffer) in &self.buffers {
       buffer.for_each(|message, sender| f(id, message, sender));
     }
