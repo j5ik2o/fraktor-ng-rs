@@ -34,12 +34,17 @@
 //                     as the first version of this model did (design review H2).
 //   MessagesBeforeSystem : a run takes the next normal message without first
 //                     handling the system messages that are waiting.
+//   PartialDrain    : after a drain, the run starts on system messages that
+//                     arrived later but takes a normal message before it has
+//                     handled all of them (Devin's review on PR #236).
 //
 // A run handles every waiting system message before it takes a normal message,
 // at its start and again after each normal message (Mailbox.run calls
 // processAllSystemMessages, then processMailbox, which calls it again after
 // each message). A system message that arrives after that drain may still be
-// overtaken by the one normal message taken next, but never by two.
+// overtaken by the one normal message taken next, but never by two. Once the
+// run starts on a system message, it handles the whole queue before the next
+// normal message (processAllSystemMessages loops until the queue is empty).
 module mailbox_scheduling {
   pure val SENDERS = Set("s1", "s2")
   pure val WORKERS = Set("w1", "w2")
@@ -48,7 +53,7 @@ module mailbox_scheduling {
   pure val CONTROL_BUDGET = 2
 
   type Mode = Fixed | LostWakeup | CheckThenAct | ExternalSuspend | LateEnqueue | DropSystemOnClose
-    | MessagesBeforeSystem
+    | MessagesBeforeSystem | PartialDrain
   type SysMsg = Suspend | Resume | Terminate
   // mark: how many normal messages had been taken when the system message arrived.
   type SysEntry = { kind: SysMsg, mark: int }
@@ -81,7 +86,8 @@ module mailbox_scheduling {
     externalSuspendsPending: int,
   }
   // drained: the run has handled every waiting system message since it last took a normal message.
-  type Worker = { phase: WorkerPhase, batch: int, drained: bool }
+  // drainMark: how many system messages had been handled when the run last saw the queue empty.
+  type Worker = { phase: WorkerPhase, batch: int, drained: bool, drainMark: int }
   type Sender = { phase: SenderPhase, left: int }
 
   var mode: Mode
@@ -150,10 +156,16 @@ module mailbox_scheduling {
   // A system message is overtaken by at most one normal message: the one a run
   // took right after its last drain, before the system message arrived.
   val systemBeforeNormal = st.sys.foldl(true, (ok, e) => ok and st.started <= e.mark + 1)
+  // No system message is handled between the drain and the normal message
+  // taken after it: once the run starts on the system messages again, it has
+  // to drain them all before the next normal message.
+  val noSystemSinceDrain =
+    WORKERS.forall(w => phaseOf(w) == Invoking implies st.sysProcessed == workers.get(w).drainMark)
 
   val invariant = atMostOneRunner and scheduledMatchesTheRun and noStrandedMessage and noInvokeWhileSuspended
     and noInvokeAfterClose and closedHoldsNothing and throughputRespected and messagesConserved
     and systemMessagesConserved and submittedOnlyWithWork and settledMeansIdle and systemBeforeNormal
+    and noSystemSinceDrain
 
   // ---- initial states ----------------------------------------------------
 
@@ -164,7 +176,7 @@ module mailbox_scheduling {
       controlLeft: CONTROL_BUDGET, pendingDecision: 0, sent: 0, processed: 0, deadLettered: 0,
       sysSent: 0, sysProcessed: 0, sysDeadLettered: 0, started: 0, externalSuspendsPending: 0,
     },
-    workers' = WORKERS.mapBy(_ => { phase: Free, batch: 0, drained: false }),
+    workers' = WORKERS.mapBy(_ => { phase: Free, batch: 0, drained: false, drainMark: 0 }),
     senders' = SENDERS.mapBy(_ => { phase: SReady, left: SENDS_PER_SENDER }),
   }
 
@@ -257,15 +269,22 @@ module mailbox_scheduling {
 
   // ---- workers -----------------------------------------------------------
 
+  action setWorkerMarked(w: str, phase: WorkerPhase, batch: int, drained: bool, mark: int, after: State): bool = all {
+    workers' = workers.set(w, { phase: phase, batch: batch, drained: drained, drainMark: mark }),
+    st' = after,
+    senders' = senders,
+    mode' = mode,
+  }
+
   action setWorkerDrained(w: str, phase: WorkerPhase, batch: int, drained: bool, after: State): bool = all {
-    workers' = workers.set(w, { phase: phase, batch: batch, drained: drained }),
+    workers' = workers.set(w, { phase: phase, batch: batch, drained: drained, drainMark: workers.get(w).drainMark }),
     st' = after,
     senders' = senders,
     mode' = mode,
   }
 
   action setWorker(w: str, phase: WorkerPhase, batch: int, after: State): bool = all {
-    workers' = workers.set(w, { phase: phase, batch: batch, drained: workers.get(w).drained }),
+    workers' = workers.set(w, { ...workers.get(w), phase: phase, batch: batch }),
     st' = after,
     senders' = senders,
     mode' = mode,
@@ -300,7 +319,9 @@ module mailbox_scheduling {
             if (mode == DropSystemOnClose) rest.sysDeadLettered else rest.sysDeadLettered + rest.sys.length(),
         }
     }
-    setWorker(w, Running, workers.get(w).batch, after),
+    // Starting on the system messages again cancels the earlier drain: the run
+    // has to see the queue empty once more before it takes a normal message.
+    setWorkerDrained(w, Running, workers.get(w).batch, mode == PartialDrain and workers.get(w).drained, after),
   }
 
   // The run has handled every waiting system message (processAllSystemMessages
@@ -310,7 +331,7 @@ module mailbox_scheduling {
     not(st.closed),
     not(workers.get(w).drained),
     st.sys.length() == 0,
-    setWorkerDrained(w, Running, workers.get(w).batch, true, st),
+    setWorkerMarked(w, Running, workers.get(w).batch, true, st.sysProcessed, st),
   }
 
   // processMailbox: dequeue one message and hand it to `receive`. The fixed run
@@ -458,7 +479,19 @@ module mailbox_scheduling {
     initWith(Fixed).then(send("s1")).then(register("s1")).then(send("s1")).then(register("s1"))
       .then(take("w1")).then(control(Resume)).then(drainDone("w1")).fail()
 
+  // A system message that arrives after the drain may be overtaken by one
+  // normal message, but once the run starts on it, the run drains the whole
+  // queue before the next normal message (Devin's review on PR #236).
+  run startedDrainIsFinishedBeforeTheNextMessageTest =
+    initWith(Fixed).then(send("s1")).then(register("s1")).then(take("w1")).then(drainDone("w1"))
+      .then(control(Resume)).then(control(Suspend)).then(processSystem("w1")).then(startInvoke("w1")).fail()
+
   // ---- runs: the mistakes (negative controls) ----------------------------
+
+  run partialDrainLetsAMessageOvertakeTest =
+    initWith(PartialDrain).then(send("s1")).then(register("s1")).then(take("w1")).then(drainDone("w1"))
+      .then(control(Resume)).then(control(Suspend)).then(processSystem("w1")).then(startInvoke("w1"))
+      .expect(st.sys.length() == 1 and not(noSystemSinceDrain))
 
   run messagesBeforeSystemOvertakesTest =
     initWith(MessagesBeforeSystem).then(send("s1")).then(register("s1")).then(send("s1")).then(register("s1"))

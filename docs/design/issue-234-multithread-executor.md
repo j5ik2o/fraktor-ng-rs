@@ -209,7 +209,7 @@ kernel が使う原子操作、Arc、ロックは、次の 3 つの決まりで�
 | kernel `dispatch/message_queue_factory.rs` | trait `MessageQueueFactory: Send + Sync`（port） | dispatcher の設定が持ち、メールボックスごとに列を作る。std と tokio はロックを使わない列、embassy は固定長の列を渡せる（§3.7、§3.8 の工夫 3） |
 | kernel `dispatch/system_message.rs` | enum `SystemMessage` | Create、Suspend、Resume、Recreate、Terminate、Supervise、Watch、Unwatch、Failed、DeathWatchNotification、ChildTerminated |
 | kernel `dispatch/mailbox.rs` | `Mailbox` | 状態、閉じる門、通常のキュー（`Arc<dyn MessageQueue>`。Balancing では team で共有）、system message のキュー、`ActorCell` を入れる場所（`LockCell<Option<ActorCell>>`）、dispatcher への戻りの辺（§3.4 の条件 2 により `Weak` か id）。1 アクターに 1 つ |
-| kernel `dispatch/mailbox_run.rs` | `MailboxRun`（kernel が adaptor に渡す仕事） | `run(self) -> RunOutcome`。1 回の実行で、system message を処理し、通常のメッセージを throughput 件まで処理し、まだ残っているかを返す（§3.8 の工夫 1）。`RunOutcome::Again` なら adaptor はもう一度予約し、`Idle` なら何もしない。`Idle` を返してよいのは、`set_as_idle` のあとに予約を読み直し、その予約に負けたとき（ほかの送り手が先に予約した、または仕事が無い）だけである。読み直して勝ったら `Again` を返す。この順を守らないと、`LostWakeup` と同じ取りこぼしになる。段 2 で、仕様の `finishIdle` と `finishRegister` に対応づける（再レビュー 3 の L2） |
+| kernel `dispatch/mailbox_run.rs` | `MailboxRun`（kernel が adaptor に渡す仕事） | `run(self) -> RunOutcome`。1 回の実行で、system message を処理し、通常のメッセージを throughput 件まで処理し、まだ残っているかを返す（§3.8 の工夫 1）。`RunOutcome::Again` は、run が読み直しで予約に勝った（scheduled の bit が立ったままの）状態で返す。adaptor は bit に触らず、受け取った仕事を `execute` で列に積み直すだけにする（予約を取り直さない。取り直すと、自分の立てた bit に阻まれて仕事を失う。Devin の指摘、PR #236）。`Idle` なら何もしない。`Idle` を返してよいのは、`set_as_idle` のあとに予約を読み直し、その予約に負けたとき（ほかの送り手が先に予約した、または仕事が無い）だけである。読み直して勝ったら `Again` を返す。この順を守らないと、`LostWakeup` と同じ取りこぼしになる。段 2 で、仕様の `finishIdle` と `finishRegister` に対応づける（再レビュー 3 の L2） |
 | kernel `dispatch/message_dispatcher.rs` | `MessageDispatcher` | id、throughput、期限、住人の数、観測口、`register_for_execution`（Pekko `Dispatcher.scala:146` の形）、Balancing の team |
 | kernel `dispatch/task_executor.rs` | trait `TaskExecutor: Send + Sync`（port） | `execute(Task) -> Result<(), Rejected>`、`shutdown`。`Task` は `MailboxRun` か、`Box<dyn FnOnce() + Send>`。これが kernel と adaptor の境目の 2 つ目（「このメールボックスを動かしてほしい」）である。断られたときの扱いは §3.5 |
 | kernel `dispatch/manual_executor.rs` | `ManualExecutor` | 実行待ちのメールボックスを `VecDeque` に積むだけ。`run_one` が 1 つ取り出して回す。今の決定論的な回し方の後継 |
@@ -236,7 +236,12 @@ kernel が使う原子操作、Arc、ロックは、次の 3 つの決まりで�
 | Balancing の共有のキュー | 流さない。team の残りが処理する（原典 `BalancingDispatcher.scala:75-89` の `SharingMailbox.cleanUp`）。止まった一員宛てに後から来たものも共有のキューに積む（`:106-109`） |
 | system message のキュー（どちらでも） | 残りを dead letters へ流す。閉じたあとに来たものも dead letters へ回す（§4.1 の I12） |
 
-自分専用のキューでは、門とキューを同じロックで守ってよい（送るたびのロックは 1 回で済む）。§3.8 の工夫 3 で、ロックを
+自分専用のキューでは、門とキューを同じロックで守ってよい（送るたびのロックは 1 回で済む）。
+
+bounded のキューが満杯で、push の待ち時間だけ待つとき（`BlockingBoundedQueue`）は、門のロックを外して待つ。門を持ったまま
+待つと、閉じる側も待たされる。門とキューが同じロックなら、取り出しも進まず、止まってしまう。空きができて起きたら、門の中で
+閉じたかを見直してから積む。閉じていれば dead letters へ送る（I6）。待ち時間が切れたら、今と同じく dead letters へ送る。
+この形は段 5 で入れる（Devin の指摘、PR #236）。§3.8 の工夫 3 で、ロックを
 使わない列に替えるときは、門の作りも替える。その形は段 5 の設計で決め、`LateEnqueue` の負の対照が破れることを Quint で
 確かめてから入れる。
 
@@ -492,7 +497,15 @@ This is a stepping aid for tests that check a deadline between messages; it is n
 mailbox. A run of a mailbox handles up to `throughput` messages; `run_one` hands a single message to
 a single actor and then returns, whatever the throughput of its dispatcher is. Use `run_until_idle`
 to drive the system the way a dispatcher does.
+
+It keeps running ready mailboxes that only have system messages to handle until it delivers one
+message or nothing is ready, so `false` means there was nothing left to drive.
 ```
+
+`run_one` が `false` を返すのは、実行待ちのメールボックスが無くなったときだけにする。実行待ちの先頭のメールボックスが
+system message だけを処理して終わったときは、`false` を返さず、次のメールボックスを続けて回し、通常のメッセージを 1 件
+配るか、実行待ちが空になるまで続ける。`TestKitBase::receive_one` は `false` を見ると待ちに入るので、ほかのメールボックスに
+通常のメッセージが残ったまま待つことを防ぐためである（段 3。Devin の指摘、PR #236）。
 
 throughput の件数や、1 回の実行の中の振る舞いを確かめるテスト（DispatcherActorSpec の「respect the throughput setting」
 と「respect throughput deadline」、ConsistencySpec、§7.3 の P4、§7.5 の測り）は、`run_one` を通さない形で回す。複数スレッドの
@@ -547,7 +560,7 @@ scratchpad の写しの仕様で確かめた（§10 の 16）。この PR の `m
 | I8 | 受け付けたメッセージは、処理済み、キューの中、処理中、dead letters のどれかにある | I6 と、閉じるときに dead letters へ流すこと | `messagesConserved` |
 | I9 | 同じ送り手から同じ宛先への順序は保つ（FIFO のキューで）。priority のキューは優先度の順、stable なら同じ優先度の中で FIFO | キューの実装 | Quint には無い。PBT（§7.3） |
 | I10 | あるメッセージの処理で書いた値は、次のメッセージの処理から見える。次の処理が別のスレッドでも見える | scheduled の bit の操作を AcqRel、キューのロックと `ActorCell` のロックで acquire と release がつながる | Quint は逐次一貫なので扱えない。ConsistencySpec と stress テスト（§7.3） |
-| I11 | system message は、実行の始めと、通常のメッセージ 1 件ごとのあとに、届いている分をすべて処理する。system message を追い越す通常のメッセージは、多くても 1 件（直前の処理し切りのあとで system message が届き、その直後に取り出したもの） | §3.5 の 1 と 2 | `systemBeforeNormal`（`drainDone` のあとでしか `startInvoke` できない。負の対照は `MessagesBeforeSystem`） |
+| I11 | system message は、実行の始めと、通常のメッセージ 1 件ごとのあとに、届いている分をすべて処理する。system message を追い越す通常のメッセージは、多くても 1 件（直前の処理し切りのあとで system message が届き、その直後に取り出したもの） | §3.5 の 1 と 2 | `systemBeforeNormal`（`drainDone` のあとでしか `startInvoke` できない。負の対照は `MessagesBeforeSystem`）と `noSystemSinceDrain`（空を確かめたあとで system message の処理を始めたら、列が空になるのを確かめ直すまで通常のメッセージを取れない。負の対照は `PartialDrain`。Devin の指摘、PR #236） |
 | I12 | system message も失われない。処理済み、キューの中、dead letters のどれかにある。閉じるときの残りと、閉じたあとに来たものは dead letters へ行く（DeathWatch のため。dead letters は Watch に DeathWatchNotification を返す） | 原典 `Mailbox.scala:318-338`、`:503-505` と同じ | `systemMessagesConserved` |
 | I13 | プールに入ったメールボックスには、その実行でできる仕事が必ずある（suspend 中を通常のメッセージで予約しない） | `can_be_scheduled` | `submittedOnlyWithWork` |
 | I14 | 何も進行中でない（送り手が途中にいない、実行も予約も無い、親の判断も待っていない）とき、開いたメールボックスは、できる仕事をやり終えている。suspend されているのは、外からの Suspend がまだ Resume で打ち消されていないときだけ | I3 と、失敗のたびに親が Resume を返すこと | `settledMeansIdle`（幽霊の変数 `externalSuspendsPending` は、外からの Suspend で 1 増え、外からの Resume で 1 減る。再レビュー L5） |
@@ -622,7 +635,7 @@ suspend されている」状態で待つ（T1）。この状態はこの仕様�
 ### 5.2 CI の決まりへの合わせ方
 
 - 不変条件は `invariant`。§4.1 の I1〜I8、I11〜I14 の論理積である
-- `run` は 20 本で、名前はどれも `Test` で終わる。`Test` で終わる名前は `run` にしか使っていない
+- `run` は 22 本で、名前はどれも `Test` で終わる。`Test` で終わる名前は `run` にしか使っていない
 - 定数は `pure val`（`SENDERS`、`WORKERS`、`SENDS_PER_SENDER`、`THROUGHPUT`、`CONTROL_BUDGET`）。`const` は使わない
 - 負の対照は、別のファイルや `--main` に分けず、同じモジュールの `mode` で切り替える。`init` は
   `initWith(Fixed)` だけなので、CI の `quint run --invariant=invariant` は正しい形だけを探す。誤りの形は、
@@ -639,6 +652,7 @@ suspend されている」状態で待つ（T1）。この状態はこの仕様�
 | `ExternalSuspend` | 外からの suspend が数を直接変える | `noInvokeWhileSuspended` | `externalSuspendInterruptsReceiveTest`（正しい形は `suspendWaitsForTheRunnerTest`） |
 | `LateEnqueue` | closed を見るのと積むのが 2 手 | `closedHoldsNothing` | `lateEnqueueLeavesAMessageInAClosedMailboxTest`（正しい形は `sendAfterCloseIsADeadLetterTest`） |
 | `MessagesBeforeSystem` | 待っている system message を処理し切らずに、次の通常のメッセージを取る | `systemBeforeNormal` | `messagesBeforeSystemOvertakesTest`（正しい形は `systemMessageGoesBeforeTheNextMessageTest`） |
+| `PartialDrain` | 空を確かめたあとに届いた system message を処理し始めたのに、処理し切る前に通常のメッセージを取る（前の版の仕様の Fixed がこの形を許していた。Devin の指摘、PR #236） | `noSystemSinceDrain` | `partialDrainLetsAMessageOvertakeTest`（正しい形は `startedDrainIsFinishedBeforeTheNextMessageTest`） |
 | `DropSystemOnClose` | 閉じるときに残りの system message を捨て、閉じたあとの system message も捨てる。この仕様の最初の版（`e702bbe`）の誤りである（設計レビュー H2） | `systemMessagesConserved` | `dropSystemOnCloseLosesAWatchTest`（正しい形は `remainingSystemMessagesAreDeadLettersTest`、`systemMessageAfterCloseIsADeadLetterTest`） |
 
 `LateEnqueue` は、Pekko でも起きうる取りこぼし（閉じた直後に積まれたメッセージが、dead letters にならずに消える）
@@ -980,6 +994,7 @@ S5〜S7 が大きいのは、今の実行器が宛先を線形に探すためで
 | 14 | 直した仕様で `bash scripts/quint-check-specs.sh`（main の 6 本の仕様すべて）。誤りの 6 つのモードから `quint run`（20 手、1 万本）。変異 R4〜R6 と R12（外からの Suspend のあとの外からの Resume を捨てる）を入れた写しで `quint run`（20 手、1 万本）と `quint test`。正しい形を 60 手・10 万本 | スクリプトは exit 0（`mailbox_scheduling.qnt` は 20 passing、`No violation found`、`max=21`。ほかの 5 本も通る）。6 つのモードはどれも `[violation]`。R4〜R6、R12 はどれも `[violation]`（`quint test` は 18〜19/20）。正しい形は `[ok]`、`max=53` |
 | 15 | `7ecb3f5` で `cargo test --workspace` | 101 個のバイナリの 1148 件が通り、失敗は 0 |
 | 16 | `mailbox_scheduling.qnt` の写しで、送り手の予約を `register`（読む）と `fetchOr`（closed と scheduled の 2 ビットだけを見る）の 2 手にし、強い I13、I13 を外した形、弱めた I13（`submittedWithWorkOrStaleRead`）のそれぞれで `quint run --invariant=…`（30 手・3 万本、60 手・10 万本）。I13 以外の不変条件を 1 つずつ（30 手・2 万本）。誤りの 6 つのモードと、変異 R4、R5、R6、R12、R13（30 手・2 万本） | §3.10 の表のとおり。強い I13 だけが正しい形で破れる。I13 を外すと R4 を見逃す。弱めた I13 は正しい形を通し、R4 も含めてすべての変異と 6 つのモードを捉える |
+| 17 | Devin の指摘の筋書きを、前の版の仕様（`cc4b4d4`）と直した仕様の写しで `quint test --match=devinRepro`。直した仕様で `bash scripts/quint-check-specs.sh`（main の 7 本の仕様すべて）。誤りの 7 つのモードから `quint run`（30 手・2 万本）。正しい形を 60 手・5 万本 | 前の版：筋書きが通る（Suspend が残ったまま `startInvoke` でき、`invariant` も成り立つ）。直した版：`startInvoke` が止まる（`Tests failed`）。スクリプトは exit 0（`mailbox_scheduling.qnt` は 22 passing、`No violation found`）。7 つのモードはどれも `[violation]`。正しい形は `[ok]`、`max=53` |
 
 429、rate limit、overloaded は出なかった。
 
@@ -1096,3 +1111,12 @@ bot の記録 `pr236-design-rereview3.md` にある。M1 と M2 は元帥が決�
 - L2：段 2 で、すべての予約の経路（送り手、実行の終わり、system message のあと）を「読む → `fetch_or`」の 2 手にし、`sawWork` を `canBeScheduled` ではなく `hasWork` で書いて、§3.10 の表を流し直す。段 2 の issue を切るときに直す
 - L3：Terminate を処理して閉じた実行は、§3.5 の 4 でセルを戻さず、`with` を出てからロックの外で捨てる。段 4a の issue を切るときに直す
 - L5：巻き戻りの drop guard はセルを戻すが、scheduled の bit は立ったまま残る。guard の中で bit も下ろすか、「catcher の無いシステムで panic が外に出たら、そのシステムは使い続けない」と書く。段 3 の issue を切るときに直す
+
+### 11.7 Devin のレビュー（PR #236、ドラフトから外したあと）
+
+| スレッド | 処理 | 変わった箇所 |
+|:---|:---|:---|
+| `mailbox_scheduling.qnt:303`（BUG）：空を確かめたあとに届いた system message を処理し始めても、前の確認が有効なまま通常のメッセージを取れる | 直す。指摘の筋書き（`drainDone`、`control(Resume)`、`control(Suspend)`、`processSystem`、`startInvoke`）は、前の版で通り、Suspend が残ったまま `receive` に入れた。原典の `processAllSystemMessages` は列が空になるまで処理するので、仕様の誤りである | 仕様：`processSystem` で `drained` を下ろす。幽霊の `drainMark` と不変条件 `noSystemSinceDrain` を足した。負の対照 `PartialDrain` と、正しい形の `startedDrainIsFinishedBeforeTheNextMessageTest` を足した（run は 22 本）。設計：§4.1 の I11、§5.2、§5.3。I11 の中身（追い越すのは多くても 1 件）は変えていない |
+| §3.2 の閉じる門（240 行）：満杯で待つ送信が門を持ったままだと、閉じる側も取り出しも止まる | 直す | §3.2：満杯で待つときは門を外して待ち、起きたら門の中で閉じたかを見直してから積む（段 5） |
+| §3.2 の `MailboxRun`（212 行）：`Again` のあとに adaptor が予約を取り直すと、立っている bit に阻まれる | 直す | §3.2：`Again` は予約に勝った状態で返す。adaptor は bit に触らず、列に積み直すだけ |
+| §3.9 の `run_one`（494 行）：system message だけの実行で `false` を返すと、testkit が待ちに入る | 直す | §3.9：`false` は実行待ちが空のときだけ。system message だけの実行のあとは、次のメールボックスを続けて回す。rustdoc の案に 1 文足した（1 件だけ配ることは変えていない） |
