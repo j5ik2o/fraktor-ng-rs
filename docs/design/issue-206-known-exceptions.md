@@ -1,12 +1,12 @@
-# #206 / #218 既知の例外の一覧（原典のファイルが決まらない 85 件）
+# #206 / #218 既知の例外の一覧（原典のファイルが決まらない 94 件）
 
 - 対象: [Issue #206](https://github.com/j5ik2o/fraktor-ng-rs/issues/206)、[Issue #218](https://github.com/j5ik2o/fraktor-ng-rs/issues/218)、[PR #215](https://github.com/j5ik2o/fraktor-ng-rs/pull/215)
 - 根拠: 設計 [`docs/design/issue-206-license-policy.md`](./issue-206-license-policy.md) 前提 7.2・§1.3・§3.1・§3.4.4（C6）
-- 件数: 全 85 件（要確認 76 件、強い根拠あり・原典ファイル未特定 9 件）
+- 件数: 全 94 件（要確認 85 件、強い根拠あり・原典ファイル未特定 9 件）
 
-以下の 85 件は、いずれも Pekko 由来（`Apache-2.0`）としてヘッダーを付けているが、対応する原典の単一ファイルを機械で特定できなかったものである。
+以下の 94 件は、いずれも Pekko 由来（`Apache-2.0`）としてヘッダーを付けているが、対応する原典の単一ファイルを機械で特定できなかったものである。
 すべてのファイルに、少なくとも ASF の帰属表示（Apache Pekko の派生物であること）と、原典 `NOTICE` に合わせた既定の表示（Akka 由来の形と `Copyright (C) 2009-2022 Lightbend Inc. <https://www.lightbend.com>`。第三者の表示があるものはそのブロックも併記）を付けている。
-原典のファイルを 1 件ずつ確かめていないため、85 件すべてについて**年と著作権者は未確認**である。あとで原典のファイルが特定できたら、[`issue-206-file-origin.tsv`](./issue-206-file-origin.tsv) の `原典ファイル` を埋めてヘッダーを付け直せる（`--remove` と `--apply --manifest`）。
+原典のファイルを 1 件ずつ確かめていないため、94 件すべてについて**年と著作権者は未確認**である。あとで原典のファイルが特定できたら、[`issue-206-file-origin.tsv`](./issue-206-file-origin.tsv) の `原典ファイル` を埋めてヘッダーを付け直せる（`--remove` と `--apply --manifest`）。
 
 | # | パス | 根拠の種類 | 原典のファイルが決まらない理由 | 年と著作権者 |
 |--:|:---|:---|:---|:---|
@@ -65,33 +65,42 @@
 | 53 | `crates/fraktor-actor/src/kernel/io/dns/ttl_test.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
 | 54 | `crates/fraktor-actor/src/kernel/io/dns/wire_reader.rs` | 原典パス | 強い根拠はあるが、原典のファイルに行き着かない | 未確認 |
 | 55 | `crates/fraktor-actor/src/kernel/io/dns/wire_reader_test.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 56 | `crates/fraktor-actor/src/kernel/supervision/failure_catcher.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 57 | `crates/fraktor-actor/src/kernel/supervision/restart_limit.rs` | Mirrors | 強い根拠はあるが、原典のファイルに行き着かない | 未確認 |
-| 58 | `crates/fraktor-actor/src/kernel/supervision/run_outcome.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 59 | `crates/fraktor-actor/src/kernel/version/fraktor_version_test.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 60 | `crates/fraktor-actor/src/kernel/version/unsupported_fraktor_version_test.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
-| 61 | `crates/fraktor-actor/src/kernel/version/version_value_test.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
-| 62 | `crates/fraktor-actor/tests/byte_string_input_stream_no_copy_test.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
-| 63 | `crates/fraktor-actor/tests/context_stash_test.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 64 | `crates/fraktor-actor/tests/double_linked_list_model_test.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 65 | `crates/fraktor-actor/tests/event_stream_lower_restart_spec.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 66 | `crates/fraktor-actor/tests/frequency_sketch_allocation_test.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 67 | `crates/fraktor-actor/tests/frequency_sketch_property_test.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
-| 68 | `crates/fraktor-actor/tests/fsm_test.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 69 | `crates/fraktor-actor/tests/g0f_review_a_no_duplicate_failure_delivery.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 70 | `crates/fraktor-actor/tests/g0f_review_a_system_failure_log.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 71 | `crates/fraktor-actor/tests/g0f_review_c1_intermediate_unsubscribe.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 72 | `crates/fraktor-actor/tests/g0f_review_c2_late_hierarchy_descendant_propagation.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 73 | `crates/fraktor-actor/tests/g0f_review_c2_late_hierarchy_reaches_an_existing_channel.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 74 | `crates/fraktor-actor/tests/g0f_review_c2_parent_first_and_removal.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 75 | `crates/fraktor-actor/tests/g0f_review_c3_other_parent_path.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 76 | `crates/fraktor-actor/tests/g0f_review_e1_level_before_loggers.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 77 | `crates/fraktor-actor/tests/g0f_review_e2_logger_set_change.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 78 | `crates/fraktor-actor/tests/g0f_review_f_terminated_subscription.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 79 | `crates/fraktor-actor/tests/supervision_all_for_one_regression.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 80 | `crates/fraktor-testkit/src/fraktorspec/fraktor_spec_test.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 81 | `crates/fraktor-testkit/src/lib.rs` | 原典パス | 強い根拠はあるが、原典のファイルに行き着かない | 未確認 |
-| 82 | `crates/fraktor-testkit/src/manual_scheduler/shared_state.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
-| 83 | `crates/fraktor-testkit/src/manual_scheduler_test.rs` | 原典への対応・移植の語（Pekko の明記なし） | 「corresponding to」「the ported」「original `X`」、または行をまたいだ「the original」がある（H1 の規則 3） | 未確認 |
-| 84 | `crates/fraktor-testkit/src/test_kit/expected_messages/class_of.rs` | Mirrors | 強い根拠はあるが、原典のファイルに行き着かない | 未確認 |
-| 85 | `crates/fraktor-testkit/src/test_kit/test_kit_value_test.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 56 | `crates/fraktor-actor/src/kernel/pretty_duration/pretty_duration_input.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
+| 57 | `crates/fraktor-actor/src/kernel/supervision/failure_catcher.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 58 | `crates/fraktor-actor/src/kernel/supervision/restart_limit.rs` | Mirrors | 強い根拠はあるが、原典のファイルに行き着かない | 未確認 |
+| 59 | `crates/fraktor-actor/src/kernel/supervision/run_outcome.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 60 | `crates/fraktor-actor/src/kernel/switch/locked_switch.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
+| 61 | `crates/fraktor-actor/src/kernel/switch/revert_guard.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
+| 62 | `crates/fraktor-actor/src/kernel/switch/switch_value_test.rs` | 原典への対応・移植の語（Pekko の明記なし） | 「corresponding to」「the ported」「original `X`」、または行をまたいだ「the original」がある（H1 の規則 3） | 未確認 |
+| 63 | `crates/fraktor-actor/src/kernel/version/fraktor_version_test.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 64 | `crates/fraktor-actor/src/kernel/version/unsupported_fraktor_version_test.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
+| 65 | `crates/fraktor-actor/src/kernel/version/version_value_test.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
+| 66 | `crates/fraktor-actor/tests/byte_string_input_stream_no_copy_test.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
+| 67 | `crates/fraktor-actor/tests/context_stash_test.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 68 | `crates/fraktor-actor/tests/double_linked_list_model_test.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 69 | `crates/fraktor-actor/tests/event_stream_lower_restart_spec.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 70 | `crates/fraktor-actor/tests/frequency_sketch_allocation_test.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 71 | `crates/fraktor-actor/tests/frequency_sketch_property_test.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
+| 72 | `crates/fraktor-actor/tests/fsm_test.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 73 | `crates/fraktor-actor/tests/g0f_review_a_no_duplicate_failure_delivery.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 74 | `crates/fraktor-actor/tests/g0f_review_a_system_failure_log.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 75 | `crates/fraktor-actor/tests/g0f_review_c1_intermediate_unsubscribe.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 76 | `crates/fraktor-actor/tests/g0f_review_c2_late_hierarchy_descendant_propagation.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 77 | `crates/fraktor-actor/tests/g0f_review_c2_late_hierarchy_reaches_an_existing_channel.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 78 | `crates/fraktor-actor/tests/g0f_review_c2_parent_first_and_removal.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 79 | `crates/fraktor-actor/tests/g0f_review_c3_other_parent_path.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 80 | `crates/fraktor-actor/tests/g0f_review_e1_level_before_loggers.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 81 | `crates/fraktor-actor/tests/g0f_review_e2_logger_set_change.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 82 | `crates/fraktor-actor/tests/g0f_review_f_terminated_subscription.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 83 | `crates/fraktor-actor/tests/glob_property_test.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
+| 84 | `crates/fraktor-actor/tests/pretty_duration_format_test.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
+| 85 | `crates/fraktor-actor/tests/pretty_duration_property_test.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
+| 86 | `crates/fraktor-actor/tests/supervision_all_for_one_regression.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 87 | `crates/fraktor-actor/tests/switch_extra_test.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
+| 88 | `crates/fraktor-actor/tests/switch_model_test.rs` | 原典への言及（Pekko の明記なし） | 「original」「upstream」への言及はあるが、原典が Pekko だと明記が無い | 未確認 |
+| 89 | `crates/fraktor-testkit/src/fraktorspec/fraktor_spec_test.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 90 | `crates/fraktor-testkit/src/lib.rs` | 原典パス | 強い根拠はあるが、原典のファイルに行き着かない | 未確認 |
+| 91 | `crates/fraktor-testkit/src/manual_scheduler/shared_state.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
+| 92 | `crates/fraktor-testkit/src/manual_scheduler_test.rs` | 原典への対応・移植の語（Pekko の明記なし） | 「corresponding to」「the ported」「original `X`」、または行をまたいだ「the original」がある（H1 の規則 3） | 未確認 |
+| 93 | `crates/fraktor-testkit/src/test_kit/expected_messages/class_of.rs` | Mirrors | 強い根拠はあるが、原典のファイルに行き着かない | 未確認 |
+| 94 | `crates/fraktor-testkit/src/test_kit/test_kit_value_test.rs` | Pekko言及 | Pekko への言及はあるが、原典との対応の明記が無い（設計の参考か写しか未確認） | 未確認 |
