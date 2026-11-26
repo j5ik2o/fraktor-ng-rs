@@ -8,16 +8,20 @@ Pekko v2.0.0（commit `9fbd2283b1cf701c90a1223bf621942c191db61f`）。
 再レビュー（固定 `7ecb3f5`）の判定は承認（D2 を除く）で、低の指摘 7 件があった。指摘の処理と、それで変わった
 箇所は §11 にある。再レビュー 2（固定 `29908ed`）は要修正（文書だけの小さな直し）だった。D1 は決定済み（元帥、2026-11-26）。
 D2 は承認済み（オーナー、2026-11-26、元帥の項目 420）で、
-所有権モデルの決定文書もこの PR で改めた。段 1 の実装は、この PR のマージのあとに別の issue と PR で行う。
+所有権モデルの決定文書もこの PR で改めた。tokio と embassy の adaptor を作れる形にするための C1〜C4 は、元帥が決めた
+（2026-11-26。§3.2、§3.7、§6 の段 0）。速さより Pekko の意味論を優先する指針（オーナー、2026-11-26）も、決定として
+この PR に入れ、§7.5 をそれに合わせた。段 1 の実装は、この PR のマージのあとに別の issue と PR で行う。
 この issue では実装しない。実装は §6 の段ごとに別の issue に分ける。
 
-この PR に入れるものは 3 つである。
+この PR に入れるものは 5 つである。
 
 | ファイル | 中身 |
 |:---|:---|
 | `docs/design/issue-234-multithread-executor.md` | この文書 |
 | `crates/fraktor-actor/specs/mailbox_scheduling.qnt` | §5 の Quint 仕様。CI の `quint` ジョブが typecheck・test・run を流す |
-| `docs/decisions/ownership-model-arc-overhead.md` | 所有権モデルの決定文書。D2 の承認を受けて、末尾に「改訂（2026-11-26）」の節を足した |
+| `docs/decisions/ownership-model-arc-overhead.md` | 所有権モデルの決定文書。D2 の承認を受けて、末尾に「改訂（2026-11-26）」の節を足した。条件 5 は、速さでは止めない形にした |
+| `docs/decisions/pekko-semantics-first.md` | 新しい決定。速さより Pekko の意味論を優先する（オーナー、2026-11-26） |
+| `docs/decisions/crate-structure-comparison.md` | crate の作りの決定。fraktor-actor の kernel について no_std の要求が確定した節を足した（段 0 の根拠） |
 
 ## 1. 目的と範囲
 
@@ -116,6 +120,10 @@ Pekko では、この 3 つは次の形である。アクターごとにメー�
 | 上の 4 か所の中身 | `Actor: Send`、枠と FSM の関数に `+ Send`、`Fsm<S, D>` に `S: Send, D: Send`、終了の通知に `+ Send` |
 | 単体テスト `actor_system_value_test.rs`（3 か所）と `actor_event_bus_test.rs`（2 か所） | `borrow` を `lock` に |
 
+段 1 は段 0 のあとに行うので、この表の `Arc` は `kernel::sync::Arc`（§3.2 の C3）、`spin` は `portable_atomic` の機能つき
+（C1）である。実行器全体のロック（`spin::Mutex<Executor>`）は、`try_lock` で再入を panic にするために要る一時のもので、
+段 3〜4 で無くなる。そのため、C2 のロックの port には載せない。
+
 | 置き換えない | 理由 |
 |:---|:---|
 | `adaptor/ask_driver.rs` の `thread_local!` の `RefCell<Vec<Step>>` | スレッドごとの登録表で、作りとしてスレッドをまたがない |
@@ -172,30 +180,47 @@ event stream の意味論は、今の `executor_value.rs`（1787 行）と、そ
 
 ### 3.2 kernel（no_std）と adaptor（std）の分け方
 
-crate に `#![no_std]` は無い。kernel を no_std に保つのは、規約と syn-check の `cfg-std-forbid` による
-（kernel では `use std::` を使わない）。この設計でも同じに守る。
+adaptor には、std のスレッドプールのほかに、tokio や embassy が来ることがある（オーナー、2026-11-26、元帥の項目 420）。
+そのため kernel は、std も、CAS（compare-and-set）の命令も前提にしない。今の crate には `#![no_std]` が無く、kernel も
+no_std では build できない（std の prelude の `String`、`Vec`、`Box`、`format!` に暗黙に頼り、64 ビットの原子操作も使う）。
+これは段 0（§6）で直す。段 0 のあとは、CI が thumbv7em（Cortex-M4。32 ビットの CAS はある）と thumbv6m（Cortex-M0、
+RP2040。CAS が無い）で kernel を `cargo check` する。
+
+kernel が使う原子操作、Arc、ロックは、次の 3 つの決まりで扱う（元帥が決めた、2026-11-26）。
+
+| 番号 | 決まり | 中身 |
+|:---|:---|:---|
+| C1 | 原子操作は `portable-atomic` 越しにする | API は core と同じで、CAS のある target では core の命令になる。CAS の無い target では critical-section で代わりに行い、その実装は adaptor（embassy や HAL）が渡す。`MailboxStatus`、id の数え上げ（今の `NEXT_ID` などの `AtomicU64`）、印の `AtomicBool` は、どれもこれを使う |
+| C2 | ロックは kernel が持つ port 越しにする | 閉じた区間を渡す形にする（下の「ロックの port」）。embassy-sync のロック（`CriticalSectionRawMutex`、`ThreadModeRawMutex`）と同じ形で、std の `Mutex`、`parking_lot`、`spin` でも作れる。システム全体の表も、この port を使う（再レビュー L6 の「spin のまま」は取りやめた） |
+| C3 | Arc は kernel の中の別名 `kernel::sync::Arc` を使う | `cfg(target_has_atomic = "ptr")` なら `alloc::sync::Arc`、無ければ `portable_atomic_util::Arc`。target の cfg で選ぶので、kernel に `feature = "std"` を置かない決まり（syn-check の `cfg-std-forbid`）には触れない。所有権モデルの決定文書の「Arc」は、この別名を含む。CAS の無い target（thumbv6m、RP2040）も対象に入れる |
 
 | 置き場所 | 型（名前は案） | 中身 |
 |:---|:---|:---|
-| kernel `dispatch/mailbox_status.rs` | `MailboxStatus` | `AtomicU32` 1 つ。bit 0 が closed、bit 1 が scheduled、bit 2 から上が suspend の数（Pekko `Mailbox.scala:47-55` と同じ配置）。`set_as_scheduled`、`set_as_idle`、`suspend`、`resume`、`become_closed` はどれも compare-and-set の繰り返し |
-| kernel `dispatch/message_queue.rs` | trait `MessageQueue: Send + Sync` | `enqueue(Envelope)`、`dequeue`、`has_messages`、`number_of_messages`、`drain`。**閉じたかどうかは持たない**（下の「閉じる門」） |
-| kernel `dispatch/…` | `UnboundedQueue<R>`、`BoundedQueue<R>`（待たない）、`PriorityQueue<R>`（stable の有無）、`ControlAwareQueue<R>` | `VecDeque<Envelope>` を、型引数 `R: lock_api::RawMutex` のロックで守る（下の「ロックは port にする」） |
+| kernel `sync.rs` | `Arc`、`Weak`（別名）、原子操作の型の再公開 | C1 と C3 |
+| kernel `sync/raw_lock.rs` | trait `RawLock: Send + Sync`（port） | `fn lock(&self, f: &mut dyn FnMut())`。閉じた区間を 1 つ走らせる。dyn で呼べる形なので、型引数が公開 API に伝わらない |
+| kernel `sync/lock_cell.rs` | `LockCell<T>` | `Box<dyn RawLock>` と中身を持ち、`with(&self, f: impl FnOnce(&mut T) -> R) -> R` だけを出す。中は `UnsafeCell` で、unsafe はこの型の中に閉じる |
+| kernel `sync/lock_factory.rs` | trait `LockFactory: Send + Sync`（port） | `RawLock` を作る。システムを作るときに adaptor が渡す。kernel の既定の工場は `spin`（`portable_atomic` の機能つき）で作る |
+| kernel `dispatch/mailbox_status.rs` | `MailboxStatus` | `portable_atomic::AtomicU32` 1 つ。bit 0 が closed、bit 1 が scheduled、bit 2 から上が suspend の数（Pekko `Mailbox.scala:47-55` と同じ配置）。`set_as_idle`、`suspend`、`resume`、`become_closed` は compare-and-set の繰り返し。§3.8 の工夫 2 と 5 を段 2 で入れると、予約は `fetch_or` の 1 手になり、bit 2 が「system message がある」の印になって、suspend の数は bit 3 から上へ移る |
+| kernel `dispatch/message_queue.rs` | trait `MessageQueue: Send + Sync` | `enqueue(Envelope)`、`dequeue`、`has_messages`、`number_of_messages`、`drain`。**閉じたかどうかは持たない**（下の「閉じる門」）。§3.8 の工夫 3 により、列そのものは adaptor が差し替えられる |
+| kernel `dispatch/…` | `UnboundedQueue`、`BoundedQueue`（待たない）、`PriorityQueue`（stable の有無）、`ControlAwareQueue` | kernel の既定の列。`VecDeque<Envelope>` を `LockCell` で守る |
+| kernel `dispatch/message_queue_factory.rs` | trait `MessageQueueFactory: Send + Sync`（port） | dispatcher の設定が持ち、メールボックスごとに列を作る。std と tokio はロックを使わない列、embassy は固定長の列を渡せる（§3.7、§3.8 の工夫 3） |
 | kernel `dispatch/system_message.rs` | enum `SystemMessage` | Create、Suspend、Resume、Recreate、Terminate、Supervise、Watch、Unwatch、Failed、DeathWatchNotification、ChildTerminated |
-| kernel `dispatch/mailbox.rs` | `Mailbox` | 状態、閉じる門、通常のキュー（`Arc<dyn MessageQueue>`。Balancing では team で共有）、system message のキュー、`ActorCell` を入れる場所、dispatcher への戻りの辺（§3.4 の条件 1 により `Weak` か id） |
+| kernel `dispatch/mailbox.rs` | `Mailbox` | 状態、閉じる門、通常のキュー（`Arc<dyn MessageQueue>`。Balancing では team で共有）、system message のキュー、`ActorCell` を入れる場所（`LockCell<Option<ActorCell>>`）、dispatcher への戻りの辺（§3.4 の条件 2 により `Weak` か id）。1 アクターに 1 つ |
+| kernel `dispatch/mailbox_run.rs` | `MailboxRun`（kernel が adaptor に渡す仕事） | `run(self) -> RunOutcome`。1 回の実行で、system message を処理し、通常のメッセージを throughput 件まで処理し、まだ残っているかを返す（§3.8 の工夫 1）。`RunOutcome::Again` なら adaptor はもう一度予約し、`Idle` なら何もしない |
 | kernel `dispatch/message_dispatcher.rs` | `MessageDispatcher` | id、throughput、期限、住人の数、観測口、`register_for_execution`（Pekko `Dispatcher.scala:146` の形）、Balancing の team |
-| kernel `dispatch/task_executor.rs` | trait `TaskExecutor: Send + Sync`（port） | `execute(Task) -> Result<(), Rejected>`、`shutdown`。`Task` はメールボックスの 1 回の実行か、`Box<dyn FnOnce() + Send>`。断られたときの扱いは §3.5 |
+| kernel `dispatch/task_executor.rs` | trait `TaskExecutor: Send + Sync`（port） | `execute(Task) -> Result<(), Rejected>`、`shutdown`。`Task` は `MailboxRun` か、`Box<dyn FnOnce() + Send>`。これが kernel と adaptor の境目の 2 つ目（「このメールボックスを動かしてほしい」）である。断られたときの扱いは §3.5 |
 | kernel `dispatch/manual_executor.rs` | `ManualExecutor` | 実行待ちのメールボックスを `VecDeque` に積むだけ。`run_one` が 1 つ取り出して回す。今の決定論的な回し方の後継 |
 | kernel `dispatch/dispatchers.rs` | `Dispatchers`、`DispatcherConfig` | id から dispatcher への表、別名、既定の id。設定はコードで組む |
 | kernel `dispatch/dispatcher_observer.rs` | trait `DispatcherObserver: Send + Sync` | 既定は何もしない `registered`、`unregistered`、`suspended`、`resumed`、`dispatched`、`shut_down` |
 | kernel（既存） | `Clock` | throughput の期限を測る。今の port をそのまま使う |
-| kernel（新しい port） | trait `Scheduler: Send + Sync` | 一度だけ後で動かす（`schedule_once(delay, task) -> Cancellable`）。dispatcher の停止の猶予（T9〜T11）に使う。原典は `prerequisites.scheduler.scheduleOnce`。adaptor はタイマーのスレッドで、testkit は今の `ManualScheduler` で実装できる |
-| kernel `dispatch/wake_signal.rs` | trait `WakeSignal: Send + Sync`（port） | `notify`、`wait(max)`。手で回す実行器に仕事が積まれたとき、または test actor にメッセージが届いたときに鳴らす。段 3 から使う（§3.6） |
+| kernel（新しい port） | trait `Scheduler: Send + Sync` | 一度だけ後で動かす（`schedule_once(delay, task) -> Cancellable`）。dispatcher の停止の猶予（T9〜T11）に使う。原典は `prerequisites.scheduler.scheduleOnce`。adaptor はタイマーのスレッド（std）、`tokio::time::sleep`、`embassy_time::Timer` で、testkit は今の `ManualScheduler` で実装できる |
+| kernel `dispatch/wake_signal.rs` | trait `WakeSignal: Send + Sync`（port） | `notify`、`wait(max)`。手で回す実行器に仕事が積まれたとき、または test actor にメッセージが届いたときに鳴らす。止まって待つ形なので、**std と testkit 用**である。tokio と embassy の adaptor は使わない。段 3 から使う（§3.6） |
 | adaptor `thread_pool_executor.rs` | `ThreadPoolExecutor` | 固定の N 本のスレッド、`Mutex<VecDeque<Task>>` と `Condvar`。スレッドの名前は `<システム名>-<dispatcher id>-<番号>`。生きたスレッドの join の完了を数える（T8、§8 の DispatcherShutdownSpec） |
 | adaptor | `ForkJoinConfig::scaled_pool_size(min, factor, max)` | `ceil(コア数 × factor)` を `[min, max]` に収める（`ThreadPoolConfig.scaledPoolSize` と同じ式。ConsistencySpec が使う） |
 | adaptor | `PinnedExecutor` | スレッド 1 本。持ち主のアクター以外の登録を断る（Pekko `PinnedDispatcher.scala` の `register`） |
 | adaptor | `BlockingBoundedQueue` | 満杯のとき push の待ち時間だけ待つ bounded キュー（`Condvar` が要るので std） |
 | adaptor | `CondvarSignal` | `WakeSignal` の std の実装 |
-| adaptor | std のロック | `lock_api::RawMutex` の実装で、待つときにスレッドを休ませるもの（下の「ロックは port にする」） |
+| adaptor | std のロックの工場 | `LockFactory` の std の実装。待つときにスレッドを休ませる（std の `Mutex`、または `parking_lot`。どちらにするかは段 2 で決める） |
 | testkit | `CallingThreadDispatcher` | 送った側のスレッドで処理する。スレッドごとの再入のキューは `thread_local!` なので std の testkit に置く（Pekko でも testkit にある） |
 
 **閉じる門（設計レビュー M4）**：閉じたかどうかは、キューではなく `Mailbox` が持つ。送るときは、門のロックの中で
@@ -208,44 +233,50 @@ crate に `#![no_std]` は無い。kernel を no_std に保つのは、規約と
 | Balancing の共有のキュー | 流さない。team の残りが処理する（原典 `BalancingDispatcher.scala:75-89` の `SharingMailbox.cleanUp`）。止まった一員宛てに後から来たものも共有のキューに積む（`:106-109`） |
 | system message のキュー（どちらでも） | 残りを dead letters へ流す。閉じたあとに来たものも dead letters へ回す（§4.1 の I12） |
 
-自分専用のキューでは、門とキューを同じロックで守ってよい（送るたびのロックは 1 回で済む）。
+自分専用のキューでは、門とキューを同じロックで守ってよい（送るたびのロックは 1 回で済む）。§3.8 の工夫 3 で、ロックを
+使わない列に替えるときは、門の作りも替える。その形は段 5 の設計で決め、`LateEnqueue` の負の対照が破れることを Quint で
+確かめてから入れる。
 
-**ロックは port にする（設計レビュー M5）**：kernel のキューと表のロックは、型引数 `R: lock_api::RawMutex` で
-受け取る。kernel の既定は `spin` のロック（no_std で使える）で、std の adaptor は、待つときにスレッドを休ませる
-ロックを渡す。ConsistencySpec はわざとコア数より多いスレッドを使う（`scaledPoolSize(1, 1.5, 2000)`）。既定の
-dispatcher も `parallelism-min = 8` である（`reference.conf:478`）。スレッドがコアより多いと、ロックを持った
+**ロックの port（C2）**：ConsistencySpec はわざとコア数より多いスレッドを使う（`scaledPoolSize(1, 1.5, 2000)`）。
+既定の dispatcher も `parallelism-min = 8` である（`reference.conf:478`）。スレッドがコアより多いと、ロックを持った
 スレッドが OS に止められ、待つ側はスピンし続ける。`spin` のロックは公平でないので、送り手が多いと取り出しが飢える。
-そのため、複数スレッドの dispatcher では spin を使わない。std の側で何を渡すか（`parking_lot::RawMutex` を
-依存に足すか、std の `Mutex` と `Condvar` で書いた自前の `RawMutex` か）は、段 2 の設計で決める。
+1 コアの組み込みでは、スレッド側がロックを持ったまま割り込みに入り、割り込みの中の実行器（embassy の InterruptExecutor）が
+同じロックを取りに行くと、回り続けて止まる。そのため、ロックは adaptor が選ぶ。
 
-**型引数 `R` をどこで選ぶか（再レビュー L6）**：`R` は公開 API に出さない。`R` を付けるのはキューの型だけで、
-キューは `Arc<dyn MessageQueue>` の後ろで型を消す。キューは、dispatcher の設定が持つ工場（`MessageQueueFactory`）が
-作る。kernel の既定の工場は `spin` のロックを使い、std の adaptor の工場は休むロックを使う。システム全体で共有する表
-（下の表の 2）は、制御の側で使う回数が少ないので、型引数を付けずに `spin` のロックのままにする。こうすると、
-`Mailbox`、`MessageDispatcher`、`ActorSystem` に型引数は伝わらず、公開 API は変わらない（再レビューの試作で、
-`dyn MessageQueue` の後ろに `R` を隠せること、3 種類のロックで 16 本のスレッドから 16 万件を積めることを確かめた）。
-足す依存は、`lock_api`（`default-features = false`）と、`spin` の `lock_api` の機能である（今の `Cargo.toml` は
-`spin_mutex` だけ）。std の側で `parking_lot` を使うなら、それも足す。どれも段 2 で入れ、#206 のライセンスの記録
-（`docs/design/issue-206-file-origin.tsv` と、依存のライセンスの確認）に載せる。
+| adaptor | ロックの工場 |
+|:---|:---|
+| std のスレッドプール | std の `Mutex`、または `parking_lot`（待つときに休む） |
+| tokio | std と同じ。`.await` をまたいでロックを持たないことは、下の I16 が保証する |
+| embassy | 割り込みからも触るものは `CriticalSectionRawMutex`、スレッドのモードだけで触るものは `ThreadModeRawMutex` |
+| kernel の既定（`ActorSystem::new` の手で回す dispatcher） | `spin`（`portable_atomic` の機能つき）。単一スレッドなので取り合わない |
 
-**ロックの決まり**：
+**ロックの中で利用者のコードを走らせない（§4.1 の I16）**：`LockCell::with` の closure は、受け取った `&mut T` のほかに
+触れない。closure の中で、`receive`、`pre_start` などのライフサイクルのフック、function ref の handler、`tell` を呼ばない。
+`LockCell` は `pub(crate)` で、closure の型は `FnOnce(&mut T) -> R` に限り、`ActorContext` や `ActorRef` を渡す口を作らない。
+
+`ActorCell` もこの決まりに従う。1 回の実行の初めに、`with` の中で `Option::take` してセルを取り出し、ロックの外で
+`receive` を回す。終わったら、`with` の中で戻す。取り出せなかったら（`None`）、ほかのスレッドが同じアクターを実行して
+いることになるので、I1 の破れとして panic する（前の版の `try_lock` の検査の代わり）。ロックを取るのは 1 回の実行ごとに
+2 回で、メッセージごとではない。今の実行器も、配送のたびにセルを表から外して戻している（`Executor::deliver`）。
+
+**ロックの順序**：
 
 | 順 | ロック | 持ってよい間 |
 |:---|:---|:---|
-| 1 | `ActorCell` のロック | 1 回の実行の間（`receive` などの利用者のコードをまたぐ）。scheduled の bit を持つスレッドしか取りに行かないので、取り合いは起きない。`try_lock` が失敗したら I1 の破れとして panic する |
-| 2 | システム全体で共有する表（function ref、終了の通知、dispatcher の登録表など）。`spin` のロックのまま | 読み書きの間だけ |
+| 1 | `ActorCell` を入れる場所 | 取り出すときと戻すときだけ。`receive` の間は持たない |
+| 2 | システム全体で共有する表（function ref、終了の通知、dispatcher の登録表など） | 読み書きの間だけ |
 | 3 | メールボックスの閉じる門とキュー | 出し入れの間だけ |
-| 4 | event bus の購読表 | 読み書きの間だけ |
+| 4 | event bus の購読者の集合（§2.4） | 読み書きの間だけ |
 
-- 取る順は上から下である。2〜4 は、同時に 2 つ以上持たない。
+- 1〜4 は、同時に 2 つ以上持たない。
 - Balancing（再レビュー L7）：門は一員ごと、通常のキューは team で共有するので、ロックが 2 つに分かれる。送るときは、
   門を見ずに共有のキューに積む（原典 `BalancingDispatcher.scala:106-109` は、止まった一員宛ても共有のキューに積む）。
   門は、その一員の system message のキューと、閉じたかどうかを守るだけに使う。したがって、Balancing でも門と
   共有のキューのロックを同時に持つことはない
-- 2〜4 を持ったまま、利用者のコードを呼ばない。`tell` もしない。宛先を写してからロックを外し、外したあとで送る。
-  今の `EventStreamBus::publish_through`（`event_stream_bus.rs`。`state.lock().recipients_of(class)` で写してから送る）がこの形である。段 4 で共有の表を足すときも、
-  これを守る。
-- 待ち（スレッドの休止、bounded の push の待ち、testkit の待ち）は、どれも adaptor の `Condvar` で行う。
+- ロックを外してから送る。今の `EventStreamBus::publish_through`（`event_stream_bus.rs`。`state.lock().recipients_of(class)`
+  で写してから送る）がこの形である。段 4 で共有の表を足すときも、これを守る。
+- 待ち（スレッドの休止、bounded の push の待ち、testkit の待ち）は、どれも adaptor が行う（std は `Condvar`、tokio と
+  embassy は `.await`）。
 
 ### 3.3 Send と Sync の境界
 
@@ -300,7 +331,7 @@ ref と配送の経路に Arc が入る。所有権モデルのスパイクで�
 | 2 | `Mailbox` から dispatcher、システム、dead letters へ戻る辺は、`Weak` か id にする。強い循環を作らない | 段 3 の設計の型で見る |
 | 3 | 閉じるとき（I6）に、自分専用のキューを必ず dead letters へ流す。Envelope の送り手（`ActorRef` → `Arc<Mailbox>`）による循環を断つため。今の `Executor::stop_all` の doc が、境界について同じ理由を書いている | 段 3 の完了条件 |
 | 4 | 終了したあとにメールボックスが解放されることを、テストで確かめる（`Arc::strong_count` か、`Weak::upgrade` の失敗） | 段 3 の完了条件 |
-| 5 | 単一スレッドの速さを計り、落ちていないことを確かめる | §7.5 の測り方と止める基準。段 3 と段 5 の完了条件 |
+| 5 | 単一スレッドの速さを計り、報告する。速さでは作業を止めない（`docs/decisions/pekko-semantics-first.md`） | §7.5 の測り方と報告の仕方。段 1、3、4、5 で報告する |
 
 選ばなかった案 (B) は、`ActorRef` を id＋世代のままにし、配送のたびに並行の表（id → メールボックス）を引く形だった。
 決定文書は変えずに済むが、`tell` のたびに表のロックと検索が要る。止まったアクター宛てを見分けるのにも、表の世代の検査が要る。
@@ -349,13 +380,84 @@ event stream に `Error` を出して、呼び出し元にエラーを返す。b
 - `ask` の待ち（`adaptor/ask_driver.rs`）は変えない。手で回すシステムは登録した driver が回し、複数スレッドの
   アクターへの `ask` は、今の条件変数の待ちで返りを待つ（登録の無い宛先の経路で、すでにある）
 
+### 3.7 tokio と embassy の adaptor の作り方
+
+kernel と adaptor の境目は、次の 2 つだけである（§3.8 の工夫 1）。
+
+- kernel から adaptor へ：「このメールボックスを動かしてほしい」（`TaskExecutor::execute(Task)`）
+- adaptor から kernel へ：「メールボックスを決まった件数（throughput）だけ動かし、まだ残っているかを返す」（`MailboxRun::run`）
+
+アクター 1 つにメールボックス 1 つ、という形は、どの adaptor でも変えない。adaptor が替えるのは、メールボックスを回す
+場所（スレッド、タスク）、ロックの工場、通常のメッセージの列、時計、後で動かす仕組みだけである。
+
+| 部品 | std のスレッドプール（段 5） | tokio | embassy |
+|:---|:---|:---|:---|
+| `TaskExecutor` | `ThreadPoolExecutor`。共有の列と `Condvar` で N 本のスレッドが回す | `TokioTaskExecutor`。予約のたびに `handle.spawn(async move { run.run() })`。割り当てを減らすなら、常駐の N 本のタスクが共有の列と `tokio::sync::Notify` で回す | `EmbassyTaskExecutor`。`static CH: Channel<CriticalSectionRawMutex, Task, N>` を置き、`#[embassy_executor::task(pool_size = W)]` の worker のタスク W 本が `loop { CH.receive().await.run() }` で回す。`execute` は `try_send` で、満杯なら `Rejected` を返す（§3.5 のとおり、bit を下ろしてエラーにする） |
+| `RunOutcome::Again` の扱い | 列の後ろへ積み直す | 同じ（`spawn` し直す） | 同じ（`try_send` し直す） |
+| Pinned | 専用のスレッド 1 本 | 専用の常駐のタスク 1 本（止まって待つアクターなら `spawn_blocking` の上のスレッド） | 専用の静的なタスク 1 本 |
+| 止まって待つアクター | Pinned か、別の dispatcher に置く | `spawn_blocking` で回す dispatcher に置く（Pekko の blocking 用の dispatcher と同じ考え） | 置かない（待つときは `.await` を使うアクターにする話で、この設計の範囲の外） |
+| `LockFactory` | std の `Mutex` か `parking_lot` | std と同じ | `CriticalSectionRawMutex`、`ThreadModeRawMutex` |
+| 原子操作、Arc | core（`portable-atomic` はそのまま core の命令になる） | 同じ | CAS のある target は core と同じ。CAS の無い target（thumbv6m、RP2040）は `portable-atomic` の critical-section と `portable_atomic_util::Arc` |
+| `MessageQueueFactory` | kernel の既定の列。段 5 でロックを使わない列に替えられる（§3.8 の工夫 3） | 同じ | 固定長の列（`heapless` の類。満杯は push の待ち時間 0 の bounded と同じく dead letters） |
+| `Clock` | `SystemClock`（今のもの） | `tokio::time::Instant` | `embassy_time::Instant` |
+| `Scheduler` | タイマーのスレッド | `tokio::time::sleep` を待つタスク | タイマーの列を持つ静的なタスクが `embassy_time::Timer` で待つ |
+| testkit の待ち（`WakeSignal`） | `CondvarSignal` | 使わない（テストは `#[tokio::test]` の中で `.await` で待つ） | 使わない |
+
+`MailboxRun::run` は同期のコードで、中で `.await` しない。アクターの `receive` も同期で、Pekko と同じく、止まって待たないことを
+利用者に求める。
+
+embassy で前提になるもの：
+
+- アクターの数は動的なので、`alloc` が要る。global allocator（`embedded-alloc` など）を、アプリケーションが用意する
+- critical-section の実装は、HAL か `cortex-m` の crate が渡す
+- worker のタスクの本数 W と、列の長さ N は、コンパイル時に決める
+
+どの adaptor を作るかは、この設計の範囲の外である（§1.3）。この節は、kernel の port が、どの adaptor でも作れる形に
+なっていることを示すためのものである。段 0 の CI（thumbv7em と thumbv6m の `cargo check`）で、kernel が std なしで
+build できることを守る。
+
+### 3.8 Rust のアクター実装から取り入れる工夫
+
+元帥の調べ（2026-11-26）から、次の 6 つを、どの段で入れるかを決めた。どれも 1 アクター 1 メールボックスを保つ。
+意味論（Pekko のテストと文書が利用者に約束している振る舞い）を変えるものは入れない
+（`docs/decisions/pekko-semantics-first.md`）。
+
+根拠にした実装（元帥の調べ役が clone した写し）：
+
+| 実装 | commit | 見たところ |
+|:---|:---|:---|
+| embassy | `2436d8e` | `embassy-executor/src/raw/state_atomics.rs` の `run_enqueue`（`fetch_or(STATE_RUN_QUEUED)` で印を立て、もとが 0 だった呼び出し元だけが列に積む） |
+| riker | `ccd4e5f` | `src/kernel/mailbox.rs`。`set_scheduled(false)` のあと、`is_scheduled()` を読んでから予約する 2 手で、予約の印の読みと書きが分かれている（Quint の `CheckThenAct` と同じ形の誤り） |
+| ractor | `064c9fa` | `docs/message-scheduling.md`。アクターは約 1,000 万件／秒（約 100 ns／件）、素の tokio のチャネルは速い場合で約 8,000 万件／秒（約 12 ns／件） |
+| tokio | `854013a` | `tokio/src/runtime/scheduler/multi_thread/worker.rs`。同じ worker が起こしたタスクを次に動かす枠（LIFO の枠）。続けて使うのは 3 回まで（`MAX_LIFO_POLLS_PER_TICK = 3`） |
+| heph、ector | `3183f48`、`5196572` | メッセージを列の枠に直接入れ、1 件ごとの割り当てを避ける |
+
+| 番号 | 工夫 | 入れるか | 段 | 中身と条件 |
+|:---|:---|:---|:---|:---|
+| 1 | kernel と adaptor の境目を「決まった件数だけ動かし、まだ残っているかを返す」と「このメールボックスを動かしてほしい」の 2 つにする | 入れる | 段 2（型）、段 3（配線） | `MailboxRun::run(self) -> RunOutcome` と `TaskExecutor::execute`（§3.2）。Pekko の `Mailbox.run` が最後に自分で `registerForExecution` を呼ぶところを、「まだ残っている」を返して adaptor に積み直させる形にする。予約の数の勘定は同じなので、Quint の `finishRegister` の意味は変わらない。tokio と embassy でも同じ形で作れる（§3.7） |
+| 2 | 予約の印は `fetch_or` の 1 手で立て、0 から 1 にした送り手だけがプールに頼む | 入れる | 段 2 | `set_as_scheduled` を、`prev = fetch_or(SCHEDULED)` で、`prev` に scheduled も closed も無いときだけ予約する形にする。CAS の繰り返しより短く、CAS の無い target でも `portable-atomic` で書ける。suspend の数は見ない（Pekko の `setAsScheduled` も closed と scheduled の bit しか見ない）。そのため、送り手が「予約してよいか」を読んでから `fetch_or` するまでに、そのアクターが suspend されると、仕事の無い予約が 1 回起きうる（Pekko でも同じ）。その実行は何もせずに終わるので、利用者の見る振る舞いは変わらない。今の仕様の I13 は、読みと書きを 1 手にまとめているので、Pekko より強い。段 2 で、仕様の `register` を「読む」と「`fetch_or`」の 2 手に分け、I13 を「仕事の無い予約は `receive` を呼ばずに終わる」に直してから実装する |
+| 3 | キューのロックをやめ、adaptor ごとに列を差し替えられるようにする（std と tokio はロックを使わない列、embassy は固定長の列）。取り出す側はまとめて取る | 入れる。ただし kernel の既定の列はロックつきのまま | 段 2（`MessageQueueFactory` の port）、段 5（std のロックを使わない列）、embassy の adaptor（固定長の列） | 列は `MessageQueueFactory` で差し替える。ロックを使わない列では、門の作り（閉じたかを見ることと積むことを分けない。I6）を別の手で得る必要がある。その形は段 5 の設計で決め、Quint で `LateEnqueue` の負の対照が破れることを確かめてから入れる。取り出す側は、1 回の実行で throughput 件までをまとめて取る |
+| 4 | メッセージを列の枠に直接入れ、1 件ごとの割り当て（`Box`）を避ける | 今は入れない | —（typed の層のゴールで考え直す） | 今の層は Pekko の classic（untyped）で、メッセージは何の型でもよい（`Message` は `Arc<dyn Any + Send + Sync>`）。型を消すために、1 件ごとの割り当ては残る。heph や ector は、アクターごとにメッセージの型が 1 つに決まる（typed）ので、列の枠に直接入れられる。typed の層を作るゴールで考え直す。`Envelope` そのものは今も `VecDeque` の枠に直接入っている |
+| 5 | 「system message がある」の印を状態の語に同居させ、1 件ごとに system message の列を見に行かない | 入れる | 段 2 | `MailboxStatus` の bit 2 を印にし、suspend の数を bit 3 から上へ移す。送り手は、system message を積んでから印を立てる。実行する側は、印を下ろしてから列を空にする。この順を逆にすると、下ろす直前に積まれたものが取り残される。段 2 で、仕様にこの印と、順を逆にした負の対照を足してから実装する |
+| 6 | 決まった件数（throughput）をさばいたら手放す。同じスレッドで送った相手は、次に動かす | 1 つ目はすでに入っている。2 つ目は入れる | 1 つ目は §3.5 と I7。2 つ目は段 5 | 1 回の実行で throughput 件まで処理して手放す（`throughputRespected`）。2 つ目は std のスレッドプールの最適化で、worker が `receive` の中で予約したメールボックスを、次に自分で動かす枠に置く。飢えを防ぐため、tokio と同じく続けて使うのは 3 回までにする。アクターの間の処理の順は、Pekko も約束していない（同じ送り手から同じ宛先への順だけを約束する）ので、意味論は変わらない |
+
+### 3.9 1 回の実行で処理する件数（オーナーの訂正）
+
+アクターは 1 回動かすと、throughput の N 件まで処理する（1 件だけではない）。この設計の §3.5、I7、Quint の
+`throughputRespected`、§3.8 の工夫 1 と 6 は、どれもこの意味で書いている。
+
+例外は、手で回す dispatcher の `ActorSystem::run_one` である。今の公開 API は「1 件だけ配る」（今の
+`Executor::run_one` の doc）で、testkit は 1 件ごとに期限を確かめている（`TestKitBase::receive_one`）。そこで、
+`run_one` は今と同じく 1 件だけ配る（手で回す dispatcher は、`run_one` から呼ばれたときだけ throughput を 1 として回す）。
+`run_until_idle` は、件数に関係なく、仕事が無くなるまで回す。
+
 ## 4. 不変条件
 
 ### 4.1 メールボックスとスケジューリング
 
 | 番号 | 不変条件 | 何が守るか | Quint の名前 |
 |:---|:---|:---|:---|
-| I1 | 1 つのアクターのメッセージを、同時に 2 つのスレッドが処理しない | scheduled の bit の compare-and-set に勝った 1 人だけが、プールにメールボックスを出す。`ActorCell` のロックの `try_lock` の失敗は panic | `atMostOneRunner` |
+| I1 | 1 つのアクターのメッセージを、同時に 2 つのスレッドが処理しない | scheduled の bit の compare-and-set に勝った 1 人だけが、プールにメールボックスを出す。実行の初めに `ActorCell` を取り出せなければ panic（§3.2） | `atMostOneRunner` |
 | I2 | メールボックスはプールに高々 1 回だけ入る。閉じていない間、scheduled の bit は「プールにある、または実行中」とちょうど一致する | 同上 | `scheduledMatchesTheRun` |
 | I3 | 仕事のある開いたメールボックスは、予約されているか、予約しに行く誰かがいる（起こし忘れが無い） | §3.5 の 4 | `noStrandedMessage` |
 | I4 | suspended の間は `receive` を呼ばない。suspend の数を変えるのは、そのアクターを実行中のスレッドだけ（外からの suspend は Suspend の system message にする） | `should_process_message` を取り出しの直前に読む。system message は `receive` の外で処理する | `noInvokeWhileSuspended` |
@@ -370,6 +472,7 @@ event stream に `Error` を出して、呼び出し元にエラーを返す。b
 | I13 | プールに入ったメールボックスには、その実行でできる仕事が必ずある（suspend 中を通常のメッセージで予約しない） | `can_be_scheduled` | `submittedOnlyWithWork` |
 | I14 | 何も進行中でない（送り手が途中にいない、実行も予約も無い、親の判断も待っていない）とき、開いたメールボックスは、できる仕事をやり終えている。suspend されているのは、外からの Suspend がまだ Resume で打ち消されていないときだけ | I3 と、失敗のたびに親が Resume を返すこと | `settledMeansIdle`（幽霊の変数 `externalSuspendsPending` は、外からの Suspend で 1 増え、外からの Resume で 1 減る。再レビュー L5） |
 | I15 | 実行器に断られたメールボックスに、scheduled の bit は残らない | §3.5 の「実行器に断られたとき」 | 段 5 で、実装より先に `mailbox_scheduling.qnt` に `reject` の動作と負の対照を足す（再レビュー L4）。止めた実行器の作り直しと合わせた形は `dispatcher_lifecycle.qnt`（段 6） |
+| I16 | ロックの中で利用者のコードを走らせない。`LockCell::with` の closure の中で、`receive`、ライフサイクルのフック、function ref の handler、`tell` を呼ばない。`ActorCell` は、実行の初めに取り出し、ロックの外で `receive` を回し、終わったら戻す | §3.2 の「ロックの中で利用者のコードを走らせない」。`LockCell` は `pub(crate)` で、closure に `&mut T` のほかを渡さない | Quint には無い（ロックの区間は仕様の 1 手の中に入る）。段 2 の設計で、型と、セルを取り出せなかったときの panic のテストで確かめる |
 
 ### 4.2 状態の名前と、bit との対応
 
@@ -491,17 +594,19 @@ priority の順序、メモリの見え方（I10）、throughput の期限（I7 
 API 3 つと単体テスト、8 ファイル）を 2 とする。どの段も、設計の差分があれば先に設計の独立レビューを通す。
 どの段も「既存のテストがすべて通る」を完了の条件に含む。
 
-始める前に要るもの：D2 は承認された（§9.2）。段 1 は、この PR の承認とマージのあとに、別の issue と PR で始める。
-速さの測り方と止める基準は §7.5 で決めた。段 1、3、4、5 の完了条件は、その基準を満たすことを含む。
+始める前に要るもの：D2 は承認された（§9.2）。段 0 と段 1 は、この PR の承認とマージのあとに、別の issue と PR で始める。
+速さの測り方と報告の仕方は §7.5 で決めた。段 1、3、4、5 では速さを測って報告するが、速さでは作業を止めない
+（`docs/decisions/pekko-semantics-first.md`）。止めるのは、各段の完了条件のうち、正しさの条件だけである。
 
 | 段 | issue にする単位 | 中身 | 完了の条件 | 大きさ |
 |:---|:---|:---|:---|:---|
-| 1 | Send にする（挙動は変えない）。この PR のマージのあと | §2.3 の置き換え。Arc が増える場所は §2.4 の 4 か所だけ。`ActorEventBus` は、§2.4 の形に作りを替え、`publish` の経路にロックを入れない。`spin::Mutex` は `try_lock` で取り、取れなければ「再入または同時の利用」で panic する（今の `RefCell` の二重借用の panic と同じ振る舞いを保つ）。`ActorSystem`、`WeakActorSystem`、`EventStream` が `Send + Sync` であることのコンパイル時の検査を `tests/` に足す。`ActorSystem` と `WeakActorSystem` の rustdoc に「段 5 より前は、別のスレッドから同時に使うと panic する」と書く | 検査を先に足して E0277（9 件）で落ちることを確かめる（red）。置き換えのあと、検査と既存のテストのすべてが通る。`receive` の中から `WeakActorSystem` を呼ぶ再入のテストが、止まらずに panic で返る（設計レビュー M3。base でも段 1 でも通ることを、レビューが試作で確かめた）。§7.5 の S1〜S4 の基準を満たす。§7.5 の計測のテストを入れる。`tests/event_bus_spec.rs` と `tests/g0f_review_f_terminated_subscription.rs` が書き換えなしで通る（購読者が止まったときの debug のイベントの時点と、止まった購読者の片づけ） | 2 |
-| 2 | kernel のメールボックス（配線しない） | `MailboxStatus`、`MessageQueue` と 4 種類のキュー、`SystemMessage` とそのキュー、閉じる門、ロックの型引数（§3.2）。どこからも使わない。D1 の条件 2 により、型の形は Balancing の共有のキューと std のロックを先に入れて決める | §7.3 の P1〜P3 の PBT。状態の操作が Quint の状態の部分と一致する。共有のキューを持つ 2 つのメールボックスで、片方を閉じても共有のキューが残ることの単体テスト | 3 |
+| 0 | kernel を no_std で build できるようにする（元帥の C4、2026-11-26） | crate は割らない。lib.rs を `#![cfg_attr(not(feature = "std"), no_std)]` にし、adaptor を `std` の機能（既定で有効）の後ろに置く（lib.rs は kernel ではないので、`cfg-std-forbid` には触れない）。kernel の各ファイルで `alloc` を明示して import する。`AtomicU64` の 3 か所（`NEXT_ID`、`NEXT_SPAWN`、`NEXT_LIST`）と、kernel のほかの原子操作を `portable-atomic` にする（C1）。kernel の `Arc` を `kernel::sync::Arc` にする（C3）。`spin` に `portable_atomic` の機能を足す。`getrandom` を adaptor の側の依存にする | 既存のテストのすべてが通る。CI に `cargo check -p fraktor-actor --no-default-features --target thumbv7em-none-eabihf` と `--target thumbv6m-none-eabi` の 2 本を足し、どちらも通る（CI の実装は段 0 の PR で行う）。根拠は `docs/decisions/crate-structure-comparison.md` の 2026-11-26 の節 | 3 |
+| 1 | Send にする（挙動は変えない）。この PR のマージのあと | §2.3 の置き換え。Arc が増える場所は §2.4 の 4 か所だけ。`ActorEventBus` は、§2.4 の形に作りを替え、`publish` の経路にロックを入れない。`spin::Mutex` は `try_lock` で取り、取れなければ「再入または同時の利用」で panic する（今の `RefCell` の二重借用の panic と同じ振る舞いを保つ）。`ActorSystem`、`WeakActorSystem`、`EventStream` が `Send + Sync` であることのコンパイル時の検査を `tests/` に足す。`ActorSystem` と `WeakActorSystem` の rustdoc に「段 5 より前は、別のスレッドから同時に使うと panic する」と書く | 検査を先に足して E0277（9 件）で落ちることを確かめる（red）。置き換えのあと、検査と既存のテストのすべてが通る。`receive` の中から `WeakActorSystem` を呼ぶ再入のテストが、止まらずに panic で返る（設計レビュー M3。base でも段 1 でも通ることを、レビューが試作で確かめた）。§7.5 の S1〜S4 を測って報告する。§7.5 の計測のテストを入れる。`tests/event_bus_spec.rs` と `tests/g0f_review_f_terminated_subscription.rs` が書き換えなしで通る（購読者が止まったときの debug のイベントの時点と、止まった購読者の片づけ） | 2 |
+| 2 | kernel のメールボックス（配線しない） | `MailboxStatus`、`MessageQueue` と 4 種類のキュー、`SystemMessage` とそのキュー、閉じる門、ロックの port（`RawLock`、`LockCell`、`LockFactory`）、`MessageQueueFactory`、`MailboxRun`（§3.2）。§3.8 の工夫 1、2、3（port まで）、5 を入れる。工夫 2 と 5 は、実装の前に `mailbox_scheduling.qnt` を直す（予約を「読む」と「`fetch_or`」の 2 手に分け、I13 を直す。system message の印と、印を下ろす順を逆にした負の対照を足す）。どこからも使わない。D1 の条件 2 により、型の形は Balancing の共有のキューと std のロックを先に入れて決める | §7.3 の P1〜P3 の PBT。状態の操作が Quint の状態の部分と一致する。共有のキューを持つ 2 つのメールボックスで、片方を閉じても共有のキューが残ることの単体テスト | 3 |
 | 3 の前 | 順序の洗い出し（D1 の条件 1） | 段 3（全体の FIFO から、アクターごとの順へ）と段 4a（子の `pre_start` が非同期になる）で変わる順序に、頼っている既存のテストを洗い出す。試作の写しで段 3 と段 4a の振る舞いを入れて既存のテストを流し、落ちたものを一覧にする。一覧の各行に、原典ではどう振る舞うか（同期か非同期か、順序を保証するか）を書く | 一覧が issue に載っている。各行について「実装で原典どおりに直す」「テストが原典より強い前提に頼っているので直す」のどちらかが決まっている。テストを直すものは、移植の規約（実装ステップはテストファイルを編集しない、移植したテストを弱めない）に従い、triage への差し戻しとして扱う。原典より弱めることになるものは、人間の判断にかける | 2 |
-| 3 | アクターごとのメールボックスと Manual dispatcher | `ShardQueue` の 1 本のキューを、アクターごとの `Mailbox` と `ManualExecutor` の実行待ちの列に替える。`ActorRef` の送り先を §3.4 の形にする。testkit の待ち方を `WakeSignal` に替える（cell のアクター宛ての `tell` が境界を通らなくなり、`await_envelope` が何も受け取らなくなるため。設計レビュー L3）。実行器の大きなロックと `&mut Executor` の文脈は、まだ残す | 既存のテストのすべてが通る（洗い出しの一覧で決めた直しを含む）。§3.4 の条件 1（`Arc<Mailbox>` の複製の回数）と条件 4（終了後にメールボックスが解放されるテスト）。§7.5 の S1〜S7 の基準。testkit の待ちが `POLL_INTERVAL` の眠りに落ちていないこと（待ちの時間を測る） | 5 |
-| 4 | アクターの間の操作を system message に（3 つに分ける） | 4a：生成と停止（Create、Terminate、子の名前、T1〜T5、閉じるときの dead letters）。4b：失敗と監督（Failed、Suspend、Resume、Recreate、all-for-one）。4c：DeathWatch と終了の通知、stop-and-reply、stash。文脈から `&mut Executor` を外し、自分のセルとシステム全体の共有の表を借りる形にする。共有の表は §3.2 のロックの決まりに従う | 各段で既存のテストのすべてが通る（洗い出しの一覧で決めた直しを含む）。4a で `actor_termination.qnt` を足す。§7.5 の S1〜S4 の基準 | 5、5、3 |
-| 5 | std のスレッドプール | `ThreadPoolExecutor`、fork-join 相当の並列度、Pinned、`Dispatchers` の登録表、スレッドの名前、std のロック、`BlockingBoundedQueue`、dispatcher ごとのメールボックスの種類、プールが数える「同時に実行中のメールボックスの最大数」（ConsistencySpec の記録に使う。§8）。`execute` が断られたときの扱い（§3.5）。実装の前に、`mailbox_scheduling.qnt` に `reject` と I15 を足す（再レビュー L4） | §7.3 の P4（stress）。§7.5 の S1〜S7 の基準と、P1〜P3 の記録（スレッドをまたぐ `tell`、アクターの数を増やした場合。設計レビュー L1）。ConsistencySpec（#235）、DispatcherActorsSpec、PinnedActorSpec、DispatcherActorSpec が移植できる状態 | 5 |
+| 3 | アクターごとのメールボックスと Manual dispatcher | `ShardQueue` の 1 本のキューを、アクターごとの `Mailbox` と `ManualExecutor` の実行待ちの列に替える。`ActorRef` の送り先を §3.4 の形にする。testkit の待ち方を `WakeSignal` に替える（cell のアクター宛ての `tell` が境界を通らなくなり、`await_envelope` が何も受け取らなくなるため。設計レビュー L3）。実行器の大きなロックと `&mut Executor` の文脈は、まだ残す | 既存のテストのすべてが通る（洗い出しの一覧で決めた直しを含む）。§3.4 の条件 1（Arc の複製の回数。満たさないときは数と理由を報告する）と条件 4（終了後にメールボックスが解放されるテスト）。§7.5 の S1〜S7 を測って報告する。testkit の待ちが `POLL_INTERVAL` の眠りに落ちていないこと（待ちの時間を測る） | 5 |
+| 4 | アクターの間の操作を system message に（3 つに分ける） | 4a：生成と停止（Create、Terminate、子の名前、T1〜T5、閉じるときの dead letters）。4b：失敗と監督（Failed、Suspend、Resume、Recreate、all-for-one）。4c：DeathWatch と終了の通知、stop-and-reply、stash。文脈から `&mut Executor` を外し、自分のセルとシステム全体の共有の表を借りる形にする。共有の表は §3.2 のロックの決まりに従う | 各段で既存のテストのすべてが通る（洗い出しの一覧で決めた直しを含む）。4a で `actor_termination.qnt` を足す。§7.5 の S1〜S4 を測って報告する | 5、5、3 |
+| 5 | std のスレッドプール | `ThreadPoolExecutor`、fork-join 相当の並列度、Pinned、`Dispatchers` の登録表、スレッドの名前、std のロック、`BlockingBoundedQueue`、dispatcher ごとのメールボックスの種類、プールが数える「同時に実行中のメールボックスの最大数」（ConsistencySpec の記録に使う。§8）。`execute` が断られたときの扱い（§3.5）。実装の前に、`mailbox_scheduling.qnt` に `reject` と I15 を足す（再レビュー L4） | §7.3 の P4（stress）。§7.5 の S1〜S7 と P1〜P3 を測って報告する（スレッドをまたぐ `tell`、アクターの数を増やした場合。設計レビュー L1）。ConsistencySpec（#235）、DispatcherActorsSpec、PinnedActorSpec、DispatcherActorSpec が移植できる状態 | 5 |
 | 6 | dispatcher の寿命 | 住人の数、自動停止と作り直し、システムの終了で全部を止める（T6〜T11）、観測口、dispatcher でクロージャを実行する口、外からの suspend／resume、kernel の `Scheduler` の port（停止の猶予を数える。設計レビュー L4） | `dispatcher_lifecycle.qnt`（断られたあとで bit を下ろさない誤りを負の対照に含む）。DispatcherShutdownSpec、DispatcherModelSpec が移植できる状態 | 3 |
 | 7 | Balancing と CallingThread | 7a：Balancing（共有のキュー、teamWork）と `balancing_team.qnt`。7b：testkit の `CallingThreadDispatcher` | BalancingDispatcherSpec、BalancingDispatcherModelSpec、CallingThreadDispatcherModelSpec が移植できる状態 | 3、3 |
 | 8 | 後始末 | 使われなくなった `ShardQueue` と、`ShardBoundary` の役目の整理。文書の更新 | 既存のテストのすべてが通る | 2 |
@@ -583,20 +688,34 @@ ConsistencySpec で確かめる。段 2 では、`MailboxStatus` に限って lo
 - 公開 API：`ActorSystem`、`WeakActorSystem`、`EventStream` が `Send + Sync` になる（足すだけ）。`Actor: Send`、
   `change_behavior`／`push_behavior` の関数に `Send`、`on_termination` の関数に `Send`、`Fsm<S, D>` に
   `S: Send, D: Send` が要る（狭める変更。リポジトリの中での影響は §3.3）。`ActorSystem` の既存のメソッドの名前と
-  意味は変えない。ロックの型引数 `R` は公開 API に出さない（§3.2）
-- 依存：段 2 で `lock_api` と、`spin` の `lock_api` の機能を足す。std の側の休むロックに `parking_lot` を使うなら、
-  それも足す。#206 のライセンスの記録に載せる
-- 決定文書：所有権モデルの決定文書を改めた（D2）
+  意味は変えない。ロックの port（`RawLock`、`LockFactory`）は dyn で呼ぶ形で、型引数は公開 API に出さない（§3.2）。
+  dispatcher を登録して作るシステムには、`LockFactory` と `MessageQueueFactory` を渡す口が増える（足すだけ）
+- 依存：段 0 で `portable-atomic`（`fallback`、`critical-section` の機能）と `portable-atomic-util` を足し、`spin` に
+  `portable_atomic` の機能を足す。`getrandom` は adaptor の側の依存にする。前の版で足すとしていた `lock_api` は足さない
+  （C2）。std の側の休むロックに `parking_lot` を使うなら、それも足す（段 2 で決める）
+- #206 のライセンスの記録への追記の案：#206 の記録（`docs/design/issue-206-license-policy.md`）には、依存の crate の
+  ライセンスを並べる節がまだ無い。次の行を足す案を出す。追記は #206 の担当に頼み、段 0 の PR の前に入れる
+
+  | crate | 使う段 | ライセンス | 使い方 |
+  |:---|:---|:---|:---|
+  | `portable-atomic` | 段 0 | Apache-2.0 OR MIT | kernel の原子操作（C1） |
+  | `portable-atomic-util` | 段 0 | Apache-2.0 OR MIT | CAS の無い target での `Arc`（C3） |
+
+  ライセンスは、どちらも crate の `Cargo.toml` の `license` の欄で、段 0 の PR で `cargo metadata` を見て確かめ直す
+- 決定文書：所有権モデルの決定文書を改めた（D2、条件 5）。速さより Pekko の意味論を優先する決定を足した。crate の作りの
+  決定に、fraktor-actor の kernel の no_std の要求が確定した節を足した
 - 保存済みのデータ：無し
 - 上流：無し（このリポジトリの中だけ）
 - 守りの仕組み：CI の `quint` ジョブの対象が 1 本増える。ほかの仕様が 3 本のときに手元で測ると、スクリプト全体が 4.3 秒から 8.6〜10.4 秒になった（レビューのあとの版。2 回測った）。syn-check の規約
   （`type-per-file`、`cfg-std-forbid`、`port-adaptor-boundary`）に合わせて、§3.2 の型は 1 ファイル 1 型、
   std を使うものは adaptor に置く
 
-### 7.5 速さの測り方と、止める基準（実装の前に決める）
+### 7.5 速さの測り方と報告の仕方（実装の前に決める）
 
-所有権モデルの改訂の条件 5（単一スレッドの速さが落ちていないこと）を、どう確かめるかを決めておく。段ごとに測り方を
-変えると、後から都合のよい数字を選べてしまうので、ここで固定する。
+オーナーの指針（2026-11-26、元帥の項目 420。`docs/decisions/pekko-semantics-first.md`）により、速さでは作業を止めない。
+遅くなっても、今は意味論を重視して、Pekko と同じスレッドモデルにする。速さは毎段で測り、数字と、何が効いているかを
+報告する。作業を止めるのは、正しさの条件だけである（下の「止めるもの」）。段ごとに測り方を変えると、後から都合のよい
+数字を選べてしまうので、測り方はここで固定する。
 
 **何を測るか**：手で回す dispatcher（`ActorSystem::new` の既定。単一スレッド）で、次の 7 つの場面を測る。値は 1 メッセージ
 あたりの時間である。今の値は `7ecb3f5` で測った（§10 の 13）。
@@ -612,43 +731,50 @@ ConsistencySpec で確かめる。段 2 では、`MailboxStatus` に限って lo
 | S7 アクター 1 万 | 1 万のアクターへ順に 10 万件 | 38636.1〜39016.5 ns |
 
 S5〜S7 が大きいのは、今の実行器が宛先を線形に探すためである（アクター 1 つあたり約 3.9 ns）。段 3 ではこの探索が
-無くなるので、速くなるはずである。
+無くなるので、速くなるはずである。比べる目安として、ractor のアクターは約 100 ns／件、素の tokio のチャネルは速い場合で
+約 12 ns／件である（§3.8）。
 
-**どの機械で測るか**：オーナーの手元の機械だけで判定する（Apple M4 Pro、14 コア、64 GB）。CI の機械は共有で揺れるので、
-判定には使わない。この機械は、ほかの bot やワーカーと共有している。`7ecb3f5` を測ったときの 1 分の load average は
-21〜28 で、揺れの大きい場面では、同じ版の中でも S3 で 8%、S4 で 19% の幅があった。そのため、絶対値ではなく、次の
-「交互に測る」形の比で判定する。測った時刻と load average は、毎回記録する。
+**どの機械で測るか**：オーナーの手元の機械で測る（Apple M4 Pro、14 コア、64 GB）。CI の機械は共有で揺れるので使わない。
+この機械も、ほかの bot やワーカーと共有している。`7ecb3f5` を測ったときの 1 分の load average は 21〜28 で、揺れの大きい
+場面では、同じ版の中でも S3 で 8%、S4 で 19% の幅があった。そのため、絶対値ではなく、次の「交互に測る」形の比で報告する。
+測った時刻と load average は、毎回記録する。
 
 **何回測るか**：
 
 1. 比べる 2 つの版（基準 A と変更 B）を、同じ `--release` で作る。基準 A は、段に入る直前の main の commit である。
-   段をまたいで少しずつ遅くなるのを防ぐため、`7ecb3f5` も毎回一緒に測る（A0）
+   段をまたいだ積み重なりも見えるように、`7ecb3f5` も毎回一緒に測る（A0）
 2. 1 回の実行では、場面ごとに 7 回測り、中央値を取る
 3. A、B、B、A、A、B、B、A の順で 8 回実行する（交互に 4 組）。組ごとに比 B／A を出し、場面ごとに 4 つの比の中央値（真ん中の 2 つの平均）を取る
 4. 同じ組の中で、実行器を通らない対照（純粋な計算のループ）の値が 5% 以上ずれたら、その組は機械の揺れとして捨て、
    測り直す（`7ecb3f5` の測り直しで、1 回だけ全場面が 13% ずれた回があった。§7.2）。測り直しは同じ段で 2 回まで
-   とする。それを超えたら、その時点では測れないこととして元帥へ上げる（通るまで測り直さない。再レビュー 2 の L2）
+   とする。それを超えたら、その時点では測れないこととして報告する（再レビュー 2 の L2）
 
-**止める基準**：
+再レビュー 2 は、同じバイナリを A と B に置いた A/A の 8 回で、S2 と S4 の比の中央値がどちらも 0.994、組ごとには
+±2.5% の中だった。段 1 で道具を入れるときに、A/A の比を 1 回記録して、揺れの幅を報告に添える（再レビュー 2 の L3）。
 
-| 場面 | 通る | 止める |
-|:---|:---|:---|
-| S1〜S4 | 比の中央値が 1.05 以下（5% 以内）。今の揺れ（±3%）の外に出ないこと | 1.05 を超える。段の作業を止め、何が効いているかを調べてから（説明のつかない数字で進めない）元帥へ上げる |
-| S5〜S7 | 段 3：A（段 3 の A は A0 の `7ecb3f5` と同じ）との比が 1.00 以下（速くなっていること）。段 4 以降：A との比が 1.05 以下で、かつ A0 との比が 1.00 以下（再レビュー 2 の M4。変えていない段の比は 1.00 の前後で揺れるので、1.00 は A0 とだけ比べる） | 左を満たさない |
-| A0 との比 | S1〜S4 で 1.05 以下 | 1.05 を超える（段ごとには通っていても、積み重なって落ちている） |
+**報告すること**：毎段で、次の 3 つを段の PR に載せ、元帥へ報告する。
+
+- S1〜S7 の A との比と A0 との比（段 5 は、スレッドプールの P1 1 本の送り手から 1 つのアクター、P2 8 本の送り手から 64 の
+  アクター、P3 ConsistencySpec の所要時間も）
+- 比が揺れの幅（A/A の比）を超えて動いた場面について、何が効いているか（説明のつかない数字のまま出さない）
+- 測れなかった組と、その理由
+
+**止めるもの**：作業を止めるのは、正しさの条件だけである。
+
+- 所有権モデルの改訂の条件 2〜4（戻りの辺、閉じるときに dead letters へ流す、メールボックスが解放される）
+- Quint の不変条件（`mailbox_scheduling.qnt` と、段ごとに足す仕様）
+- 移植した Spec（ConsistencySpec など）と、既存のテスト
+
+改訂の条件 1（Arc の複製の数）は残す。段 3 のテストで数を確かめ、満たさないときは、数と理由を元帥へ報告する。
 
 **段とのつながり**：
 
 | 段 | 測るもの | 完了の条件 |
 |:---|:---|:---|
-| 1 | S1〜S4 | 上の基準を満たす（§7.2 の試作では 1〜2% 増で、通る見込み） |
-| 3 | S1〜S7。改訂の条件 1（`Arc<Mailbox>` の複製の回数）と条件 4（解放のテスト） | 上の基準を満たす。結果を段 3 の PR に載せる |
-| 4a〜4c | S1〜S4 | 上の基準を満たす（system message にしたことで遅くならないこと） |
-| 5 | S1〜S7（手で回す dispatcher のまま）。加えて、スレッドプールで次を記録する：P1 1 本の送り手から 1 つのアクター、P2 8 本の送り手から 64 のアクター、P3 ConsistencySpec の所要時間 | S1〜S7 は上の基準を満たす。P1〜P3 は記録だけで、止める基準は段 5 の結果を見て、段 6 の前に決める |
-
-再レビュー 2 は、同じバイナリを A と B に置いた A/A の 8 回で、S2 と S4 の比の中央値がどちらも 0.994、組ごとには
-±2.5% の中だった。1.05 の基準には 5 倍ほどの余裕がある。段 1 で道具を入れるときに、A/A の比を 1 回記録して、基準の
-余裕を確かめる（再レビュー 2 の L3）。
+| 1 | S1〜S4 | 測って報告する（§7.2 の試作では 1〜2% 増） |
+| 3 | S1〜S7。改訂の条件 1（Arc の複製の数）と条件 4（解放のテスト） | S1〜S7 は測って報告する。条件 4 は止めるもの。条件 1 は数を確かめて報告する |
+| 4a〜4c | S1〜S4 | 測って報告する |
+| 5 | S1〜S7（手で回す dispatcher のまま）と P1〜P3 | 測って報告する |
 
 測る道具：`7ecb3f5` を測った計測は scratchpad の写しにある。段 1 の issue で、`crates/fraktor-actor/tests/` に
 `#[ignore]` を付けた計測のテストとして入れる（`cargo test --release -- --ignored` で流す）。交互に流す手順は、
@@ -704,7 +830,7 @@ S5〜S7 が大きいのは、今の実行器が宛先を線形に探すためで
 | 条件 | 中身 | どこに書いたか |
 |:---|:---|:---|
 | 1 | 段 3 の設計の前に、順序に頼っている既存のテストの一覧と、その直し方を作る | §6 の段 3 の前の「順序の洗い出し」 |
-| 2 | 段 2 の型の形を、Balancing の共有のキューと、std のロックも使える形に合わせる | §3.2 の「閉じる門」と「ロックは port にする」、§6 の段 2 |
+| 2 | 段 2 の型の形を、Balancing の共有のキューと、std のロックも使える形に合わせる | §3.2 の「閉じる門」と「ロックの port」、§6 の段 2 |
 
 選ばなかった (B) は、新しい実行器を横に作り、最後に既存のテストを移して古い方を消す形である。新しい側を既存の
 テストで確かめられない期間が長くなるので、採らなかった。
@@ -786,7 +912,7 @@ S5〜S7 が大きいのは、今の実行器が宛先を線形に探すためで
 | M2 `execute` が断られたとき、scheduled の bit が立ったまま残る | 直す | §3.5 に、1 回だけ試し直し、だめなら bit を下ろしてエラーを出すと書いた。§4.1 に I15、§5.4 の `dispatcher_lifecycle.qnt` の不変条件と負の対照、§7.1 に入力を足した。実装は段 5 |
 | M3 段 1 は、コンパイルで止まっていた同時の利用を、実行時の panic に変える | 直す | §6 の段 1 の完了条件に再入のテストを、中身に rustdoc の注意書きを足した。§9.3 の D5 の条件にした。§7.2 の計測は `try_lock` の形で測り直した |
 | M4 閉じたかどうかをキューに持たせると、Balancing の共有のキューと両立しない | 直す | §3.2：`MessageQueue` から「閉じた」を外し、`Mailbox` の閉じる門にした。キューが自分専用か共有かで、閉じるときの扱いを分けた。§6 の段 2 に単体テストを足した |
-| M5 kernel のキューに `spin` を焼き込んでいる。ロックの順序も無い | 直す | §3.2：ロックを `lock_api::RawMutex` の型引数にし、std の adaptor が休むロックを渡す形にした。ロックの順序の表と、持ったまま `tell` しない決まりを書いた |
+| M5 kernel のキューに `spin` を焼き込んでいる。ロックの順序も無い | 直す | §3.2：ロックを `lock_api::RawMutex` の型引数にし、std の adaptor が休むロックを渡す形にした。ロックの順序の表と、持ったまま `tell` しない決まりを書いた（その後、§11.4 の C2 で、閉じた区間を渡す形の kernel の port に替えた） |
 | M6 ExecutionContextSpec の 10 ケースを一括で「Scala の機能」とした | 直す | §8 を、BatchingExecutor を作れば移せる 3、段 6／7b で移せる 3、Scala の機能 4、SerializedSuspendable 4 に分けた |
 | M7 順序に頼るテストの扱いが、移植の規約と結びついていない | 直す | §6 に「3 の前：順序の洗い出し」の段を足した。一覧を作ること、直す道（triage への差し戻し、弱めるものは人間の判断）を書いた。D1 の条件 1 でもある |
 | M8 Quint の不変条件の穴（予約したのに仕事が無い、進まないこと） | 直す | 仕様に `submittedOnlyWithWork`（I13）と `settledMeansIdle`（I14、幽霊の変数 `externalSuspendIssued` を使う。再レビュー L5 で数に替えた）を足した。I13 は `canBeScheduled` を使わずに書いた（同じ定義を使うと、予約の規則の誤りが検査そのものも弱める。最初はそう書いて、変異 M4 を見逃した）。レビューの変異 M4〜M6 は、探索で見つかるようになった（§10 の 10） |
@@ -813,13 +939,14 @@ D1 は、元帥が (A) に決めた（条件 2 つ。§9.1）。D2 は、オー�
 | L3 §7.2 の段 5 の spin の文言が §3.2 と矛盾する | 直す | §7.2 の段 5 を、「キューのロックは段 2 から port で、複数スレッドでは spin を使わない」に直した |
 | L4 I15 の実装は段 5、仕様は段 6 | 直す | 段 5 で、実装より先に `mailbox_scheduling.qnt` に `reject` と I15 を足す、と §4.1、§5.4、§6 に書いた |
 | L5 I14 の幽霊の変数が R12 を見逃す | 直す | 仕様の幽霊の変数を、真偽値 `externalSuspendIssued` から数 `externalSuspendsPending`（外からの Suspend で 1 増え、外からの Resume で 1 減る）に替えた。`run` を 1 本足した（`externalSuspendThenResumeHandlesTheMessageTest`）。R12 の変異が探索で見つかることを確かめた（§10 の 14） |
-| L6 ロックの型引数 `R` をどこで選ぶか、依存の追加 | 直す | §3.2 に、`R` はキューにだけ付けて `dyn MessageQueue` の後ろで消し、dispatcher の設定の工場で選ぶと書いた。システム全体の表は `spin` のまま。足す依存と #206 の記録を §3.2 と §7.4 に書いた |
+| L6 ロックの型引数 `R` をどこで選ぶか、依存の追加 | 直す | §3.2 に、`R` はキューにだけ付けて `dyn MessageQueue` の後ろで消し、dispatcher の設定の工場で選ぶと書いた。システム全体の表は `spin` のまま。足す依存と #206 の記録を §3.2 と §7.4 に書いた（その後、§11.4 の C2 で、表も port を使う形に替えた） |
 | L7 Balancing でのロックの重なり | 直す | §3.2 のロックの決まりに、Balancing では送るときに門を見ず、門と共有のキューのロックを同時に持たない、と書いた |
 
 あわせて、指示（元帥、2026-11-26）に従い、次の 3 つを入れた。
 
 - D2 の承認を、§3.4、§9.2、冒頭に書いた。所有権モデルの決定文書に「改訂（2026-11-26）」の節を足した
-- 速さの測り方と止める基準を、§7.5 に実装の前に決めて書いた。段 1、3、4、5 の完了条件とつないだ
+- 速さの測り方と止める基準を、§7.5 に実装の前に決めて書いた。段 1、3、4、5 の完了条件とつないだ（その後、§11.4 で、
+  オーナーの指針により「測って報告する。止めるのは正しさの条件だけ」に替えた）
 - 仕様に、system message が通常のメッセージより先にさばかれることの不変条件 `systemBeforeNormal`（I11）と、
   その負の対照 `MessagesBeforeSystem` を足した。前の版の I11 は「一部だけ」で、CI では確かめていなかった
 
@@ -834,7 +961,23 @@ D1 は、元帥が (A) に決めた（条件 2 つ。§9.1）。D2 は、オー�
 | (b)／M5 メッセージごとの `upgrade` の経路に ask の待ちが抜けている | 直す | `attach_wait_driver` で登録した ask の待ちを、決定文書の「範囲の外」、設計の §2.4 と §7.2 に書き足した。範囲の外のまま |
 | M2 条件 1 の文言が、送り手のハンドルの複製で破れる | 直す | 元帥が決めた 2 文（2026-11-26）を、決定文書の条件 1 と設計の §3.4 の条件 1 に、同じ文字列で入れた。§3.4 の確かめ方に、今の 4 つと段 3 の 3 つの数え方を書いた |
 | M3 例外の範囲の書き方が食い違っている | 直す | 「セルのアクターすべてのメールボックス（手で回す dispatcher を含む。複数スレッドで動かすために要る形）」にそろえた（決定文書の冒頭、残る場所の一覧、改訂の節の見出しと範囲、設計の §3.4 と §9.2） |
-| M4 S5〜S7 の「1.00 以下」が揺れだけで止まる | 直す | §7.5 を、段 3 は A（＝A0）との比が 1.00 以下、段 4 以降は A との比が 1.05 以下かつ A0 との比が 1.00 以下、にした |
+| M4 S5〜S7 の「1.00 以下」が揺れだけで止まる | 直す | §7.5 を、段 3 は A（＝A0）との比が 1.00 以下、段 4 以降は A との比が 1.05 以下かつ A0 との比が 1.00 以下、にした（その後、§11.4 で、速さの止める基準そのものを外した） |
 | L1 4 つの比の中央値 | 直す | §7.5 に「真ん中の 2 つの平均」と書いた |
 | L2 測り直しの上限 | 直す | §7.5 に「同じ段で 2 回まで。超えたら測れないこととして元帥へ上げる」と書いた |
 | L3 S4 の今の値の幅 | 直す | §7.5 の S4 に再レビュー 2 の値を添え、段 1 で A/A の比を 1 回記録すると書いた |
+
+### 11.4 元帥の決定とオーナーの指針の反映（2026-11-26）
+
+| 項目 | 決めた人 | 変わった箇所 |
+|:---|:---|:---|
+| C1 原子操作は `portable-atomic` 越し | 元帥 | §3.2 の C1 と `MailboxStatus` の行、§6 の段 0、§7.4 の依存 |
+| C2 ロックは閉じた区間を渡す形の kernel の port。システム全体の表もこの port。`with` の中で利用者のコードを走らせない | 元帥 | §3.2 の C2、「ロックの port」「ロックの中で利用者のコードを走らせない」「ロックの順序」、§4.1 の I16。セルは取り出してから `receive` を回す形にした（前の版の `try_lock` の検査の代わり） |
+| C3 Arc は `kernel::sync::Arc` の別名。CAS の無い target も対象 | 元帥 | §3.2 の C3、§2.3 の注、所有権モデルの決定文書の「例外の範囲」 |
+| C4 段 0（kernel を no_std で build できるようにする）。crate は割らない | 元帥 | §3.2 の冒頭、§6 の段 0、crate の作りの決定の 2026-11-26 の追記 |
+| §3.7 tokio と embassy の adaptor の作り方 | — | §3.7 を足した |
+| Rust のアクター実装から取り入れる工夫 6 つ | 元帥（承認済みの範囲の中） | §3.8。入れるもの：1（段 2〜3）、2（段 2。仕様を先に直す）、3（段 2 の port、段 5、embassy の adaptor）、5（段 2。仕様を先に直す）、6（1 つ目は済み、2 つ目は段 5）。入れないもの：4（今の層は untyped のため。typed の層で考え直す） |
+| 1 回の実行で throughput の N 件を処理する（オーナーの訂正） | オーナー | §3.9。`run_one` だけは今の公開 API どおり 1 件 |
+| 速さより Pekko の意味論を優先する | オーナー | 新しい決定 `docs/decisions/pekko-semantics-first.md`。§7.5 を「測って報告する。止めるのは正しさの条件だけ」に書き直した。§3.4 と所有権モデルの決定文書の条件 5 も同じ。§6 の完了条件を「測って報告する」に替えた |
+| #206 のライセンスの記録 | 元帥 | §7.4 に、`portable-atomic` と `portable-atomic-util` を足す追記の案を書いた。#206 の文書そのものは書き換えていない |
+
+`.takt/facets/knowledge/fraktor-porting-rules.md` への 1 行は、別の PR #239 で入れるので、この PR では触らない。
