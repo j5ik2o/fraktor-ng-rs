@@ -29,6 +29,7 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::time::Duration;
 
+use portable_atomic::AtomicBool;
 use portable_atomic::AtomicU64;
 use portable_atomic::Ordering;
 
@@ -298,6 +299,7 @@ pub(crate) struct Executor {
   boundary_active: bool,
   hook_child_creation_refused: bool,
   terminated: bool,
+  routes_closed: Arc<AtomicBool>,
   clock: Option<Arc<dyn Clock>>,
   next_delivery: u64,
   dispatch_settings: Option<DispatchSettings>,
@@ -324,6 +326,7 @@ impl Executor {
     let root_guardian = next_actor_ref(root.clone(), boundary.clone());
     let user_guardian = next_actor_ref(root.with_child("user"), boundary.clone());
     let system_guardian = next_actor_ref(root.with_child("system"), boundary.clone());
+    let routes_closed = Arc::new(AtomicBool::new(false));
     let signal = boundary.wake_signal();
     let key = Arc::as_ptr(&boundary) as *const () as usize;
     let manual = Arc::new(ManualExecutor::new(key, signal.clone(), &SpinLockFactory));
@@ -356,6 +359,7 @@ impl Executor {
       boundary_active: false,
       hook_child_creation_refused: false,
       terminated: false,
+      routes_closed,
       clock: None,
       next_delivery: 0,
       dispatch_settings: None,
@@ -517,6 +521,32 @@ impl Executor {
     let reference = ActorRef::new(id, 0, path.clone(), boundary.clone());
     slot.call_once(|| (id, path, Arc::downgrade(&boundary)));
     reference
+  }
+
+  /// Builds the route a refused envelope takes (issue #286): the dead
+  /// letter rules, run on the sender's thread, as Pekko's dead letter
+  /// mailbox sends `DeadLetter(message, sender, receiver)` to `deadLetters`
+  /// from its `enqueue`. The route captures the routing state and the dead
+  /// letters handle once, when the actor is spawned, and a routing passes
+  /// the handle by reference, so routing one envelope clones no handle of
+  /// the executor's and walks no way back (design of #234, section
+  /// 11.11.7, the refused path of condition 1).
+  fn dead_letter_route(&self) -> Arc<dyn Fn(Envelope) + Send + Sync> {
+    let shared = self.dead_letters_shared.clone();
+    let dead_letters = self.dead_letters.clone();
+    let routes_closed = self.routes_closed.clone();
+    Arc::new(move |envelope: Envelope| {
+      // Once the system has terminated, a refused envelope is discarded,
+      // as the closed executor queue discarded it before the routing moved
+      // to the sender's thread (review of PR #295).
+      if routes_closed.load(Ordering::SeqCst) {
+        return;
+      }
+      let (recipient, message, sender) = envelope.into_parts();
+      if let Some(recipient) = recipient {
+        shared.route_undeliverable(message, sender, recipient, &dead_letters);
+      }
+    })
   }
 
   /// Records the subscription table the dead letter routing rules publish
@@ -906,7 +936,9 @@ impl Executor {
     };
     let queue = Arc::new(UnboundedQueue::new(&SpinLockFactory));
     let limits = RunLimits::new(Throughput::new(MANUAL_THROUGHPUT));
-    let mailbox = Arc::new(Mailbox::for_actor(queue, limits, &SpinLockFactory, Arc::downgrade(&self.manual)));
+    let mut mailbox = Mailbox::for_actor(queue, limits, &SpinLockFactory, Arc::downgrade(&self.manual));
+    mailbox.set_refused_route(self.dead_letter_route());
+    let mailbox = Arc::new(mailbox);
     let self_ref = ActorRef::for_mailbox(next_actor_id(), Arc::new(path), Arc::clone(&mailbox));
     let cell = ActorCell::pending(self_ref.clone(), parent, props, strategy, strategy_inherited);
     mailbox.put_back_cell(Box::new(cell));
@@ -2216,6 +2248,7 @@ impl Executor {
   /// where Pekko's test actor has stopped and its messages are dead letters.
   pub(crate) fn stop_all(&mut self) {
     self.terminated = true;
+    self.routes_closed.store(true, Ordering::SeqCst);
     self.fatal = false;
     self.boundary.close();
     for reference in &self.function_refs {
@@ -2951,6 +2984,18 @@ impl Executor {
   fn enqueue_termination(&mut self, recipient: ActorRef, notice: Terminated, custom: Option<Message>) {
     let sender = recipient.clone();
     if self.is_local(&recipient) {
+      if recipient.mailbox_is_closed() {
+        // The watcher has already stopped, so its mailbox turns the notice
+        // away. Route the notice itself to dead letters here, as the
+        // executor's delivery of a refused envelope did before the routing
+        // moved to the sender's thread: the pending record is consumed
+        // (never registered) and the internal carrier never surfaces as a
+        // dead letter's payload (review of PR #295).
+        let message = custom.unwrap_or_else(|| Message::new(notice));
+        let dead_letters = self.dead_letters.clone();
+        self.dead_letters_shared.route_undeliverable(message, sender, recipient, &dead_letters);
+        return;
+      }
       let pending = Arc::new(PendingTermination { watcher: recipient.clone(), notice, custom });
       self.pending_terminations.push(pending.clone());
       recipient.send_message(Message::new(pending), sender);
