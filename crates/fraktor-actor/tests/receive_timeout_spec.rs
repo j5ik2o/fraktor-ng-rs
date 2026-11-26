@@ -234,12 +234,18 @@ fn reschedules_timeout_after_regular_receive() {
 }
 
 // "be able to turn off timeout if desired"
+//
+// The port adds a wait past the next deadline before the actor is stopped:
+// the original stops it right after the first `ReceiveTimeout`, so a
+// setting of `Undefined` that is ignored would still pass.
 #[test]
 fn can_turn_off_timeout() {
   let mut spec = new_spec();
   let count = Arc::new(AtomicUsize::new(0));
   let timeout_latch = new_latch(&spec, 1);
+  let second_timeout_latch = new_latch(&spec, 2);
   let latch = timeout_latch.clone();
+  let second = second_timeout_latch.clone();
   let counter = Arc::clone(&count);
 
   let timeout_actor =
@@ -250,6 +256,7 @@ fn can_turn_off_timeout() {
       if is_receive_timeout(message) {
         counter.fetch_add(1, Ordering::SeqCst);
         latch.open();
+        second.count_down();
         context.set_receive_timeout(ReceiveTimeoutSetting::Undefined);
       }
     }));
@@ -258,6 +265,10 @@ fn can_turn_off_timeout() {
 
   timeout_latch.ready(spec.system(), TestLatch::DEFAULT_TIMEOUT);
   assert_eq!(count.load(Ordering::SeqCst), 1, "the actor received exactly one ReceiveTimeout");
+  // Twice the 500 milliseconds: the deadline the turned-off setting would
+  // have scheduled after the first `ReceiveTimeout` passes, the actor alive.
+  assert_latch_stays_closed(&second_timeout_latch, spec.system(), millis(1000));
+  assert_eq!(count.load(Ordering::SeqCst), 1, "no ReceiveTimeout after the timeout was turned off");
   spec.system_mut().stop(&timeout_actor);
   spec.terminate();
 }

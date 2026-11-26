@@ -46,7 +46,7 @@ use core::time::Duration;
 
 use std::collections::VecDeque;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fraktor_actor::kernel::actor::{
@@ -126,23 +126,25 @@ fn random_advance(rng: &mut SplitMix64) -> Duration {
 // ---------------------------------------------------------------------------
 // The system under test
 
-// A hand-driven monotonic clock, in nanoseconds.
+// A hand-driven monotonic clock. It holds a `Duration`, so it reaches
+// `Duration::MAX`, the edge of the range a deadline is computed in.
 #[derive(Clone)]
-struct ControlledClock(Arc<AtomicU64>);
+struct ControlledClock(Arc<Mutex<Duration>>);
 
 impl ControlledClock {
   fn new(start: Duration) -> Self {
-    Self(Arc::new(AtomicU64::new(start.as_nanos() as u64)))
+    Self(Arc::new(Mutex::new(start)))
   }
 
   fn advance(&self, by: Duration) {
-    self.0.fetch_add(by.as_nanos() as u64, Ordering::SeqCst);
+    let mut now = self.0.lock().unwrap();
+    *now = now.checked_add(by).expect("the test clock stays within Duration's range");
   }
 }
 
 impl Clock for ControlledClock {
   fn monotonic(&self) -> Duration {
-    Duration::from_nanos(self.0.load(Ordering::SeqCst))
+    *self.0.lock().unwrap()
   }
 }
 
@@ -256,6 +258,17 @@ impl Harness {
 
   fn run_one(&mut self) -> bool {
     self.spec.system_mut().run_one()
+  }
+
+  // `run_until_idle` with a bound, for a clock reading where a wrong
+  // implementation would keep firing and never become idle.
+  fn run_until_idle_within(&mut self, steps: usize) {
+    for _ in 0..steps {
+      if !self.run_one() {
+        return;
+      }
+    }
+    panic!("the system is still busy after {steps} steps");
   }
 
   fn stop(&mut self) {
@@ -715,18 +728,21 @@ fn the_last_setting_in_one_handler_wins() {
 
 // P5 (with I8): a zero duration is finite and fires at the next drive of the
 // system, and durations at the edge of the clock's range do not panic: a
-// deadline past the range schedules nothing.
+// deadline past the range schedules nothing, even once the clock reaches
+// `Duration::MAX` (a deadline saturated to `Duration::MAX` would fire there),
+// and a deadline inside the range, up to `Duration::MAX` itself, fires at it.
 #[test]
 fn edge_durations_do_not_panic() {
+  let clock_start = Duration::from_secs(10);
   let edges = [
     Duration::ZERO,
     Duration::from_nanos(1),
     Duration::MAX,
     Duration::MAX - Duration::from_nanos(1),
+    Duration::MAX - clock_start,
     Duration::from_secs(u64::MAX / 2),
   ];
   for (case, timeout) in edges.into_iter().enumerate() {
-    let clock_start = Duration::from_secs(10);
     let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
       let mut harness = Harness::start(None, clock_start);
       harness.run_until_idle();
@@ -747,11 +763,26 @@ fn edge_durations_do_not_panic() {
         harness.clock.advance(timeout);
         harness.run_until_idle();
         assert_eq!(harness.deliveries(), vec![Delivery { at: clock_start + timeout, timeout }]);
+      } else if clock_start.checked_add(timeout).is_none() {
+        harness.run_until_idle();
+        harness.clock.advance(Duration::MAX - clock_start);
+        harness.run_until_idle_within(1_000);
+        assert!(
+          harness.deliveries().is_empty(),
+          "a deadline past the clock's range never comes, even at Duration::MAX"
+        );
       } else {
         harness.run_until_idle();
-        harness.clock.advance(Duration::from_secs(1_000_000));
+        harness.clock.advance(timeout - Duration::from_nanos(1));
         harness.run_until_idle();
-        assert!(harness.deliveries().is_empty(), "a deadline at or past the clock's range never comes");
+        assert!(harness.deliveries().is_empty(), "nothing fires one nanosecond before the deadline");
+        harness.clock.advance(Duration::from_nanos(1));
+        harness.run_until_idle_within(1_000);
+        assert_eq!(
+          harness.deliveries(),
+          vec![Delivery { at: clock_start + timeout, timeout }],
+          "a deadline inside the clock's range fires at it"
+        );
       }
       harness.finish();
     }));

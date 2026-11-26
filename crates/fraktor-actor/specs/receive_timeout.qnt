@@ -8,8 +8,12 @@
 // or the handler changed the setting, and scheduling anyway when no task
 // is set. A firing task leaves the cell in the fired state and puts one
 // `ReceiveTimeout` in the mailbox; once there it is an ordinary message
-// and is always delivered while the actor lives (I1), whatever the
-// setting has become.
+// and stays there until it is handled or the actor stops, whatever the
+// setting has become (I1). The invariants are safety properties: they
+// check that no enqueued `ReceiveTimeout` is lost, not that one is
+// eventually delivered, since `step` may keep handling other messages
+// forever. Eventual delivery is checked by the tests, against the
+// reference model (design section 6, P3).
 //
 // Time is not modelled: `deadlineComes` is the scheduled deadline being
 // reached. Durations are not modelled either: a setting is only
@@ -247,9 +251,9 @@ module receive_timeout {
   }
 
   // I1: a deadline exists only under a finite setting, so a firing
-  // enqueues a `ReceiveTimeout` only then; every enqueued one is
-  // delivered while the actor lives, and is lost only with the mailbox of
-  // a stopped actor.
+  // enqueues a `ReceiveTimeout` only then; every enqueued one is either
+  // delivered or still queued, and is lost only with the mailbox of a
+  // stopped actor. This is conservation, not eventual delivery.
   val scheduledOnlyWhenFinite = task == Scheduled implies setting == Finite
   val firedAreDeliveredOrQueued = delivered + queued + dropped == fires
   val droppedOnlyWhenStopped = alive or queued == 0
