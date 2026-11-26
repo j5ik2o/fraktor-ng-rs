@@ -19,11 +19,28 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
+#[cfg(feature = "test-support")]
+use alloc::string::String;
+#[cfg(feature = "test-support")]
+use core::time::Duration;
+
+#[cfg(feature = "test-support")]
+use crate::kernel::actor::test_support::FsmControl;
+#[cfg(feature = "test-support")]
+use crate::kernel::actor::test_support::FsmHandle;
+#[cfg(feature = "test-support")]
+use crate::kernel::actor::test_support::FsmStateTimerRecord;
+#[cfg(feature = "test-support")]
+use crate::kernel::actor::test_support::FsmTimerKind;
+#[cfg(feature = "test-support")]
+use crate::kernel::actor::test_support::FsmTimerRecord;
 use crate::kernel::actor::Actor;
 use crate::kernel::actor::ActorContext;
 use crate::kernel::actor::CurrentState;
 use crate::kernel::actor::FsmState;
 use crate::kernel::actor::FsmView;
+#[cfg(feature = "test-support")]
+use crate::kernel::actor::StateTimeout;
 use crate::kernel::actor::SubscribeTransitionCallBack;
 use crate::kernel::actor::Transition;
 use crate::kernel::actor::UnsubscribeTransitionCallBack;
@@ -46,6 +63,17 @@ type TransitionHandler<S, D> = Box<dyn FnMut(&mut ActorContext<'_>, &S, &S, &D, 
 #[derive(Clone, Debug)]
 struct ListenerTerminated(ActorRef);
 
+/// One named timer the machine holds, with the generation it was started
+/// with. The generation comes from the counter the machine shares with
+/// its handle, so a mark struck for an older timer of the same name never
+/// matches the row that stands in the table now.
+#[cfg(feature = "test-support")]
+struct FsmTimer {
+  generation: u64,
+  kind: FsmTimerKind,
+  message: Message,
+}
+
 /// An actor whose behaviour is a state name `S`, the data `D` it carries, and a
 /// state function per state.
 ///
@@ -61,8 +89,12 @@ struct ListenerTerminated(ActorRef);
 /// The port covers starting, handling events, moving between states with
 /// `goto`, `stay`, and `using`, transition notices to handlers and to
 /// subscribed listeners, `when_unhandled`, and replies recorded with
-/// `replying`. Timers, state timeouts, and `onTermination` are not part
-/// of it.
+/// `replying`. `onTermination` is not part of it. Named timers and the
+/// state timeout exist under the `test-support` feature, driven by the
+/// test that holds the machine's handle: the machine keeps the timer
+/// table, the generations, and the judgement of firing marks in
+/// `receive`, and the firing itself, a thread that watches deadlines,
+/// lives in the test kit.
 pub struct Fsm<S, D> {
   current: Option<(S, D)>,
   state_functions: Vec<(S, StateFunction<S, D>)>,
@@ -71,6 +103,12 @@ pub struct Fsm<S, D> {
   listeners: Vec<ActorRef>,
   watched_listeners: Vec<ActorRef>,
   initialized: bool,
+  #[cfg(feature = "test-support")]
+  handle: Option<FsmHandle<S, D>>,
+  #[cfg(feature = "test-support")]
+  timers: Vec<(String, FsmTimer)>,
+  #[cfg(feature = "test-support")]
+  state_timer: Option<u64>,
 }
 
 impl<S, D> Fsm<S, D>
@@ -88,6 +126,12 @@ where
       listeners: Vec::new(),
       watched_listeners: Vec::new(),
       initialized: false,
+      #[cfg(feature = "test-support")]
+      handle: None,
+      #[cfg(feature = "test-support")]
+      timers: Vec::new(),
+      #[cfg(feature = "test-support")]
+      state_timer: None,
     }
   }
 
@@ -96,6 +140,42 @@ where
   /// Mirrors `FSM.startWith(stateName, stateData)`.
   pub fn start_with(&mut self, state: S, data: D) {
     self.current = Some((state, data));
+    #[cfg(feature = "test-support")]
+    if let (Some(handle), Some((state, data))) = (&self.handle, &self.current) {
+      handle.write_snapshot(state, data);
+    }
+  }
+
+  /// Attaches the handle a test reads this machine through and sends it
+  /// control messages with.
+  ///
+  /// The handle starts over for this instance: its snapshot becomes the
+  /// state the machine starts in, so a test reads the starting state from
+  /// the moment the machine exists, before any message and whether or
+  /// not [`initialize`](Self::initialize) is called, and its timer
+  /// records are emptied, as a restarted machine holds no timers. The
+  /// factory a test wraps calls this once per (re)creation with the same
+  /// handle, so the handle's sequence numbers and generation counter run
+  /// on across a restart.
+  ///
+  /// Only a machine built for a test carries a handle; a machine built
+  /// the usual way never pays for one. Reading the snapshot copies the
+  /// data, which is why the copy is set up here, the one place that
+  /// requires `D: Clone`: Pekko's `stateData` hands out a reference,
+  /// which the port's ownership model does not allow for the actor
+  /// itself, so the snapshot is the reference's replacement.
+  #[cfg(feature = "test-support")]
+  pub fn attach_handle(&mut self, handle: FsmHandle<S, D>)
+  where
+    D: Clone,
+  {
+    let cloner: crate::kernel::actor::test_support::FsmDataCloner<D> =
+      crate::kernel::sync::Arc::new(|data: &D| data.clone());
+    match self.current.as_ref() {
+      | Some((state, data)) => handle.install(Some((state, data)), cloner),
+      | None => handle.install(None, cloner),
+    }
+    self.handle = Some(handle);
   }
 
   /// Adds a state function for `state`.
@@ -221,7 +301,9 @@ where
   ///
   /// When the move happens, the replies recorded with `replying` are
   /// sent to the event's sender first, then the handlers run, then the
-  /// listeners are told, which is Pekko's order.
+  /// listeners are told, which is Pekko's order. Returns whether the move
+  /// happened, which a caller that arms the state timer only for a move
+  /// that took place needs to know.
   fn make_transition(
     &mut self,
     context: &mut ActorContext<'_>,
@@ -229,15 +311,15 @@ where
     data: Option<D>,
     replies: Vec<Message>,
     sender: ActorRef,
-  ) {
+  ) -> bool {
     let Some((current_state, current_data)) = self.current.take() else {
-      return;
+      return false;
     };
     let notifies = target.is_some();
     let next_state = target.unwrap_or_else(|| current_state.clone());
     if !self.has_state(&next_state) {
       self.current = Some((current_state, current_data));
-      return;
+      return false;
     }
     let self_ref = context.self_ref();
     for reply in replies {
@@ -264,6 +346,11 @@ where
         self.current = Some((next_state, current_data));
       },
     }
+    #[cfg(feature = "test-support")]
+    if let (Some(handle), Some((state, data))) = (&self.handle, &self.current) {
+      handle.write_snapshot(state, data);
+    }
+    true
   }
 
   fn notify_listeners(&mut self, context: &mut ActorContext<'_>, from: &S, to: &S) {
@@ -305,6 +392,138 @@ where
     if self.watched_listeners.contains(listener) {
       self.watched_listeners.retain(|existing| existing != listener);
       context.unwatch(listener);
+    }
+  }
+
+  /// Cancels the state timer and advances the machine's generation, as
+  /// Pekko's `receive` does for every message it takes: a state timer
+  /// armed before this message can no longer fire, because its mark
+  /// carries the older generation. The reads as active flag goes with
+  /// it. A machine without a handle holds no state timer, so there is
+  /// nothing to cancel.
+  #[cfg(feature = "test-support")]
+  fn cancel_state_timer(&mut self) {
+    if let Some(handle) = &self.handle {
+      handle.next_generation();
+      self.state_timer = None;
+      handle.set_state_timer(None, false);
+    }
+  }
+
+  /// Arms the state timer with the machine's current generation, so the
+  /// next received ordinary message, which advances the generation,
+  /// cancels it.
+  #[cfg(feature = "test-support")]
+  fn arm_state_timer(&mut self, timeout: Duration) {
+    if let Some(handle) = &self.handle {
+      let generation = handle.generation();
+      self.state_timer = Some(generation);
+      handle.set_state_timer(Some(FsmStateTimerRecord::new(generation, timeout)), true);
+    }
+  }
+
+  #[cfg(feature = "test-support")]
+  fn note_processed(&self, sequence: u64) {
+    if let Some(handle) = &self.handle {
+      handle.note_processed(sequence);
+    }
+  }
+
+  /// Runs one event through the state functions and the move it answers,
+  /// as the ordinary path of `receive` does.
+  #[cfg(feature = "test-support")]
+  fn process_event(&mut self, context: &mut ActorContext<'_>, event: &Message) {
+    let sender = context.sender();
+    if let Some(next) = self.apply_event(context, event) {
+      let (target, data, replies) = next.into_parts();
+      self.make_transition(context, target, data, replies, sender);
+    }
+  }
+
+  /// Carries out one control message from the test that drives this
+  /// machine, in mailbox order, as the design of the `TestFSMRef` port
+  /// records. Timer operations and the sentinel leave the state timer
+  /// alone: in Pekko they are calls on the actor's proxies, not messages
+  /// through `receive`, so they neither cancel the state timer nor
+  /// advance the generation.
+  #[cfg(feature = "test-support")]
+  fn handle_control(&mut self, context: &mut ActorContext<'_>, control: &FsmControl<S, D>) {
+    match control {
+      | FsmControl::SetState { sequence, state, data, timeout } => {
+        // Setting the state is a move from inside the machine, so the
+        // state timer of the state that is left is cancelled first, as
+        // the promise `setState` documents; Pekko's own call path keeps
+        // the old timer armed, which the port does not copy.
+        self.cancel_state_timer();
+        let target = state.clone().or_else(|| self.current.as_ref().map(|(name, _)| name.clone()));
+        let data = data.as_ref().and_then(|slot| slot.lock().take());
+        let mut applied = false;
+        if let Some(target) = target {
+          let sender = context.sender();
+          applied = self.make_transition(context, Some(target), data, Vec::new(), sender);
+        }
+        if applied {
+          if let Some(timeout) = timeout {
+            self.arm_state_timer(*timeout);
+          }
+        }
+        self.note_processed(*sequence);
+      },
+      | FsmControl::StartTimer { sequence, name, kind, message, delay } => {
+        if let Some(handle) = &self.handle {
+          let generation = handle.next_generation();
+          self.timers.retain(|(used, _)| used != name);
+          self.timers.push((name.clone(), FsmTimer { generation, kind: *kind, message: message.clone() }));
+          handle.set_timer_record(name, FsmTimerRecord::new(generation, *kind, *delay));
+        }
+        self.note_processed(*sequence);
+      },
+      | FsmControl::CancelTimer { sequence, name } => {
+        self.timers.retain(|(used, _)| used != name);
+        if let Some(handle) = &self.handle {
+          handle.remove_timer_record(name);
+        }
+        self.note_processed(*sequence);
+      },
+      | FsmControl::Sentinel { sequence } => {
+        self.note_processed(*sequence);
+      },
+      | FsmControl::TimerMark { name, generation } => {
+        let accepted = self
+          .timers
+          .iter()
+          .find(|(used, _)| used == name)
+          .and_then(|(_, timer)| (timer.generation == *generation).then(|| (timer.kind, timer.message.clone())));
+        if let Some((kind, message)) = accepted {
+          if kind == FsmTimerKind::Single {
+            self.timers.retain(|(used, _)| used != name);
+            if let Some(handle) = &self.handle {
+              handle.remove_timer_record(name);
+            }
+          }
+          // A timer receipt is an ordinary receipt for the state timer:
+          // it cancels it and advances the generation, as Pekko's does.
+          self.cancel_state_timer();
+          self.process_event(context, &message);
+        }
+      },
+      | FsmControl::StateTimeoutMark { generation } => {
+        // The armed slot alone judges the mark. Every path that
+        // invalidates the state timer clears the slot (an ordinary
+        // message, an accepted timer receipt, and `SetState` all cancel
+        // it first), and a re-armed timer holds a later generation, so
+        // a stale mark never matches. The shared counter is not part of
+        // the judgement: starting a named timer advances it for the
+        // timer's own generation, and Pekko keeps the state timeout's
+        // generation apart from the named timers' generations, so that
+        // advance must not invalidate the state timer.
+        if self.state_timer == Some(*generation) {
+          // The receipt itself neither cancels the state timer nor
+          // advances the generation, as in Pekko: the timer still reads
+          // as active until the next ordinary message.
+          self.process_event(context, &Message::new(StateTimeout));
+        }
+      },
     }
   }
 }
@@ -349,10 +568,32 @@ where
       self.watched_listeners.retain(|existing| existing != &listener);
       return;
     }
+    #[cfg(feature = "test-support")]
+    if let Some(control) = message.downcast_ref::<FsmControl<S, D>>() {
+      self.handle_control(context, control);
+      return;
+    }
+    // Every ordinary message cancels the state timer, handled or not,
+    // as Pekko's `receive` does before it runs the state function. The
+    // subscribe, unsubscribe, and listener-terminated receipts above
+    // are the exceptions Pekko names, and they return before this point.
+    #[cfg(feature = "test-support")]
+    self.cancel_state_timer();
     let sender = context.sender();
     if let Some(next) = self.apply_event(context, &message) {
       let (target, data, replies) = next.into_parts();
       self.make_transition(context, target, data, replies, sender);
+    }
+  }
+
+  fn post_stop(&mut self) {
+    // A stopped machine leaves an empty snapshot and no timers behind,
+    // so a test that reads the handle of a stopped machine sees that it
+    // is gone, and a restarted machine starts from the fresh snapshot
+    // its new instance writes when it attaches.
+    #[cfg(feature = "test-support")]
+    if let Some(handle) = &self.handle {
+      handle.clear();
     }
   }
 }
