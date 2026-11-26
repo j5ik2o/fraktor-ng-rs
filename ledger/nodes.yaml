@@ -2254,7 +2254,7 @@ nodes:
     module: actor-tests
     class: DeployerSpec
     test_cases_approx: 16
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -2265,14 +2265,16 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 16
+    ported: 16
+    passing: 16
     excluded: []
+    not_built: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/deployer_spec.rs
+  goal: G0issue195
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/serialization/DisabledJavaSerializerWarningSpec.scala
   name: actor-tests:DisabledJavaSerializerWarningSpec
   kind: test
