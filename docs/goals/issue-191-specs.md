@@ -92,4 +92,6 @@ ConsistencySpec は、このゴールには含めていない。fraktor の `Act
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功 |
 | `cargo fmt --check` | 成功（stable。nightly の rustfmt は既存ファイルの書式と違うので使っていない） |
 | `scripts/quint-check-specs.sh` | 全 4 仕様 pass（この仕様を含む） |
+| syn checker（`crates/fraktor-actor`、`crates/fraktor-testkit`） | 違反 0、抑制 0 |
+| `npm run check:aislop` | 既知の指摘と一致 |
 | 台帳の検査（`pekko_baseline.py check-ledger`、`check-refs`、`relocate_nodes.py check`、`report_ledger_1to1.py check`） | 成功 |
