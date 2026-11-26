@@ -1823,12 +1823,15 @@ testkit の待ち（`crates/fraktor-testkit/tests/wait_latency_bench.rs`、別�
 | セルの状態 | すること |
 |:---|:---|
 | 停止中（`Terminate` を処理したあと） | 何もしない。原典は、子を待つ間に届いた `Recreate` を取っておき、閉じるときに dead letters へ流す。生成を始めない点は同じ |
-| すでに作られている | 何もしない（4a では起きない。11.12.5 で、作られていない子にだけ `Create` を送る） |
+| すでに作られている | 何もしない（やり直しの `Create` が 2 通並び、1 通目で作れたときの 2 通目。下の「やり直しの `Create` が 2 通並ぶとき」） |
+| 開始に失敗していて、その失敗への判断がまだ（同じ実行の中で、先の `Create` がもう一度失敗した） | 何もしない。判断 1 回につき、作り直しは 1 回である（下の「やり直しの `Create` が 2 通並ぶとき」） |
 | 開始に失敗していて、前の試みの子が残っている | その子のすべてに `Terminate` を送り、「子を待つ（理由：Creation）」にする（`faultCreate`）。最後の子の `ChildTerminated` を処理したときに、下の「作る」を行う |
 | ほか | 作る。開始に失敗した状態からなら、まず失敗の suspend を 1 つ解く（`finishCreate` の `resumeNonRecursive`）。そのあと catcher で包んで、`Props` からインスタンスを作り、戦略を登録し、`pre_start` を回す（今の `ActorCell::create`。枠と `ActorContext` の作り方は今の `create_initial` と同じ）。失敗したら、メールボックスを suspend し（`handleInvokeFailure` の `suspendNonRecursive`）、セルに「開始に失敗した」を記録し、`after_run` が空なら `StartFailed` を記録する |
 
 **開始の失敗の判断**（実行のあとに実行器が行う。段 4b で親の `Failed` にする）：今の `create_initial` の分岐を、ループにせずに
-移す。失敗を publish し（`ActorInitializationException`）、戦略を当てる。
+移す。失敗を publish し（`ActorInitializationException`）、戦略を当てる。判断を当てたら、セルの「開始に失敗した」の記録に
+「判断が済んだ」を付ける（上の表と 11.12.5 が読む。原典で `Failed` が親に届いて判断されたことに当たる）。親が suspend されて
+いる間は、判断を取っておく（11.12.6 の「親が suspend されている間の子の失敗」）。
 
 | 判断 | すること |
 |:---|:---|
@@ -1836,6 +1839,39 @@ testkit の待ち（`crates/fraktor-testkit/tests/wait_latency_bench.rs`、別�
 | Restart（回数を超えた）、Stop | 子に `Terminate` を積む。suspend のまま止まる（`Terminate` は system message なので処理される）。インスタンスが無いので `post_stop` は走らない |
 | all-for-one | 今の `apply_all_for_one` と同じ判断。やり直すなら、失敗した子に `Create` を積み、兄弟は 11.12.5 の再起動。止めるなら、兄弟と一緒に `Terminate` |
 | decider の panic | 今と同じく親の失敗にする（`fail_supervisor`）。子は suspend のまま待つ。親が再起動されれば、親の再起動の後半が子に `Create` を送る（11.12.5）。親が止まれば、子は T1 の `Terminate` で止まる |
+
+**やり直しの `Create` が 2 通並ぶとき**：子の `Create` の送り手は 2 つある。子の開始の失敗への Restart の判断（上の表）と、
+親の再起動の後半（11.12.5。「開始に失敗した」の記録があり、判断が済んだ子に送る）である。両方が同じ子に効くことがある。子 `c1` の
+開始が失敗し、判断が Restart で `c1` に `Create` が積まれたあと、`c1` の実行より先に、親が自分の失敗（または兄弟の decider の
+panic）で再起動され、後半が `c1` にもう 1 通 `Create` を送る筋書きである（設計の独立レビューの高 1）。`c1` の次の実行は、system
+message を列の残りまで処理するので（11.12.8）、2 通を同じ実行で処理する。何もしなければ、1 通目がもう一度失敗したあと、2 通目が
+判断を経ずに作り直し、2 回目の失敗の記録は `after_run` の 1 枠に入らず失われ、再起動の回数の勘定も狂い、1 回目の失敗への判断が
+作り直せた子に当たる。
+
+4a は、`Create` の処理の側で閉じる（上の表の「その失敗への判断がまだ」の行）。作り直すのは、判断が済んだ開始の失敗に対して
+だけで、判断のまだの失敗に届いた `Create` は何もしない。1 通目が作れたなら、2 通目は「すでに作られている」で何もしない。
+1 通目がまた失敗したなら、2 通目は何もせず、2 回目の失敗は実行のあとで判断され、その判断が次の作り直しを決める。どの送り手が
+何通送っても、判断 1 回につき作り直しは 1 回で、1 つの実行で記録される開始の失敗は 1 件である（11.12.8）。Quint の
+`oneRetryPerDecision` と、負の対照 `RetryUndecided`（判断のまだの失敗にも作り直す形）で確かめる。
+
+原典との関係：原典の作り直しは、`Recreate` を受けた `faultRecreate` が、インスタンスが無ければ `faultCreate` へ落とす形で進む。
+同じ重なりでは、原典の子の列にも `Recreate` が 2 通並びうる（親の Restart の判断の `Recreate` と、親の `finishRecreate` が
+生き残りの子に送る `Recreate`）。`Recreate` は失敗中に取っておかれない（`StashWhenWaitingForChildren` だけで、`StashWhenFailed`
+ではない）ので、原典では 2 通目も作り直す。原典が壊れないのは、失敗ごとに別の `Failed` が親に届いてそれぞれ判断されること、
+親の `handleInvokeFailure` が子に `Suspend` を送って suspend の数が合うことによる。4a は失敗の記録が `after_run` の 1 枠で、
+`Suspend` も送らない（11.12.9）ので、原典と同じく 2 通目で作り直すと記録が失われる。2 通目を捨てても、原典で起きることのうち
+失われるものは無い。2 通目の作り直しは、原典では判断のまだの失敗を追い越す作り直しで、その失敗の `Failed` への判断が、作り直せた
+子をあとから再起動するか止める。4a では、その失敗の判断のあとで作り直す。原典より順が 1 つ遅れるだけで、判断を経ない作り直しは
+無くなる。
+
+選ばなかった 2 つ（レビューの候補）：
+
+- **親の再起動の後半が、やり直しの `Create` が積まれている子には送らない**（候補 a）：子のセルに「やり直しの `Create` が未処理」を
+  持たせ、送り手どうしで調整する形である。送り手が増えるたびに（段 4b で `Recreate` を system message にするときなど）、同じ
+  調整が要る。受け手の側で閉じる形なら、送り手の数に頼らない
+- **`Create` が失敗した実行では、後ろの `Create` を処理せず列に残す**（候補 c）：実行が system message を列の残りまで処理する形
+  （I11、`mailbox_scheduling.qnt` の `systemBeforeNormal` と、段 3 の drain）を、`Create` だけ崩す。残した `Create` は、次の判断の
+  あとで、前の判断の分として処理され、判断と作り直しの対応が 1 つずれる
 
 **判断の時点で子が止まっていたとき**：開始の失敗と `Terminate` が同じ実行の列に並ぶと（作ってすぐ止めた子の開始が失敗した
 場合など）、実行が返ったときには子は閉じている。原典では、親は子の `Failed` を `DeathWatchNotification` より先に処理するので、
@@ -1878,7 +1914,9 @@ dead letters」）。停止中のアクターに届いた `Terminate` も何も�
 
 **`Terminate` の処理**（対象の実行の中。原典 `FaultHandling.terminate`）：
 
-1. 停止中なら何もしない
+1. 理由が `Termination` で子を待っている（停止中）なら何もしない。ほかの理由（`Creation`、`Recreation`）で待っているときは、
+   11.12.4 のとおり理由を `Termination` に替え、待つ子をすべての子に広げて、2 から進む（原典 `terminate` の
+   `setChildrenTerminationReason`）
 2. T1：自分が watch している相手をすべて外す（`watchers`、`watch_messages`、`pending_terminations`、`function_watching` の
    うち、自分が watcher のもの。今の `finish_termination` の先頭の 4 行を、ここへ前に出す）。原典の `unwatchWatchedActors` で、
    待つ間に届く `Terminated` が dead letters に溜まらないようにする
@@ -1932,8 +1970,9 @@ specific order」）。
 `queued_to_dead_letters` も捨てている）。今は、止まったアクターをもう一度止めても dead letters に何も出ない。原典の
 `DeadLetter(Terminate)` などは、利用者が中を見られない内部の型で、dead letters の配送は best effort である。4a で出し始めると、
 dead letters を数える既存のテストの数が変わりうる。`Watch` を送るようになる段 4c で、閉じたメールボックスの system message を
-dead letters の規則（`Watch` に通知を返す）へ回すときに、一緒に決める。I12 の「system message も失われない」は、仕様では
-dead letters に数える（`actor_termination.qnt` の `sysDead`）。
+dead letters の規則（`Watch` に通知を返す）へ回すときに、一緒に決める。`actor_termination.qnt` の `sysDead` と `deadLettered` は、
+閉じたメールボックスへ行った数を数えるだけで、不変条件は読まない。I12 の「system message も失われない」の保存の主張は、
+1 つのメールボックスについて `mailbox_scheduling.qnt` の `systemMessagesConserved` が担う。
 
 #### 11.12.4 子の名前と ChildTerminated
 
@@ -1972,7 +2011,10 @@ enum WaitReason {
 
 **`ChildTerminated` の処理**（親の実行の中。原典 `FaultHandling.handleChildTerminated`）：
 
-1. 子を親の表から外す（名前が空く）。親が user guardian なら `user_children` からも外す
+1. 子を親の表から外す（名前が空く）。親が user guardian なら `user_children` からも外す。外すのは、`ChildTerminated` が持つ
+   `ActorRef`（id と世代）が表の登録と一致するときだけで、一致しない通知は表を変えない（原典 `handleChildTerminated` の
+   `childrenRefs.getByRef`。Quint の `handleChildTerm` も世代が一致するときだけ名前を空ける）。名前だけで外すと、古い世代の
+   通知が、同じ名前で作り直した子の登録を消しうる
 2. 親が作られていれば、子の終了のフックを catcher で包んで回す（今の `execute_child_terminated_hook` を、実行が持つセルで回す
    形にする）。失敗と、停止中の親での子の生成の拒否は、今と同じく `IllegalStateException("handleChildTerminated failed")` を
    1 回 publish する（原典はさらに `handleInvokeFailure` で親を失敗させる。監督を system message にする段 4b で扱う）
@@ -1983,7 +2025,8 @@ enum WaitReason {
 には、`ChildTerminated` を積む列が無い。子の finishTerminate の中で、実行器がその場で上の 1 を行う（ガーディアンにフックは無い。
 function ref の親にもフックは走らない。今の `execute_child_terminated_hook` の `is_created` の検査と同じ）。function ref が自分の
 停止で子を待っていれば、3 も行う（11.12.3 の function ref の行）。原典のガーディアンはアクターで、通知を自分の実行で処理するが、
-fraktor のガーディアンはセルを持たないので、その場で行う。名前が空く時点は、原典より早くなることはあっても遅くはならない。
+fraktor のガーディアンはセルを持たないので、その場で行う。ガーディアンの下の名前は、子の終了の処理（子の finishTerminate）の
+中で空くので、親の実行を待つ形より遅くはならず、原典（ガーディアンが自分の実行で通知を処理してから空く）より早く空くことがある。
 
 **`LiveActors`（選択の表）**：今と同じく、生成で入れ、閉じるときに外す。原典では、閉じた子も親が通知を処理するまで `getChild`
 で見つかり、その子の閉じたメールボックスを通って dead letters になる。4a では、閉じた子のパスは解決できず、誰もいないパスとして
@@ -2053,6 +2096,24 @@ dead letters になる（dead letters の受け手が、子のハンドルでな
 「親が残ったか」は、decider の panic を当てた結果（親への判断が Restart だったか）で決める。`fail_supervisor`、`apply_failure`、
 `handle_kill` が判断の結果を返す形に直す。
 
+**親が suspend されている間の子の失敗**：4a では、親が suspend されたまま、複数の実行にまたがって残ることがある（自分の失敗の
+判断を待つ間、開始に失敗して判断かやり直しを待つ間、子を待つ間）。その間に別の子の失敗の判断を当てると、親の戦略の decider の
+panic が、子を待っている親や、インスタンスの無い親を失敗させ、進行中の再起動の中でもう一度再起動する（11.12.7 の深さ 1 が
+崩れる）。decider が panic するかは回してみるまで分からないので、どの判断も取っておく。
+
+- 子の失敗（`receive` の失敗、`Kill`、開始の失敗）の判断は、親が suspend されていないときに当てる。親が suspend されていれば、
+  実行器は失敗を親の `ParentEntry` に取っておき、子は suspend のまま待つ
+- 取っておいた失敗は、親の suspend が 0 に戻ったときに、届いた順に判断する。実行器は、親の実行が返ったときと、親への判断の
+  効果を当てたあとに、親の suspend を見る
+- 親が閉じたら、取っておいた失敗は捨てる（子は T1 で止まっている。原典でも、閉じる親が取っておいた `Failed` は判断されない）
+- 原典の `Failed` が `StashWhenFailed` と `StashWhenWaitingForChildren` で、親が失敗中か子を待つ間は取っておかれることに当たる
+  （`ActorCell.systemInvoke` の `shouldStash`）。段 4b で判断を親の `Failed` にすると、これは親の列の取り置きになる
+- 段 3 では、判断が実行のすぐあとに同期に終わるので、親が suspend されたまま子の判断を待つ時点は無い。段 3 の振る舞いは変わらない
+
+Quint では `decide` の前提（親が閉じているか、親の suspend が 0）で表す。設計の独立レビューの指摘ではなく、中 1 を直すときに、
+直す前の仕様が decider の panic の判断だけを「親が子を待つ間は起きない」として外していた（`canRestart` の前提）のを見て足した。
+実装は decider が panic するかを前もって知れないので、判断のすべてを取っておく形にした。
+
 #### 11.12.7 回復の重なりの深さ 1（#251 の 2 件）
 
 `executor_value_test.rs` の `repeated_child_recovery_failures_obey_parent_retry_limit` と
@@ -2087,8 +2148,13 @@ decider が panic する。decider の panic は親の失敗になり、親の�
 `Terminate` を送って待ち、両方の `ChildTerminated` のあとで閉じる。試行 3、再起動 2、深さ 1、親と子が止まり、`bob` についての
 終了のフックは 1 回である（親が止まる途中でも、作られた親のフックは走る。原典 `handleChildTerminated` の `actor != null`）。
 
-Quint では、`actor_termination.qnt` の `recoveryNotNested` と、負の対照 `CreateInsideRestart`（親の再起動の中で子の開始を
-やり直す形）が、この決まりを表す。
+Quint では、`actor_termination.qnt` の `recoveryNotNested` と、負の対照 `CreateInsideRestart` が、この決まりを表す。各アクターは
+進行中の再起動の数（`restarting`。前半の始めで増え、後半の終わりで減る）を持ち、`recoveryNotNested` は、再起動が始まる時点で
+同じアクターの再起動が進行中でない（深さが 1 を超えない）ことである。`CreateInsideRestart` は、#251 の試作の遷移そのものを書く。
+親の再起動の後半が、開始に失敗した子の作り直しをその場で行い、作り直しが失敗すると、親の再起動は、その子の失敗が判断される
+まで進行中のまま残る（試作で、古い振る舞いの枠が生きている間に `finish_boundary` が判断したことに当たる）。その判断の decider が
+panic すると、親の再起動が進行中のまま、親の再起動が始まり、深さが 2 になる。正しい形では、再起動が進行中のアクターは子を待って
+suspend されており、子の失敗の判断は取っておかれる（11.12.6）ので、同じ数で深さ 1 が保たれる。
 
 #### 11.12.8 利用者のコードを走らせる system message を catcher で包む（§11.11.13 から）
 
@@ -2101,7 +2167,8 @@ Quint では、`actor_termination.qnt` の `recoveryNotNested` と、負の対�
 
 `after_run` が空でないとき（同じ実行で、先に `receive` が失敗している）は、後の失敗を記録しない（原典の `isFailed`。
 §11.11.2）。4a では、1 つの実行で記録される失敗は高々 1 件である。失敗したら suspend して通常のメッセージを取らず、`Create` が
-もう一度失敗するには、間に実行のあとの判断が要る。
+もう一度失敗するには、間に実行のあとの判断が要る。同じ実行の列に `Create` が 2 通並んでも、判断のまだの失敗に届いた 2 通目は
+何もしない（11.12.2 の「やり直しの `Create` が 2 通並ぶとき」）。
 
 #### 11.12.9 段 3 から回した 2 点
 
@@ -2130,6 +2197,11 @@ Quint では、`actor_termination.qnt` の `recoveryNotNested` と、負の対�
 
 記録の文字列が 1 か所変わるので、このコミットの形も、設計の独立レビューで見てもらう。
 
+設計の独立レビュー（2026-11-27、`d436bea` に対して）は、この表のとおり triage として扱うのでよいとした。3 件とも確かめる性質は
+変わらず、記録の文字列の変化は確かめる対象ではない付随の変化である。実装で避ける道（送らない `Suspend` を enum に残す）は、
+dead_code の抑制が要り、#253 の完了条件（4a が送る 4 種類だけを残す）に反する。条件は 2 つで、この直しを実装と別の、テストだけの
+コミットに分けることと、表のとおりであることを設計の独立レビューで見たという記録（この段落）を、実装の PR にも載せることである。
+
 **2. ワイルドカードの `ActorSelection`**（#253 のコメントの 2）。今の `ActorSelection` は、パターン（`*`、`?`）を持つパスを
 展開しない。生きているアクターの完全なパスだけを送り手のスレッドで引き、ほかは境界を通って、配るときに完全なパスとして
 解決するので、ワイルドカードのパスは誰もいないパスとして dead letters になる。原典の `deliverSelection` は、送り手のスレッドで、
@@ -2156,7 +2228,7 @@ Quint では、`actor_termination.qnt` の `recoveryNotNested` と、負の対�
 |:---|:---|:---|
 | `ActorSystem::actor_of` など生成の口 | `pre_start` を済ませて返る。開始の失敗の判断も済んでいる | `pre_start` の前に返る。開始と、その失敗の判断は、次に回したとき |
 | `ActorSystem::stop` | 止め切って返る | `Terminate` を積んで返る。`is_actor_terminated` は、回すまで `false` |
-| 名前の再利用 | 止めた直後から使える | 親が `ChildTerminated` を処理したあと（`run_until_idle` のあと）から使える（原典と同じ） |
+| 名前の再利用 | 止めた直後から使える | メールボックスを持つ親の下では、親が `ChildTerminated` を処理したあと（`run_until_idle` のあと）から使える（原典と同じ）。ガーディアンと function ref の下（トップレベルの名前など）では、子の終了の処理の中でその場で空く（11.12.4 の「メールボックスの無い親」） |
 | 既定の `pre_restart`（`stop_children` のあと `post_stop`） | 子を止め切ってから `post_stop` | 子に `Terminate` を送ってすぐ `post_stop`（原典と同じ。子が止まるのは後で、`post_restart` は子が止まってから） |
 | catcher の無い `pre_start` の panic | `actor_of` から出る | `run_until_idle` などから出る。次の呼び出しでシステムが終わるのは同じ |
 | testkit の `TestFsmRef` | 生成が同期であることに頼り、開始に失敗した機械を、作った直後の `is_actor_terminated` で見分ける（原典の `TestFSMRef` は CallingThreadDispatcher で同期に作る） | 作ったあと、その機械が作られるか止まるまで手で回す dispatcher を回し（`run_one` を繰り返す。実行待ちの列で前にある仕事も回る）、そのあとで今と同じ検査をする。段 7b で CallingThreadDispatcher を入れたら、それに置き換える |
@@ -2189,7 +2261,7 @@ c1 の下に g）を、名前ごとの枠で表す。枠は、名前が空けば
 | `stop` | 停止を頼む口（11.12.3）。`Terminate` を積む |
 | `runSys` | 実行が system message を 1 件処理する。`Create`、`Terminate`、`Resume`、`ChildTerm` の処理は 11.12.2〜11.12.5 |
 | `receive` | 実行が通常のメッセージを 1 件処理する。catcher の下で失敗しうる |
-| `decide` | 実行のあとの実行器の判断（11.12.2 の開始の失敗、段 3 の `apply_failure`、11.12.5 の再起動、11.12.6 の数え方） |
+| `decide` | 実行のあとの実行器の判断（11.12.2 の開始の失敗、段 3 の `apply_failure`、11.12.5 の再起動、11.12.6 の数え方）。親が suspend されている間は取っておく（11.12.6 の「親が suspend されている間の子の失敗」） |
 | `tellRest` | finishTerminate の 2 つ目の通知。親への `ChildTerminated` と watcher への `Terminated` の間に、ほかのスレッドが親を回せることを表す |
 
 | 不変条件 | 中身 | 何を表すか |
@@ -2198,15 +2270,18 @@ c1 の下に g）を、名前ごとの枠で表す。枠は、名前が空けば
 | `noLostChildTerminated` | 子の `ChildTerminated` が閉じた親に届かない | T1、I12 |
 | `namesHeldWhileLive`、`heldNamesHaveActors` | 生きているアクターは親の表に名前を持ち、表の名前にはアクターがいる | 子の名前 |
 | `noticesAfterTheEnd` | watcher が `Terminated` を受けるのは、そのアクターが閉じたあと | T3、T4 |
+| `noticesOnce`、`postStopOnce` | どの世代の終わりも、watcher への `Terminated` と親への `ChildTerminated`（ガーディアンの下では名前を空けること）はそれぞれ 1 回まで。`post_stop` も世代ごとに 1 回まで（通知は世代ごとの数で数える） | T2、T4、二重の停止 |
 | `parentLearnsBeforeWatchers` | 親でもある watcher は、子の `ChildTerminated` を、その子の `Terminated` より先に処理する | T4 |
 | `noTerminatedToAStoppingWatcher` | 停止中のアクターに `Terminated` を送らない | T1 の unwatch |
 | `createBeforeTerminate` | 閉じたアクターは、その前に `Create` を処理している | `Create` が `Terminate` より先 |
 | `noReceiveWithoutInstance`、`failedStartStaysSuspended` | インスタンスの無いアクターに通常のメッセージを渡さない。開始に失敗したアクターは、やり直しの `Create` まで suspend のまま | 11.12.2、11.12.6 |
+| `oneRetryPerDecision` | 開始の失敗を作り直すのは、その失敗への判断が済んだあとだけ（判断 1 回に作り直し 1 回） | 11.12.2 のやり直しの `Create` が 2 通並ぶとき |
 | `noReceiveWhileWaiting` | 子を待つ間は通常のメッセージを処理しない | T1、11.12.5 |
 | `retryWithoutTheAttemptsChildren` | 開始のやり直しは、前の試みの子がいなくなってから作る | 11.12.2 |
 | `restartAfterStoppedChildren` | `post_restart` は、`pre_restart` で止めた子がいなくなってから | 11.12.5 |
-| `recoveryNotNested` | 再起動が、同じアクターの再起動の中で起きない | 11.12.7 |
+| `recoveryNotNested` | 再起動が始まる時点で、同じアクターの再起動が進行中でない（進行中の再起動の数 `restarting` から求めた深さが 1 を超えない） | 11.12.7 |
 | `waitsEnd` | 何も進行中でない（列が空、判断を待つ失敗が無い、通知が残っていない）とき、子を待つアクターはいない | 待ちが必ず終わる |
+| `settledMeansResumed` | 何も進行中でないとき、インスタンスのある（または作られる前の）アクターの suspend は 0 である | 11.12.6 の「失敗 1 回に suspend 1 回、解くのは 1 回」。段 3 の I14 を木に広げたもの |
 
 負の対照（`initWith(<誤り>)` から始める `run` が、毎回の `quint test` で確かめる）：
 
@@ -2222,14 +2297,17 @@ c1 の下に g）を、名前ごとの枠で表す。枠は、名前が空けば
 | `ResumeOnRestart` | 再起動の判断がすぐ `Resume` を送る（段 3 の形） | `noReceiveWhileWaiting` | `resumeOnRestartReceivesWhileWaitingTest` |
 | `NoCreationWait` | 開始のやり直しが前の試みの子を待たない | `retryWithoutTheAttemptsChildren` | `noCreationWaitKeepsTheAttemptsChildrenTest` |
 | `NoRecreationWait` | `post_restart` が止めた子を待たない | `restartAfterStoppedChildren` | `noRecreationWaitRestartsBeforeTheChildrenGoTest` |
-| `CreateInsideRestart` | 親の再起動の中で子の開始をやり直す（#251 の試作の形） | `recoveryNotNested` | `createInsideRestartNestsTheRecoveryTest` |
+| `CreateInsideRestart` | 親の再起動の後半が子の開始をその場でやり直し、やり直しが失敗すると、その判断まで再起動が進行中のまま残る（#251 の試作の形。11.12.7） | `recoveryNotNested` | `createInsideRestartNestsTheRecoveryTest` |
 | `NoTerminateToChildren` | `Terminate` が子に停止を送らずに待つ | `waitsEnd` | `noTerminateToChildrenWaitsForeverTest` |
+| `RetryUndecided` | 判断のまだの開始の失敗に届いた `Create` も作り直す | `oneRetryPerDecision` | `retryUndecidedRetriesTwiceForOneDecisionTest` |
+| `NotifyTwice` | finishTerminate が親と watcher にその場で知らせ、2 つ目の通知でも watcher に知らせる | `noticesOnce` | `notifyTwiceTellsTheWatcherTwiceTest` |
+| `KeepSuspended` | 再起動の後半が失敗の suspend を解かない | `settledMeansResumed` | `keepSuspendedLeavesARestartedActorSuspendedTest` |
 
-正しい形の `run` は 8 本で（`aStopBehindTheCreateRunsAfterPreStartTest`、`aParentClosesInTheRunOfItsLastChildsNoticeTest`、
+正しい形の `run` は 9 本で（`aStopBehindTheCreateRunsAfterPreStartTest`、`aParentClosesInTheRunOfItsLastChildsNoticeTest`、
 `theNameStaysTakenUntilTheParentLearnsTest`、`aFailedStartThatIsStoppedRunsNoPostStopTest`、
 `aRetriedStartStopsTheAttemptsChildrenFirstTest`、`aRestartWaitsForTheChildrenItStoppedTest`、
-`anEscalatedStartFailureIsRetriedAfterTheParentRestartTest`、`aWatchingParentLearnsOfItsChildFirstTest`）、`run` は全部で
-20 本である。
+`anEscalatedStartFailureIsRetriedAfterTheParentRestartTest`、`twoQueuedCreatesRetryOncePerDecisionTest`、
+`aWatchingParentLearnsOfItsChildFirstTest`）、`run` は全部で 24 本である。
 
 仕様の単純化（仕様の外に置いたもの）：
 
@@ -2239,6 +2317,9 @@ c1 の下に g）を、名前ごとの枠で表す。枠は、名前が空けば
 - 監督の判断は 3 つ（Restart、Stop、decider の panic）で、all-for-one と `Kill` は入れない（どちらも 11.12.5 と 11.12.6 の同じ口を
   通る）
 - DeathWatch は「p が c1 を watch」と「外の watcher がすべてを watch」に固定する（watch と unwatch の操作は段 4c の仕様）
+- T5（`on_termination` と `stop_and_reply` の返事が通知のあと）は仕様に入れない。§5.4 の案（`actor_termination.qnt` は T1〜T5）
+  との差で、11.12.12 の単体テストで確かめる
+- `sysDead` と `deadLettered` は数えるだけで、不変条件は読まない（11.12.3 の「閉じるときの dead letters」）
 
 #### 11.12.12 テスト
 
@@ -2248,8 +2329,8 @@ c1 の下に g）を、名前ごとの枠で表す。枠は、名前が空けば
 | 回復の重なりの深さの 2 件 | 書き換えずに通す（11.12.7） |
 | 段 3 の橋渡しを確かめた単体テストのうち、4a で意味が変わるもの | `a_stop_asked_for_in_receive_ends_the_run_and_takes_effect_before_the_next_message`（`context.stop` で `Yield` し、次のメッセージの前に相手が止まっている。4a では `Yield` せず、相手は自分の実行で止まる。原典の停止は非同期で、次のメッセージの時点で止まっていることは約束しない）、`stopping_an_actor_takes_the_run_that_waits_for_it`（停止が待っている `Run` を取り除く。4a では、その `Run` が `Terminate` を処理する）、`a_panic_in_pre_start_without_a_catcher_terminates_on_the_next_call`（11.12.10）。どれも fraktor が段 3 で足したテストで、§11.11.2 が「段 4 で消す」とした `Yield` と同期の停止を確かめていた。red の工程のテストだけのコミットで、4a の形を確かめるテストに直す（直した形は実装の PR に載せる） |
 | 段 2・段 3 の単体テストの `Suspend` | 11.12.9 の表 |
-| 一覧に無いテストが停止の非同期で落ちたとき | #251 の洗い出しの試作は、停止を同期のまま残し、止める対象の `Create` を先に済ませる形だった（#251 の一覧の「試作の入れ方」）。そのため、停止を `Terminate` にしたことで落ちるテスト（`stop` の直後に止まったことを読む、止めた直後に同じ名前で作る、既定の `pre_restart` の子の停止の順に頼る、など）は、一覧に載っていない。設計の時点で読んで見つけた例は、`a_restart_of_one_child_keeps_the_other_child_stop_waiting` である（`pre_restart` で止めた兄弟が `post_restart` の時点でまだ生きていることを確かめる。4a では、兄弟の `Terminate` は、親の再起動が子を待つ間に兄弟の実行で処理されうる。原典でもこの順は約束しない）。実装の最初の工程として、#251 と同じ作りの洗い出し（4a の振る舞いを入れた写しで既存のテストをすべて流し、一覧に無い落ちを、原典の振る舞いと判定つきで issue に載せる）を行い、中将の判定を受けてから red に入る。テストは書き換えずに上げる（§11.11.1 と同じ） |
-| 新しい単体テスト | 生成：`actor_of` の直後は `pre_start` が走っていない／名前は生成の時点で予約される（同じ名前の 2 つ目は断られる）／作ってすぐ止めた子は `pre_start`、`post_stop` の順に走る。停止：子のいる親は子の `ChildTerminated` まで開いていて、待つ間は通常のメッセージを処理しない（T1）／`post_stop` は子の `post_stop` のあと（T2）／watcher が `Terminated` を受けた時点でメールボックスが閉じている（T3）／親でもある watcher は、子の名前が空いたあとで `Terminated` を受ける（T4）／`on_termination` と返事は通知のあと（T5）／止まるアクターが watch していた相手の `Terminated` が dead letters に出ない（T1 の unwatch）／`Terminate` で閉じた実行がセルを戻さず、ロックの外で捨てる（L3。`Drop` で別のアクターへ送る振る舞いで確かめる）／2 度目の `Terminate` は何も起こさない。再起動：待つ間は通常のメッセージを処理しない／all-for-one の兄弟が待つ間も同じ。suspend：11.12.6 の表の行ごと（Stop の判断のあと、後ろのメッセージが `receive` に届かない、など）。開始の失敗：前の試みの子が止まってから作り直す（既存の `a_retried_start_does_not_keep_the_children_of_the_failed_attempt` も確かめる）／開始の失敗と同じ実行で止まった子にも判断が当たり、decider の panic が親を失敗させる |
+| 一覧に無いテストが停止の非同期で落ちたとき | #251 の洗い出しの試作は、停止を同期のまま残し、止める対象の `Create` を先に済ませる形だった（#251 の一覧の「試作の入れ方」）。そのため、停止を `Terminate` にしたことで落ちるテスト（`stop` の直後に止まったことを読む、止めた直後に同じ名前で作る、既定の `pre_restart` の子の停止の順に頼る、など）は、一覧に載っていない。設計の時点で読んで見つけた例は、`a_restart_of_one_child_keeps_the_other_child_stop_waiting` である（`pre_restart` で止めた兄弟が `post_restart` の時点でまだ生きていることを確かめる。4a では、兄弟の `Terminate` は、親の再起動が子を待つ間に兄弟の実行で処理されうる。原典でもこの順は約束しない）。実装の最初の工程として、#251 と同じ作りの洗い出しを行い、中将の判定を受けてから red に入る。テストは書き換えずに上げる（§11.11.1 と同じ）。洗い出しの決まりは次の 3 つである（設計の独立レビューの答え）。(1) 写しは、生成と停止の両方を system message にした形（`Create` と `Terminate` の非同期を両方入れた形）で作る。#251 の試作のように、どちらかを同期のまま残さない。(2) その写しで、テストスイートの全体（testkit を含む `cargo test --workspace`）を流し、一覧に無い落ちを、原典の振る舞いと判定つきで issue に載せる。(3) 落ちずに通るが意味が弱まるテスト（`run_until_idle` がすべてを回すので、生成と停止の順の違いを見ないテストなど）は、流すだけでは拾えない。生成と停止に触れるテストを目で読む分を残し、読んだ範囲と見つけたものも issue に載せる |
+| 新しい単体テスト | 生成：`actor_of` の直後は `pre_start` が走っていない／名前は生成の時点で予約される（同じ名前の 2 つ目は断られる）／作ってすぐ止めた子は `pre_start`、`post_stop` の順に走る。停止：子のいる親は子の `ChildTerminated` まで開いていて、待つ間は通常のメッセージを処理しない（T1）／`post_stop` は子の `post_stop` のあと（T2）／watcher が `Terminated` を受けた時点でメールボックスが閉じている（T3）／親でもある watcher は、子の名前が空いたあとで `Terminated` を受ける（T4）／`on_termination` と返事は通知のあと（T5）／止まるアクターが watch していた相手の `Terminated` が dead letters に出ない（T1 の unwatch）／`Terminate` で閉じた実行がセルを戻さず、ロックの外で捨てる（L3。`Drop` で別のアクターへ送る振る舞いで確かめる）／2 度目の `Terminate` は何も起こさない。再起動：待つ間は通常のメッセージを処理しない／all-for-one の兄弟が待つ間も同じ。suspend：11.12.6 の表の行ごと（Stop の判断のあと、後ろのメッセージが `receive` に届かない、など）。開始の失敗：前の試みの子が止まってから作り直す（既存の `a_retried_start_does_not_keep_the_children_of_the_failed_attempt` も確かめる）／開始の失敗と同じ実行で止まった子にも判断が当たり、decider の panic が親を失敗させる／開始のやり直しの `Create` が 2 通並んだとき（子の Restart の判断と、親の再起動の後半）、作り直しは判断 1 回につき 1 回だけで、1 通目がまた失敗したら 2 回目の失敗も判断される（`pre_start` の回数、記録された失敗と判断の回数、再起動の回数で確かめる。11.12.2）。判断の取り置き：親が子を待つ間（`Recreation`）に失敗した子の判断は、親の再起動の後半のあとに当たり、decider の panic が親の再起動の中で親をもう一度再起動しない（11.12.6） |
 | PBT（P5） | `mailbox_order_property_test.rs` は、停止を含むまま通す。停止が非同期になっても、送ったものは 1 回だけ届くか dead letters へ行く（I8） |
 | 速さ | §7.5 の S1〜S4 を、A＝段に入る直前の main（`74d8872`）、A0＝`7ecb3f5` と比べて報告する。1 件ごとの送受信の経路は変えないので、揺れの中に収まる見込みである（生成と停止の経路は 1 件ごとには走らない）。止める基準ではない |
 
@@ -2286,6 +2367,18 @@ c1 の下に g）を、名前ごとの枠で表す。枠は、名前が空けば
 | `uv run python3 tools/license-headers/license_headers.py --check --manifest docs/design/issue-206-file-origin.tsv` | errors 0（新しい仕様に Apache-2.0 の見出しを付けた） |
 | ほかの CI と同じ検査（`cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、ledger と tools の Python のテストと Pekko baseline の検査、thumbv7em の `cargo check`、syn-check、`npm run check:aislop`） | すべて exit 0。`cargo test --workspace` は 1389 件が通過、失敗 0（Rust のコードは変えていない）。syn-check は違反 0 |
 
+設計の独立レビューを受けて直したあと（2026-11-27、quint 0.32.0。11.12.16）：
+
+| 検査 | 結果 |
+|:---|:---|
+| `scripts/quint-check-specs.sh` | exit 0。`actor_termination.qnt` は 24 passing（正しい形 9 本、負の対照 15 本）、ほかの仕様は変えていない |
+| `actor_termination.qnt` の `quint run --invariant=invariant`（正しい形、rust の backend、20 手・1 万本、3 回） | 3 回とも違反なし（trace の長さの最大 21、平均 20.99） |
+| 同（40 手・5 万本、3 回） | 3 回とも違反なし（最大 41、平均 33.8） |
+| 同（`--backend=typescript`、60 手・5,000 本） | 違反なし（最大 42、平均 33.6。seed `0x10f8605643e8a0`） |
+| 15 の誤りのモードから始める `quint run`（20 手・1 万本、モードごとに 3 回） | 14 のモードは 3 回とも違反を見つけた。`CreateInsideRestart` は `recoveryNotNested`、`NotifyTwice` は `noticesOnce`、`KeepSuspended` は `settledMeansResumed` を、それぞれその不変条件だけを渡した `quint run` でも破った（レビューが写しで試した 2 つの変異は、`NotifyTwice` と `KeepSuspended` と同じ形で、どちらも乱数の探索で落ちるようになった）。`RetryUndecided` は、20 手・1 万本では種に左右され、9 回中 3 回だけ見つけた（2 通目の `Create` が並び、1 通目がもう一度失敗し、判断より先に 2 通目を処理する、の 3 つが揃う必要がある）。30 手・5 万本では 6 回とも、40 手・20 万本でも見つけた。CI が毎回確かめるのは、決まった筋書きの `retryUndecidedRetriesTwiceForOneDecisionTest` である |
+| 探索が届く状態（正しい形、20 手・1 万本。その状態を否定した式を不変条件にして流す） | 同じ子の列に `Create` が 2 通並ぶ状態、親が suspend されている間に子の判断が取っておかれている状態、親が `Recreation` で待つ間に子の判断が取っておかれている状態、再起動が進行中の状態、閉じて `post_stop` を 1 回回した状態は見つけた。判断のまだの開始の失敗の後ろに `Create` が残る状態（高 1 の 2 通目が届く時点）は、2 回のうち 1 回見つけた |
+| `npm run check:aislop`、`license_headers.py --check` | どちらも exit 0。Rust のコードは変えていない |
+
 #### 11.12.15 選ばなかった形
 
 - **停止を同期のまま残し、止める対象の `Create` を先に済ませる**（#251 の試作の形）：#251 の 13 件だけで済むが、T1 の「子が
@@ -2301,3 +2394,23 @@ c1 の下に g）を、名前ごとの枠で表す。枠は、名前が空けば
 - **閉じたメールボックスの system message を、原典どおり `DeadLetter` として publish する**：11.12.3 の理由で、`Watch` を送る 4c で
   決める
 - **ワイルドカードの選択を 4a で入れる**：11.12.9 の理由で 4c
+
+#### 11.12.16 設計の独立レビューの指摘の処理（2026-11-27 のレビュー、`d436bea` に対して）
+
+レビューの判定は「要修正（高 1、中 3、低 4）」で、全体の形（`Create` と `Terminate` を system message にすること、名前の予約と
+解放の時点、T1〜T5 の順、`resume_if_open` の改め方、深さ 1 の保ち方、`SystemMessage` の 4 種類、ワイルドカードの 4c 行き）は
+原典と合うとされた。指摘ごとの処理は次のとおりである。
+
+| 指摘 | 判断 | 処理 |
+|:---|:---|:---|
+| 高 1：開始のやり直しの `Create` が 2 通並ぶと、判断を経ない作り直しと開始の失敗の記録の喪失が同じ実行の中で起きる | 直す（候補 b） | `Create` の処理に「開始に失敗していて、その失敗への判断がまだ」の行を足し、何もしない形にした（11.12.2 の表と「やり直しの `Create` が 2 通並ぶとき」）。判断を当てたら、セルの記録に「判断が済んだ」を付ける。候補 a と c を選ばなかった理由も同じ節に書いた。レビューの「原典ではこの形は起きない」は訂正して記した。原典でも `Recreate` が 2 通並べば 2 通目は作り直す（`Recreate` は `StashWhenFailed` でない）が、原典は失敗ごとに `Failed` が届き、親の `Suspend` で数が合うので壊れない。4a は記録が 1 枠で `Suspend` も送らないので、2 通目を捨てる。Quint に `oneRetryPerDecision`、負の対照 `RetryUndecided`、正しい形の `twoQueuedCreatesRetryOncePerDecisionTest` を足し、この筋書きに要る 3 回の失敗のため `FAILS` を 2 から 3 にした。11.12.12 の新しい単体テストに 1 件足した |
+| 中 1：`recoveryNotNested` は状態から導かれない幽霊の印で、負の対照 `CreateInsideRestart` が同語反復 | 直す | 各アクターに進行中の再起動の数 `restarting` を持たせ（前半の始めで増え、後半の終わりで減る）、再起動が始まる時点の深さの最大を `deepestRestart` に残す。`recoveryNotNested` は深さが 1 を超えないこととした。`CreateInsideRestart` は、後半が子の作り直しをその場で行い、失敗すると判断まで再起動が進行中のまま残る遷移にした（11.12.7）。印の `nested` と、`decide` の引数で印を立てる分岐は消した。直す中で、直す前の仕様が decider の panic の判断だけを親が子を待つ間は起きないとして外していたことに気づき、判断のすべてを親の suspend が解けるまで取っておく形を設計に足した（下の最後の行） |
+| 中 2：`notices` が集合で、終了の通知の二重を数えられない | 直す | `notices`（watcher への `Terminated`）と `parentNotices`（親への `ChildTerminated`、ガーディアンの下では名前を空けること）を世代ごとの数にし、`post_stop` も世代ごとの回数（`postStops`）にした。不変条件 `noticesOnce` と `postStopOnce` を足し、負の対照 `NotifyTwice`（レビューが写しで試した変異と同じ形）を足した |
+| 中 3：suspend の残りを捕まえる不変条件が無い | 直す | `settledMeansResumed`（何も進行中でないとき、インスタンスのある、または作られる前のアクターの suspend は 0）を足した。正しい形で成り立つことを `quint run` で確かめてから足した（11.12.14）。負の対照 `KeepSuspended`（レビューが写しで試した「後半が suspend を解かない」変異と同じ形）を足した |
+| 低 1：名前の再利用の記述が、メールボックスの無い親の場合と合わない | 直す | 11.12.10 の行をメールボックスのある親とガーディアンの下に分け、11.12.4 の「遅くはならない」の範囲を限った |
+| 低 2：`ChildTerminated` で親の表から外すときの照合が書かれていない | 直す | 11.12.4 の 1 に、`ActorRef`（id と世代）が表の登録と一致するときだけ外し、一致しない通知は表を変えないことを書いた |
+| 低 3：`sysDead` と `deadLettered` は数えるだけ。T5 は仕様の外 | 直す | 11.12.3 の文を「数えるだけ。保存の主張は `mailbox_scheduling.qnt` の `systemMessagesConserved`」に直し、11.12.11 の仕様の単純化に T5 と数えるだけの 2 つを書いた |
+| 低 4：`Terminate` の処理の「停止中なら何もしない」が誤読できる | 直す | 11.12.3 の 1 を、理由が `Termination` のときだけ何もせず、ほかの理由なら `Termination` に替えて進む形に書いた |
+| 中将の点 (1)：停止を非同期にした分の洗い出しを実装の最初の工程にする進め方 | 直す（設計に書く） | 11.12.12 の「一覧に無いテスト」の行に、写しは生成と停止の両方を system message にした形で作ること、テストスイートの全体（testkit を含む）を流すこと、落ちずに意味が弱まるテストを目で読む分を残すことを書いた |
+| 中将の点 (2)：`Suspend` を外すと形が変わる単体テスト 3 件 | 直す（記録する） | 11.12.9 の表のとおり triage として扱う。レビューの答えと 2 つの条件（テストだけのコミット、実装の PR への記録）を 11.12.9 に書いた |
+| （レビューの指摘ではない）親が suspend されている間の子の失敗 | 足す（要レビュー） | 中 1 を直す中で見つけた。4a では親が suspend されたまま複数の実行にまたがる（自分の失敗の判断待ち、開始の失敗、子を待つ間）。その間に子の判断を当てると、decider の panic が子を待つ親やインスタンスの無い親を失敗させ、深さ 1 が崩れる。原典の `Failed` の `StashWhenFailed` と `StashWhenWaitingForChildren` に合わせ、判断を親の `ParentEntry` に取っておき、親の suspend が 0 に戻ったら届いた順に判断し、親が閉じたら捨てる形を 11.12.6 に足した。Quint では `decide` の前提で表す。この行は、次の設計レビューで見てもらう |
