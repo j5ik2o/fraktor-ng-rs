@@ -2622,3 +2622,96 @@ fn a_retried_start_finds_the_cell_again_after_a_child_stop_moves_the_table() {
   assert!(!system.is_actor_terminated(&children[1]), "the child of the retried attempt is not alive");
   assert!(system.is_actor_terminated(&victim_ref), "the stop issued from the child-terminated hook did not happen");
 }
+
+#[test]
+fn named_top_level_creation_verifies_dispatcher_configuration() {
+  let mut system = system("PekkoCustomSpec");
+  let props = Props::empty().with_dispatcher("does not exist");
+
+  let named_err = system.actor_of_named(props.clone(), "missing-a").expect_err("unknown dispatcher must be refused");
+  assert!(matches!(named_err, crate::kernel::actor::ActorCreationError::Configuration(_)));
+  let with_name_err =
+    system.actor_of_with_name(props, "missing-b").expect_err("actor_of_with_name must also verify dispatcher");
+  assert!(with_name_err.to_string().contains("does not exist"));
+
+  // A refused creation must not reserve the name.
+  let created = system.actor_of_named(Props::empty(), "missing-a").expect("refused name stays free");
+  assert_eq!(created.path().name(), "missing-a");
+}
+
+#[test]
+fn named_top_level_creation_applies_router_verification_and_head() {
+  use crate::kernel::actor::{PoolKind, RouterConfig};
+  use crate::kernel::dispatch::{DispatcherConfig, DispatcherKind, Dispatchers};
+  use crate::kernel::setup::ActorSystemSetup;
+
+  let dispatchers = Dispatchers::new(alloc::vec![DispatcherConfig {
+    id: "balancing-dispatcher".to_string(),
+    kind: DispatcherKind::Balancing,
+  }]);
+  let setup = ActorSystemSetup::empty().with_setup(dispatchers);
+  let mut system = ActorSystem::with_setup("PekkoCustomSpec", Arc::new(ChannelBoundary::new()), setup);
+
+  let bad_router = Props::empty().with_router(RouterConfig {
+    pool: PoolKind::RoundRobin,
+    nr_of_instances: 2,
+    router_dispatcher: Some("balancing-dispatcher".to_string()),
+  });
+  let named_err =
+    system.actor_of_named(bad_router.clone(), "bad-router-a").expect_err("balancing router head must be refused");
+  assert!(matches!(named_err, crate::kernel::actor::ActorCreationError::Configuration(_)));
+  assert!(
+    system.actor_of_with_name(bad_router, "bad-router-b").is_err(),
+    "actor_of_with_name must also refuse a balancing router head"
+  );
+
+  // Valid router starts the router head rather than running the routee factory directly.
+  let seen_a = Arc::new(Mutex::new(Vec::new()));
+  let router_props_a = Props::new({
+    let seen = Arc::clone(&seen_a);
+    move || Sink { received: Arc::clone(&seen) }
+  })
+  .with_router(RouterConfig { pool: PoolKind::Broadcast, nr_of_instances: 2, router_dispatcher: None });
+  let head_a = system.actor_of_named(router_props_a, "router-a").expect("valid router starts");
+  head_a.tell("ping", system.dead_letters());
+  system.run_until_idle();
+  assert!(seen_a.lock().unwrap().is_empty(), "router head must not invoke routee receive directly");
+
+  let seen_b = Arc::new(Mutex::new(Vec::new()));
+  let router_props_b = Props::new({
+    let seen = Arc::clone(&seen_b);
+    move || Sink { received: Arc::clone(&seen) }
+  })
+  .with_router(RouterConfig { pool: PoolKind::Broadcast, nr_of_instances: 2, router_dispatcher: None });
+  let head_b = system.actor_of_with_name(router_props_b, "router-b").expect("valid router starts");
+  head_b.tell("ping", system.dead_letters());
+  system.run_until_idle();
+  assert!(seen_b.lock().unwrap().is_empty(), "actor_of_with_name must also install the router head");
+}
+
+#[test]
+fn named_top_level_creation_reuses_name_after_pre_start_stop() {
+  let mut system = system("PekkoCustomSpec");
+  let first = system.actor_of_named(Props::new(|| StopsItselfInPreStart), "ephemeral").expect("first actor starts");
+  assert!(system.is_actor_terminated(&first), "actor stopped during pre_start");
+
+  let second = system.actor_of_named(Props::empty(), "ephemeral").expect("name must be reusable after pre_start stop");
+  assert_ne!(first, second);
+  assert_eq!(second.path().name(), "ephemeral");
+
+  system.stop(&second);
+  system.run_until_idle();
+  assert!(system.is_actor_terminated(&second));
+
+  let third = system.actor_of_named(Props::empty(), "ephemeral").expect("name must be reusable after stop");
+  assert_ne!(second, third);
+}
+
+#[test]
+fn named_top_level_creation_on_terminated_system_returns_error() {
+  let mut system = system("PekkoCustomSpec");
+  system.terminate();
+
+  let error = system.actor_of_named(Props::empty(), "late").expect_err("terminated system must return Err");
+  assert_eq!(error.to_string(), "cannot create children while terminating or terminated");
+}
