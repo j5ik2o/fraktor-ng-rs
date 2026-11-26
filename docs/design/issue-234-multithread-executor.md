@@ -2499,26 +2499,29 @@ B/A は 7 場面とも 1 を下回ったが、A/A の組の比の揺れ（0.81�
 `dispatch/sysmsg/SystemMessage.scala`、`FaultHandling.scala`（`SupervisorStrategy`、`OneForOneStrategy`、`AllForOneStrategy`）、
 `dungeon/Dispatch.scala`、`dungeon/Children.scala` である（Pekko v2.0.0）。
 
-**要判断（D4b-1、元帥へ）**：原典の `finishRecreate` は、再起動したアクターが残した子（`pre_restart` で止めなかった子）の
-すべてに `Recreate` を送り、子も再起動する（`FaultHandling.scala:278-300` の `survivors`）。失敗したアクターの子は、判断が出るまで
-suspend される（`handleInvokeFailure` の `suspendChildren`、`faultSuspend`）。fraktor は、段 3 からどちらも行わない（残した子を
-再起動するのは `Kill` のときだけで、子は suspend しない）。この設計は、両方を原典どおりに入れる形を推す（11.13.7、11.13.9）。
-ところが、#254 の完了条件で「書き換えずに通す」と決まった `repeated_child_recovery_failures_do_not_nest_parent_recovery`
-（`executor_value_test.rs`）は、深さ 1 のほかに、親が `pre_restart` で残した子 `healthy` が親の再起動のあとも作り直されない
-こと（`healthy_creations == 1`、値が 1 のまま）を確かめている（`run_recovery`、`:516-521`）。原典どおりにすると、`healthy` は
-親の再起動のたびに作り直され、この 2 つの assert が落ちる。深さ 1 の assert は落ちない（11.13.10）。
+**元帥の決定（2026-11-27）：D4b-1 は A**。原典の `finishRecreate` は、再起動したアクターが残した子（`pre_restart` で止めなかった
+子）のすべてに `Recreate` を送り、子も再起動する（`FaultHandling.scala:278-300` の `survivors`）。失敗したアクターの子は、判断が
+出るまで suspend される（`handleInvokeFailure` の `suspendChildren`、`faultSuspend`）。fraktor は段 3 からどちらも行わない（残した子を
+再起動するのは `Kill` のときだけで、子は suspend しない）。段 4b は、両方を原典どおりに入れる（11.13.6、11.13.7）。
+
+これにより、#254 の完了条件で「書き換えずに通す」とした `repeated_child_recovery_failures_do_not_nest_parent_recovery`
+（`executor_value_test.rs`）のうち、親が `pre_restart` で残した子 `healthy` が親の再起動のあとも作り直されないことを確かめる 2 つの
+assert（`run_recovery` の `healthy_creations == 1` と、再起動のあとの値が 1 であること。`:519-520`）が、原典の振る舞いと合わなくなる。
+元帥は、2026-11-26 の決定の「書き換えずに深さ 1 のまま通す」を、深さ 1 の assert に限ると読み直した。深さ 1 の assert は書き換えず、
+`healthy` の 2 つの assert は、原典より強い前提（親が再起動しても残した子は作り直されない）に頼っているので、triage へ差し戻す。
+テストの担当（Opus）が、原典の振る舞い（`healthy` は親の再起動のたびに作り直される）を確かめる形に直す（#254 と #251 に記録）。
+深さ 1 の流れは 11.13.10 にある。
+
+決める前に比べた形（記録として残す）：
 
 | 選択肢 | 中身 | 結果 |
 |:---|:---|:---|
-| A（推す） | 原典どおり、子の suspend と残した子の再起動を入れる。`run_recovery` の `healthy` の 2 つの assert は、原典より強い前提（親が再起動しても残した子は作り直されない）に頼っているので、triage へ差し戻して直す。深さ 1 の assert は書き換えない | 原典の意味論になる。元帥の決定（2026-11-26）の「書き換えずに」を、深さ 1 の assert に限って読み直すことになるので、元帥の判断が要る |
-| B | 段 4a と同じく、子を suspend せず、残した子は `Kill` のときだけ再起動する | `run_recovery` は書き換えずに通る。原典との差（失敗したアクターの子が判断の前に通常のメッセージを処理する。残した子が再起動しない）が残り、`docs/decisions/pekko-semantics-first.md` の「作りのずれは直す」から外れる。この差を残すことになるので、オーナーの判断が要る |
+| A（採った） | 原典どおり、子の suspend と残した子の再起動を入れる。`healthy` の 2 つの assert は triage へ差し戻す。深さ 1 の assert は書き換えない | 原典の意味論になる |
+| B（採らなかった） | 段 4a と同じく、子を suspend せず、残した子は `Kill` のときだけ再起動する | `run_recovery` は書き換えずに通るが、原典との差（失敗したアクターの子が判断の前に通常のメッセージを処理する。残した子が再起動しない）が残り、`docs/decisions/pekko-semantics-first.md` の「作りのずれは直す」から外れる |
 
-根拠：`docs/decisions/pekko-semantics-first.md`（Pekko どおりに写せるものは伺わずに写す。伺うのは数から外す・弱めるとき）。
-A は写せる形で、伺うのは完了条件の読み方だけである。B は原典より弱い（子の suspend が無い）ので伺いの対象になる。
 Quint では、A の形で不変条件 `noReceiveUnderAFailedParent` が成り立ち、子を suspend しない形（負の対照 `NoSuspendChildren`。
 B の半分）では成り立たない。子を suspend して、残した子を再起動しない形（負の対照 `NoSurvivorRecreate`）では、子が suspend された
-まま残る（`settledMeansResumed`。11.13.11）。2 つは対で、片方だけを入れることはできない。以下は A で書く。B に決まったら、11.13.7 の子への `Suspend` と
-11.13.6 の生き残りの `Recreate` を外し、11.13.11 の仕様をそれに合わせて直す。
+まま残る（`settledMeansResumed`。11.13.11）。2 つは対で、片方だけを入れることはできない。
 
 **変えないこと**：DeathWatch と終了の通知の表、stash、`stop_and_reply` の返事は、実行器の表のまま（段 4c）。`MailboxCell::Env`
 は `Executor` のままで、`ActorContext` の `&mut Executor` も残す（段 4 の終わりで外す）。システムの終了（`stop_all`、T6〜T8）は
@@ -2790,8 +2793,8 @@ suspend が 0 に戻ったら届いた順に判断する」「親が閉じたら
 `Terminate` を処理する。試行 3、再起動 2、深さ 1、親と子が止まり、`bob` についての終了のフックは 1 回で、4a と同じである。
 
 D4b-1 の A では、`healthy` が親の再起動のたびに作り直される。`run_recovery` のうち、`healthy_creations == 1` と、再起動のあとの
-値が 1 であることの 2 つの assert（`:519-520`）は落ちる。深さ（`restart_depths`）、試行の数、再起動の数、停止、通知の数は
-変わらない。`healthy` を残す形（B）では、すべての assert が書き換えずに通る。
+値が 1 であることの 2 つの assert（`:519-520`）は落ちるので、triage へ差し戻して原典の振る舞いを確かめる形に直す（元帥の決定、
+2026-11-27。11.13 の冒頭）。深さ（`restart_depths`）、試行の数、再起動の数、停止、通知の数は変わらず、その assert は書き換えない。
 
 #### 11.13.11 不変条件と Quint
 
@@ -2917,7 +2920,7 @@ red のテストを書くのに使える面（どれも、今の公開 API か t
 受けてから red に入る。テストは書き換えずに上げる。
 
 1. 写しは、11.13.1 の表の形をすべて入れた形で作る（`Failed`、`Suspend`、`Resume`、`Recreate` を system message にし、取り置きと、
-   子の suspend と、生き残りの `Recreate` を入れる。D4b-1 が B に決まれば、その形で作る）
+   子の suspend と、生き残りの `Recreate` を入れる。D4b-1 は A に決まった）
 2. その写しで、テストスイートの全体（testkit を含む `cargo test --workspace`）を流し、落ちたテストを、原典の振る舞いと判定つきで
    #254 に載せる
 3. 落ちずに通るが意味が弱まるテストを目で読む。少なくとも、`pre_restart` を上書きして子を残すテスト（`ticket669_spec.rs`、
@@ -2963,8 +2966,8 @@ red のテストを書くのに使える面（どれも、今の公開 API か t
 - **再起動の回数を子のセルに残す**：親の実行が子のセルを読むことになり、段 5 で競合する。原典は親の表に置く
 - **`post_restart` の失敗を原典どおり親の判断にする**（`PostRestartException` で `handleInvokeFailure`、`setFailedFatally`）：
   既定の decider の答え（止める）は今と同じで、違うのは decider を上書きした場合だけである。`FailureKind` に種類を足すと公開 API
-  が変わり、`isFailedFatally` の扱い（次の `Resume` を `Recreate` に変える）も要る。#254 の範囲の外として残し、段 4c か別の issue
-  で扱う（中将へ上げる）
+  が変わり、`isFailedFatally` の扱い（次の `Resume` を `Recreate` に変える）も要る。#254 の範囲の外として残す
+  - 中将が [Issue #301](https://github.com/j5ik2o/fraktor-ng-rs/issues/301)（post_restart の失敗の扱いを原典どおりにする）に分けた（2026-11-27）
 - **ガーディアンをアクターにして、原典どおり user guardian の失敗を root guardian に判断させる**：#234 の範囲の外。11.13.4 の差を
   残す
 
