@@ -1697,6 +1697,10 @@ impl Executor {
     }
     let mut cell = self.take_cell(parent).expect("the parent's cell was just read in its mailbox");
     let mut stack = cell.take_stack();
+    // The hook stands in for the `Terminated` the original's cell handles
+    // as an auto-received message, so the receive timeout is cancelled
+    // before it and checked after it, as `invoke` does for a message.
+    let timeout_before = self.receive_timeout_before(parent.key(), true);
     self.hook_child_creation_refused = false;
     self.enter_frame(parent);
     let catcher = self.catcher.clone();
@@ -1711,6 +1715,8 @@ impl Executor {
       }
     };
     self.exit_frame();
+    self.receive_timeout_after(parent.key(), true, timeout_before);
+    self.fire_due_receive_timeouts();
     cell.restore_stack(stack);
     self.put_cell(cell);
     let refused = core::mem::replace(&mut self.hook_child_creation_refused, false);
@@ -2324,9 +2330,16 @@ impl Executor {
     self.running.push(key);
     let (outcome, sender) = cell.receive(self, message, sender, catcher.as_deref());
     self.exit_frame();
-    self.receive_timeout_after(key, influences, timeout_before);
-    self.fire_due_receive_timeouts();
     let deferred_stop = self.actors.get(&key).is_some_and(|entry| !entry.deferred_replies.is_empty());
+    // A stop the handling asked for wins over the timeout it set: the
+    // check and the firing are skipped here, and the stop the run's end
+    // carries out first clears the timeout, so no `ReceiveTimeout` is
+    // fired into the closing mailbox.
+    let stopping = deferred_stop || self.pending_stops.iter().any(|target| target.key() == key);
+    if !stopping {
+      self.receive_timeout_after(key, influences, timeout_before);
+      self.fire_due_receive_timeouts();
+    }
     match outcome {
       | RunOutcome::Completed if deferred_stop => {
         self.after_run = Some((key, AfterRun::Stop { sender: None }));
@@ -2431,10 +2444,17 @@ impl Executor {
         self.fire_due_receive_timeouts();
         return has_work(self);
       }
-      arrivals.wait(deadline - now);
+      let signaled = arrivals.wait(deadline - now);
       self.fire_due_receive_timeouts();
       if has_work(self) {
         return true;
+      }
+      if !signaled {
+        // The real wait ran out without a signal. A clock the caller
+        // drives by hand does not advance while this thread waits, so
+        // waiting again on the same reading would never end: the wait
+        // is over, as it is when the clock itself reaches the deadline.
+        return has_work(self);
       }
     }
   }
