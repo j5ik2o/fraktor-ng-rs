@@ -3358,8 +3358,8 @@ nodes:
     coverage: approx
   cases:
     total: 8
-    ported: 8
-    passing: 8
+    ported: 7
+    passing: 7
     excluded: []
   rust:
     crate: fraktor-actor
