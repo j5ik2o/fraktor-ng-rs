@@ -193,13 +193,13 @@ kernel が使う原子操作、Arc、ロックは、次の 3 つの決まりで�
 
 | 番号 | 決まり | 中身 |
 |:---|:---|:---|
-| C1 | 原子操作は `portable-atomic` 越しにする | API は core と同じで、CAS のある target では core の命令になる。CAS の無い target では critical-section で代わりに行い、その実装は adaptor（embassy や HAL）が渡す。`MailboxStatus`、id の数え上げ（今の `NEXT_ID` などの `AtomicU64`）、印の `AtomicBool` は、どれもこれを使う |
+| C1 | 原子操作は `portable-atomic` 越しにする | API は core と同じで、CAS のある target では core の命令になる。CAS の無い target では critical-section で代わりに行い、その実装は adaptor（embassy や HAL）が渡す。`MailboxStatus` と id の数え上げ（今の `NEXT_ID` などの `AtomicU64`）はこれを使う。各ファイルが `portable_atomic` を直接 import し、`kernel::sync` からは再公開しない（段 0 のあとの直し。§11.9）。switch の `AtomicBool` は段 0 では core のままにし、CAS の無い target 向けの置き換えは段 0b（[Issue #243](https://github.com/j5ik2o/fraktor-ng-rs/issues/243)）で行う |
 | C2 | ロックは kernel が持つ port 越しにする | 閉じた区間を渡す形にする（下の「ロックの port」）。embassy-sync のロック（`CriticalSectionRawMutex`、`ThreadModeRawMutex`）と同じ形で、std の `Mutex`、`parking_lot`、`spin` でも作れる。システム全体の表も、この port を使う（再レビュー L6 の「spin のまま」は取りやめた） |
 | C3 | Arc は kernel の中の別名 `kernel::sync::Arc` を使う | `cfg(target_has_atomic = "ptr")` なら `alloc::sync::Arc`、無ければ `portable_atomic_util::Arc`。target の cfg で選ぶので、kernel に `feature = "std"` を置かない決まり（syn-check の `cfg-std-forbid`）には触れない。所有権モデルの決定文書の「Arc」は、この別名を含む。CAS の無い target（thumbv6m、RP2040）も対象に入れる。ただし、その target で build できるようにするのは段 0b（#243）で、`Arc<dyn …>` の作り方と、`self: Arc<Self>` を使う公開 API の変更を含む |
 
 | 置き場所 | 型（名前は案） | 中身 |
 |:---|:---|:---|
-| kernel `sync.rs` | `Arc`、`Weak`（別名）、原子操作の型の再公開 | C1 と C3 |
+| kernel `sync.rs` | `Arc`、`Weak`（別名だけ。原子操作の型は再公開しない） | C3。原子操作の型は各ファイルが `portable_atomic` を直接 import する（C1。syn-check の module-wiring のため、`kernel::sync` からは再公開しない。段 0 のあとの直し。§11.9）。`sync.rs` は `kernel.rs` で可視性なしの `mod sync;` として宣言する |
 | kernel `sync/raw_lock.rs` | trait `RawLock: Send + Sync`（port） | `fn lock(&self, f: &mut dyn FnMut())`。閉じた区間を 1 つ走らせる。dyn で呼べる形なので、型引数が公開 API に伝わらない |
 | kernel `sync/lock_cell.rs` | `LockCell<T>` | `Box<dyn RawLock>` と中身を持ち、`with(&self, f: impl FnOnce(&mut T) -> R) -> R` だけを出す。中は `UnsafeCell` で、unsafe はこの型の中に閉じる |
 | kernel `sync/lock_factory.rs` | trait `LockFactory: Send + Sync`（port） | `RawLock` を作る。システムを作るときに adaptor が渡す。kernel の既定の工場は `spin`（`portable_atomic` の機能つき）で作る |
@@ -430,7 +430,7 @@ kernel と adaptor の境目は、次の 2 つだけである（§3.8 の工夫 
 | Pinned | 専用のスレッド 1 本 | 専用の常駐のタスク 1 本（止まって待つアクターなら `spawn_blocking` の上のスレッド） | 専用の静的なタスク 1 本 |
 | 止まって待つアクター | Pinned か、別の dispatcher に置く | `spawn_blocking` で回す dispatcher に置く（Pekko の blocking 用の dispatcher と同じ考え） | 置かない（待つときは `.await` を使うアクターにする話で、この設計の範囲の外） |
 | `LockFactory` | std の `Mutex` か `parking_lot` | std と同じ | `CriticalSectionRawMutex`、`ThreadModeRawMutex` |
-| 原子操作、Arc | core（`portable-atomic` はそのまま core の命令になる） | 同じ | CAS のある target は core と同じ（段 0 のあと）。CAS の無い target（thumbv6m、RP2040）は段 0b（#243）のあとで、`portable-atomic` の critical-section と `portable_atomic_util::Arc` |
+| 原子操作、Arc | core（`portable-atomic` はそのまま core の命令になる） | 同じ | thumbv7em の 64 ビットは、portable-atomic の中でスピンロックになり、割り込みから再入すると止まる（[Issue #263](https://github.com/j5ik2o/fraktor-ng-rs/issues/263)）。CAS の無い target（thumbv6m、RP2040）は段 0b（#243）のあとで、`portable-atomic` の critical-section と `portable_atomic_util::Arc` |
 | `MessageQueueFactory` | kernel の既定の列。段 5 でロックを使わない列に替えられる（§3.8 の工夫 3） | 同じ | 固定長の列（`heapless` の類。満杯は push の待ち時間 0 の bounded と同じく dead letters） |
 | `Clock` | `SystemClock`（今のもの） | `tokio::time::Instant` | `embassy_time::Instant` |
 | `Scheduler` | タイマーのスレッド | `tokio::time::sleep` を待つタスク | タイマーの列を持つ静的なタスクが `embassy_time::Timer` で待つ |
@@ -447,6 +447,8 @@ embassy で前提になるもの：
   実行を待つクロージャの数の和の最大」以上にする。I2 により、各メールボックスは列に高々 1 回しか入らないので、こうすれば
   混んでいるだけで満杯になることは無い。満杯で `Rejected` になるのは、止めたあとだけにする（原典と同じ。再レビュー 3 の L3）。
   §3.5 の扱い（bit を下ろしてエラー）は、仕事のあるメールボックスを予約されないまま残すので、混雑で起こしてはいけない
+
+embassy の adaptor を作る段の完了条件に、[Issue #263](https://github.com/j5ik2o/fraktor-ng-rs/issues/263) を閉じる（割り込みから送っても止まらないこと）を含める。embassy では割り込みから送るのがふつうの使い方なので、この条件を満たさない限り embassy 対応とは言わない（元帥）。
 
 どの adaptor を作るかは、この設計の範囲の外である（§1.3）。この節は、kernel の port が、どの adaptor でも作れる形に
 なっていることを示すためのものである。段 0 の CI（thumbv7em の `cargo check`）と段 0b の CI（thumbv6m）で、kernel が std なしで
@@ -696,7 +698,7 @@ API 3 つと単体テスト、8 ファイル）を 2 とする。どの段も、
 
 | 段 | issue にする単位 | 中身 | 完了の条件 | 大きさ |
 |:---|:---|:---|:---|:---|
-| 0 | kernel を no_std で build できるようにする（元帥の C4、2026-11-26） | crate は割らない。lib.rs を `#![cfg_attr(not(feature = "std"), no_std)]` にし、adaptor を `std` の機能（既定で有効）の後ろに置く（lib.rs は kernel ではないので、`cfg-std-forbid` には触れない）。kernel の各ファイルで `alloc` を明示して import する。`AtomicU64` の 3 か所（`NEXT_ID`、`NEXT_SPAWN`、`NEXT_LIST`）と、kernel のほかの原子操作を `portable-atomic` にする（C1）。`AtomicU64::try_update`（`double_linked_list_value.rs`）は portable-atomic に無いので `fetch_update` にする（再レビュー 3 の L5）。kernel の `Arc` を `kernel::sync::Arc` にする（C3。CAS のある target では `alloc::sync::Arc` のまま）。`spin` に `portable_atomic` の機能を足す。`getrandom` を adaptor の側の依存にする。前提：`portable-atomic` と `portable-atomic-util` のライセンスの記録を、段 0 の PR より前に #206 の側へ入れる（§7.4 の追記の案。元帥、2026-11-26） | 既存のテストのすべてが通る。CI に `cargo check -p fraktor-actor --no-default-features --target thumbv7em-none-eabihf` を足し、通る（CI の実装は段 0 の PR で行う。再レビュー 3 の試作では、この段の直しでエラーが 0 になった）。根拠は `docs/decisions/crate-structure-comparison.md` の 2026-11-26 の節 | 3 |
+| 0 | kernel を no_std で build できるようにする（元帥の C4、2026-11-26） | crate は割らない。lib.rs を `#![cfg_attr(not(feature = "std"), no_std)]` にし、adaptor を `std` の機能（既定で有効）の後ろに置く（lib.rs は kernel ではないので、`cfg-std-forbid` には触れない）。kernel の各ファイルで `alloc` を明示して import する。`AtomicU64` の 3 か所（`NEXT_ID`、`NEXT_SPAWN`、`NEXT_LIST`）と、kernel のほかの原子操作を `portable-atomic` にする（C1。各ファイルが `portable_atomic` を直接 import し、`kernel::sync` からは再公開しない。switch の `AtomicBool` は core のままにし、CAS の無い target 向けの置き換えは段 0b（#243）に回す。段 0 のあとの直し。§11.9）。`AtomicU64::try_update`（`double_linked_list_value.rs`）は portable-atomic に無いので `fetch_update` にする（再レビュー 3 の L5）。kernel の `Arc` を `kernel::sync::Arc` にする（C3。CAS のある target では `alloc::sync::Arc` のまま）。`spin` に `portable_atomic` の機能を足す。`getrandom` を adaptor の側の依存にする。前提：`portable-atomic` と `portable-atomic-util` のライセンスの記録を、段 0 の PR より前に #206 の側へ入れる（§7.4 の追記の案。元帥、2026-11-26） | 既存のテストのすべてが通る。CI に `cargo check -p fraktor-actor --no-default-features --target thumbv7em-none-eabihf` を足し、通る（CI の実装は段 0 の PR で行う。再レビュー 3 の試作では、この段の直しでエラーが 0 になった）。no_std の check には警告が 2 件残る（`executor::next_actor_ref` の使われない import と、`ActorRef::boundary_key` の使われないメソッド。どちらも adaptor だけが使う kernel の `pub(crate)` の口で、std なしでは使う側が無くなる。kernel には `cfg(feature = "std")` を置けず、抑制は人間が決めるため段 0 では残した。片づける先は段 1（[Issue #249](https://github.com/j5ik2o/fraktor-ng-rs/issues/249) のコメント）で、段 1 で無理なら段 0b（#243）で片づけ、その理由を #249 に書く。段 0 のあとの直し。§11.9）。根拠は `docs/decisions/crate-structure-comparison.md` の 2026-11-26 の節 | 3 |
 | 0b | CAS の無い target（thumbv6m、RP2040）で build できるようにする（C3 の作り方。[Issue #243](https://github.com/j5ik2o/fraktor-ng-rs/issues/243)。元帥の M2、2026-11-26） | `Arc<dyn …>` を作る所を、どの target でも通る形にそろえる（`Arc::from(Box::new(x) as Box<dyn …>)` か、同じことをする小さなマクロ。CAS の無い target では割り当てと複写が 1 回増える）。場所は、`Props::new`、`FunctionBoundary`、`NoOpBoundary`、`SupervisorStrategy` の decider と hook、`ActorSystemSetup`、`Logging/error.rs` など。`self: Arc<Self>` を受け手にする公開 trait（`EventSink::into_any`）の受け手を替える。この 2 つの作り方は #243 の設計で決める | CI に `cargo check -p fraktor-actor --no-default-features --target thumbv6m-none-eabi` を足し、エラーが 0。公開 API の変更点の一覧（`EventSink` の受け手のほか、変わる型とメソッド）を #243 の設計と PR に載せる。既存のテストのすべてが通る | #243 で見積もる |
 | 1 | Send にする（挙動は変えない）。この PR のマージのあと | §2.3 の置き換え。Arc が増える場所は §2.4 の 4 か所だけ。`ActorEventBus` は、§2.4 の形に作りを替え、`publish` の経路にロックを入れない。`spin::Mutex` は `try_lock` で取り、取れなければ「再入または同時の利用」で panic する（今の `RefCell` の二重借用の panic と同じ振る舞いを保つ）。`ActorSystem`、`WeakActorSystem`、`EventStream` が `Send + Sync` であることのコンパイル時の検査を `tests/` に足す。`ActorSystem` と `WeakActorSystem` の rustdoc に「段 5 より前は、別のスレッドから同時に使うと panic する」と書く | 検査を先に足して E0277（9 件）で落ちることを確かめる（red）。置き換えのあと、検査と既存のテストのすべてが通る。`receive` の中から `WeakActorSystem` を呼ぶ再入のテストが、止まらずに panic で返る（設計レビュー M3。base でも段 1 でも通ることを、レビューが試作で確かめた）。§7.5 の S1〜S4 を測って報告する。§7.5 の計測のテストを入れる。`tests/event_bus_spec.rs` と `tests/g0f_review_f_terminated_subscription.rs` が書き換えなしで通る（購読者が止まったときの debug のイベントの時点と、止まった購読者の片づけ） | 2 |
 | 2 | kernel のメールボックス（配線しない） | `MailboxStatus`、`MessageQueue` と 4 種類のキュー、`SystemMessage` とそのキュー、閉じる門、ロックの port（`RawLock`、`LockCell`、`LockFactory`）、`MessageQueueFactory`、`MailboxRun`（§3.2）。§3.8 の工夫 1、2、3（port まで）、5 を入れる。工夫 2 と 5 は、実装の前に `mailbox_scheduling.qnt` を直す（予約を「読む」と「`fetch_or`」の 2 手に分け、I13 を直す。system message の印と、印を下ろす順を逆にした負の対照を足す）。どこからも使わない。D1 の条件 2 により、型の形は Balancing の共有のキューと std のロックを先に入れて決める | §7.3 の P1〜P3 の PBT。状態の操作が Quint の状態の部分と一致する。共有のキューを持つ 2 つのメールボックスで、片方を閉じても共有のキューが残ることの単体テスト | 3 |
@@ -789,7 +791,7 @@ ConsistencySpec で確かめる。段 2 では、`MailboxStatus` に限って lo
   dispatcher を登録して作るシステムには、`LockFactory` と `MessageQueueFactory` を渡す口が増える（足すだけ）。
   段 0b（#243）では、`self: Arc<Self>` を受け手にする公開 trait（`EventSink::into_any`）の受け手が変わる（狭める変更。
   一覧は #243 で作る）
-- 依存：段 0 で `portable-atomic`（`fallback`、`critical-section` の機能）と `portable-atomic-util` を足し、`spin` に
+- 依存：段 0 で `portable-atomic`（`fallback`、`critical-section` の機能）を足し、`portable-atomic-util` は target の cfg（`not(target_has_atomic = "ptr")`）の依存（`[target.'cfg(not(target_has_atomic = "ptr"))'.dependencies]`）に置き、`spin` に
   `portable_atomic` の機能を足す。`getrandom` は adaptor の側の依存にする。前の版で足すとしていた `lock_api` は足さない
   （C2）。std の側の休むロックに `parking_lot` を使うなら、それも足す（段 2 で決める）
 - #206 のライセンスの記録への追記の案：#206 の記録（`docs/design/issue-206-license-policy.md`）には、依存の crate の
@@ -1128,3 +1130,16 @@ bot の記録 `pr236-design-rereview3.md` にある。M1 と M2 は元帥が決�
 - L1：仕様を深く流す手順に、`--backend=typescript` を書く（既定の rust の backend は、この仕様で 25 手を超えると quint の実行時エラーで落ちることがある。CI の 20 手には当たらない）。段 2 の issue を切るときに直す
 - L2：満杯の待ちから起きた送り手は、門の中で「閉じたか」に加えて「まだ空きがあるか」も見直し、空きが無ければ残りの待ち時間でもう一度待つ。閉じる側は、閉じたときに待っている送り手を起こす。段 5 の issue を切るときに直す
 - L3：`Again` の積み直しで `execute` が `Rejected` を返したときも、§3.5 の扱い（1 回だけ試し直し、だめなら bit を下ろしてエラー）にそろえると、`MailboxRun` の行に書く。段 2 の issue を切るときに直す
+
+### 11.9 段 0 のあとの直し
+
+段 0（[PR #262](https://github.com/j5ik2o/fraktor-ng-rs/pull/262)、main にマージ済み）の実装と、この設計のあいだにできたずれ 4 点を、元帥の判断で設計の文書を実装に合わせて直した。変わった点の設計レビューは行わない。[Issue #263](https://github.com/j5ik2o/fraktor-ng-rs/issues/263) の分も、あわせて直した。
+
+| 項目 | 直した内容 | 変わった箇所 |
+|:---|:---|:---|
+| ずれ 1：原子操作の型を `kernel::sync` から再公開しない | `pub(crate) use portable_atomic::…` は syn-check の module-wiring（直属の子モジュール以外からの再エクスポート）に当たるため、段 0 では各ファイルが `portable_atomic` を直接 import した。`kernel/sync.rs` は `Arc` と `Weak` の別名だけを持ち、`kernel.rs` では可視性なしの `mod sync;` で宣言する | §3.2 の C1、§3.2 の `sync.rs` の行、§6 の段 0 |
+| ずれ 2：switch の `AtomicBool` は core のまま | 単体テストが core の `AtomicBool` を作って渡すため、portable-atomic に替えると「既存のテストは書き換えなし」に反する。thumbv7em には 32 ビットの CAS があるので段 0 はこれで通る。CAS の無い target 向けの置き換えは段 0b（[Issue #243](https://github.com/j5ik2o/fraktor-ng-rs/issues/243)）に回す | §3.2 の C1、§6 の段 0 |
+| ずれ 3：no_std の check に警告が 2 件残る | `executor::next_actor_ref` の使われない import と、`ActorRef::boundary_key` の使われないメソッドである。どちらも adaptor だけが使う kernel の `pub(crate)` の口で、std なしでは使う側が無くなる。kernel には `cfg(feature = "std")` を置けず（cfg-std-forbid）、抑制は人間が決めるため段 0 では残した。片づける先は段 1（[Issue #249](https://github.com/j5ik2o/fraktor-ng-rs/issues/249) のコメント）で、段 1 で無理なら段 0b（#243）で片づけ、その理由を #249 に書く | §6 の段 0 の完了の条件 |
+| ずれ 4：`portable-atomic-util` は target の cfg の依存に置く | `[target.'cfg(not(target_has_atomic = "ptr"))'.dependencies]` に置いた。thumbv7em とホストでは使わないので、ふつうの依存にすると cargo の `unused_dependencies` の警告が出るためである | §7.4 の依存 |
+| #263：§3.7 の表の「core と同じ」は誤り | thumbv7em の 64 ビットは、portable-atomic の中でスピンロックになり、割り込みから再入すると止まる（[Issue #263](https://github.com/j5ik2o/fraktor-ng-rs/issues/263)）と直した | §3.7 の「原子操作、Arc」の行の embassy の欄 |
+| #263：embassy の adaptor を作る段の完了条件 | embassy の adaptor を作る段の完了条件に「#263 を閉じる（割り込みから送っても止まらないこと）」を入れた。embassy では割り込みから送るのがふつうの使い方なので、この条件を満たさない限り embassy 対応とは言わない（元帥） | §3.7（embassy で前提になるもののあと） |
