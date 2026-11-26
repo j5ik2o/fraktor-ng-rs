@@ -17,8 +17,9 @@ actor-tests/src/test/scala/org/apache/pekko/actor/DeadLetterSupressionSpec.scala
 actor-tests/src/test/scala/org/apache/pekko/actor/DeadLetterSuspensionSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/FSMTransitionSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/ForwardActorSpec.scala	no-report
-actor-tests/src/test/scala/org/apache/pekko/actor/FunctionRefSpec.scala	unclassified
+actor-tests/src/test/scala/org/apache/pekko/actor/FunctionRefSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/HotSwapSpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/actor/PropsCreationSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/ProviderSelectionSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/RelativeActorPathSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/RestartStrategySpec.scala	no-report

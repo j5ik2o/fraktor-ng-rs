@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""台帳 `cases.excluded` の承認記録の読み込みと件数計算（verify_red から利用する）。
+"""台帳 `cases.excluded` と `cases.not_built` の承認記録の読み込みと件数計算（verify_red から利用する）。
 
-台帳の除外は「人間が承認した除外」だけを already_green の件数式へ加える。この
-モジュールは、その承認記録の読み込み（重複・merge を拒否する厳格な SafeLoader）、
+台帳の除外と作らない区分は「人間が承認した」ものだけを already_green の件数式へ加える。
+このモジュールは、その承認記録の読み込み（重複・merge を拒否する厳格な SafeLoader）、
 要素ごとの承認判定、対象ノードの件数計算を持つ。呼出し側の `verify_red` は
-`count_excluded(node_id)` の入口を保ち、呼出し時点の台帳パスを渡す。
+`count_excluded(node_id)` と `count_not_built(node_id)` の入口を保ち、呼出し時点の台帳パスを渡す。
 
 PyYAML は読み込み処理の内部で import する。`record_already_green.py` は PyYAML なしの
 `uv run python3` から起動され `verify_red` を import するため、このモジュールの
@@ -77,25 +77,8 @@ def ledger_loader():
     return LedgerLoader
 
 
-def count_excluded(ledger_path: str, node_id: str) -> int | None:
-    """台帳の対象ノードの cases.excluded の件数を返す。読めないときは None。
-
-    excluded は人間が承認した除外の一覧である。要素は `name`・`reason` に加えて、
-    人による承認記録 `approved_by`（空白以外の文字列）と `approved_at`
-    （YYYY-MM-DD の暦日。引用なしの表記は `ledger_loader` が文字列として読む）を直下に持つ。
-    承認記録が欠落・空欄・null・不正な日付・不正な型の要素が 1 件でもあれば None を返し、
-    件数式（passed + excluded == original_cases）が成り立っても already_green にしない
-    （既存の name/reason だけの要素も未承認として扱う）。
-
-    台帳を YAML として読み、対象ノードの `cases.excluded` だけを検査する。同じノードの
-    `cases` の外にある `excluded` や、除外要素の下位（metadata など）にある承認欄は
-    流用しない。`excluded:` が空配列・null なら 0。台帳が YAML として読めない、
-    `cases` が無い、要素がマッピングでない、または `excluded` がリストでないときは None
-    （除外の件数を確かめられないと判断する）。台帳が無い・ノードが無いときも None。
-    重複したマッピングキーや merge キー (`<<`) を含む台帳も、専用ローダが読み込みを
-    拒否するため None となる（先の未承認除外を隠す入力や、他ノードの承認記録の流用を
-    件数に反映しない）。
-    """
+def _find_node(ledger_path: str, node_id: str) -> dict | None:
+    """台帳から対象ノードを返す。台帳が無い・読めない・ノードが無いときは None。"""
     if not os.path.exists(ledger_path):
         return None
     import yaml
@@ -108,8 +91,65 @@ def count_excluded(ledger_path: str, node_id: str) -> int | None:
     nodes = doc.get("nodes") if isinstance(doc, dict) else None
     if not isinstance(nodes, list):
         return None
-    node = next((n for n in nodes
+    return next((n for n in nodes
                  if isinstance(n, dict) and n.get("id") == node_id), None)
+
+
+def _record_names(records: list) -> list[str]:
+    """記録のケース名（前後の空白を除いたもの）を返す。名前が文字列でない要素は含まない。"""
+    return [item["name"].strip() for item in records
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+            and item["name"].strip()]
+
+
+def _has_duplicate_names(records: list) -> bool:
+    """同じケース名の記録が 2 件以上あるかを返す。"""
+    names = _record_names(records)
+    return len(names) != len(set(names))
+
+
+def case_names_overlap(ledger_path: str, node_id: str) -> bool:
+    """対象ノードの cases.excluded と cases.not_built に同じケース名があるかを返す。
+
+    同じ原典ケースを除外と作らないの両方に記録すると、件数式が二重に数えて
+    未移植のケースを見落とす。台帳が読めない・ノードが無いときは False を返す
+    （その場合は count_excluded と count_not_built が None を返し、already_green
+    にはならない）。
+    """
+    node = _find_node(ledger_path, node_id)
+    if node is None:
+        return False
+    cases = node.get("cases")
+    if not isinstance(cases, dict):
+        return False
+    excluded = cases.get("excluded")
+    not_built = cases.get("not_built")
+    if not isinstance(excluded, list) or not isinstance(not_built, list):
+        return False
+    return bool(set(_record_names(excluded)) & set(_record_names(not_built)))
+
+
+def count_excluded(ledger_path: str, node_id: str) -> int | None:
+    """台帳の対象ノードの cases.excluded の件数を返す。読めないときは None。
+
+    excluded は人間が承認した除外の一覧である。要素は `name`・`reason` に加えて、
+    人による承認記録 `approved_by`（空白以外の文字列）と `approved_at`
+    （YYYY-MM-DD の暦日。引用なしの表記は `ledger_loader` が文字列として読む）を直下に持つ。
+    承認記録が欠落・空欄・null・不正な日付・不正な型の要素が 1 件でもあれば None を返し、
+    件数式（passed + excluded == original_cases）が成り立っても already_green にしない
+    （既存の name/reason だけの要素も未承認として扱う）。同じケース名の要素が
+    重複していれば None を返す（同じケースを二重に数えない）。
+
+    台帳を YAML として読み、対象ノードの `cases.excluded` だけを検査する。同じノードの
+    `cases` の外にある `excluded` や、除外要素の下位（metadata など）にある承認欄は
+    流用しない。`excluded:` が空配列・null なら 0。台帳が YAML として読めない、
+    `cases` が無い、要素がマッピングでない、または `excluded` がリストでないときは None
+    （除外の件数を確かめられないと判断する）。台帳が無い・ノードが無いときも None。
+    重複したマッピングキーや merge キー (`<<`) を含む台帳も、専用ローダが読み込みを
+    拒否するため None となる（先の未承認除外を隠す入力や、他ノードの承認記録の流用を
+    件数に反映しない）。
+    """
+    node = _find_node(ledger_path, node_id)
     if node is None:
         return None
     cases = node.get("cases")
@@ -125,7 +165,47 @@ def count_excluded(ledger_path: str, node_id: str) -> int | None:
     for item in excluded:
         if not isinstance(item, dict) or not is_approved_by_human(item):
             return None
+    if _has_duplicate_names(excluded):
+        return None
     return len(excluded)
+
+
+def count_not_built(ledger_path: str, node_id: str) -> int | None:
+    """台帳の対象ノードの cases.not_built の件数を返す。読めないときは None。
+
+    作らない区分は、人間が承認した要素の一覧である。要素は `name`・`reason`・
+    `alternative`（どれも空白以外の文字列）に加えて、除外と同じ人による承認記録
+    （`approved_by` と `approved_at`）を直下に持つ。承認記録が欠落・不正な要素、
+    文字列欄が欠けた要素が 1 件でもあれば None を返し、件数式
+    （passed + excluded + not_built == original_cases）が成り立っても already_green に
+    しない（未承認の作らない区分を green の根拠にしない）。同じケース名の要素が
+    重複していれば None を返す（同じケースを二重に数えない）。
+
+    `count_excluded` との違いは、欄そのものが無いノードの扱いだけである。作らない区分の
+    欄は後から足されたため、欄が無い・null のノードは 0 件として扱う（除外の欄は全ノードに
+    あるため、欠落は None のまま）。台帳が読めない・ノードが無い・`cases` がマッピングでない・
+    `not_built` がリストでないときは None。
+    """
+    node = _find_node(ledger_path, node_id)
+    if node is None:
+        return None
+    cases = node.get("cases")
+    if not isinstance(cases, dict):
+        return None
+    not_built = cases.get("not_built")
+    if not_built is None:
+        return 0
+    if not isinstance(not_built, list):
+        return None
+    for item in not_built:
+        if not isinstance(item, dict) or not is_approved_by_human(item):
+            return None
+        if not all(isinstance(item.get(k), str) and item.get(k).strip()
+                   for k in ("name", "reason", "alternative")):
+            return None
+    if _has_duplicate_names(not_built):
+        return None
+    return len(not_built)
 
 
 def is_approved_by_human(item: dict) -> bool:
