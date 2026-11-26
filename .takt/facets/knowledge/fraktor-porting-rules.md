@@ -3,7 +3,7 @@
 Apache Pekko v2.0.0 のテストスイートを正とする Rust 移植の共通規約。要約であり、矛盾したら決定文書が優先する。
 
 ## 移植の作法
-- 速さより Pekko の意味論（テストと文書が利用者に約束する振る舞い）を優先し、速さのために意味論を弱めたり強めたりしない。JVM・Scala 固有の振る舞いは1件ずつオーナーに伺う（docs/decisions/pekko-semantics-first.md）
+- 速さより Pekko の意味論（テストと文書が利用者に約束する振る舞い）を優先し、速さのために意味論を弱めたり強めたりしない。Pekko どおりに写せる JVM・Scala の癖は伺わずに写し、外す・弱めるときだけ伺う（docs/decisions/pekko-semantics-first.md）
 - Scala・Java の書き方と Rust の対応は、対応表（docs/decisions/scala-java-to-rust-correspondence.md）を引く
 - テスト先行。red を確認していない実装は書かない
 - 実装ステップはテストファイルを編集しない。テストが誤りなら、実装でごまかさず triage へ差し戻して報告する
@@ -13,7 +13,7 @@ Apache Pekko v2.0.0 のテストスイートを正とする Rust 移植の共通
 ## 台帳とゴール
 - 進捗の正は `ledger/nodes.yaml`。ノードはテストクラス1件。id は Pekko リポジトリ相対パス
 - 1 run は1ゴール（ゴール定義文書のノード集合）を扱い、ノードは1件ずつ処理する
-- 状態遷移は unported → red → green の順だけ。`do_not_port` とケース除外は人間だけが決める。エージェントは提案まで。承認なく台帳に書かない
+- 状態遷移は unported → red → green の順。`do_not_port` とケース除外は人間だけが決める。エージェントは提案まで。承認なく台帳に書かない
 - 人間の判断は run の外で受ける。未承認の提案が出たら、run は提案をレポートに残して needs_human で終わる。除外は、人間が対象ノードの `cases.excluded` に `approved_by` と `approved_at` の両方を書いて承認済みになり、再 run で反映してよい。欠けたら未承認で needs_human に戻す。`do_not_port` も人間が status に直接書く
 - `not_built`（作らない区分）も人間だけが決める。Java・Scala 用の補助を検証し、振る舞いを Rust の言語機能・標準ライブラリ・既存 API で満たせるケースを、人間が1件ずつ理由・代替例・承認つきで `cases.not_built` に書く（エージェントは提案まで）。定義は `ledger-schema-draft.md`
 - ケース数は近似でなく実数を数えて `cases` に記録する
