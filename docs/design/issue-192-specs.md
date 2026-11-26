@@ -190,7 +190,8 @@ impl ActorContext<'_> {
 
 - **例外の受け方は `try_stash` で置き換える。** 原典の overflow 用 actor は `stash()` の例外を try-catch で捕らえて数え、21件目で返信して自ら停止する。Rust の `receive` は戻り値を持たないので、panic では actor 自身が捕らえられない（監督の再起動になる）。`try_stash() -> Result` を正の経路とし、ケース3・4の actor はこれを使う。既存の `stash()` は互換のため残し、容量違反では panic する（原典で例外を捕らえなかった場合に監督へ伝わる動きに対応する）。既存の無制限の actor では振る舞いは変わらない。
 - **同じメッセージの二重 stash は、容量違反とは別の契約違反として panic のままにする（レビュー L4）。** 既存の契約（最新の stash と同じ配送の二重 stash は panic）があり、`try_stash` でも `Err` にはしない。容量の数えが契約違反と混ざってずれることを防ぐためである。
-- **容量の解決は、原典どおりキーごとにフォールバックする（レビュー M9）。** 原典の `Mailboxes.stashCapacityFromConfig`（`Mailboxes.scala:314-321`）は、mailbox の設定、dispatcher の設定、既定の mailbox の設定の順に、キー（stash 容量と mailbox 容量）ごとに未指定を次の段で埋める。移植も、actor に mailbox 指定があればその mailbox の定義を起点に、キーごとに dispatcher の定義、既定の定義へフォールバックする。`Option` の `None`（未指定）と `Some(Unlimited)`（無制限の明示）を区別するのはこのためである。どちらも指定が無ければ無制限（現在の振る舞い）。
+- **容量の解決は、stash 容量だけがキーごとの3段フォールバックをする（レビュー M9、再レビュー N1）。** mailbox 容量は、原典の `getMailboxType` のとおり、mailbox が指定されていればその定義だけ（未指定は既定＝無制限）で決まり、dispatcher へはフォールバックしない。mailbox が指定されていない場合だけ dispatcher の mailbox 定義を使う。
+- **容量の解決は、原典どおりstash 容量がフォールバックする（レビュー M9）。** 原典の `Mailboxes.stashCapacityFromConfig`（`Mailboxes.scala:314-321`）は、mailbox の設定、dispatcher の設定、既定の mailbox の設定の順に、キー（stash 容量と mailbox 容量）ごとに未指定を次の段で埋める。移植も、actor に mailbox 指定があればその mailbox の定義を起点に、キーごとに dispatcher の定義、既定の定義へフォールバックする。`Option` の `None`（未指定）と `Some(Unlimited)`（無制限の明示）を区別するのはこのためである。どちらも指定が無ければ無制限（現在の振る舞い）。
 - **定義に無い名前はエラーにしない（レビュー H2 で修正）。** `DispatchSettings` に載っていない dispatcher／mailbox 名は、現在の振る舞い（名前の記録だけ、無制限）のままにする。green の `SupervisorMiscSpec`（`crates/fraktor-actor/tests/supervisor_misc_spec.rs`）が、定義の無い `"pinned-dispatcher"` と `"test-dispatcher"` を使っており、未定義を spawn のエラーにするとこのノードが壊れるためである。エラーにするのは、alias の循環、alias の行き先が未定義の場合、alias の段数が原典の上限20（`MaxDispatcherAliasDepth`）を超えた場合だけである。
 - **解決エラーの出し方は、既存の署名を変えない panic とする（H2）。** `ActorSystem::actor_of` は `ActorRef` を返し、`ActorContext::actor_of` は `Result<_, InvalidActorNameException>` を返すため、どちらの署名にも新しいエラー型を載せる余地が無い。spawn 時の解決で `DispatchResolutionError` が出たら、その値をメッセージに含めて panic する（原典の `ConfigurationException` に対応する経路）。解決そのものは `resolve_dispatcher`／`resolve_mailbox` が `Result` で返すので、単体テストでは panic を介さずに確かめられる。別の `try_` 系 API は足さない。
 - **alias は名前の解決だけに効く。** alias の段数は原典どおり上限20とし、解決は定義に届くまで辿る。解決の結果は spawn の時点で固定され、後から定義を変えても既存の actor には効かない。
@@ -233,7 +234,7 @@ DeadLetter を発行する範囲は、executor が dead letters へ送る3か所
 **`FunctionRef` は `ActorRef` の newtype（id＋世代の値）だけにする（レビュー H1 で修正。方向は元帥の決定、2026-11-26）。** 以前の設計は `FunctionRef` に `WeakActorSystem`（`alloc::rc::Weak<RefCell<Executor>>`）を持たせていたが、この形は `!Send`／`!Sync` になり、`Message::new` の `M: Any + Send + Sync` を満たせないため、FunctionRef そのものをメッセージとして運ぶ原典のケース（`replyTo ! ref`、`DropForwarder(ref)`）が書けない。レビューは一時クレートの `cargo check` で E0277 を確認している。所有権の決定（`docs/decisions/ownership-model-arc-overhead.md` の「ref は実体へのポインタではなくハンドル（id＋世代）」「処理系への参照はその場で渡す」）にも反する。
 
 ```rust
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct FunctionRef {
   inner: ActorRef, // 宛先としてのハンドル（id＋世代）だけを持つ。処理系への参照は持たない
 }
@@ -279,11 +280,13 @@ impl ActorContext<'_> {
 - **ハンドラは `Fn` にそろえる（レビュー L2）。** `FunctionBoundary` の `Handler = Arc<dyn Fn + Send + Sync>` と、既存の `ActorSystem::function_ref` の `Fn` に合わせる。`FnMut`／`Box<dyn FnMut>` にはしない（post にロックが要る形になるため）。
 - **他人の FunctionRef の除去は、黙って偽を返すのではなく panic にする（レビュー M7）。** 原典（`Children.scala:98`）は `require(ref.path.parent eq self.path, ...)` で `IllegalArgumentException`（actor の失敗）になる。移植でも、`remove_function_ref` に他セルの FunctionRef を渡したら panic する（actor の失敗として監督へ伝わる経路）ことを、移植の忠実さの判断としてゴールの文書に書く。自セルの FunctionRef の除去は冪等であり、すでに除去済みの自セルの FunctionRef への再除去は何もしない。
 - **除去された FunctionRef への送信は dead letters へ行く。その経路は boundary 側に作る（レビュー M6）。** 既存の扱いは「既存と同じ」ではない。`FunctionBoundary::close` の後の `post` は何もせず、dead letters の handler も何もしない。原典の `stop()` は宛先を `deadLetterMessageHandler` に差し替える。移植では、登録の除去のときに boundary の宛先を dead letters への経路に差し替え、`ActorRef::tell` の直接の post でも `DeadLetter` が発行されるようにする。実装の置き場所は boundary の差し替えであることをここに明記する。
+- **除去後の宛先の差し替えは、ロックなしで実装する（再レビュー N3）。** `FunctionBoundary` の `handler` は差し替えられない `Arc` なので、post のたびに差し替えを読む形にはしない。すでにある `open` の原子フラグで分け、閉じた後は生成時に持たせた dead letters への経路（Send＋Sync の届き先。前例 `start_unhandled_message_forwarder` の `EventStreamBusWeak` の役割）を使う。
+- **Terminated の sender の差し替えの見分けは登録表で行う（再レビュー N4）。** `enqueue_to` の boundary 経由の枝は別の shard の actor にも使われるため、枝では見分けず、watcher が function ref の登録表にあるかどうかで見分ける。
 - **FunctionRef に届く `Terminated` の sender は、終わった宛先自身とする（レビュー M5）。** 原典（`ActorRef.scala:879-880`）は `Terminated(f)(existenceConfirmed = true, addressTerminated = false)` を sender＝終わった `f` として関数に渡し、テストも `Forwarded(Terminated(f)(true, false), f)` を期待する。既存の `enqueue_to` は sender＝受け手にしているので、この差し替えは **function ref の watcher への通知の経路だけ**に絞る（通常の actor への通知の sender は変えない）。
 - **`is_watching` の意味は原典どおりにする。** watch 中の相手が終わると `Terminated` が FunctionRef へメッセージとして届くが、登録は自動では外れない。`function_ref_unwatch` を呼ぶか、FunctionRef 自身が止まるまで真のままである（ケース3が固定する、通常の actor と違う点。自分の停止での片付けは §3 の F3）。
 - 既存の `ActorSystem::function_ref` の戻り値の型は変えない（公開 API の互換）。その宛先を watch する既存の単体テスト群にも触れない。
 
-no_std: ハンドラは `Arc<dyn Fn>`（alloc）、登録表は alloc の表で書ける。`FunctionRef` 自体は core の値である。新しい依存は足さない。
+no_std: ハンドラは `Arc<dyn Fn>`（alloc）、登録表は alloc の表で書ける。`FunctionRef` 自体は `ActorRef`（alloc の `Arc` を持つ）の値であり、`Copy` は付けられない（`ActorRef` が `Copy` でないため E0204 になる。再レビュー N2）。`Clone` のままで Send＋Sync であり、メッセージとして運べる。新しい依存は足さない。
 
 ## 3. 守る性質（不変条件）と壊しうる入力
 
@@ -318,7 +321,7 @@ PBT は足す。`crates/fraktor-actor/tests/provider_selection_property_test.rs`
 | B2 | 順序：stash は FIFO である。`unstash_all` は古い順に mailbox の先頭へ戻す（既存の振る舞いを変えない） |
 | B3 | `unstash_all` のあふれ（原典は `theStash.reverseIterator` で `enqueueFirst` する。レビュー M2 で順序を修正）：すでに滞留しているメッセージはそのまま残る。stash のうち**新しい側**の (cap_m − 滞留) 件が残る。落ちるのは古い側の分であり、`DeadLetter` の発行順はその中で**新しい被害者から先**である。原典のケース1では、戻す11件のうち最も古い `hello1` だけが落ち（発行は1件だけ）、残り10件は処理される。試作の確認：stash [0,1,2]、滞留 [3,4]、cap_m 3 では、滞留は [2,3,4] になり、dead は [1,0] の順に出る |
 | B4 | 停止時の始末：actor が止まると、原典は postStop の unstashAll で bounded mailbox へ戻す。入りきらない古い k 件は、逆順（新しい被害者から先）に DeadLetter になり、残りは掃除の段で古い順に出る。dispatcher-1 の設定（stash 20、mailbox 10）で15件を stash して PoisonPill を送ると、原典の順序は hello5, 4, 3, 2, 1, hello6..15 になる。無制限の mailbox では、従来どおり stash の全件が元の送信者を保って古い順に dead letters へ行く（既存の振る舞い） |
-| B5 | 設定の解決：キーごとに、mailbox の定義、dispatcher の定義、既定の定義の順にフォールバックする（M9）。定義に無い名前はエラーではなく、無制限のままである（H2）。エラーになるのは alias の循環、alias の行き先の未定義、alias の段数が上限20を超えた場合だけであり、出し方は署名を変えない panic である。解決の結果は spawn の時点で固定され、後から定義を変えても既存の actor には効かない |
+| B5 | 設定の解決：**stash 容量だけ**が、mailbox の定義、dispatcher の定義、既定の定義の順に3段フォールバックする（M9、再レビュー N1 で範囲を修正）。**mailbox 容量は dispatcher へフォールバックしない**：mailbox が指定されていればその定義（容量が未指定なら既定＝無制限）を使い、mailbox が指定されていない場合だけ dispatcher の定義を使う。定義に無い名前はエラーではなく、無制限のままである（H2）。エラーになるのは alias の循環、alias の行き先の未定義、alias の段数が上限20を超えた場合だけであり、出し方は署名を変えない panic である。解決の結果は spawn の時点で固定され、後から定義を変えても既存の actor には効かない |
 | B6 | 容量は actor ごとに数える。同じ dispatcher を使う別の actor の stash や滞留は、対象の容量を消費しない |
 
 壊しうる入力:
@@ -466,3 +469,14 @@ E1（ProviderSelection の Settings／HOCON の部分）と E2（bounded stash �
 | E1 | ProviderSelection の Settings／HOCON の部分 | **除外にしない（元帥の決定）** | 忠実さの判断として第2段でゴールの文書と PR 本文に書く。条件（数えているケースがすべて型付きの入力で原典と同じことを確かめていること）を §5 に明記し、PR #238 の本文にも1行で整合させた。台帳は 4／4／4、excluded [] |
 | E2 | bounded stash の HOCON・FQCN の型生成と push の時間切れ | **除外にしない（元帥の決定）** | E1 と同じ形で記録する。ケースに出てこない振る舞い（push timeout、通常の tell のあふれ）を移さないことは、ゴールの文書と PR 本文に1行で書く。台帳は 5／5／5、excluded [] |
 | E3 | FunctionRef の「not be found」 | **判断待ち** | ケースの除外なのでオーナーの承認が要る。上司（元帥）がオーナーに伺い中であり、それまで台帳には書かず、PR の中では「判断待ち」と書く。理由の文は直した（「登録されていない FunctionRef は型で表せない」は誤りであり取り下げ、正しい理由を §5 に書いた）。残りの8件は進めてよい |
+
+## 9. 再レビュー回答（2026-11-26、条件つき承認）
+
+再レビュー（`pr238-design-rereview.md`、判定「条件つき承認」）の新しい指摘 N1〜N4 への対応である。N1 と N2 は実装の最初のコミットの前に本書へ反映した。N3 と N4 は実装の段での注意として §2.4 に注記した。
+
+| 番号 | 指摘 | 対応 |
+|:---|:---|:---|
+| N1（中） | mailbox 容量は原典では dispatcher へフォールバックしない。3段フォールバックは stash 容量だけ | **直した**。B5 と §2.2 を分け、stash 容量だけが mailbox → dispatcher → 既定の3段フォールバックをし、mailbox 容量は mailbox 指定があればその定義（未指定は既定＝無制限）、無ければ dispatcher の定義で決まるとした。単体テストの表に「dispatcher が容量10の bounded、mailbox が stash 20 だけを定義する」入力を足す |
+| N2（低） | `FunctionRef` の `#[derive(Copy)]` は E0204 でコンパイルできない | **直した**。derive から `Copy` を外し、「core の値である」という文も直した（§2.4） |
+| N3（低） | 除去した FunctionRef の宛先の差し替えの実装（ホットパスにロックを入れない） | **実装の注意として注記した**（§2.4）。`open` の原子フラグと生成時に持たせた dead letters 経路で分け、ロックは入れない |
+| N4（低） | Terminated の sender を差し替える範囲の見分け方 | **実装の注意として注記した**（§2.4）。`enqueue_to` の枝ではなく、watcher が function ref の登録表にあるかで見分ける |
