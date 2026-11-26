@@ -9,6 +9,34 @@ use core::fmt;
 #[path = "message_value_test.rs"]
 mod tests;
 
+/// The payload of a message, with the name of its type attached.
+///
+/// `dyn Any` cannot answer `core::any::type_name` for the value it hides,
+/// but a log line — the dead letter listener's, above all — names the type
+/// of the message it reports. The payload therefore travels behind this
+/// private trait, whose one implementation records the name when the value
+/// is wrapped, so no field is added to each message.
+///
+/// The blanket implementation also covers `Arc<dyn Payload>` itself, so
+/// the accessors on [`Message`] call through the trait object; calling a
+/// method on the `Arc` directly would resolve to the blanket
+/// implementation for the `Arc` type and answer for the pointer instead
+/// of the payload.
+trait Payload: Any + Send + Sync {
+  fn type_name(&self) -> &'static str;
+  fn as_any(&self) -> &dyn Any;
+}
+
+impl<T: Any + Send + Sync> Payload for T {
+  fn type_name(&self) -> &'static str {
+    core::any::type_name::<T>()
+  }
+
+  fn as_any(&self) -> &dyn Any {
+    self
+  }
+}
+
 /// A message that carries a value of any type that can cross a thread.
 ///
 /// Mirrors the object an `org.apache.pekko.actor.Actor` receives in its
@@ -20,9 +48,10 @@ mod tests;
 ///
 /// A message is cheap to clone: cloning shares the payload instead of copying
 /// it, which is how one delivery reaches more than one consumer.
+
 #[derive(Clone)]
 pub struct Message {
-  payload: Arc<dyn Any + Send + Sync>,
+  payload: Arc<dyn Payload>,
 }
 
 impl Message {
@@ -31,16 +60,16 @@ impl Message {
   /// A `Message` given to this function is returned unchanged, so forwarding a
   /// message keeps the payload a recipient can compare against.
   pub fn new<M: Any + Send + Sync>(payload: M) -> Self {
-    let boxed: Box<dyn Any + Send + Sync> = Box::new(payload);
-    match boxed.downcast::<Message>() {
-      | Ok(inner) => *inner,
-      | Err(other) => Self { payload: Arc::from(other) },
+    let boxed: Box<dyn Payload> = Box::new(payload);
+    match (*boxed).as_any().downcast_ref::<Message>() {
+      | Some(inner) => inner.clone(),
+      | None => Self { payload: Arc::from(boxed) },
     }
   }
 
   /// Returns the payload as the given type, or `None` if it has another type.
   pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
-    self.payload.downcast_ref::<T>()
+    (*self.payload).as_any().downcast_ref::<T>()
   }
 
   /// Returns the type of the payload it carries.
@@ -50,20 +79,28 @@ impl Message {
   /// which is how `EventStream` behaves in Pekko: an event is published to the
   /// subscribers of `event.getClass`.
   pub(crate) fn payload_type_id(&self) -> TypeId {
-    (*self.payload).type_id()
+    (*self.payload).as_any().type_id()
+  }
+
+  /// Returns the name of the type of the payload it carries.
+  ///
+  /// Mirrors the `getClass.getName` a Pekko log line prints for a message:
+  /// the dead letter listener names the message it reports this way.
+  pub fn payload_type_name(&self) -> &'static str {
+    (*self.payload).type_name()
   }
 
   /// Returns whether the payload has the given type.
   pub fn is<T: Any>(&self) -> bool {
-    self.payload.is::<T>()
+    (*self.payload).as_any().is::<T>()
   }
 }
 
 impl fmt::Debug for Message {
   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-    match self.payload.downcast_ref::<&'static str>() {
+    match self.downcast_ref::<&'static str>() {
       | Some(text) => write!(formatter, "{text:?}"),
-      | None => match self.payload.downcast_ref::<i32>() {
+      | None => match self.downcast_ref::<i32>() {
         | Some(number) => write!(formatter, "{number}"),
         | None => formatter.write_str("<message of an unknown type>"),
       },
@@ -73,7 +110,7 @@ impl fmt::Debug for Message {
 
 impl PartialEq<str> for Message {
   fn eq(&self, other: &str) -> bool {
-    match self.payload.downcast_ref::<&'static str>() {
+    match self.downcast_ref::<&'static str>() {
       | Some(text) => *text == other,
       | None => false,
     }

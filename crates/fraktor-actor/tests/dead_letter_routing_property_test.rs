@@ -14,18 +14,18 @@
 // `frequency_sketch_property_test.rs`: no new dependency, and a failing
 // seed is printed so the sequence can be replayed.
 
-use alloc::format;
-use alloc::string::String;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::time::Duration;
+use std::string::String;
+use std::sync::Arc;
 use std::sync::Mutex;
+use std::vec::Vec;
 
 use fraktor_actor::kernel::actor::AnyDeadLetter;
 use fraktor_actor::kernel::actor::DeadLetter;
 use fraktor_actor::kernel::actor::DeadLetterListener;
 use fraktor_actor::kernel::actor::DeadLetterLogLimit;
 use fraktor_actor::kernel::actor::DeadLetterSettings;
+use fraktor_actor::kernel::actor::DeadLetterSuppression;
 use fraktor_actor::kernel::actor::SuppressedDeadLetter;
 use fraktor_actor::kernel::actor::Terminated;
 use fraktor_actor::kernel::actor_ref::ActorRef;
@@ -39,6 +39,8 @@ struct NormalMsg(i32);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SuppressedMsg;
+
+impl DeadLetterSuppression for SuppressedMsg {}
 
 struct SplitMix64 {
   state: u64,
@@ -159,7 +161,7 @@ fn routing_matches_the_model_for_random_sequences() {
         | _ => Step::NormalDeadLetterToDeadLetters,
       };
       expected.extend(model_step(step, &stopped, &dead_letters, &live));
-      let payload = NormalMsg(index as i32);
+      let payload = NormalMsg(index);
       match step {
         | Step::NormalToStopped => stopped.tell(payload, sender.clone()),
         | Step::SuppressedToStopped => stopped.tell(SuppressedMsg, sender.clone()),
@@ -175,8 +177,12 @@ fn routing_matches_the_model_for_random_sequences() {
           dead_letters.tell(DeadLetter::new(payload, sender.clone(), live.clone()), sender.clone())
         },
       }
+      // Drive the shard after each step: a tell to the dead letters handle
+      // publishes at once, while a tell to a stopped actor is routed when
+      // the executor delivers it, so the published order matches the step
+      // order only when the shard is drained between steps.
+      spec.system_mut().run_until_idle();
     }
-    spec.system_mut().run_until_idle();
     let actual = collected.lock().expect("the collector lock is not poisoned").clone();
     assert_eq!(actual, expected, "seed {seed}: the published events differ from the model");
     spec.terminate();
@@ -217,17 +223,10 @@ fn listener_core_matches_the_model_for_random_sequences() {
             sender.clone(),
             recipient.clone(),
           );
-          let dropped = fraktor_actor::kernel::actor::Dropped::new(
-            NormalMsg(1),
-            "reason",
-            sender.clone(),
-            recipient.clone(),
-          );
-          let unhandled = fraktor_actor::kernel::actor::UnhandledMessage::new(
-            NormalMsg(1),
-            sender.clone(),
-            recipient.clone(),
-          );
+          let dropped =
+            fraktor_actor::kernel::actor::Dropped::new(NormalMsg(1), "reason", sender.clone(), recipient.clone());
+          let unhandled =
+            fraktor_actor::kernel::actor::UnhandledMessage::new(NormalMsg(1), sender.clone(), recipient.clone());
           let event = match kind {
             | 0 => AnyDeadLetter::DeadLetter(&dl_normal),
             | 1 => AnyDeadLetter::DeadLetter(&dl_wrapped),
@@ -247,8 +246,7 @@ fn listener_core_matches_the_model_for_random_sequences() {
           match suspended_until {
             | Some(until) => {
               if now > until {
-                let expected_tail =
-                  format!(", of which {} were not logged", count - limit_value(limit) - 1);
+                let expected_tail = format!(", of which {} were not logged", count - limit_value(limit) - 1);
                 let text = logged.expect("the resume logs one event");
                 assert!(text.contains(&expected_tail), "seed {seed}: resume text {text:?}");
                 assert!(text.contains(&format!("[{count}] dead letters encountered")), "seed {seed}: count in text");
@@ -262,7 +260,10 @@ fn listener_core_matches_the_model_for_random_sequences() {
               let text = logged.expect("an event is logged while logging is on");
               assert!(text.contains(&format!("[{count}] dead letters encountered")), "seed {seed}: count in text");
               if count == limit_value(limit) {
-                assert!(text.contains(", no more dead letters will be logged in next [2.000 s]"), "seed {seed}: {text:?}");
+                assert!(
+                  text.contains(", no more dead letters will be logged in next [2.000 s]"),
+                  "seed {seed}: {text:?}"
+                );
                 suspended_until = Some(now + Duration::from_secs(2));
               }
             },

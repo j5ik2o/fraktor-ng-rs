@@ -821,11 +821,19 @@ type DeadLetterLog = Arc<Mutex<Vec<(ActorRef, &'static str)>>>;
 
 /// Stands in for the system's dead letters with a handle that records what
 /// reaches it, so the routing of a stash is observable.
+///
+/// A leftover reaches the dead letters handle wrapped in a `DeadLetter`
+/// that names its original sender and recipient, as the mailbox clean-up
+/// hands it over; the recorder reads the pair back out of the report.
 fn record_dead_letters(executor: &mut Executor) -> DeadLetterLog {
   let delivered: DeadLetterLog = Arc::new(Mutex::new(Vec::new()));
   let inbox = delivered.clone();
-  executor.dead_letters = executor.function_ref("recordedDeadLetters", move |sender: &ActorRef, message: Message| {
-    inbox.lock().unwrap().push((sender.clone(), *message.downcast_ref::<&'static str>().unwrap()));
+  executor.dead_letters = executor.function_ref("recordedDeadLetters", move |_: &ActorRef, message: Message| {
+    let dead = message.downcast_ref::<crate::kernel::actor::DeadLetter>().unwrap();
+    inbox
+      .lock()
+      .unwrap()
+      .push((dead.sender().clone(), *dead.message().downcast_ref::<&'static str>().unwrap()));
   });
   delivered
 }

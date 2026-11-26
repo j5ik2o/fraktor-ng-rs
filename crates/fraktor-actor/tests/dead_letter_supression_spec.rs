@@ -39,11 +39,7 @@ fn no_message_window() -> Duration {
 }
 
 fn subscribe(spec: &FraktorSpec, probe: &TestProbe, class: EventClass) {
-  spec
-    .system()
-    .event_stream()
-    .subscribe(Some(probe.ref_handle()), class)
-    .expect("the probe is not null");
+  spec.system().event_stream().subscribe(Some(probe.ref_handle()), class).expect("the probe is not null");
 }
 
 fn expect_dead_letter(probe: &mut TestProbe) -> DeadLetter {

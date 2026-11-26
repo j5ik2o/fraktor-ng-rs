@@ -10,16 +10,25 @@ use core::sync::atomic::Ordering;
 use core::time::Duration;
 
 use crate::kernel::actor::ActorContext;
+use crate::kernel::actor::ActorSelection;
+use crate::kernel::actor::ActorSelectionMessage;
+use crate::kernel::actor::AnyDeadLetter;
 use crate::kernel::actor::BehaviorStack;
+use crate::kernel::actor::DeadLetter;
+use crate::kernel::actor::DeadLetterSettings;
+use crate::kernel::actor::DeadLettersShared;
 use crate::kernel::actor::InvalidActorNameException;
 use crate::kernel::actor::Logging::Error;
 use crate::kernel::actor::Logging::EventSink;
+use crate::kernel::actor::Logging::Info;
 use crate::kernel::actor::Logging::Warning;
 use crate::kernel::actor::Props;
 use crate::kernel::actor::Terminated;
 use crate::kernel::actor::UnhandledMessage;
 use crate::kernel::actor_path::ActorPath;
 use crate::kernel::actor_ref::ActorRef;
+use crate::kernel::event::DeadLetterListener;
+use crate::kernel::event::EventClass;
 use crate::kernel::event::EventStream;
 use crate::kernel::executor::ActorCell;
 use crate::kernel::executor::ShardQueue;
@@ -151,6 +160,7 @@ pub(crate) struct Executor {
   running: Vec<ActorRef>,
   termination_callbacks: Vec<TerminationCallback>,
   dead_letters: ActorRef,
+  dead_letters_shared: Arc<DeadLettersShared>,
   boundary_active: bool,
   hook_child_creation_refused: bool,
   terminated: bool,
@@ -161,7 +171,8 @@ pub(crate) struct Executor {
 
 impl Executor {
   pub(crate) fn new(root: ActorPath, boundary: Arc<dyn crate::kernel::executor::ShardBoundary>) -> Self {
-    let dead_letters = Self::create_dead_letters(&root);
+    let dead_letters_shared = Arc::new(DeadLettersShared::new());
+    let dead_letters = Self::create_dead_letters(&root, dead_letters_shared.clone());
     let mut executor = Self {
       cells: Vec::new(),
       queue: ShardQueue::new(boundary),
@@ -180,6 +191,7 @@ impl Executor {
       running: Vec::new(),
       termination_callbacks: Vec::new(),
       dead_letters,
+      dead_letters_shared,
       boundary_active: false,
       hook_child_creation_refused: false,
       terminated: false,
@@ -207,20 +219,113 @@ impl Executor {
 
   /// Returns the handle that absorbs messages which no actor takes.
   ///
-  /// Mirrors `ActorSystem.deadLetters`. The handle posts to a boundary that
-  /// drops the envelope. The executor makes one such handle when it is created,
-  /// below the root path, and answers that same handle for the life of the
-  /// system.
+  /// Mirrors `ActorSystem.deadLetters`. The handle posts to a boundary whose
+  /// handler routes the message through the dead letter rules, publishing
+  /// the event the rules name. The executor makes one such handle when it is
+  /// created, below the root path, and answers that same handle for the life
+  /// of the system.
   pub(crate) fn dead_letters(&self) -> ActorRef {
     self.dead_letters.clone()
   }
 
-  fn create_dead_letters(root: &ActorPath) -> ActorRef {
+  fn create_dead_letters(root: &ActorPath, shared: Arc<DeadLettersShared>) -> ActorRef {
     let path = root.with_child("deadLetters");
-    let handler = Arc::new(|_: &ActorRef, _: Message| {});
+    // The handler routes through the shared state, which the executor fills
+    // with the event stream's table once the system is built. The handle
+    // itself is named by a cell the handler captures after creation,
+    // because the routing rules name it as the processing reference.
+    let slot: Arc<spin::Mutex<Option<ActorRef>>> = Arc::new(spin::Mutex::new(None));
+    let slot_in_handler = slot.clone();
+    let handler = Arc::new(move |sender: &ActorRef, message: Message| {
+      let dead_letters = slot_in_handler.lock().clone();
+      if let Some(dead_letters) = dead_letters {
+        shared.route_at_dead_letters(message, sender.clone(), &dead_letters);
+      }
+    });
     let boundary: Arc<dyn crate::kernel::executor::ShardBoundary> =
       Arc::new(crate::kernel::executor::FunctionBoundary::new(handler));
-    next_actor_ref(path, boundary)
+    let reference = next_actor_ref(path, boundary);
+    *slot.lock() = Some(reference.clone());
+    reference
+  }
+
+  /// Records the subscription table the dead letter routing rules publish
+  /// to, once the system has built its event stream.
+  pub(crate) fn set_dead_letter_bus(&self, bus: crate::kernel::event::EventStreamBusWeak) {
+    self.dead_letters_shared.set_bus(bus);
+  }
+
+  /// Registers a payload type for dead letter suppression.
+  ///
+  /// Mirrors the run-time half of Pekko's `DeadLetterSuppression` marker:
+  /// Rust cannot test trait membership at run time, so the system records
+  /// the type's identity here.
+  pub(crate) fn register_dead_letter_suppression(&self, id: core::any::TypeId) {
+    self.dead_letters_shared.register_suppression(id);
+  }
+
+  /// Publishes `event` on the event stream of the system, if one is set.
+  pub(crate) fn publish_event<E: core::any::Any + Send + Sync>(&self, event: E) {
+    if let Some(stream) = self.event_stream.as_ref() {
+      stream.publish(event);
+    }
+  }
+
+  /// Creates a selection for `path` on this shard.
+  ///
+  /// The selection captures the shard boundary and the dead letters handle
+  /// (which carries envelopes addressed to it), so it never borrows the
+  /// executor when it sends.
+  pub(crate) fn actor_selection(&self, path: ActorPath) -> ActorSelection {
+    ActorSelection::new(self.queue.boundary().clone(), self.dead_letters.clone(), path)
+  }
+
+  /// Starts the dead letter listener with `settings` and returns its
+  /// handle.
+  ///
+  /// Mirrors the `DeadLetterListener` a Pekko system starts when
+  /// `pekko.log-dead-letters` is not off: a function reference subscribed
+  /// to the `DeadLetter`, `Dropped`, and `UnhandledMessage` channels,
+  /// whose handler feeds the counting state machine and publishes the
+  /// `Info` it produces to the event stream and the event sink. The
+  /// handler captures the clock, the bus, the sink, and the dead letters
+  /// handle at start, so it never borrows the executor.
+  pub(crate) fn start_dead_letter_listener(&mut self, settings: DeadLetterSettings) -> ActorRef {
+    let shared = self.dead_letters_shared.clone();
+    let dead_letters = self.dead_letters.clone();
+    let clock = self.clock.clone();
+    let boundary = self.queue.boundary().clone();
+    let now_of = Arc::new(move || -> Duration {
+      match clock.as_ref() {
+        | Some(clock) => clock.monotonic(),
+        | None => boundary.monotonic_time().unwrap_or(Duration::ZERO),
+      }
+    });
+    let bus = self.event_stream.as_ref().map(|stream| stream.downgrade());
+    let sink = self.event_sink.clone();
+    let state = Arc::new(spin::Mutex::new(DeadLetterListener::new(settings, dead_letters)));
+    let listener = self.function_ref("DeadLetterListener", move |_: &ActorRef, message: Message| {
+      let Some(event) = AnyDeadLetter::from_message(&message) else {
+        return;
+      };
+      let is_suppressed = |candidate: &Message| shared.is_suppressed(candidate);
+      let text = state.lock().on_event(&event, now_of(), &is_suppressed);
+      if let Some(text) = text {
+        let info = Info::new(event.recipient().path().to_string(), 0, &text);
+        if let Some(bus) = bus.as_ref() {
+          bus.publish(info.clone());
+        }
+        if let Some(sink) = sink.as_ref() {
+          sink.publish(&info);
+        }
+      }
+    });
+    if let Some(stream) = self.event_stream.as_ref() {
+      let _ = stream.subscribe(Some(listener.clone()), EventClass::of::<DeadLetter>());
+      let _ = stream.subscribe(Some(listener.clone()), EventClass::of::<crate::kernel::actor::Dropped>());
+      let _ = stream.subscribe(Some(listener.clone()), EventClass::of::<UnhandledMessage>());
+    }
+    listener
   }
 
   pub(crate) fn function_ref<H>(&mut self, name: &str, handler: H) -> ActorRef
@@ -938,16 +1043,17 @@ impl Executor {
   ///
   /// Mirrors what Pekko does with the stash of a stopped actor:
   /// `UnrestrictedStash.postStop` returns it to the mailbox, and the mailbox
-  /// clean-up hands every message left there to `deadLetters`. The port's dead
-  /// letters do not yet publish a `DeadLetter` event, so the messages are not
-  /// observable there.
+  /// clean-up hands every message left there to `deadLetters`. Each message
+  /// keeps its original recipient inside the `DeadLetter` it is wrapped in,
+  /// so the dead letters handle publishes it as it is.
   fn stash_to_dead_letters(&mut self, owner: &ActorRef) {
     if let Some(index) = self.stashes.iter().position(|(held, _)| held == owner) {
       let (_, stash) = self.stashes.swap_remove(index);
       let dead_letters = self.dead_letters();
       for (_, envelope) in stash {
         let (_, message, sender) = envelope.into_parts();
-        self.send(sender, &dead_letters, message);
+        let wrapped = DeadLetter::from_message(message, sender.clone(), owner.clone());
+        self.send(sender, &dead_letters, Message::new(wrapped));
       }
     }
   }
@@ -969,7 +1075,8 @@ impl Executor {
         | Some(pending) => Message::new(pending.notice.clone()),
         | None => message,
       };
-      self.send(sender, &dead_letters, message);
+      let wrapped = DeadLetter::from_message(message, sender.clone(), target.clone());
+      self.send(sender, &dead_letters, Message::new(wrapped));
     }
   }
 
@@ -1183,6 +1290,29 @@ impl Executor {
 
   /// Returns whether `target` can still be watched for its end.
   ///
+  /// Delivers the message a selection envelope carries, resolving its
+  /// path now.
+  ///
+  /// Mirrors `ActorSelection.deliverSelection`: a path that names a live
+  /// actor or a function reference of this shard is delivered to it; any
+  /// other path is routed by the dead letter rules with an empty reference
+  /// for that path as the recipient, and a suppressed payload names that
+  /// empty reference as the reference that processed it.
+  fn deliver_selection(&mut self, path: &ActorPath, message: Message, sender: ActorRef) {
+    if let Some(cell) = self.cells.iter().find(|cell| &cell.self_ref().path() == path) {
+      let target = cell.self_ref();
+      self.send(sender, &target, message);
+      return;
+    }
+    if let Some(reference) = self.function_refs.iter().find(|reference| &reference.path() == path) {
+      let target = reference.clone();
+      self.send(sender, &target, message);
+      return;
+    }
+    let empty = next_actor_ref(path.clone(), self.queue.boundary().clone());
+    self.dead_letters_shared.route_unresolved(message, sender, empty);
+  }
+
   /// The cell table does not hold the actor that is currently executing it, so
   /// a frame that is running counts as live as well; otherwise an actor would
   /// see itself as terminated from inside `receive`, `pre_start`,
@@ -1219,6 +1349,11 @@ impl Executor {
   /// carries out a stop-after-reply once the actor returns.
   fn deliver(&mut self, envelope: Envelope) {
     let (recipient, message, sender) = envelope.into_parts();
+    if let Some(selection) = message.downcast_ref::<ActorSelectionMessage>() {
+      let selection = selection.clone();
+      self.deliver_selection(selection.path(), selection.message().clone(), selection.sender().clone());
+      return;
+    }
     let message = if let Some(pending) = message.downcast_ref::<Arc<PendingTermination>>() {
       let Some(index) = self.pending_terminations.iter().position(|queued| Arc::ptr_eq(queued, pending)) else {
         return;
@@ -1229,6 +1364,11 @@ impl Executor {
       message
     };
     let Some(index) = self.cells.iter().position(|cell| cell.accepts(&recipient)) else {
+      // No actor answers for the recipient: the message is routed by the
+      // dead letter rules, as a Pekko mailbox hands a message for a
+      // stopped actor to the dead letters provider.
+      let dead_letters = self.dead_letters.clone();
+      self.dead_letters_shared.route_undeliverable(message, sender, recipient, &dead_letters);
       return;
     };
     if message == KILL {

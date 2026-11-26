@@ -136,11 +136,12 @@ fn suspend_dead_letters_logging_at_the_limit_and_re_enable() {
     unhandled_actor.tell(3_i32, test_actor.clone());
   });
   let system = spec.system_mut();
-  EventFilter::info()
-    .start(&(dead_expected(4) + ", no more dead letters will be logged in next"))
-    .intercept(system, || {
+  EventFilter::info().start(&(dead_expected(4) + ", no more dead letters will be logged in next")).intercept(
+    system,
+    || {
       dead_actor.tell(4_i32, test_actor.clone());
-    });
+    },
+  );
 
   dead_actor.tell(5_i32, test_actor.clone());
   dropping_actor.tell(6_i32, test_actor.clone());
@@ -150,11 +151,9 @@ fn suspend_dead_letters_logging_at_the_limit_and_re_enable() {
   clock.advance(Duration::from_millis(2050));
 
   let system = spec.system_mut();
-  EventFilter::info()
-    .start(&(dead_expected(7) + ", of which 2 were not logged"))
-    .intercept(system, || {
-      dead_actor.tell(7_i32, test_actor.clone());
-    });
+  EventFilter::info().start(&(dead_expected(7) + ", of which 2 were not logged")).intercept(system, || {
+    dead_actor.tell(7_i32, test_actor.clone());
+  });
 
   // the counter was reset by the resume
   let system = spec.system_mut();
