@@ -6,7 +6,12 @@
 // "FastFrequencySketch must" are kept as one test each, named after the case
 // with a `frequency_sketch_` or `fast_frequency_sketch_` prefix, and with the
 // original name as a comment. Every increment and check runs in the original
-// order.
+// order. Twenty of them are here. The two "detect width overflow that would
+// have been missed by Int arithmetic" cases call `FrequencySketch.Bits`, which
+// is `private[pekko]` in the original and crate-private in the port, so they
+// are in the unit tests next to the sketches:
+// src/kernel/frequency_sketch/frequency_sketch_value_test.rs and
+// src/kernel/frequency_sketch/fast_frequency_sketch_test.rs.
 //
 // Rust has no default arguments. The original's
 // `FrequencySketch[String](capacity, widthMultiplier = 4, resetMultiplier = 10,
@@ -40,8 +45,7 @@
 use std::collections::HashMap;
 
 use fraktor_actor::kernel::frequency_sketch::{
-  Bits, FastFrequencySketch, FastFrequencySketchSettings, FrequencySketch, FrequencySketchError,
-  FrequencySketchSettings,
+  FastFrequencySketch, FastFrequencySketchSettings, FrequencySketch, FrequencySketchError, FrequencySketchSettings,
 };
 
 // `java.util.Random`, which `scala.util.Random(seed)` wraps.
@@ -450,20 +454,6 @@ fn frequency_sketch_reject_capacity_that_would_cause_width_to_overflow_int() {
   assert!(matches!(result, Err(FrequencySketchError::WidthOverflow { .. })));
 }
 
-// "detect width overflow that would have been missed by Int arithmetic"
-#[test]
-fn frequency_sketch_detect_width_overflow_that_would_have_been_missed_by_int_arithmetic() {
-  // before the fix, widthMultiplier * ceilingPowerOfTwo(capacity) was computed in Int and could silently overflow
-  let capacity: i32 = 536_870_913;
-  let width_multiplier: i32 = 4;
-  // the old Int multiplication silently overflows to a non-power-of-two or zero/negative value
-  let width_int = width_multiplier.wrapping_mul(Bits::ceiling_power_of_two(capacity));
-  assert!(width_int <= 0); // negative or zero due to Int overflow (old broken behavior)
-                           // the new Long multiplication correctly identifies the overflow
-  let width_long = i64::from(width_multiplier) * i64::from(Bits::ceiling_power_of_two(capacity));
-  assert!(width_long > i64::from(i32::MAX));
-}
-
 // "reject capacity that would cause width to overflow Int with custom widthMultiplier"
 #[test]
 fn frequency_sketch_reject_capacity_that_would_cause_width_to_overflow_int_with_custom_width_multiplier() {
@@ -580,18 +570,6 @@ fn fast_frequency_sketch_reject_capacity_that_would_cause_width_to_overflow_int(
   // capacity > 536,870,912 with default widthMultiplier=4: ceilingPowerOfTwo gives 2^30=1073741824, times 4 overflows
   let result = FastFrequencySketch::<str>::new(536_870_913, FastFrequencySketchSettings::default());
   assert!(matches!(result, Err(FrequencySketchError::WidthOverflow { .. })));
-}
-
-// "detect width overflow that would have been missed by Int arithmetic"
-#[test]
-fn fast_frequency_sketch_detect_width_overflow_that_would_have_been_missed_by_int_arithmetic() {
-  // before the fix, widthMultiplier * ceilingPowerOfTwo(capacity) was computed in Int and could silently overflow
-  let capacity: i32 = 536_870_913;
-  let width_multiplier: i32 = 4;
-  let width_int = width_multiplier.wrapping_mul(Bits::ceiling_power_of_two(capacity));
-  assert!(width_int <= 0); // negative or zero due to Int overflow (old broken behavior)
-  let width_long = i64::from(width_multiplier) * i64::from(Bits::ceiling_power_of_two(capacity));
-  assert!(width_long > i64::from(i32::MAX));
 }
 
 // "reject capacity that would cause width to overflow Int with custom widthMultiplier"

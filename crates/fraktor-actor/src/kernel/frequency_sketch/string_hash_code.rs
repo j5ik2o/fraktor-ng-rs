@@ -1,6 +1,6 @@
 //! The polynomial string hash of the fixed-shape sketch.
 
-use super::FrequencySketchHasher;
+use super::{hasher_seal::HasherSeal, FrequencySketchHasher};
 
 #[cfg(test)]
 #[path = "string_hash_code_test.rs"]
@@ -14,6 +14,8 @@ mod tests;
 /// counters as on the JVM.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StringHashCode;
+
+impl HasherSeal<str> for StringHashCode {}
 
 impl FrequencySketchHasher<str> for StringHashCode {
   fn hash(&self, value: &str) -> i32 {
