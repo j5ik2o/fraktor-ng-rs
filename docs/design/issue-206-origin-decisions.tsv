@@ -1,0 +1,4 @@
+対象	決定	決めた人	日付	理由
+@要確認	Apache-2.0	元帥	2026-11-26	決定 2：要確認（機械の判定で材料が弱いもの）は一括で Apache-2.0 のままにし、1 件ずつは見ない。あとで自分で書いたと分かったものは、そのときに 1 件ずつ原典と照らして確かめ、この下にファイルごとの行を足して MIT OR Apache-2.0 へ広げる
+# 提案（元帥の確認待ち。行頭の # を外すと決定になる）。M3：原典の第三者のライセンス（hash-prospector の Unlicense）を SPDX に残す。根拠は issue-206-license-policy.md §2.1
+# crates/fraktor-actor/src/kernel/frequency_sketch/fast_frequency_sketch.rs	Apache-2.0 AND Unlicense	元帥	YYYY-MM-DD	M3：rehash は hash-prospector（public domain、UNLICENSE）の関数を写す。原典 FrequencySketch.scala 334-336 行の表示も本文に残す
