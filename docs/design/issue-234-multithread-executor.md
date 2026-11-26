@@ -994,7 +994,7 @@ S5〜S7 が大きいのは、今の実行器が宛先を線形に探すためで
 | 14 | 直した仕様で `bash scripts/quint-check-specs.sh`（main の 6 本の仕様すべて）。誤りの 6 つのモードから `quint run`（20 手、1 万本）。変異 R4〜R6 と R12（外からの Suspend のあとの外からの Resume を捨てる）を入れた写しで `quint run`（20 手、1 万本）と `quint test`。正しい形を 60 手・10 万本 | スクリプトは exit 0（`mailbox_scheduling.qnt` は 20 passing、`No violation found`、`max=21`。ほかの 5 本も通る）。6 つのモードはどれも `[violation]`。R4〜R6、R12 はどれも `[violation]`（`quint test` は 18〜19/20）。正しい形は `[ok]`、`max=53` |
 | 15 | `7ecb3f5` で `cargo test --workspace` | 101 個のバイナリの 1148 件が通り、失敗は 0 |
 | 16 | `mailbox_scheduling.qnt` の写しで、送り手の予約を `register`（読む）と `fetchOr`（closed と scheduled の 2 ビットだけを見る）の 2 手にし、強い I13、I13 を外した形、弱めた I13（`submittedWithWorkOrStaleRead`）のそれぞれで `quint run --invariant=…`（30 手・3 万本、60 手・10 万本）。I13 以外の不変条件を 1 つずつ（30 手・2 万本）。誤りの 6 つのモードと、変異 R4、R5、R6、R12、R13（30 手・2 万本） | §3.10 の表のとおり。強い I13 だけが正しい形で破れる。I13 を外すと R4 を見逃す。弱めた I13 は正しい形を通し、R4 も含めてすべての変異と 6 つのモードを捉える |
-| 17 | Devin の指摘の筋書きを、前の版の仕様（`cc4b4d4`）と直した仕様の写しで `quint test --match=devinRepro`。直した仕様で `bash scripts/quint-check-specs.sh`（main の 7 本の仕様すべて）。誤りの 7 つのモードから `quint run`（30 手・2 万本）。正しい形を 60 手・5 万本 | 前の版：筋書きが通る（Suspend が残ったまま `startInvoke` でき、`invariant` も成り立つ）。直した版：`startInvoke` が止まる（`Tests failed`）。スクリプトは exit 0（`mailbox_scheduling.qnt` は 22 passing、`No violation found`）。7 つのモードはどれも `[violation]`。正しい形は `[ok]`、`max=53` |
+| 17 | Devin の指摘の筋書きを、前の版の仕様（`cc4b4d4`）と直した仕様の写しで `quint test --match=devinRepro`。直した仕様で `bash scripts/quint-check-specs.sh`（main の 7 本の仕様すべて）。誤りの 7 つのモードから `quint run`（30 手・2 万本）。正しい形を 60 手・5 万本 | 前の版：筋書きが通る（Suspend が残ったまま `startInvoke` でき、`invariant` も成り立つ）。直した版：`startInvoke` が止まる（`Tests failed`）。スクリプトは exit 0（`mailbox_scheduling.qnt` は 22 passing、`No violation found`）。7 つのモードはどれも `[violation]`。正しい形は `[ok]`、`max=53`（既定の rust の backend で流した。再レビュー 5 では、同じ版の正しい形を rust の backend で 25 手を超えて流すと `Error: invalid type: null, expected usize` で落ちることがあり、`--backend=typescript` では 30 手・3 万本と 60 手・2 万本で `[ok]` だった。道具の問題で、CI の 20 手には当たらない） |
 
 429、rate limit、overloaded は出なかった。
 
@@ -1120,3 +1120,11 @@ bot の記録 `pr236-design-rereview3.md` にある。M1 と M2 は元帥が決�
 | §3.2 の閉じる門（240 行）：満杯で待つ送信が門を持ったままだと、閉じる側も取り出しも止まる | 直す | §3.2：満杯で待つときは門を外して待ち、起きたら門の中で閉じたかを見直してから積む（段 5） |
 | §3.2 の `MailboxRun`（212 行）：`Again` のあとに adaptor が予約を取り直すと、立っている bit に阻まれる | 直す | §3.2：`Again` は予約に勝った状態で返す。adaptor は bit に触らず、列に積み直すだけ |
 | §3.9 の `run_one`（494 行）：system message だけの実行で `false` を返すと、testkit が待ちに入る | 直す | §3.9：`false` は実行待ちが空のときだけ。system message だけの実行のあとは、次のメールボックスを続けて回す。rustdoc の案に 1 文足した（1 件だけ配ることは変えていない） |
+
+### 11.8 再レビュー 5 の低の指摘（段の issue を切るときに直す）
+
+再レビュー 5：固定 `b6d15d9`、2026-11-26、判定は承認。レポートは bot の記録 `pr236-design-rereview5.md` にある。低の 3 件は、次のとおり段の issue を切るときに直す（L1 の backend は、§10 の 17 にも書き添えた）。
+
+- L1：仕様を深く流す手順に、`--backend=typescript` を書く（既定の rust の backend は、この仕様で 25 手を超えると quint の実行時エラーで落ちることがある。CI の 20 手には当たらない）。段 2 の issue を切るときに直す
+- L2：満杯の待ちから起きた送り手は、門の中で「閉じたか」に加えて「まだ空きがあるか」も見直し、空きが無ければ残りの待ち時間でもう一度待つ。閉じる側は、閉じたときに待っている送り手を起こす。段 5 の issue を切るときに直す
+- L3：`Again` の積み直しで `execute` が `Rejected` を返したときも、§3.5 の扱い（1 回だけ試し直し、だめなら bit を下ろしてエラー）にそろえると、`MailboxRun` の行に書く。段 2 の issue を切るときに直す
