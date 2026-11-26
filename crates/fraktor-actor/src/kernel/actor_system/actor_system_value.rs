@@ -243,7 +243,7 @@ impl ActorSystem {
   ) -> Result<ActorRef, crate::kernel::actor::ActorCreationError> {
     match name.into() {
       | Some(name) => self.try_actor_of(props, Some(name)),
-      | None => todo!(),
+      | None => Err(crate::kernel::actor::InvalidActorNameException::null_name().into()),
     }
   }
 
