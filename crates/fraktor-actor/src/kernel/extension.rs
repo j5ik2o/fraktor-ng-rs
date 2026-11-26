@@ -27,13 +27,15 @@ mod extension_entry;
 mod extension_error;
 mod extension_id;
 mod extension_startup;
+mod extension_trait;
 
 pub use extension_error::ExtensionError;
-pub use extension_id::{Extension, ExtensionId};
+pub use extension_id::ExtensionId;
 pub use extension_startup::ExtensionStartup;
+pub use extension_trait::Extension;
 
 pub(crate) use extension_entry::ExtensionEntry;
 
 #[cfg(test)]
-#[path = "extension/extension_test.rs"]
+#[path = "extension_test.rs"]
 mod tests;

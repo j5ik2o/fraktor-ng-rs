@@ -14,18 +14,13 @@
 //
 // This file has been modified from the Apache Pekko original.
 
-//! The marker of an extension value and the id that creates it.
+//! The id of an extension: the key the registry counts it under, and the
+//! factory that creates it.
 
 use core::any::Any;
 
 use crate::kernel::actor_system::ActorSystem;
-use crate::kernel::extension::ExtensionError;
-
-/// A value an actor system creates once and shares through its registry.
-///
-/// Mirrors `org.apache.pekko.actor.Extension`. The trait is a marker: the
-/// registry only needs the value to be a concrete, shareable type.
-pub trait Extension: Any + Send + Sync {}
+use crate::kernel::extension::{Extension, ExtensionError};
 
 /// The id of an extension: the key the registry counts it under, and the
 /// factory that creates it.

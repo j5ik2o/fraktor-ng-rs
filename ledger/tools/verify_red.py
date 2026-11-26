@@ -13,10 +13,9 @@
   unclassifiable          機械分類できない（軽量モデルの判定ステップへ）
   source_rejected         原典が変更のない現行の基準 commit でない（cargo も台帳も触らず止める）
 
-already_green は「移植の正しさ（原典 Pekko のケース数と、人間が承認した除外と作らない区分の
-件数の和が、通過したケース数に一致し、1 件以上通っている）」と「前提の実装が契約を満たす
-（対象テストの全件成功）」の両方が確かめられる場合に限る。片方でも欠ける場合は
-unexpected_pass に倒す。
+already_green は「移植の正しさ（原典 Pekko のケース数と、人間が承認した除外と作らない
+区分の件数の和が、通過したケース数に一致し、1 件以上通っている）」と「前提の実装が契約を
+満たす（対象テストの全件成功）」の両方が確かめられる場合に限る。片方が欠ければ倒す。
 原典が用意されていない環境（pekko/ が無い）、または原典のケースをすべて数えたと確認できない
 ファイル（WordSpec の `"name" must {` など既知の書式で全件を説明できない構文を含む）では
 移植を確かめられないため already_green にはしない。
@@ -108,8 +107,7 @@ def mark_green(node_id: str, total: int, passed: int, reason: str, verified_agai
     green を残さないため）。
 
     total には原典のケース数、ported と passing には Rust の成功件数 passed を書く
-    （承認済みの除外や作らない区分がある場合、total = passed + len(excluded) + len(not_built)
-    になる）。
+    （承認済みの除外や作らない区分がある場合、total = passed + 除外 + 作らない になる）。
     status・cases の total/ported/passing・既存の triage.reason・最上位の verified_against だけを
     書き換える。verified_against 行が無ければノードの末尾に足し、それ以外の新キーは増やさない。
     triage.reason が null または空のときだけ `already_green: ` 理由を書き、人間が書いた既存の
@@ -282,20 +280,9 @@ def count_excluded(node_id: str) -> int | None:
 
     読み込み（厳格な SafeLoader）、承認記録の判定、件数計算は同ディレクトリの
     `excluded_approvals` が持つ。ここでは呼出し時点の `LEDGER`（cwd 相対）を渡すだけにし、
-    台帳パスをモジュール読込時に固定しない。未承認・不正な承認記録が 1 件でもあれば
-    None を返し、already_green を許可しない（詳細は `excluded_approvals.count_excluded`）。
+    台帳パスをモジュール読込時に固定しない。未承認・不正があれば None を返す。
     """
     return excluded_approvals.count_excluded(LEDGER, node_id)
-
-
-def count_not_built(node_id: str) -> int | None:
-    """台帳の対象ノードの cases.not_built のうち、人間が承認した件数を返す。
-
-    承認記録の判定と件数計算は `excluded_approvals` が持つ。未承認・不正な記録が
-    1 件でもあれば None を返し、already_green を許可しない（詳細は
-    `excluded_approvals.count_not_built`）。欄が無いノードは 0 件である。
-    """
-    return excluded_approvals.count_not_built(LEDGER, node_id)
 
 
 def parse_passed(out: str) -> int | None:
@@ -387,7 +374,7 @@ def main() -> int:
     original_cases = count_original_cases(node)
     passed = parse_passed(out)
     excluded = count_excluded(node)
-    not_built = count_not_built(node)
+    not_built = excluded_approvals.count_not_built(LEDGER, node)
 
     already_green = (
         passed is not None and original_cases is not None and excluded is not None
