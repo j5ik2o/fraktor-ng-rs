@@ -9,6 +9,7 @@ publish = false
 [features]
 default = ["std"]
 std = ["dep:getrandom"]
+test-support = []
 
 [dependencies]
 getrandom = { version = "0.3", optional = true }

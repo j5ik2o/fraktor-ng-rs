@@ -23,6 +23,7 @@
 use alloc::string::String;
 use core::time::Duration;
 
+use crate::kernel::actor::ActorCreationError;
 use crate::kernel::actor::Props;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::Executor;
@@ -80,7 +81,42 @@ impl WeakActorSystem {
     name: Option<&str>,
     strategy: SupervisorStrategy,
   ) -> ActorRef {
-    Executor::lend(&self.upgrade(), |executor| executor.spawn_child_from_weak(parent, props, name, strategy))
+    match self.try_spawn_child(parent, props, name, strategy) {
+      | Ok(child) => child,
+      | Err(error) => panic!("{error}"),
+    }
+  }
+
+  /// Starts a child of `parent`, answering with the refusal instead of
+  /// throwing it.
+  ///
+  /// The checks are the ones a top-level creation runs: the name, that
+  /// the system and the parent still take children, that the name is
+  /// free, and the configuration of the recipe. A caller that can report
+  /// a refusal, such as a test handle that starts a child under a
+  /// supervisor it was given, uses this entry; [`spawn_child`](Self::spawn_child)
+  /// is this call with the refusal thrown, as Pekko throws it.
+  ///
+  /// This entry verifies the configuration, which
+  /// [`ActorContext::actor_of`](crate::kernel::actor::ActorContext::actor_of)
+  /// does not: the same recipe with an undefined dispatcher name is
+  /// refused here and accepted there. That difference is a known
+  /// deviation; issue #247
+  /// (https://github.com/j5ik2o/fraktor-ng-rs/issues/247) aligns
+  /// `actor_of` with this entry so both verify the configuration.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ActorCreationError`] when the name, the parent's state,
+  /// or the configuration is refused.
+  pub fn try_spawn_child(
+    &self,
+    parent: &ActorRef,
+    props: Props,
+    name: Option<&str>,
+    strategy: SupervisorStrategy,
+  ) -> Result<ActorRef, ActorCreationError> {
+    Executor::lend(&self.upgrade(), |executor| executor.try_spawn_child_from_weak(parent, props, name, strategy))
   }
 
   /// Starts a handle whose shard runs `handler` for each delivered message.

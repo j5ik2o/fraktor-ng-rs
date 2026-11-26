@@ -33623,7 +33623,7 @@ nodes:
     module: testkit
     class: TestFSMRefSpec
     test_cases_approx: 6
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -33634,14 +33634,15 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 6
+    ported: 6
+    passing: 6
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-testkit
+    test_file: crates/fraktor-testkit/tests/test_fsm_ref_spec.rs
+  goal: G0issue181
+  verified_against: v2.0.0
 - id: testkit/src/test/java/org/apache/pekko/testkit/javadsl/TestKitApiTest.java
   name: testkit:TestKitApiTest
   kind: test

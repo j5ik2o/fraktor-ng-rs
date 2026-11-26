@@ -676,15 +676,20 @@ impl Executor {
   /// Returns whether `id` names a configured dispatcher: either the
   /// registry installed for this system, or a definition (or alias) in
   /// the system's `DispatchSettings`, whose definitions the ported
-  /// tests configure their dispatchers through.
+  /// tests configure their dispatchers through. A name whose alias
+  /// chain cannot be resolved is not configured, even when the
+  /// registry table holds the name: creation resolves the same chain
+  /// to find the actor's capacities, so passing verification here
+  /// would only move the failure into creation.
   fn has_dispatcher(&self, id: &str) -> bool {
-    if self.dispatchers.has_dispatcher(id) {
-      return true;
+    if let Some(settings) = &self.dispatch_settings {
+      match settings.resolve_dispatcher(id) {
+        | Ok(Some(_)) => return true,
+        | Ok(None) => {},
+        | Err(_) => return false,
+      }
     }
-    match &self.dispatch_settings {
-      | Some(settings) => matches!(settings.resolve_dispatcher(id), Ok(Some(_))),
-      | None => false,
-    }
+    self.dispatchers.has_dispatcher(id)
   }
 
   /// Verifies the configuration of a creation at `path`, in Pekko's
@@ -962,7 +967,7 @@ impl Executor {
     strategy: SupervisorStrategy,
   ) -> Result<ActorRef, InvalidActorNameException> {
     if self.parent_entry(parent).is_none() {
-      if !self.is_live(parent) {
+      if !self.is_live(parent) && !self.is_guardian(parent) {
         return Err(InvalidActorNameException::terminating());
       }
       self.insert_parent_entry(ParentEntry {
@@ -1010,34 +1015,81 @@ impl Executor {
     Ok(child)
   }
 
-  /// Starts a child for a caller that only holds a non-owning handle.
+  /// Starts a child for a caller that only holds a non-owning handle and
+  /// wants a refusal as a value. The checks are the ones
+  /// [`try_spawn_user`](Self::try_spawn_user) runs for a top-level
+  /// creation, in the same order: the name first, then that the system
+  /// and the parent still take children, then that the name is free,
+  /// then the configuration. A child creation therefore refuses for the
+  /// same reasons whichever entry a caller reaches it through, instead
+  /// of one entry checking the configuration and another skipping it.
   ///
-  /// Mirrors `TestProbe.childActorOf`: the caller has no way to receive a
-  /// refusal, so a named request the registry rejects ends the call with the
-  /// message Pekko throws from `attachChild`, and a request after the system
-  /// has terminated still panics as [`Executor::spawn_child`] documents.
-  /// An unnamed request reaches `attachChild` too, so a parent that is no
-  /// longer live or whose registry is stopping refuses it with the same
-  /// message instead of starting a child below a stopped actor.
-  pub(crate) fn spawn_child_from_weak(
+  /// # Errors
+  ///
+  /// Returns [`ActorCreationError`] when the name, the parent's state,
+  /// or the configuration is refused.
+  pub(crate) fn try_spawn_child_from_weak(
     &mut self,
     parent: &ActorRef,
     props: Props,
     name: Option<&str>,
     strategy: SupervisorStrategy,
-  ) -> ActorRef {
-    self.assert_running();
-    match name {
-      | Some(name) => match self.spawn_named_child_with_strategy(parent, props, name, strategy) {
-        | Ok(child) => child,
-        | Err(error) => panic!("{error}"),
+  ) -> Result<ActorRef, ActorCreationError> {
+    if let Some(name) = name {
+      validate_actor_name(name)?;
+    }
+    if self.terminated {
+      return Err(InvalidActorNameException::terminating().into());
+    }
+    match self.parent_entry(parent) {
+      | Some(entry) => {
+        if entry.stopping {
+          return Err(InvalidActorNameException::terminating().into());
+        }
+        if let Some(name) = name {
+          if entry.children.iter().any(|(used, _)| used == name) {
+            return Err(InvalidActorNameException::name_taken(name).into());
+          }
+        }
       },
       | None => {
-        let stopping = self.parent_entry(parent).is_some_and(|entry| entry.stopping);
-        assert!(self.is_live(parent) && !stopping, "{TERMINATED_MESSAGE}");
-        self.spawn_child(parent, props, None, strategy)
+        if !self.is_live(parent) && !self.is_guardian(parent) {
+          return Err(InvalidActorNameException::terminating().into());
+        }
+        // A child of the user guardian is a top-level actor, so its
+        // name must also be free in the top-level registry.
+        if parent == &self.user_guardian {
+          if let Some(name) = name {
+            if self.user_children.contains_key(name) {
+              return Err(InvalidActorNameException::name_taken(name).into());
+            }
+          }
+        }
       },
     }
+    // The configuration check reads only the recipe and the path. For
+    // an unnamed child the last path segment is the generated name,
+    // which the creation itself draws, so the check runs against a
+    // placeholder segment that only an error message would show.
+    let path = match name {
+      | Some(name) => parent.path().with_child(name),
+      | None => parent.path().with_child("$generated"),
+    };
+    self.verify_configuration(&props, &path)?;
+    let child = match name {
+      | Some(name) => self.spawn_named_child_with_strategy(parent, props, name, strategy)?,
+      | None => self.spawn_child(parent, props, None, strategy),
+    };
+    // A named child of the user guardian is recorded with the
+    // top-level actors, as `try_spawn_user` records its own: the name
+    // stays taken for both entries until the child stops, and
+    // `forget_child` frees it for both.
+    if let Some(name) = name {
+      if parent == &self.user_guardian && self.has_cell(&child) {
+        self.user_children.insert(name.to_string(), child.clone());
+      }
+    }
+    Ok(child)
   }
 
   /// Records a stop request to carry out after the actor that asked returns.
@@ -2289,6 +2341,14 @@ impl Executor {
       .values()
       .find(|entry| entry.self_ref.has_path(path) && (entry.mailbox.has_cell() || self.is_running(&entry.self_ref)))
       .map(|entry| entry.self_ref.clone())
+  }
+
+  /// Returns whether `target` is one of the system's guardians. A
+  /// guardian is a handle without a cell, so `is_live` never holds for
+  /// it; as a parent it is live for as long as the system runs, which
+  /// the caller has already established when it asks.
+  fn is_guardian(&self, target: &ActorRef) -> bool {
+    target == &self.root_guardian || target == &self.user_guardian || target == &self.system_guardian
   }
 
   /// Sends `message` to `target`, naming `sender` as the sender of the

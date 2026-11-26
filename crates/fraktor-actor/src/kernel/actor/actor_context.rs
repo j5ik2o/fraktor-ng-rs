@@ -341,6 +341,14 @@ impl<'a> ActorContext<'a> {
   /// wants a generated name must generate one, as Pekko's
   /// `context.actorOf(props)` does.
   ///
+  /// This entry checks the name only: unlike
+  /// [`WeakActorSystem::try_spawn_child`](crate::kernel::actor_system::WeakActorSystem::try_spawn_child),
+  /// it does not verify the recipe's configuration, so a dispatcher name
+  /// that no configuration defines is accepted here and refused there.
+  /// That difference is a known deviation; issue #247
+  /// (https://github.com/j5ik2o/fraktor-ng-rs/issues/247) aligns this
+  /// entry with `try_spawn_child` so both verify the configuration.
+  ///
   /// # Errors
   ///
   /// Returns [`InvalidActorNameException`] when the name is taken by a live
