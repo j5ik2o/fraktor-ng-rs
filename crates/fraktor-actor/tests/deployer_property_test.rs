@@ -24,10 +24,11 @@
 
 use core::time::Duration;
 
-use fraktor_actor::kernel::actor::{
-  Deploy, DeployError, DeployedRouter, Deployer, DeploymentSection, NumberOfInstances, PoolKind, ResizerSection,
-  RouterSelection, Scope,
+use fraktor_actor::kernel::actor::deploy::{
+  Deploy, DeployError, DeployedRouter, Deployer, DeploymentSection, NumberOfInstances, ResizerSection, RouterSelection,
+  Scope,
 };
+use fraktor_actor::kernel::actor::PoolKind;
 use fraktor_actor::kernel::wildcard_index::WildcardIndex;
 
 struct SplitMix64(u64);
@@ -151,11 +152,7 @@ fn deployer_with_only_a_double_wildcard_section_matches_every_extension() {
     assert_eq!(deployer.lookup_path(&prefix_path), None, "the prefix itself does not match");
     let extension = random_elements(&mut rng, &QUERY_ELEMENTS);
     let extended = format!("{}/{}", prefix_path, extension.join("/"));
-    assert_eq!(
-      deployer.lookup_path(&extended).map(|deploy| &deploy.path),
-      Some(&key),
-      "every extension matches"
-    );
+    assert_eq!(deployer.lookup_path(&extended).map(|deploy| &deploy.path), Some(&key), "every extension matches");
   }
 }
 
@@ -238,7 +235,7 @@ fn deployer_resizer_reading_pools_validate_the_resizer() {
   ];
   for router in readers {
     let good = DeploymentSection {
-      router,
+      router: router.clone(),
       resizer: Some(resizer_section(2, 5)),
       ..DeploymentSection::default()
     };
@@ -252,7 +249,7 @@ fn deployer_resizer_reading_pools_validate_the_resizer() {
       | other => panic!("expected a pool, got {other:?}"),
     }
     let bad = DeploymentSection {
-      router,
+      router: router.clone(),
       resizer: Some(resizer_section(5, 2)),
       ..DeploymentSection::default()
     };
@@ -269,11 +266,7 @@ fn deployer_resizer_reading_pools_validate_the_resizer() {
 // dispatcher.
 #[test]
 fn deployer_kinds_that_do_not_read_the_resizer_ignore_even_a_broken_one() {
-  let ignored = [
-    RouterSelection::BalancingPool,
-    RouterSelection::RoundRobinGroup,
-    RouterSelection::FromCode,
-  ];
+  let ignored = [RouterSelection::BalancingPool, RouterSelection::RoundRobinGroup, RouterSelection::FromCode];
   for router in ignored {
     let section = DeploymentSection {
       router,

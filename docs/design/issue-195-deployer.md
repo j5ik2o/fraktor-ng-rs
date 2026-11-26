@@ -118,7 +118,13 @@ DeployerSpec の大半は HOCON の `pekko.actor.deployment` の節を読むケ�
 | `crates/fraktor-actor/src/kernel/actor/deploy.rs` | モジュールの宣言と再エクスポート |
 | `crates/fraktor-actor/src/kernel/actor/deploy/deploy_value.rs` | `Deploy` |
 | `crates/fraktor-actor/src/kernel/actor/deploy/scope.rs` | `Scope` |
-| `crates/fraktor-actor/src/kernel/actor/deploy/deployment_section.rs` | `DeploymentSection`、`RouterSelection`、`ResizerSection`、`NumberOfInstances`（§2.2） |
+| `crates/fraktor-actor/src/kernel/actor/deploy/deployment_section.rs` | `DeploymentSection`（§2.2） |
+| `crates/fraktor-actor/src/kernel/actor/deploy/router_selection.rs` | `RouterSelection` と FQCN の定数（§2.2、§2.6） |
+| `crates/fraktor-actor/src/kernel/actor/deploy/number_of_instances.rs` | `NumberOfInstances`（§2.2） |
+| `crates/fraktor-actor/src/kernel/actor/deploy/resizer_section.rs` | `ResizerSection`（§2.2） |
+| `crates/fraktor-actor/src/kernel/actor/deploy/deployed_router.rs` | `DeployedRouter`（§2.4） |
+| `crates/fraktor-actor/src/kernel/actor/deploy/group_kind.rs` | `GroupKind`（§2.4） |
+| `crates/fraktor-actor/src/kernel/actor/deploy/default_resizer.rs` | `DefaultResizer`（§2.4、§2.5） |
 | `crates/fraktor-actor/src/kernel/actor/deploy/deployer_value.rs` | `Deployer` |
 | `crates/fraktor-actor/src/kernel/actor/deploy/deploy_error.rs` | `DeployError`（§2.6） |
 | `crates/fraktor-actor/src/kernel/actor/deploy/*_test.rs` | 原典外の単体テスト（境界の固定。§3） |
@@ -597,3 +603,13 @@ FQCN は定数として持つ（例：`ROUND_ROBIN_POOL_FQCN = "org.apache.pekko
 9. `NaN` の率を素通しにすることは、原典どおりとして採る。
 10. `Deployer` を公開 API にして `tests/` に置くことは、#187 の前例どおり採る（§6 の1）。
 11. `PoolKind` に種類を足すことの影響は、記録で足りるものとして採る。振り分けは #269 への申し送りのままとし、balancing の検証の期待値は低5で確かめる。
+
+## 10. 実装の記録（第2段、2026-11-26）
+
+- 16件すべてを `crates/fraktor-actor/tests/deployer_spec.rs` に移し、台帳の対象ノードを green にした（16件中16件が通過、除外0件）。性質 P1〜P8 は `crates/fraktor-actor/tests/deployer_property_test.rs` に置き、境界の単体テストは `deploy/deployer_value_test.rs` に置いた。
+- 公開面は syn チェッカーの module-wiring の規則（再エクスポートは末端モジュールの直属親だけ）に従い、`kernel::actor::deploy` を公開モジュールとして出し、型はその下に置いた。`dispatch_settings` の前例と同じ形である。§2.1 の「公開面は `kernel::actor` の下に置く」は、この形で満たす。
+- 型ごとにファイルを分ける規則に従い、§2.2 の4型は別々のファイルに分けた（§2.1 の表を実装に合わせて直した）。
+- `PoolKind` に `Balancing`、`ConsistentHashing`、`TailChopping` を足し、#194 の `actor_configuration_verification_property_test.rs` の表にもこの3種を足した。規則は dispatcher の種類についてのものであり、原典の `ActorConfigurationVerificationSpec` にプールの種類ごとの期待値の違いは無い（balancing についての記述は balancing dispatcher のものである）ことを確かめたうえで、同じ期待値の行を適用した。
+- Java の `split` の挙動は写す形で実装した。オーナーの判断は元帥経由で待ちのままであり、承認済みとは書かない（§6 の6、§9 の決定1）。
+- 台帳の `needs.testkit`（`extends-pekko-spec`／`pekko-spec`）は元のままにした。移植は testkit を使わないため、実態との差としてゴール文書（`docs/goals/issue-195-deployer.md`）に記録した。
+- `docs/baseline/v2.0.0-undocumented-nodes.tsv` は `report_ledger_1to1.py list-undocumented` で作り直し、本ノードを一覧へ足した（#194 の前例と同じ扱い）。

@@ -27,10 +27,11 @@
 
 use core::time::Duration;
 
-use fraktor_actor::kernel::actor::{
-  DefaultResizer, Deploy, DeployError, DeployedRouter, Deployer, DeploymentSection, NumberOfInstances, PoolKind,
-  RouterSelection, Scope,
+use fraktor_actor::kernel::actor::deploy::{
+  DefaultResizer, Deploy, DeployError, DeployedRouter, Deployer, DeploymentSection, NumberOfInstances, RouterSelection,
+  Scope,
 };
+use fraktor_actor::kernel::actor::PoolKind;
 
 fn section(router: RouterSelection) -> DeploymentSection {
   DeploymentSection { router, ..DeploymentSection::default() }
@@ -45,10 +46,10 @@ fn deployer() -> Deployer {
   };
   let resizer = DeploymentSection {
     router: RouterSelection::RoundRobinPool,
-    resizer: Some(fraktor_actor::kernel::actor::ResizerSection {
+    resizer: Some(fraktor_actor::kernel::actor::deploy::ResizerSection {
       lower_bound: 1,
       upper_bound: 10,
-      ..fraktor_actor::kernel::actor::ResizerSection::default()
+      ..fraktor_actor::kernel::actor::deploy::ResizerSection::default()
     }),
     ..DeploymentSection::default()
   };
@@ -139,10 +140,7 @@ fn deployer_rejects_a_non_numeric_number_of_instances() {
     ..DeploymentSection::default()
   };
   let result = Deployer::from_sections([("/service-invalid-number-of-instances".to_string(), invalid)]);
-  assert_eq!(
-    result.unwrap_err(),
-    DeployError::WrongType { key: "nr-of-instances", value: "boom".to_string() }
-  );
+  assert_eq!(result.unwrap_err(), DeployError::WrongType { key: "nr-of-instances", value: "boom".to_string() });
 }
 
 // "detect invalid deployment path"
@@ -212,10 +210,7 @@ fn deployer_scatter_gather_section_yields_a_pool_with_a_two_second_within() {
   let deployer = deployer();
   let found = deployer.lookup_path("/service-scatter-gather").expect("the section is deployed");
   assert_eq!(found.path, "/service-scatter-gather");
-  assert_eq!(
-    found.router,
-    pool(PoolKind::ScatterGatherFirstCompleted { within: Duration::from_secs(2) }, 1)
-  );
+  assert_eq!(found.router, pool(PoolKind::ScatterGatherFirstCompleted { within: Duration::from_secs(2) }, 1));
   assert_eq!(found.scope, Scope::NoScopeGiven);
 }
 
@@ -264,10 +259,7 @@ fn deployer_single_wildcards_match_one_path_element() {
   assert_eq!(first.router, pool(PoolKind::Random, 1));
   let second = deployer.lookup_path("/somewildcardmatch/some").expect("the wildcard section matches");
   assert_eq!(second.path, "/*/some");
-  assert_eq!(
-    second.router,
-    pool(PoolKind::ScatterGatherFirstCompleted { within: Duration::from_secs(5) }, 1)
-  );
+  assert_eq!(second.router, pool(PoolKind::ScatterGatherFirstCompleted { within: Duration::from_secs(5) }, 1));
 }
 
 // "be able to use double wildcards"
@@ -277,8 +269,7 @@ fn deployer_double_wildcards_match_the_remaining_path_elements() {
   let first = deployer.lookup_path("/double/wildcardmatch").expect("the double wildcard matches");
   assert_eq!(first.path, "/double/**");
   assert_eq!(first.router, pool(PoolKind::Random, 1));
-  let second =
-    deployer.lookup_path("/double/wildcardmatch/anothermatch").expect("the double wildcard matches");
+  let second = deployer.lookup_path("/double/wildcardmatch/anothermatch").expect("the double wildcard matches");
   assert_eq!(second.path, "/double/**");
   let third = deployer.lookup_path("/double/more/anothermatch").expect("the longer prefix wins");
   assert_eq!(third.path, "/double/more/**");
