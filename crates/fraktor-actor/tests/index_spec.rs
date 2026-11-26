@@ -153,16 +153,16 @@ fn be_able_to_be_accessed_in_parallel() {
       for _ in 0..(nr_of_tasks / nr_of_threads) {
         match random.below(4) {
           | 0 => {
-            index.put(random.below(nr_of_keys) as i32, random.below(nr_of_values) as i32);
+            index.put(random.below(nr_of_keys as u64) as i32, random.below(nr_of_values as u64) as i32);
           },
           | 1 => {
-            index.remove(&(random.below(nr_of_keys / 2) as i32), &(random.below(nr_of_values) as i32));
+            index.remove(&(random.below((nr_of_keys / 2) as u64) as i32), &(random.below(nr_of_values as u64) as i32));
           },
           | 2 => {
-            index.remove_key(&(random.below(nr_of_keys / 2) as i32));
+            index.remove_key(&(random.below((nr_of_keys / 2) as u64) as i32));
           },
           | _ => {
-            let key = random.below(nr_of_keys) as i32;
+            let key = random.below(nr_of_keys as u64) as i32;
             let values = index.value_iterator(&key);
             if key >= (nr_of_keys / 2) as i32 {
               assert!(!values.is_empty());

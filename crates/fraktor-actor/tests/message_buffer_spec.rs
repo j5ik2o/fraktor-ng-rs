@@ -43,19 +43,19 @@ fn append_and_drop() {
   assert_eq!(buffer.size(), 1);
   buffer.append("m2", "s2");
   assert_eq!(buffer.size(), 2);
-  let (m1, s1) = buffer.head().expect("the buffer holds two entries");
+  let (m1, s1) = buffer.head().map(|(m, s)| (*m, *s)).expect("the buffer holds two entries");
   assert_eq!(buffer.size(), 2);
   buffer.drop_head();
   assert_eq!(buffer.size(), 1);
-  assert_eq!(m1, &"m1");
-  assert_eq!(s1, &"s1");
-  let (m2, s2) = buffer.head().expect("the buffer holds one entry");
+  assert_eq!(m1, "m1");
+  assert_eq!(s1, "s1");
+  let (m2, s2) = buffer.head().map(|(m, s)| (*m, *s)).expect("the buffer holds one entry");
   buffer.drop_head();
   assert_eq!(buffer.size(), 0);
   buffer.drop_head();
   assert_eq!(buffer.size(), 0);
-  assert_eq!(m2, &"m2");
-  assert_eq!(s2, &"s2");
+  assert_eq!(m2, "m2");
+  assert_eq!(s2, "s2");
 }
 
 // "process elements in the right order"

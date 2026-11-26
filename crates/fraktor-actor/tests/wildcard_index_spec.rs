@@ -87,8 +87,8 @@ fn fail_when_a_double_wildcard_is_used_as_a_suffix() {
   // The original expects an IllegalArgumentException; the port returns an
   // error value instead (see the design document for #187, section 2.2).
   assert_eq!(
-    empty_index().insert(&["a**"], 1),
-    Err(WildcardIndexError::DoubleWildcardAsSuffix { element: "a**".to_string() })
+    empty_index().insert(&["a**"], 1).unwrap_err(),
+    WildcardIndexError::DoubleWildcardAsSuffix { element: "a**".to_string() }
   );
 }
 
