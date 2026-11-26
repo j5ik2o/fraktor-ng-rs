@@ -14,13 +14,17 @@
 //
 // This file has been modified from the Apache Pekko original.
 
-//! Mailboxes and what runs them (design of #234, section 3.2).
+//! Dispatcher definitions and the registry that verifies against them, and
+//! mailboxes and what runs them (design of #234, section 3.2).
 //!
-//! Stage 2 of #234 adds these types without wiring them into the executor:
-//! the actor system does not use them yet.
+//! Stage 2 of #234 adds the mailbox types without wiring them into the
+//! executor: the actor system does not use them yet.
 
 mod bounded_queue;
 mod control_aware_queue;
+mod dispatcher_config;
+mod dispatcher_kind;
+mod dispatchers;
 mod mailbox;
 mod mailbox_cell;
 mod mailbox_run;
@@ -38,6 +42,10 @@ mod unbounded_queue;
 
 pub use bounded_queue::BoundedQueue;
 pub use control_aware_queue::ControlAwareQueue;
+pub use dispatcher_config::DispatcherConfig;
+pub use dispatcher_kind::DispatcherKind;
+pub use dispatchers::Dispatchers;
+pub use dispatchers::DEFAULT_DISPATCHER_ID;
 pub use mailbox::Mailbox;
 pub use mailbox_cell::MailboxCell;
 pub use mailbox_run::MailboxRun;

@@ -27,6 +27,7 @@
 pub struct FsmState<S, D> {
   target: Option<S>,
   data: Option<D>,
+  replies: alloc::vec::Vec<crate::kernel::message::Message>,
 }
 
 impl<S, D> FsmState<S, D> {
@@ -35,7 +36,7 @@ impl<S, D> FsmState<S, D> {
   ///
   /// Mirrors `FSM.goto(nextStateName)`, whose state notifies the handlers.
   pub fn goto(state: S) -> Self {
-    Self { target: Some(state), data: None }
+    Self { target: Some(state), data: None, replies: alloc::vec::Vec::new() }
   }
 
   /// Keeps the current state without telling the transition handlers.
@@ -43,7 +44,7 @@ impl<S, D> FsmState<S, D> {
   /// Mirrors `FSM.stay()`, which is `goto(stateName)` with the notification
   /// switched off.
   pub fn stay() -> Self {
-    Self { target: None, data: None }
+    Self { target: None, data: None, replies: alloc::vec::Vec::new() }
   }
 
   /// Replaces the data the machine keeps in the next state.
@@ -54,7 +55,21 @@ impl<S, D> FsmState<S, D> {
     self
   }
 
-  pub(crate) fn into_parts(self) -> (Option<S>, Option<D>) {
-    (self.target, self.data)
+  /// Records a reply to send to the sender of the event being handled,
+  /// before the transition handlers run and before the listeners are
+  /// told.
+  ///
+  /// Mirrors `FSM.State.replying(msg)`. Pekko's `makeTransition` sends
+  /// the replies first; calling `replying` more than once sends every
+  /// recorded reply, in the order they were recorded. When the move
+  /// names a state that does not exist, no reply is sent, as Pekko
+  /// sends none when the transition does not happen.
+  pub fn replying<M: core::any::Any + Send + Sync>(mut self, message: M) -> Self {
+    self.replies.push(crate::kernel::message::Message::new(message));
+    self
+  }
+
+  pub(crate) fn into_parts(self) -> (Option<S>, Option<D>, alloc::vec::Vec<crate::kernel::message::Message>) {
+    (self.target, self.data, self.replies)
   }
 }

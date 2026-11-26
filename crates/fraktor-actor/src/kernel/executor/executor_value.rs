@@ -34,10 +34,12 @@ use portable_atomic::Ordering;
 use crate::kernel::actor::dispatch_settings::CapacityLimit;
 use crate::kernel::actor::dispatch_settings::DispatchSettings;
 use crate::kernel::actor::ActorContext;
+use crate::kernel::actor::ActorCreationError;
 use crate::kernel::actor::ActorSelection;
 use crate::kernel::actor::ActorSelectionMessage;
 use crate::kernel::actor::AnyDeadLetter;
 use crate::kernel::actor::BehaviorStack;
+use crate::kernel::actor::ConfigurationException;
 use crate::kernel::actor::DeadLetter;
 use crate::kernel::actor::DeadLetterSettings;
 use crate::kernel::actor::DeadLettersShared;
@@ -55,6 +57,9 @@ use crate::kernel::actor_path::ActorPath;
 use crate::kernel::actor_ref::next_actor_id;
 use crate::kernel::actor_ref::next_actor_ref;
 use crate::kernel::actor_ref::ActorRef;
+use crate::kernel::dispatch::DispatcherKind;
+use crate::kernel::dispatch::Dispatchers;
+use crate::kernel::dispatch::DEFAULT_DISPATCHER_ID;
 use crate::kernel::event::DeadLetterListener;
 use crate::kernel::event::EventStream;
 use crate::kernel::executor::ActorCell;
@@ -162,6 +167,33 @@ struct StopDeadLetterListener;
 struct PendingTermination {
   watcher: ActorRef,
   notice: Terminated,
+  custom: Option<Message>,
+}
+
+/// The head of a router, in the minimal router of issue #194: it has no
+/// routees and routes nothing, so every message it receives is reported
+/// as unhandled, as the design's condition (a) decides. Routing itself
+/// is issue #269 (https://github.com/j5ik2o/fraktor-ng-rs/issues/269).
+struct RouterHeadActor;
+
+impl crate::kernel::actor::Actor for RouterHeadActor {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    context.unhandled(message);
+  }
+}
+
+/// Validates one actor name the way every creation entry point must.
+///
+/// Mirrors `Children.checkName` together with
+/// `ActorPath.validatePathElement`: the entry point itself refuses
+/// only the empty name (Pekko also refuses null, which a Rust `&str`
+/// cannot hold), and every other refusal is the one message of
+/// `validate_path_element`.
+pub(crate) fn validate_actor_name(name: &str) -> Result<(), InvalidActorNameException> {
+  if name.is_empty() {
+    return Err(InvalidActorNameException::empty_name());
+  }
+  ActorPath::validate_path_element(name).map_err(InvalidActorNameException::invalid_name)
 }
 
 /// Creates actors of one shard, runs their messages, and owns their state.
@@ -206,12 +238,27 @@ pub(crate) struct Executor {
   actor_capacities: Vec<(ActorRef, CapacityLimit, CapacityLimit)>,
   function_parents: Vec<(ActorRef, ActorRef)>,
   function_watching: Vec<(ActorRef, ActorRef)>,
+  root_guardian: ActorRef,
+  user_guardian: ActorRef,
+  system_guardian: ActorRef,
+  dispatchers: Dispatchers,
+  watch_messages: Vec<(ActorRef, ActorRef, Message)>,
+  user_children: Vec<(String, ActorRef)>,
 }
 
 impl Executor {
   pub(crate) fn new(root: ActorPath, boundary: Arc<dyn crate::kernel::executor::ShardBoundary>) -> Self {
     let dead_letters_shared = Arc::new(DeadLettersShared::new());
     let dead_letters = Self::create_dead_letters(&root, dead_letters_shared.clone());
+    // The guardians are handles without cells: Pekko's guardians are
+    // real actors, but this port keeps no actor behind them, so a
+    // message addressed to a guardian path is reported as unhandled
+    // (see `deliver` and `deliver_selection`). The top-level names
+    // register in `user_children`, apart from the parent registry,
+    // whose entries belong to actors that can stop.
+    let root_guardian = next_actor_ref(root.clone(), boundary.clone());
+    let user_guardian = next_actor_ref(root.with_child("user"), boundary.clone());
+    let system_guardian = next_actor_ref(root.with_child("system"), boundary.clone());
     let mut executor = Self {
       cells: Vec::new(),
       queue: ShardQueue::new(boundary),
@@ -242,6 +289,12 @@ impl Executor {
       actor_capacities: Vec::new(),
       function_parents: Vec::new(),
       function_watching: Vec::new(),
+      root_guardian,
+      user_guardian,
+      system_guardian,
+      dispatchers: Dispatchers::with_defaults(),
+      watch_messages: Vec::new(),
+      user_children: Vec::new(),
     };
     executor.function_refs.push(executor.dead_letters.clone());
     executor
@@ -464,6 +517,108 @@ impl Executor {
   /// Installs the dispatcher and mailbox definitions that spawn-time
   /// resolution reads, from the system's
   /// [`DispatchSettings`](crate::kernel::actor::dispatch_settings::DispatchSettings) setup.
+  /// Installs the dispatcher registry that creation verifies against.
+  pub(crate) fn set_dispatchers(&mut self, dispatchers: Dispatchers) {
+    self.dispatchers = dispatchers;
+  }
+
+  /// Returns whether `id` names a configured dispatcher: either the
+  /// registry installed for this system, or a definition (or alias) in
+  /// the system's `DispatchSettings`, whose definitions the ported
+  /// tests configure their dispatchers through.
+  fn has_dispatcher(&self, id: &str) -> bool {
+    if self.dispatchers.has_dispatcher(id) {
+      return true;
+    }
+    match &self.dispatch_settings {
+      | Some(settings) => matches!(settings.resolve_dispatcher(id), Ok(Some(_))),
+      | None => false,
+    }
+  }
+
+  /// Verifies the configuration of a creation at `path`, in Pekko's
+  /// order (design of #194, section 2.3): without a router, the
+  /// recipe's dispatcher must be configured; with a router, the
+  /// routees' dispatcher is checked first, then the head's, and a
+  /// balancing head is refused. The head message names the head
+  /// dispatcher; Pekko's body puts the routee name there by mistake,
+  /// and the port does not copy the mistake.
+  fn verify_configuration(&self, props: &Props, path: &ActorPath) -> Result<(), ConfigurationException> {
+    let routee_dispatcher = props.dispatcher().unwrap_or(DEFAULT_DISPATCHER_ID);
+    match props.router() {
+      | None => {
+        if !self.has_dispatcher(routee_dispatcher) {
+          return Err(ConfigurationException::new(alloc::format!(
+            "Dispatcher [{routee_dispatcher}] not configured for path {path}"
+          )));
+        }
+        Ok(())
+      },
+      | Some(router) => {
+        if !self.has_dispatcher(routee_dispatcher) {
+          return Err(ConfigurationException::new(alloc::format!(
+            "Dispatcher [{routee_dispatcher}] not configured for routees of {path}"
+          )));
+        }
+        let head_dispatcher = router.router_dispatcher.as_deref().unwrap_or(DEFAULT_DISPATCHER_ID);
+        if !self.has_dispatcher(head_dispatcher) {
+          return Err(ConfigurationException::new(alloc::format!(
+            "Dispatcher [{head_dispatcher}] not configured for router of {path}"
+          )));
+        }
+        if self.dispatchers.kind_of(head_dispatcher) == Some(DispatcherKind::Balancing) {
+          return Err(ConfigurationException::new(alloc::format!(
+            "Configuration for {path} is invalid - you can not use a 'BalancingDispatcher' as a Router's dispatcher, you can however use it for the routees."
+          )));
+        }
+        Ok(())
+      },
+    }
+  }
+
+  /// Resolves `path` to a handle, as `ActorRefProvider.resolveActorRef`
+  /// does: a live actor's own handle, a guardian's handle for a
+  /// guardian path, and otherwise a handle that keeps the path and
+  /// answers nothing (Pekko's `EmptyLocalActorRef`). Dead letters is
+  /// returned only for a path whose root belongs to another system.
+  /// The actor currently running (out of the cell table) resolves too.
+  pub(crate) fn resolve_actor_ref(&self, path: &ActorPath) -> ActorRef {
+    if path.root() != self.root.root() {
+      return self.dead_letters.clone();
+    }
+    // Whole-path comparison, for the same reason as `guardian_for_path`:
+    // `elements` answers one empty element for the root path.
+    if let Some(guardian) = self.guardian_for_path(path) {
+      return guardian;
+    }
+    if let Some(cell) = self.cells.iter().find(|cell| &cell.self_ref().path() == path) {
+      return cell.self_ref();
+    }
+    if let Some(running) = self.running.iter().find(|running| &running.path() == path) {
+      return running.clone();
+    }
+    if let Some(reference) = self.function_refs.iter().find(|reference| &reference.path() == path) {
+      return reference.clone();
+    }
+    next_actor_ref(path.clone(), self.queue.boundary().clone())
+  }
+
+  /// Returns the guardian handle for a guardian `path`, when it is one.
+  fn guardian_for_path(&self, path: &ActorPath) -> Option<ActorRef> {
+    // Whole-path comparison: `ActorPath::elements` answers one empty
+    // element for the root path (Pekko's own convention), so it cannot
+    // tell the root from a one-element path here.
+    if *path == self.root {
+      Some(self.root_guardian.clone())
+    } else if *path == self.root.with_child("user") {
+      Some(self.user_guardian.clone())
+    } else if *path == self.root.with_child("system") {
+      Some(self.system_guardian.clone())
+    } else {
+      None
+    }
+  }
+
   pub(crate) fn set_dispatch_settings(&mut self, settings: DispatchSettings) {
     self.dispatch_settings = Some(settings);
   }
@@ -490,12 +645,45 @@ impl Executor {
     self.send(sender, &dead_letters, Message::new(wrapped));
   }
 
-  /// Starts an actor that the system owns directly, below `/user`.
-  pub(crate) fn spawn_user(&mut self, props: Props) -> ActorRef {
+  /// Records a top-level name in the user guardian's registry, the
+  /// same registry `spawn_named_child_under` keeps for one parent, so
+  /// a name taken at the top level is taken for `actor_of_named` too
+  /// (design of #194, L6).
+  fn record_user_child(&mut self, name: String, reference: ActorRef) {
+    self.user_children.push((name, reference));
+  }
+
+  /// Starts a top-level actor after both the name checks and the
+  /// configuration checks, as `ActorSystem.actorOf` does in Pekko,
+  /// which throws both refusal kinds from the one call.
+  ///
+  /// With a router, the head that starts is the minimal router head:
+  /// verification has passed, no routees are created, and a message to
+  /// the head is reported as unhandled (design of #194, section 1.5).
+  pub(crate) fn try_spawn_user(&mut self, props: Props, name: Option<&str>) -> Result<ActorRef, ActorCreationError> {
     self.assert_running();
-    let name = alloc::format!("${}", next_spawn_name());
-    let path = self.root.with_child("user").with_child(&name);
-    self.spawn_at(props, path, None, SupervisorStrategy::default_strategy(), false)
+    if let Some(name) = name {
+      validate_actor_name(name)?;
+    }
+    let label = match name {
+      | Some(name) => name.to_string(),
+      | None => alloc::format!("${}", next_spawn_name()),
+    };
+    let path = self.root.with_child("user").with_child(&label);
+    if name.is_some() && self.user_children.iter().any(|(used, _)| used == &label) {
+      return Err(InvalidActorNameException::name_taken(&label).into());
+    }
+    self.verify_configuration(&props, &path)?;
+    let head_props = match props.router() {
+      | Some(router) => {
+        let head = router.router_dispatcher.as_deref().unwrap_or(DEFAULT_DISPATCHER_ID);
+        Props::new(|| RouterHeadActor).with_dispatcher(head)
+      },
+      | None => props,
+    };
+    let reference = self.spawn_at(head_props, path, None, SupervisorStrategy::default_strategy(), false);
+    self.record_user_child(label, reference.clone());
+    Ok(reference)
   }
 
   /// Starts an actor below `parent`, using `name` when one is given.
@@ -661,6 +849,7 @@ impl Executor {
       self.hook_child_creation_refused = true;
       return Err(InvalidActorNameException::terminating());
     }
+    validate_actor_name(name)?;
     if self.parents[entry_index].children.iter().any(|(used, _)| used == name) {
       return Err(InvalidActorNameException::name_taken(name));
     }
@@ -1007,6 +1196,7 @@ impl Executor {
     self.stash_to_dead_letters(target);
     self.queued_to_dead_letters(target);
     self.watchers.retain(|(watcher, _)| watcher != target);
+    self.watch_messages.retain(|(watcher, _, _)| watcher != target);
     self.pending_terminations.retain(|pending| &pending.watcher != target);
     self.notify_watchers(target, true, false);
     for callback in &self.termination_callbacks {
@@ -1032,6 +1222,7 @@ impl Executor {
     for entry in &mut self.parents {
       entry.children.retain(|(_, held)| held != child);
     }
+    self.user_children.retain(|(_, held)| held != child);
   }
 
   /// Runs `parent`'s child-terminated hook for the stopped `child`.
@@ -1298,7 +1489,8 @@ impl Executor {
         let pending = match queued {
           | Some(pending) => pending.clone(),
           | None => {
-            let pending = Arc::new(PendingTermination { watcher: recipient.clone(), notice: notice.clone() });
+            let pending =
+              Arc::new(PendingTermination { watcher: recipient.clone(), notice: notice.clone(), custom: None });
             self.pending_terminations.push(pending.clone());
             pending
           },
@@ -1393,6 +1585,7 @@ impl Executor {
     self.function_parents.retain(|(held, _)| held != target);
     self.function_watching.retain(|(watcher, _)| watcher != target);
     self.watchers.retain(|(watcher, _)| watcher != target);
+    self.watch_messages.retain(|(watcher, _, _)| watcher != target);
     self.pending_terminations.retain(|pending| &pending.watcher != target);
     self.notify_watchers(target, true, false);
     for callback in &self.termination_callbacks {
@@ -1476,6 +1669,18 @@ impl Executor {
   /// target that keeps running out of scope is therefore indistinguishable from
   /// a stopped one, which is the documented limit of this port.
   pub(crate) fn watch(&mut self, watcher: &ActorRef, target: &ActorRef) {
+    // Pekko's `checkWatchingSame`: a plain watch over a pair that
+    // already carries a custom message throws IllegalStateException.
+    if self
+      .watch_messages
+      .iter()
+      .any(|(existing, watched, _)| existing == watcher && Self::same_watch_target(watched, target))
+    {
+      panic!(
+        "watching {} with a custom message is already registered; a plain watch on the same target is not allowed",
+        target.path()
+      );
+    }
     if target.is_detached() || self.is_live(target) {
       if !self
         .watchers
@@ -1495,8 +1700,53 @@ impl Executor {
   /// calls once a subscriber holds no subscription. Removing a watch that is
   /// not registered changes nothing. A local notice still queued for the
   /// removed watch is also cancelled.
+  /// Registers `watcher` for `target` with a custom notice message,
+  /// as `ActorContext.watchWith` does. One pair carries one notice:
+  /// a different message for a pair that is already registered, in
+  /// either direction, panics, as Pekko's `checkWatchingSame` throws.
+  /// Repeating the same registration is idempotent; message equality
+  /// is by payload type, the strongest comparison the erased
+  /// `Message` offers.
+  pub(crate) fn watch_with(&mut self, watcher: &ActorRef, target: &ActorRef, message: Message) {
+    let existing = self
+      .watch_messages
+      .iter()
+      .find(|(existing, watched, _)| existing == watcher && Self::same_watch_target(watched, target));
+    match existing {
+      | Some((_, _, registered)) => {
+        if registered.payload_type_id() != message.payload_type_id() {
+          panic!("watching {} with a different custom message is not allowed", target.path());
+        }
+        return;
+      },
+      | None => {
+        if self
+          .watchers
+          .iter()
+          .any(|(existing, watched)| existing == watcher && Self::same_watch_target(watched, target))
+        {
+          panic!("watching {} with a custom message is not allowed after a plain watch", target.path());
+        }
+      },
+    }
+    self.watch_messages.push((watcher.clone(), target.clone(), message.clone()));
+    if target.is_detached() || self.is_live(target) {
+      self.watchers.push((watcher.clone(), target.clone()));
+    } else {
+      self.enqueue_notice(watcher.clone(), target, Some(message));
+    }
+  }
+
+  /// Returns whether `watcher` watches `target`, in either table.
+  pub(crate) fn is_watching(&self, watcher: &ActorRef, target: &ActorRef) -> bool {
+    self.watchers.iter().any(|(existing, watched)| existing == watcher && Self::same_watch_target(watched, target))
+  }
+
   pub(crate) fn unwatch(&mut self, watcher: &ActorRef, target: &ActorRef) {
     self.watchers.retain(|(existing, watched)| existing != watcher || !Self::same_watch_target(watched, target));
+    self
+      .watch_messages
+      .retain(|(existing, watched, _)| existing != watcher || !Self::same_watch_target(watched, target));
     self
       .pending_terminations
       .retain(|pending| &pending.watcher != watcher || !Self::same_watch_target(pending.notice.target(), target));
@@ -1626,6 +1876,11 @@ impl Executor {
       self.send(sender, &target, message);
       return;
     }
+    if let Some(guardian) = self.guardian_for_path(path) {
+      let dead_letters = self.dead_letters.clone();
+      self.publish_unhandled(message, dead_letters, guardian);
+      return;
+    }
     let empty = next_actor_ref(path.clone(), self.queue.boundary().clone());
     self.dead_letters_shared.route_unresolved(message, sender, empty);
   }
@@ -1688,11 +1943,23 @@ impl Executor {
         return;
       };
       self.pending_terminations.swap_remove(index);
-      Message::new(pending.notice.clone())
+      match &pending.custom {
+        | Some(custom) => custom.clone(),
+        | None => Message::new(pending.notice.clone()),
+      }
     } else {
       message
     };
     let Some(index) = self.cells.iter().position(|cell| cell.accepts(&recipient)) else {
+      // A guardian has no cell: a message addressed to one is reported
+      // as unhandled, with the dead letters as its sender, as Pekko's
+      // guardians do for a message they will not act upon.
+      if recipient == self.root_guardian || recipient == self.user_guardian || recipient == self.system_guardian {
+        let dead_letters = self.dead_letters.clone();
+        self.publish_unhandled(message, dead_letters, recipient);
+        self.finish_boundary();
+        return;
+      }
       // No actor answers for the recipient: the message is routed by the
       // dead letter rules, as a Pekko mailbox hands a message for a
       // stopped actor to the dead letters provider.
@@ -2235,8 +2502,22 @@ impl Executor {
       .filter(|watcher| !function_watchers.contains(watcher))
       .collect();
     self.watchers.retain(|(_, watched)| !Self::same_watch_target(watched, target));
+    let custom: Vec<(ActorRef, Message)> = self
+      .watch_messages
+      .iter()
+      .filter(|(_, watched, _)| Self::same_watch_target(watched, target))
+      .map(|(watcher, _, message)| (watcher.clone(), message.clone()))
+      .collect();
+    self.watch_messages.retain(|(_, watched, _)| !Self::same_watch_target(watched, target));
     for watcher in &watchers {
-      self.enqueue_to(watcher.clone(), Terminated::new(target.clone(), existence_confirmed, address_terminated));
+      let message =
+        custom.iter().find(|(custom_watcher, _)| custom_watcher == watcher).map(|(_, message)| message.clone());
+      match message {
+        | Some(message) => self.enqueue_notice(watcher.clone(), target, Some(message)),
+        | None => {
+          self.enqueue_to(watcher.clone(), Terminated::new(target.clone(), existence_confirmed, address_terminated))
+        },
+      }
     }
     for watcher in function_watchers {
       let notice = Terminated::new(target.clone(), existence_confirmed, address_terminated);
@@ -2250,10 +2531,25 @@ impl Executor {
     watched == target && watched.shares_boundary_with(target.boundary())
   }
 
+  /// Enqueues a custom DeathWatch notice, cancellable like the plain
+  /// one until it is delivered.
+  fn enqueue_notice(&mut self, recipient: ActorRef, target: &ActorRef, custom: Option<Message>) {
+    let notice = Terminated::new(target.clone(), true, false);
+    let sender = recipient.clone();
+    if recipient.shares_boundary_with(self.queue.boundary()) {
+      let pending = Arc::new(PendingTermination { watcher: recipient.clone(), notice, custom });
+      self.pending_terminations.push(pending.clone());
+      self.queue.enqueue_locally(Envelope::new(recipient, Message::new(pending), sender));
+    } else {
+      let message = custom.unwrap_or_else(|| Message::new(notice));
+      Envelope::new(recipient, message, sender).post_to_boundary();
+    }
+  }
+
   fn enqueue_to(&mut self, recipient: ActorRef, message: Terminated) {
     let sender = recipient.clone();
     if recipient.shares_boundary_with(self.queue.boundary()) {
-      let pending = Arc::new(PendingTermination { watcher: recipient.clone(), notice: message });
+      let pending = Arc::new(PendingTermination { watcher: recipient.clone(), notice: message, custom: None });
       self.pending_terminations.push(pending.clone());
       self.queue.enqueue_locally(Envelope::new(recipient, Message::new(pending), sender));
     } else {
