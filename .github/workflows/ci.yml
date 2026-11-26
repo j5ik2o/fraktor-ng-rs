@@ -65,6 +65,7 @@ jobs:
           uv run --with pyyaml python3 tools/license-headers/license_headers_test.py
           uv run --with pyyaml python3 tools/pekko-source/prepare_pekko_source_test.py
           uv run --with pyyaml python3 tools/takt-facets/knowledge_budget_test.py
+          uv run python3 scripts/check_src_hygiene_test.py
       - name: Pekko baseline
         run: |
           uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger --ledger ledger/nodes.yaml
@@ -74,6 +75,11 @@ jobs:
           uv run --with pyyaml python3 ledger/tools/report_ledger_1to1.py check
       - name: License headers
         run: uv run python3 tools/license-headers/license_headers.py --check --manifest docs/design/issue-206-file-origin.tsv
+      # No review-process wording (re-review, design of #N, item N) and no
+      # `let _ =` in the non-test code of crates/*/src (#279). The rules and
+      # the files they skip are in the script's docstring.
+      - name: src hygiene
+        run: uv run python3 scripts/check_src_hygiene.py
       - name: check:aislop
         run: npm run check:aislop
       - name: cargo test
