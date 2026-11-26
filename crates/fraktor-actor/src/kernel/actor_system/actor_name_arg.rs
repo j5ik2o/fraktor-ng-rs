@@ -21,9 +21,11 @@ use super::actor_name_arg_seal::ActorNameArgSeal;
 /// A name argument for [`ActorSystem::actor_of_named`](super::ActorSystem::actor_of_named).
 ///
 /// Pekko's `actorOf(props, name)` takes a `String`, and `null` refuses
-/// the creation. A Rust caller can hold the name as any reference to a
-/// string (`&str`, `&String`, `&Box<str>`, `&Cow<str>`, `&&str`, and so
-/// on), or as an `Option<&str>`, where `None` stands for Pekko's `null`.
+/// the creation. A Rust caller can hold the name as a reference to a
+/// type that implements `AsRef<str>` (`&str`, `&String`, `&Box<str>`,
+/// `&Cow<str>`, `&&str`, and so on), or as an `Option<&str>`, where
+/// `None` stands for Pekko's `null`. A reference to a type that only
+/// implements `Deref` is not accepted.
 ///
 /// The trait is sealed: only the spellings this crate provides
 /// implement it.

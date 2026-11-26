@@ -230,12 +230,12 @@ impl ActorSystem {
   /// [`ActorCreationError`](crate::kernel::actor::ActorCreationError).
   ///
   /// The name is taken as an [`ActorNameArg`]: a reference to a
-  /// string is the name, and `None` (an `Option` spelling) stands for
-  /// Pekko's `null` name in `actorOf(props, null)`, which is refused
-  /// as an invalid name whose message mentions `null`. That is the
-  /// opposite of [`try_actor_of`](Self::try_actor_of), whose `None`
-  /// asks for an automatically generated name, as Pekko's
-  /// `actorOf(props)` does.
+  /// type that implements `AsRef<str>` is the name, and `None` (an
+  /// `Option` spelling) stands for Pekko's `null` name in
+  /// `actorOf(props, null)`, which is refused as an invalid name
+  /// whose message mentions `null`. That is the opposite of
+  /// [`try_actor_of`](Self::try_actor_of), whose `None` asks for an
+  /// automatically generated name, as Pekko's `actorOf(props)` does.
   ///
   /// # Errors
   ///
