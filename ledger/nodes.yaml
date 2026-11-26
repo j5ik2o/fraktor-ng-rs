@@ -2706,7 +2706,7 @@ nodes:
     module: actor-tests
     class: ExtensionSpec
     test_cases_approx: 8
-  status: unported
+  status: red
   triage:
     kind: pending
     reason: null
@@ -2722,9 +2722,9 @@ nodes:
     passing: null
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/extension_spec.rs
+  goal: G0issue193
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/FSMActorSpec.scala
   name: actor-tests:FSMActorSpec
   kind: test
