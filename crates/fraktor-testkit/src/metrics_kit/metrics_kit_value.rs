@@ -27,6 +27,16 @@ use crate::metrics_kit::{
   MetricsKitSettings, MetricsReporterKind,
 };
 
+/// Where the scheduled report thread is in its life.
+enum ReporterThreadState {
+  /// The thread is running; the handle is taken out only to join it.
+  Running(Option<JoinHandle<()>>),
+  /// One caller is joining the thread; other callers wait for `Finished`.
+  Joining,
+  /// There is no thread, or the thread has been joined.
+  Finished,
+}
+
 /// The state a [`MetricsKit`] and its scheduled report thread share.
 struct MetricsKitShared {
   registry: Mutex<BTreeMap<String, Metric>>,
@@ -35,29 +45,78 @@ struct MetricsKitShared {
   scheduled_report_interval: Duration,
   stop_requested: Mutex<bool>,
   stop_condvar: Condvar,
-  reporter_thread: Mutex<Option<JoinHandle<()>>>,
+  reporter_thread: Mutex<ReporterThreadState>,
+  reporter_thread_changed: Condvar,
 }
 
-/// Prints the registered metrics once, if a reporter is running.
-fn report_once(shared: &MetricsKitShared) {
-  let Some(reporter) = &shared.console_reporter else {
-    return;
-  };
-  let snapshot = shared.registry.lock().expect("registry lock").clone();
-  let mut output = shared.output.lock().expect("output lock");
-  reporter.report(&snapshot, &mut *output);
-}
-
-/// Stops the scheduled report thread, if any. Later calls do nothing.
-fn stop_reporter_thread(shared: &MetricsKitShared) {
-  {
-    let mut stop_requested = shared.stop_requested.lock().expect("stop lock");
-    *stop_requested = true;
+impl MetricsKitShared {
+  /// Prints the registered metrics once, if a reporter is running.
+  /// Returns whether the output succeeded; without a reporter, printing
+  /// nothing counts as success.
+  fn report_once(&self) -> bool {
+    let snapshot = self.registry.lock().expect("registry lock").clone();
+    self.report_snapshot(&snapshot)
   }
-  shared.stop_condvar.notify_all();
-  let handle = shared.reporter_thread.lock().expect("reporter thread lock").take();
-  if let Some(handle) = handle {
-    let _ = handle.join();
+
+  /// Prints `snapshot` once, if a reporter is running. Returns whether
+  /// the output succeeded; without a reporter, printing nothing counts
+  /// as success.
+  fn report_snapshot(&self, snapshot: &BTreeMap<String, Metric>) -> bool {
+    let Some(reporter) = &self.console_reporter else {
+      return true;
+    };
+    let mut output = self.output.lock().expect("output lock");
+    reporter.report(snapshot, &mut *output).is_ok()
+  }
+
+  /// Takes the registered metrics out of the registry and returns them.
+  /// Metrics registered after the take stay registered.
+  fn take_metrics(&self) -> BTreeMap<String, Metric> {
+    let mut registry = self.registry.lock().expect("registry lock");
+    let snapshot = registry.clone();
+    registry.retain(|key, _| !snapshot.contains_key(key));
+    snapshot
+  }
+
+  /// Puts back metrics taken out by [`Self::take_metrics`], except keys
+  /// that were registered again in the meantime.
+  fn restore_metrics(&self, snapshot: BTreeMap<String, Metric>) {
+    let mut registry = self.registry.lock().expect("registry lock");
+    for (key, metric) in snapshot {
+      registry.entry(key).or_insert(metric);
+    }
+  }
+
+  /// Stops the scheduled report thread, if any. Every caller waits until
+  /// the thread has ended; calls after that do nothing. A report the
+  /// thread had already started when the stop was requested can still
+  /// finish before this returns, so the boundary of the guarantee is
+  /// this method returning, not the stop being requested.
+  fn stop_reporter_thread(&self) {
+    {
+      let mut stop_requested = self.stop_requested.lock().expect("stop lock");
+      *stop_requested = true;
+    }
+    self.stop_condvar.notify_all();
+    let mut state = self.reporter_thread.lock().expect("reporter thread lock");
+    loop {
+      match &mut *state {
+        | ReporterThreadState::Finished => return,
+        | ReporterThreadState::Joining => {
+          state = self.reporter_thread_changed.wait(state).expect("reporter thread condvar");
+        },
+        | ReporterThreadState::Running(handle) => {
+          let handle = handle.take().expect("a running reporter thread has its handle");
+          *state = ReporterThreadState::Joining;
+          drop(state);
+          drop(handle.join());
+          let mut state = self.reporter_thread.lock().expect("reporter thread lock");
+          *state = ReporterThreadState::Finished;
+          self.reporter_thread_changed.notify_all();
+          return;
+        },
+      }
+    }
   }
 }
 
@@ -89,6 +148,13 @@ impl Drop for StopOnDrop<'_> {
 
 /// Registers metrics under keys and reports them.
 ///
+/// When the scheduled reporter writes to the standard output (the output
+/// of [`MetricsKit::new`]), no `StdoutLock` may be held while
+/// [`MetricsKit::shutdown_metrics`] runs or the kit is dropped: the
+/// reporter thread waits for the output lock, and stopping waits for the
+/// reporter thread, so holding the lock across a stop deadlocks. Release
+/// the output lock first, then stop.
+///
 /// Mirrors `org.apache.pekko.testkit.metrics.MetricsKit` and `MetricsKitOps`.
 pub struct MetricsKit {
   shared: Arc<MetricsKitShared>,
@@ -110,7 +176,8 @@ impl MetricsKit {
       scheduled_report_interval: settings.console.scheduled_report_interval,
       stop_requested: Mutex::new(false),
       stop_condvar: Condvar::new(),
-      reporter_thread: Mutex::new(None),
+      reporter_thread: Mutex::new(ReporterThreadState::Finished),
+      reporter_thread_changed: Condvar::new(),
     });
     if shared.console_reporter.is_some() && shared.scheduled_report_interval > Duration::ZERO {
       let thread_shared = Arc::clone(&shared);
@@ -124,9 +191,9 @@ impl MetricsKit {
           break;
         }
         drop(stop_requested);
-        report_once(&thread_shared);
+        thread_shared.report_once();
       });
-      *shared.reporter_thread.lock().expect("reporter thread lock") = Some(handle);
+      *shared.reporter_thread.lock().expect("reporter thread lock") = ReporterThreadState::Running(Some(handle));
     }
     Self { shared }
   }
@@ -232,19 +299,26 @@ impl MetricsKit {
     Ok(())
   }
 
-  /// Prints every metric with every reporter.
+  /// Prints every metric with every reporter. A failed write is not
+  /// reported to the caller, as in the original, and every metric stays
+  /// registered.
   ///
   /// Mirrors `reportMetrics`.
   pub fn report_metrics(&self) {
-    report_once(&self.shared);
+    self.shared.report_once();
   }
 
-  /// Prints every metric, then removes them all.
+  /// Prints every metric, then removes the printed ones. Metrics
+  /// registered while the report is printed stay registered, and when
+  /// the output fails the printed metrics stay registered too, so a
+  /// later report can print them again.
   ///
   /// Mirrors `reportAndClearMetrics`.
   pub fn report_and_clear_metrics(&self) {
-    self.report_metrics();
-    self.clear_metrics();
+    let snapshot = self.shared.take_metrics();
+    if !self.shared.report_snapshot(&snapshot) {
+      self.shared.restore_metrics(snapshot);
+    }
   }
 
   /// Removes every metric.
@@ -254,16 +328,18 @@ impl MetricsKit {
     self.shared.registry.lock().expect("registry lock").clear();
   }
 
-  /// Stops the scheduled reports. Calls after the first do nothing.
+  /// Stops the scheduled reports and waits until the reporter thread has
+  /// ended, also when another caller is already stopping it. Calls after
+  /// the thread has ended do nothing.
   ///
   /// Mirrors `shutdownMetrics`.
   pub fn shutdown_metrics(&self) {
-    stop_reporter_thread(&self.shared);
+    self.shared.stop_reporter_thread();
   }
 }
 
 impl Drop for MetricsKit {
   fn drop(&mut self) {
-    stop_reporter_thread(&self.shared);
+    self.shared.stop_reporter_thread();
   }
 }

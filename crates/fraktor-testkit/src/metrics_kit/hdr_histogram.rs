@@ -23,6 +23,9 @@ use crate::metrics_kit::MetricsError;
 /// The lowest discernible value, the one the original builds with.
 const LOWEST_DISCERNIBLE_VALUE: i64 = 1;
 
+/// The percentiles a verbose console report prints.
+pub(crate) const PERCENTILES: [f64; 6] = [0.0, 50.0, 90.0, 95.0, 99.0, 100.0];
+
 /// The distribution of recorded values. Clones share the state.
 ///
 /// Mirrors `org.apache.pekko.testkit.metrics.HdrHistogram`.
@@ -86,6 +89,14 @@ impl HdrHistogram {
       return Err(self.out_of_range(value));
     }
     let mut inner = self.inner.lock().expect("histogram lock");
+    // The underlying histogram saturates its total count instead of
+    // failing, so a record that no longer fits must be refused here,
+    // before anything changes.
+    if inner.len() == u64::MAX {
+      return Err(MetricsError::InvalidArgument {
+        reason: "recording one more value would overflow the total count".to_owned(),
+      });
+    }
     inner.record(value as u64).map_err(|_| self.out_of_range(value))
   }
 
@@ -111,8 +122,16 @@ impl HdrHistogram {
         reason: format!("recording {count} more values would overflow the total count"),
       });
     }
-    // Record into a copy first, so a value that cannot be stored leaves
-    // the histogram untouched.
+    if value <= self.highest_trackable_value {
+      // The histogram is built to track every value up to
+      // `highest_trackable_value`, so recording cannot fail and needs no
+      // trial copy.
+      inner.record_n(value as u64, count as u64).map_err(|_| self.out_of_range(value))?;
+      return Ok(());
+    }
+    // Above the trackable value, whether the value still fits depends on
+    // the bucket it falls into. Record into a copy first, so a value that
+    // cannot be stored leaves the histogram untouched.
     let mut trial = inner.clone();
     trial.record_n(value as u64, count as u64).map_err(|_| self.out_of_range(value))?;
     *inner = trial;
@@ -143,8 +162,13 @@ impl HdrHistogram {
     self.inner.lock().expect("histogram lock").max()
   }
 
-  /// Returns the value at `percentile`, for the console report.
-  pub(crate) fn value_at_percentile(&self, percentile: f64) -> u64 {
-    self.inner.lock().expect("histogram lock").value_at_percentile(percentile)
+  /// Returns the values a console report prints, all read under one lock
+  /// so a report never mixes two states of the histogram: the count, the
+  /// minimum, the maximum, and, when `verbose`, the values at the
+  /// reported percentiles in the order of `PERCENTILES`.
+  pub(crate) fn report_values(&self, verbose: bool) -> (u64, u64, u64, Option<[u64; 6]>) {
+    let inner = self.inner.lock().expect("histogram lock");
+    let percentiles = verbose.then(|| PERCENTILES.map(|percentile| inner.value_at_percentile(percentile)));
+    (inner.len(), inner.min(), inner.max(), percentiles)
   }
 }

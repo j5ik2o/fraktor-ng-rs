@@ -17,10 +17,12 @@
 //! The reporter that prints the registered metrics.
 
 use std::collections::BTreeMap;
+use std::io;
 use std::io::Write;
 
 use fraktor_actor::kernel::pretty_duration::PrettyDurationInput;
 
+use crate::metrics_kit::hdr_histogram::PERCENTILES;
 use crate::metrics_kit::Metric;
 
 /// Prints every registered metric to an output.
@@ -38,27 +40,27 @@ impl ConsoleReporter {
   }
 
   /// Prints `metrics`, in key order.
-  pub fn report(&self, metrics: &BTreeMap<String, Metric>, output: &mut dyn Write) {
+  ///
+  /// # Errors
+  ///
+  /// Returns the first write or flush error of `output`. Lines written
+  /// before the error stay written, so reporting the same metrics again
+  /// after a failure can print those lines twice.
+  pub fn report(&self, metrics: &BTreeMap<String, Metric>, output: &mut dyn Write) -> io::Result<()> {
     for (key, metric) in metrics {
       match metric {
         | Metric::AveragingGauge(gauge) => {
-          let _ = writeln!(output, "{key}: gauge value={}", gauge.value());
+          writeln!(output, "{key}: gauge value={}", gauge.value())?;
         },
         | Metric::FileDescriptorGauge(gauge) => {
-          let _ = writeln!(output, "{key}: gauge value={}", gauge.value());
+          writeln!(output, "{key}: gauge value={}", gauge.value())?;
         },
         | Metric::HdrHistogram(histogram) => {
-          let _ = writeln!(
-            output,
-            "{key}: histogram count={} min={} max={} unit={}",
-            histogram.count(),
-            histogram.min(),
-            histogram.max(),
-            histogram.unit()
-          );
-          if self.verbose {
-            for percentile in [0.0, 50.0, 90.0, 95.0, 99.0, 100.0] {
-              let _ = writeln!(output, "  {percentile}%: {}", histogram.value_at_percentile(percentile));
+          let (count, min, max, percentiles) = histogram.report_values(self.verbose);
+          writeln!(output, "{key}: histogram count={count} min={min} max={max} unit={}", histogram.unit())?;
+          if let Some(values) = percentiles {
+            for (percentile, value) in PERCENTILES.iter().zip(values.iter()) {
+              writeln!(output, "  {percentile}%: {value}")?;
             }
           }
         },
@@ -67,10 +69,10 @@ impl ConsoleReporter {
             | Some(elapsed) => PrettyDurationInput::Finite(elapsed).pretty(),
             | None => "not stopped".to_owned(),
           };
-          let _ = writeln!(output, "{key}: timer count={} elapsed={elapsed}", timer.count());
+          writeln!(output, "{key}: timer count={} elapsed={elapsed}", timer.count())?;
         },
       }
     }
-    let _ = output.flush();
+    output.flush()
   }
 }

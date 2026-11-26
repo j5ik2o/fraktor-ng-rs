@@ -719,7 +719,7 @@ Pekko 由来ファイル（`Apache-2.0` のみ）と自作ファイル（`MIT OR
 - 版は、#234 の設計の §7.4 に書かれていなかったため、この記録を書いた時点の最新の安定版を書いた。実際に使う版は段 0 で確定する。段 0 のプルリクエストでは、`cargo metadata` でライセンスを確かめ直し、使う版がこの記録と違う場合は、この節も合わせて直す。
 - `critical-section` は、段 0 の担当が `cargo metadata` で確かめた推移的な依存である。`portable-atomic` の `critical-section` の機能を有効にすると入る（`portable-atomic` 1.15.0 の `Cargo.toml` では `critical-section = { version = "1", optional = true }` で、その機能がこの依存を有効にする）。入る版は 1.2.0 で、ライセンスは `MIT OR Apache-2.0` である（crates.io に公開された `critical-section` 1.2.0 の `Cargo.toml` の `license` の欄でも確かめた）。
 - `portable-atomic` 1.15.0 と `portable-atomic-util` 0.2.8 の版とライセンスは、段 0 の担当が `cargo metadata` で確かめ、この記録と一致している。
-- `hdrhistogram` 7.6.0 と `libc` 0.2.191 の版とライセンスは、#183 の担当が `cargo metadata` で確かめた（`hdrhistogram` は `license = "MIT/Apache-2.0"`、`libc` は `license = "MIT OR Apache-2.0"`）。どちらも `fraktor-testkit` だけの依存であり、`fraktor-actor` の no_std には触らない。
+- `hdrhistogram` 7.6.0 と `libc` 0.2.191 の版とライセンスは、#183 の担当が `cargo metadata` で確かめた（`hdrhistogram` は `license = "MIT/Apache-2.0"`、`libc` は `license = "MIT OR Apache-2.0"`）。どちらも #183 で追加した直接依存は `fraktor-testkit` のみであり、`fraktor-actor` の no_std には触らない（`libc` については、Linux の既定構成では `fraktor-actor` も `getrandom` 経由で推移的に依存する。ここで言うのは #183 が追加した直接依存の範囲である）。
 
 ---
 

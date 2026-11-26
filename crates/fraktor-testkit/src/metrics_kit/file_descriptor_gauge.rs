@@ -75,14 +75,20 @@ fn open_file_descriptors() -> Option<u64> {
 }
 
 /// The limit of file descriptors of this process.
+///
+/// The conversion to `u64` is the identity on 64-bit targets and a
+/// widening on 32-bit ones, where `rlim_t` is 32 bits wide.
 #[cfg(unix)]
+#[allow(clippy::useless_conversion)]
 fn max_file_descriptors() -> Option<u64> {
   let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
   // SAFETY: `limit` is a writable `rlimit` owned by this call, and
   // `getrlimit` only writes to it.
   let result = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
   if result == 0 {
-    Some(limit.rlim_cur)
+    // `rlim_t` is 32 bits wide on some unix targets and 64 on others;
+    // convert at this boundary so the value is always a `u64`.
+    Some(u64::from(limit.rlim_cur))
   } else {
     None
   }
