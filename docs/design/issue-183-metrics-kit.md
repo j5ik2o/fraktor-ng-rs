@@ -217,7 +217,7 @@ unix でないプラットフォーム（CI の Windows を含む）でも、3�
 
 原典の `PekkoConsoleReporter` は、ゲージ、カウンタ、ヒストグラム、メーター、タイマーの標準の種類に加え、独自の3種類（`KnownOpsInTimespanTimer`、`HdrHistogram`、`AveragingGauge`）を横断バナー付きで標準出力へ印字する。Rust では `ConsoleReporter` が `MetricsKit` のレジストリのスナップショットを受け取り、登録順ではなくキー順（`BTreeMap`）に、種類ごとの見出しと `key` と値を印字する。
 
-定期報告（`scheduled_report_interval` が 0 より大きい場合）は標準ライブラリのスレッドで回す。これはアクターの dispatcher ではなく、レポーター自身のスレッドであり、[Issue #234](https://github.com/j5ik2o/fraktor-ng-rs/issues/234) の実行器とは無関係である（§8）。既定値では間隔が 0 のためスレッドは起動しない。スレッドと本体は、レジストリ・停止フラグ・出力先を含む共有状態を `Arc` で共有し、レジストリは `Mutex<BTreeMap<String, Metric>>` とする。スレッドの待ちは `thread::sleep` ではなく、停止フラグと対になった `Condvar::wait_timeout` とし、`shutdown_metrics()` が呼ばれたら長い間隔の途中でも即座に目覚めて終わる。`shutdown_metrics()` は冪等であり（2回目以降は何もしない）、呼ばれないまま `MetricsKit` がドロップされた場合も、`Drop` が同じ停止手順（フラグを立て、Condvar で起こし、スレッドを接合する）を行うため、スレッドは残らない。このライフサイクルは状態遷移であるため、Quint で検査する（§6）。テストから出力を差し替えられるよう、出力先は `with_output` 構築子で `Box<dyn Write + Send>` を受け取り、`new` では標準出力にする。
+定期報告（Console レポーターが有効であり、かつ `scheduled_report_interval` が 0 より大きい場合）は標準ライブラリのスレッドで回す。これはアクターの dispatcher ではなく、レポーター自身のスレッドであり、[Issue #234](https://github.com/j5ik2o/fraktor-ng-rs/issues/234) の実行器とは無関係である（§8）。既定値では間隔が 0 のためスレッドは起動しない。スレッドと本体は、レジストリ・停止フラグ・出力先を含む共有状態を `Arc` で共有し、レジストリは `Mutex<BTreeMap<String, Metric>>` とする。スレッドの待ちは `thread::sleep` ではなく、停止フラグと対になった `Condvar::wait_timeout_while`（述語は「フラグが立っていない」）とし、`shutdown_metrics()` が呼ばれたら長い間隔の途中でも即座に目覚めて終わる。スレッドはフラグの確認のために停止ロックを取るが、報告はロックを解放してから行うため、報告の途中でも停止側はフラグを立てられる。`shutdown_metrics()` は冪等であり（2回目以降は何もしない）、呼ばれないまま `MetricsKit` がドロップされた場合も、`Drop` が同じ停止手順（停止ロックの中でフラグを立て、解放して Condvar で起こし、ハンドルの状態を見て、スレッドを接合するか接合の完了を待つ）を行うため、スレッドは残らない。このライフサイクルは状態遷移であるため、Quint で検査する（§6）。テストから出力を差し替えられるよう、出力先は `with_output` 構築子で `Box<dyn Write + Send>` を受け取り、`new` では標準出力にする。
 
 停止の保証の境界は、停止フラグを立てた時点ではなく、`shutdown_metrics()`（または `Drop` の停止手順）が戻った時点である。スレッドは報告の前に停止フラグを読むため、停止要求の直前に始まっていた報告は、停止手順が戻る前に完了することがある。戻った後に新しい報告が始まることはない。並行して `shutdown_metrics()` を呼んだ場合も、全ての呼び出しがスレッドの終了を待ってから戻る（接合中の呼び出しは完了を待つ）。出力先が標準出力の場合、呼び出し側が `StdoutLock` を保持したまま停止手順を呼ぶと、スレッドが出力を待ち、停止手順がスレッドの終了を待つため止まったままになる。そのため、出力ロックを解放してから停止する契約とし、公開 API の文書にも明記する。
 
@@ -263,7 +263,13 @@ unix でないプラットフォーム（CI の Windows を含む）でも、3�
 
 ## 6. Quint を書くかどうか
 
-**定期報告スレッドのライフサイクルについて書く。** 対象は `crates/fraktor-testkit/specs/console_reporter.qnt` であり、状態は「未起動・待機中・報告中・停止要求済み・終了」の遷移と、`shutdown_metrics()` の冪等性、ドロップ時の停止、長い待機の途中での停止要求による即時の終了をモデル化する。定期報告スレッドは、待ちと時間とロックと停止要求が絡む並行の状態遷移であり、`fraktor-testkit` の既存の Quint 仕様 `watch_handle.qnt`（監視スレッド）と同型であるため、検査の対象にする。
+**定期報告スレッドのライフサイクルについて書く。** 対象は `crates/fraktor-testkit/specs/console_reporter.qnt` である。モデルは1つの状態列挙ではなく、次の3つの状態と、停止フラグ・停止ロックで表す。
+
+- スレッドの状態 `Thread`：`NotStarted`（未起動）・`Waiting`（待機中）・`Reporting`（報告中）・`Finished`（終了）。スレッドが起動するのは、Console レポーターが有効であること（`console`）と、間隔が正であること（`positiveInterval`）の両方が成り立つときだけであり、この2つの条件は分けて持つ。
+- ハンドルの状態 `Handle`：`Running`・`Joining`・`Joined`。実装の `ReporterThreadState`（`Running`・`Joining`・`Finished`）に対応し、実装の `Finished` をモデルでは `Joined` と呼ぶ。
+- 停止の呼び出し側の状態 `Call`：`Idle`・`Flagging`・`Flagged`・`Joiner`・`WaitingForTheJoin`・`Returned`。`shutdown_metrics()` の呼び出しと `Drop` のどちらも、この同じ遷移を通る。
+
+停止のロックは、停止フラグ（`stopFlag`）の読み書きの間だけ保持する。報告スレッドはロックを解放してから報告するため、報告の途中でも停止側はフラグを立てて接合へ進める。停止手順は、ロックを取り、フラグを立て、ロックを解放して起こし、ハンドルの状態を見る、という順序でそろえる。最初に `Running` を見つけた呼び出しが `Joiner` として接合し、`Joining` を見つけた呼び出しは `WaitingForTheJoin` として完了を待ち、`Joined` を見つけた呼び出しはそのまま `Returned` になる。停止の保証の境界は、フラグを立てた時点ではなく、呼び出しが戻った時点であり、不変条件 `noReportOnceACallReturned`（呼び出しが戻った後は、報告は走っておらず新しく始まることもない）で表す。ほかの不変条件は、`threadOnlyWithConsoleAndInterval`（Console と間隔の条件が無ければスレッドは起動せず報告も無い）、`flagOnlyAfterAStopBegins`、`leavesOnlyOnTheFlag`（スレッドはフラグが立ったときにだけ終わる）、`stopLockOnlyAroundTheFlag`（ロックはフラグの読み書きの間だけ）、`oneJoinerAtATime`、`joinedAtMostOnce`、`nothingRunsAfterTheDrop` である。あわせて、`shutdown_metrics()` の冪等性、ドロップ時の停止、長い待機の途中での停止要求による即時の終了をモデル化する。なお、以前の版が挙げた「停止要求済み」という状態はモデルには無い。停止要求は `stopFlag` と `Call` の遷移で表す。定期報告スレッドは、待ちと時間とロックと停止要求が絡む並行の状態遷移であり、`fraktor-testkit` の既存の Quint 仕様 `watch_handle.qnt`（監視スレッド）と同型であるため、検査の対象にする。
 
 書かない部分も明記する。タイマーの「計測中→停止済み」の2状態は、停止が一回限りである性質を I5 と P5 で直接に確かめられるため Quint にはしない。レジストリの登録・取得・消去は写像の意味論であり、順序の interleaving をモデル化しても得られる検査が増えないため Quint にはしない。
 
@@ -322,3 +328,5 @@ unix でないプラットフォーム（CI の Windows を含む）でも、3�
 内訳は、直す12件、別件0件、採らない0件である。新しい依存2件（`hdrhistogram` を `default-features = false` で、`libc` を unix 限定で）の採用は妥当であるというレビューの結論に従い、§2 の依存の設計は維持した。
 
 テストの担当が足した面：`Metric` の列挙子 `AveragingGauge`・`HdrHistogram`・`KnownOpsInTimespanTimer`（`#[derive(Clone)]`。ファイルディスクリプタの列挙子は実装の担当が決める）、`HdrHistogram::min` と `HdrHistogram::max`（原典 `getMinValue`・`getMaxValue`、空では 0）、`impl Default for AveragingGauge`（`new` と同じ値）。理由：ケース2の暗黙の検査（登録されたタイマーの件数と停止）と P3 の最小・最大を書くため。また、引数の無い `new` には `Default` が無いと clippy の `new_without_default` が `-D warnings` で落ちるため（中将の判断、2026-11-27）。
+
+追記（テストの担当による `console_reporter.qnt` のモデルの作り直しへの追従）：上記の回答表は当時の対応の記録であり、書き換えない。作り直し後のモデルでは、状態は `Thread`・`Handle`・`Call` の3つに分かれ、「停止要求済み」という状態は無く、停止の保証の境界は不変条件 `noReportOnceACallReturned` で表される。§6 の記述は、作り直し後の状態と遷移に合わせて直した。高-4 の理由に書いた `Condvar::wait_timeout` は当時の設計文面であり、実装は述語つきの `wait_timeout_while` であるため、§2 の記述は実態にそろえた。
