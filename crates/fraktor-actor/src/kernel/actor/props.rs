@@ -99,7 +99,11 @@ impl Props {
   /// name records states that the port keeps the name only: interpreting a
   /// configuration text and modelling a thread pool belong to a later goal.
   /// The name therefore travels with the recipe and is readable through
-  /// [`Props::dispatcher`] without changing how the actor runs.
+  /// [`Props::dispatcher`]. It is not inert, though: at spawn the
+  /// executor resolves it against the system's
+  /// [`DispatchSettings`](crate::kernel::actor::dispatch_settings::DispatchSettings)
+  /// and the resolved definition decides the actor's stash and mailbox
+  /// capacities.
   pub fn with_dispatcher(mut self, name: &str) -> Self {
     self.dispatcher = Some(Arc::from(name));
     self
@@ -118,8 +122,12 @@ impl Props {
   /// [`with_dispatcher`](Self::with_dispatcher), the port keeps the name
   /// only: the executor resolves it against the system's
   /// [`DispatchSettings`](crate::kernel::actor::dispatch_settings::DispatchSettings) when
-  /// the actor is spawned, and a name with no definition there changes
-  /// nothing.
+  /// the actor is spawned. Naming a mailbox selects that mailbox's
+  /// definition: its mailbox capacity is the definition's value, or
+  /// unlimited when the definition leaves it open or the name is not
+  /// defined at all — the dispatcher's mailbox capacity does not carry
+  /// over to a named mailbox. Only the stash capacity falls back to
+  /// the dispatcher's definition.
   pub fn with_mailbox(mut self, name: &str) -> Self {
     self.mailbox = Some(Arc::from(name));
     self

@@ -21,17 +21,23 @@
 // a function ref created by a toplevel actor and once for one created by
 // a non-toplevel actor; the port keeps the eight executions as eight
 // tests. The ninth case, "not be found" for a ref that was never
-// registered, is not ported here: it is pending the owner's decision
-// (design issue-192-specs.md section 5, E3) and is not recorded in the
-// ledger.
+// registered, is excluded with the owner's approval (design
+// issue-192-specs.md section 5, E3): the original checks, through a
+// serialization round trip, that an unregistered FunctionRef resolved
+// from a path does not come back as a FunctionRef, and this port has
+// neither path resolution nor message serialization. The ledger
+// records the exclusion with its approver and date. The tests after
+// the eight ported cases are regression tests from the review of
+// this port, not ported cases.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use fraktor_actor::adaptor::{ChannelBoundary, UnwindCatcher};
-use fraktor_actor::kernel::actor::{Actor, ActorContext, FunctionRef, Props, Terminated};
+use fraktor_actor::kernel::actor::{Actor, ActorContext, DeadLetter, FunctionRef, Props, Terminated};
 use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::actor_system::ActorSystem;
+use fraktor_actor::kernel::event::EventClass;
 use fraktor_actor::kernel::message::Message;
 use fraktor_testkit::test_kit::TestKit;
 
@@ -229,4 +235,85 @@ fn function_ref_created_by_a_non_toplevel_actor_terminates_when_its_parent_termi
   let test_actor = kit.test_actor();
   s.tell("PoisonPill", test_actor);
   expect_terminated(&mut kit, &forwarder);
+}
+
+// Regression (review of #192): a function ref created from a
+// post_stop hook ends with its parent instead of staying live.
+struct PostStopCreator {
+  probe: ActorRef,
+  created: std::sync::Arc<std::sync::Mutex<Option<FunctionRef>>>,
+}
+
+impl Actor for PostStopCreator {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+
+  fn post_stop_with_context(&mut self, context: &mut ActorContext<'_>) {
+    let probe = self.probe.clone();
+    let target = probe.clone();
+    let fref = context.add_function_ref(move |sender, msg| {
+      target.tell(Forwarded(msg, sender.clone()), sender.clone());
+    });
+    *self.created.lock().expect("created slot") = Some(fref.clone());
+    context.tell(&probe, fref);
+  }
+}
+
+#[test]
+fn function_ref_created_in_post_stop_ends_with_its_parent() {
+  let mut kit = kit();
+  let test_actor = kit.test_actor();
+  kit.system().event_stream().subscribe(Some(test_actor.clone()), EventClass::of::<DeadLetter>()).expect("subscribe");
+  let created = std::sync::Arc::new(std::sync::Mutex::new(None));
+  let actor = kit.system_mut().actor_of(Props::new({
+    let probe = test_actor.clone();
+    let created = created.clone();
+    move || PostStopCreator { probe: probe.clone(), created: created.clone() }
+  }));
+  actor.tell("PoisonPill", test_actor.clone());
+  let fref = kit.expect_msg_type::<FunctionRef>();
+  assert!(created.lock().expect("created slot").is_some(), "the hook recorded the ref it created");
+  fref.tell("hello", test_actor.clone());
+  let dead = kit.expect_msg_type::<DeadLetter>();
+  assert_eq!(dead.message().downcast_ref::<&'static str>().copied(), Some("hello"));
+  assert!(dead.recipient() == &fref.as_actor_ref());
+  kit.expect_no_message(Duration::from_millis(300));
+}
+
+// Regression (review of #192): registering the same pair through
+// both watch tables delivers the notice once, as the original's
+// single DeathWatch set does.
+#[test]
+fn function_ref_watched_through_both_tables_is_told_once() {
+  let mut kit = kit();
+  let s = toplevel(&mut kit);
+  let forwarder = get_forwarder(&mut kit, &s);
+  let target = get_forwarder(&mut kit, &s);
+  kit.system_mut().watch(&forwarder.as_actor_ref(), &target.as_actor_ref());
+  kit.system_mut().function_ref_watch(&forwarder, &target.as_actor_ref());
+  let test_actor = kit.test_actor();
+  s.tell(DropForwarder(target.clone()), test_actor);
+  let forwarded = kit.expect_msg_type::<Forwarded>();
+  let notice = forwarded.0.downcast_ref::<Terminated>().expect("the forwarded message is a Terminated");
+  assert_eq!(notice.target(), &target.as_actor_ref());
+  kit.expect_no_message(Duration::from_millis(300));
+}
+
+// Regression (review of #192): a removed function ref subscribed to
+// dead letters must not receive its own dead letter again and again.
+#[test]
+fn removed_function_ref_subscribed_to_dead_letters_does_not_loop() {
+  let mut kit = kit();
+  let s = toplevel(&mut kit);
+  let f = get_forwarder(&mut kit, &s);
+  let test_actor = kit.test_actor();
+  kit.system().event_stream().subscribe(Some(f.as_actor_ref()), EventClass::of::<DeadLetter>()).expect("subscribe");
+  kit.system().event_stream().subscribe(Some(test_actor.clone()), EventClass::of::<DeadLetter>()).expect("subscribe");
+  kit.watch(&f.as_actor_ref());
+  s.tell(DropForwarder(f.clone()), test_actor.clone());
+  expect_terminated(&mut kit, &f);
+  f.tell("hello", test_actor.clone());
+  let dead = kit.expect_msg_type::<DeadLetter>();
+  assert_eq!(dead.message().downcast_ref::<&'static str>().copied(), Some("hello"));
+  assert!(dead.recipient() == &f.as_actor_ref());
+  kit.expect_no_message(Duration::from_millis(500));
 }

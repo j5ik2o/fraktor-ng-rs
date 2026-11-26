@@ -22,6 +22,7 @@ use core::sync::atomic::Ordering;
 use core::time::Duration;
 
 use crate::kernel::actor::DeadLetter;
+use crate::kernel::actor::SuppressedDeadLetter;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
@@ -72,6 +73,13 @@ impl ShardBoundary for FunctionBoundary {
   fn post(&self, envelope: Envelope) {
     if !self.open.load(Ordering::Acquire) {
       let (recipient, message, sender) = envelope.into_parts();
+      // A dead letter that cannot be delivered is dropped, as the
+      // dead letters route itself drops one: wrapping it again and
+      // handing it back would make a stopped subscriber of
+      // AllDeadLetters receive its own dead letter forever.
+      if message.downcast_ref::<DeadLetter>().is_some() || message.downcast_ref::<SuppressedDeadLetter>().is_some() {
+        return;
+      }
       if let Some(dead_letters) = &self.dead_letters {
         let wrapped = DeadLetter::from_message(message, sender.clone(), recipient);
         dead_letters.tell(wrapped, sender);

@@ -55,9 +55,14 @@ fn settings() -> DispatchSettings {
   settings.define_dispatcher("my-dispatcher-2", MailboxDefinition::bounded(100, 20));
   settings.define_mailbox("my-mailbox-1", MailboxDefinition::bounded(10, 20));
   settings.define_mailbox("my-mailbox-2", MailboxDefinition::bounded(100, 20));
+  settings.define_dispatcher("my-dispatcher-3", MailboxDefinition::bounded(3, 20));
   settings.alias_dispatcher("my-aliased-dispatcher-1", "my-dispatcher-1");
   settings.alias_dispatcher("my-aliased-dispatcher-2", "my-aliased-dispatcher-1");
   settings
+}
+
+fn kit_second() -> TestKit {
+  kit()
 }
 
 fn kit() -> TestKit {
@@ -208,4 +213,84 @@ fn bounded_stash_resolves_stash_capacity_through_dispatcher_aliases() {
     .system_mut()
     .actor_of(Props::new(|| StashingActor { after_world: false }).with_dispatcher("my-aliased-dispatcher-2"));
   test_dead_letters(&mut kit, stasher);
+  // The alias resolves the stash capacity of 20 as well: through the
+  // alias, the overflow case also ends at the twenty-first stash. The
+  // alias points at dispatcher-1, whose mailbox capacity is 10, so at
+  // the stop the ten oldest stashed messages overflow newest victim
+  // first and the remaining ten follow in order.
+  let mut kit = kit_second();
+  let stasher = kit
+    .system_mut()
+    .actor_of(Props::new(|| StashingActorWithOverflow { stashed: 0 }).with_dispatcher("my-aliased-dispatcher-2"));
+  let test_actor = kit.test_actor();
+  kit.system().event_stream().subscribe(Some(test_actor.clone()), EventClass::of::<DeadLetter>()).expect("subscribe");
+  for text in &HELLOS[..20] {
+    stasher.tell(*text, test_actor.clone());
+    kit.expect_msg("ok");
+  }
+  stasher.tell("hello21", test_actor.clone());
+  kit.expect_msg("STASHOVERFLOW");
+  for text in HELLOS[..10].iter().rev() {
+    expect_dead_letter(&mut kit, text, &test_actor, &stasher);
+  }
+  for text in &HELLOS[10..20] {
+    expect_dead_letter(&mut kit, text, &test_actor, &stasher);
+  }
+}
+
+// Regression (review of #192), not a ported case: at stop, the
+// messages already queued for the actor share the mailbox capacity,
+// so the overflow at stop counts them. A sender inside the system
+// queues "die" and the two late messages in one turn, so the late
+// messages are certainly in the local queue when the stop runs.
+struct StashingActorThatStops;
+
+impl Actor for StashingActorThatStops {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    let text = text_of(&message);
+    if text == "die" {
+      let me = context.self_ref();
+      context.stop(&me);
+    } else if text.starts_with("hello") {
+      context.stash();
+      let sender = context.sender();
+      context.tell(&sender, "ok");
+    }
+  }
+}
+
+struct BacklogSender {
+  stasher: ActorRef,
+}
+
+impl Actor for BacklogSender {
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    if text_of(&message) == "go" {
+      context.tell(&self.stasher, "die");
+      context.tell(&self.stasher, "late1");
+      context.tell(&self.stasher, "late2");
+    }
+  }
+}
+
+#[test]
+fn bounded_stash_stop_counts_the_queued_backlog_against_the_mailbox_capacity() {
+  let mut kit = kit();
+  let stasher = kit.system_mut().actor_of(Props::new(|| StashingActorThatStops).with_dispatcher("my-dispatcher-3"));
+  let test_actor = kit.test_actor();
+  kit.system().event_stream().subscribe(Some(test_actor.clone()), EventClass::of::<DeadLetter>()).expect("subscribe");
+  for text in &HELLOS[..3] {
+    stasher.tell(*text, test_actor.clone());
+    kit.expect_msg("ok");
+  }
+  let sender = kit.system_mut().actor_of(Props::new({
+    let stasher = stasher.clone();
+    move || BacklogSender { stasher: stasher.clone() }
+  }));
+  sender.tell("go", test_actor.clone());
+  expect_dead_letter(&mut kit, "hello2", &test_actor, &stasher);
+  expect_dead_letter(&mut kit, "hello1", &test_actor, &stasher);
+  expect_dead_letter(&mut kit, "hello3", &test_actor, &stasher);
+  expect_dead_letter(&mut kit, "late1", &sender, &stasher);
+  expect_dead_letter(&mut kit, "late2", &sender, &stasher);
 }

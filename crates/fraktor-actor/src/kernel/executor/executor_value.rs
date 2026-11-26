@@ -992,6 +992,11 @@ impl Executor {
         self.run_post_stop(&mut cell, sender);
       }
     }
+    // A post_stop hook receives a context and can create function
+    // references; those belong to the stopping actor and end here too.
+    // References already ended above are gone from the registry, so
+    // this second pass never notifies a watcher twice.
+    self.stop_function_refs_of(target);
     self.forget_child(target);
     self.function_watching.retain(|(watcher, _)| watcher != target);
     self.stash_to_dead_letters(target);
@@ -1197,7 +1202,8 @@ impl Executor {
       // newest victim first (design of #192, B4). An unlimited mailbox
       // keeps the previous behaviour of sending everything in order.
       let (mailbox_capacity, _) = self.capacities_of(owner);
-      let bound = mailbox_capacity.bound().unwrap_or(usize::MAX);
+      let queued = self.queue.count_addressed_to(owner);
+      let bound = mailbox_capacity.bound().unwrap_or(usize::MAX).saturating_sub(queued);
       let total = stash.len();
       if total > bound {
         let excess = total - bound;
@@ -1372,6 +1378,7 @@ impl Executor {
       let reference = self.function_refs.remove(index);
       reference.boundary().close();
     }
+    self.function_parents.retain(|(held, _)| held != target);
     self.function_watching.retain(|(watcher, _)| watcher != target);
     self.watchers.retain(|(watcher, _)| watcher != target);
     self.pending_terminations.retain(|pending| &pending.watcher != target);
@@ -1532,6 +1539,8 @@ impl Executor {
       reference.boundary().close();
     }
     self.function_refs.clear();
+    self.function_parents.clear();
+    self.function_watching.clear();
     self.cells.clear();
     self.queue.clear();
     self.watchers.clear();
@@ -2198,8 +2207,8 @@ impl Executor {
       .map(|(watcher, _)| watcher.clone())
       .collect();
     self.watchers.retain(|(_, watched)| !Self::same_watch_target(watched, target));
-    for watcher in watchers {
-      self.enqueue_to(watcher, Terminated::new(target.clone(), existence_confirmed, address_terminated));
+    for watcher in &watchers {
+      self.enqueue_to(watcher.clone(), Terminated::new(target.clone(), existence_confirmed, address_terminated));
     }
     // Function references that watch through the dedicated table are
     // told apart by that table, not by the delivery branch (re-review
@@ -2211,6 +2220,7 @@ impl Executor {
       .iter()
       .filter(|(_, watched)| Self::same_watch_target(watched, target))
       .map(|(watcher, _)| watcher.clone())
+      .filter(|watcher| !watchers.contains(watcher))
       .collect();
     for watcher in function_watchers {
       let notice = Terminated::new(target.clone(), existence_confirmed, address_terminated);

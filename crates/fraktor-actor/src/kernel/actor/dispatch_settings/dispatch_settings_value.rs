@@ -54,25 +54,45 @@ impl DispatchSettings {
   }
 
   /// Defines the dispatcher `name`.
+  ///
+  /// A name is either a definition or an alias, never both: defining
+  /// a name drops an alias of the same name, and aliasing a name
+  /// drops its definition. The later registration wins.
   pub fn define_dispatcher(&mut self, name: &str, definition: MailboxDefinition) -> &mut Self {
+    self.dispatcher_aliases.remove(name);
     self.dispatchers.insert(String::from(name), definition);
     self
   }
 
   /// Defines the mailbox `name`.
+  ///
+  /// A name is either a definition or an alias, never both: defining
+  /// a name drops an alias of the same name, and aliasing a name
+  /// drops its definition. The later registration wins.
   pub fn define_mailbox(&mut self, name: &str, definition: MailboxDefinition) -> &mut Self {
+    self.mailbox_aliases.remove(name);
     self.mailboxes.insert(String::from(name), definition);
     self
   }
 
   /// Makes the dispatcher name `alias` another name for `target`.
+  ///
+  /// Aliasing a name drops a definition of the same name, as
+  /// [`define_dispatcher`](Self::define_dispatcher) drops an alias:
+  /// the later registration wins.
   pub fn alias_dispatcher(&mut self, alias: &str, target: &str) -> &mut Self {
+    self.dispatchers.remove(alias);
     self.dispatcher_aliases.insert(String::from(alias), String::from(target));
     self
   }
 
   /// Makes the mailbox name `alias` another name for `target`.
+  ///
+  /// Aliasing a name drops a definition of the same name, as
+  /// [`define_mailbox`](Self::define_mailbox) drops an alias: the
+  /// later registration wins.
   pub fn alias_mailbox(&mut self, alias: &str, target: &str) -> &mut Self {
+    self.mailboxes.remove(alias);
     self.mailbox_aliases.insert(String::from(alias), String::from(target));
     self
   }

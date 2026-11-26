@@ -19,7 +19,7 @@ Pekko v2.0.0 の `actor-tests` の3つの Spec（ProviderSelectionSpec、ActorWi
 
 - E1（ProviderSelectionSpec）：原典のケースは HOCON の設定文字列を `Settings` 経由で読み、選択の `fqcn` と `hasCluster` と、設定から読んだ provider クラスが一致することを確かめる。移植は設定ファイルを持たないため、数えている4件すべてを、HOCON の代わりの型付き入力（設定文字列そのもの）で、原典と同じことを確かめる形にした。ケースの除外ではない。
 - E2（ActorWithBoundedStashSpec）：原典のケースは dispatcher と mailbox の定義を HOCON で与える。移植は設定ファイルを持たないため、数えている5件すべてを、HOCON の代わりの型付き入力（`DispatchSettings` と `MailboxDefinition`）で、原典と同じ容量の解決と振る舞いを確かめる形にした。ケースの除外ではない。
-- ケースに出てこない振る舞い（bounded mailbox への通常の tell のあふれの扱い、FunctionRef の登録表の push timeout 相当）は移していない。
+- ケースに出てこない振る舞い（bounded mailbox への通常の tell のあふれの扱い、bounded mailbox の push timeout（500ms））は移していない。
 
 ## 除外の承認
 

@@ -119,7 +119,8 @@ module bounded_stash {
   // hands everything left, in order, to dead letters.
   action stopWith(drop: str): bool = all {
     not(stopped),
-    val excess = if (stashed.length() > MailboxCap) stashed.length() - MailboxCap else 0
+    val room = if (MailboxCap > queued.length()) MailboxCap - queued.length() else 0
+    val excess = if (stashed.length() > room) stashed.length() - room else 0
     val victims = if (drop == "newest") stashed.slice(stashed.length() - excess, stashed.length()) else stashed.slice(0, excess)
     val keep = if (drop == "newest") stashed.slice(0, stashed.length() - excess) else stashed.slice(excess, stashed.length())
     all {

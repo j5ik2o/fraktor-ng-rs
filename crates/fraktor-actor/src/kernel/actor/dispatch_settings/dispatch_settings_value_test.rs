@@ -92,3 +92,25 @@ fn stash_capacity_falls_back_but_mailbox_capacity_does_not() {
   settings.define_mailbox("m", MailboxDefinition::new(Some(limited(3)), None));
   assert_eq!(settings.resolve_capacities(Some("d"), Some("m")), Ok((limited(3), limited(7))));
 }
+
+#[test]
+fn later_registration_wins_between_definition_and_alias() {
+  // A name is either a definition or an alias: defining a name drops
+  // its alias, and aliasing a name drops its definition, in both
+  // orders and for both kinds.
+  let mut settings = DispatchSettings::new();
+  settings.define_dispatcher("t", MailboxDefinition::bounded(3, 3));
+  settings.define_dispatcher("d", MailboxDefinition::new(None, None));
+  settings.alias_dispatcher("d", "t");
+  assert_eq!(settings.resolve_dispatcher("d"), Ok(Some(MailboxDefinition::bounded(3, 3))));
+  settings.define_dispatcher("d", MailboxDefinition::bounded(7, 7));
+  assert_eq!(settings.resolve_dispatcher("d"), Ok(Some(MailboxDefinition::bounded(7, 7))));
+
+  let mut settings = DispatchSettings::new();
+  settings.define_mailbox("t", MailboxDefinition::bounded(3, 3));
+  settings.alias_mailbox("m", "t");
+  settings.define_mailbox("m", MailboxDefinition::bounded(7, 7));
+  assert_eq!(settings.resolve_mailbox("m"), Ok(Some(MailboxDefinition::bounded(7, 7))));
+  settings.alias_mailbox("m", "t");
+  assert_eq!(settings.resolve_mailbox("m"), Ok(Some(MailboxDefinition::bounded(3, 3))));
+}

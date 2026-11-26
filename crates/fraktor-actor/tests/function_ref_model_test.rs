@@ -74,6 +74,7 @@ impl Actor for Parent {
     let sender = context.sender();
     if command == "add" {
       let probe = self.probe.clone();
+      let index = self.refs.len();
       let reference = context.add_function_ref(move |sender, forwarded| {
         let description = if forwarded.downcast_ref::<Terminated>().is_some() {
           String::from("Terminated")
@@ -83,7 +84,7 @@ impl Actor for Parent {
           String::from("other")
         };
         let from = sender.path().to_string();
-        probe.tell((description, from), sender.clone());
+        probe.tell((description, from, index), sender.clone());
       });
       self.refs.push(reference.clone());
       context.tell(&sender, reference);
@@ -168,13 +169,13 @@ fn classify(refs: &[FunctionRef], parent: &ActorRef, message: &Message) -> Obser
     let index = refs.iter().position(|reference| reference.as_actor_ref() == *ended).expect("known ref");
     return Observed::ProbeTerminated(index);
   }
-  if let Some((description, from)) = message.downcast_ref::<(String, String)>() {
+  if let Some((description, from, watcher)) = message.downcast_ref::<(String, String, usize)>() {
     if description == "Terminated" {
       let target =
         refs.iter().position(|reference| reference.path().to_string() == *from).expect("the sender is the ended ref");
-      // The watcher is not in the message; the model comparison is a
-      // multiset match, so the watcher is recovered by the caller.
-      return Observed::ForwardedTerminated(usize::MAX, target);
+      // The handler captured its own index when the parent created
+      // it, so the watcher is known exactly.
+      return Observed::ForwardedTerminated(*watcher, target);
     }
     return Observed::Forwarded(description.clone());
   }
@@ -196,20 +197,8 @@ fn drain(kit: &mut TestKit, refs: &[FunctionRef], parent: &ActorRef, count: usiz
   observed
 }
 
-// ForwardedTerminated carries an unknown watcher from the wire; the
-// model knows it. Compare with the watcher erased on both sides.
-fn erased(deliveries: &[Observed]) -> Vec<Observed> {
-  deliveries
-    .iter()
-    .map(|delivery| match delivery {
-      | Observed::ForwardedTerminated(_, target) => Observed::ForwardedTerminated(usize::MAX, *target),
-      | other => other.clone(),
-    })
-    .collect()
-}
-
 fn sorted(deliveries: &[Observed]) -> Vec<Observed> {
-  let mut deliveries = erased(deliveries);
+  let mut deliveries = deliveries.to_vec();
   deliveries.sort();
   deliveries
 }
