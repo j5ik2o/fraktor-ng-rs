@@ -86,7 +86,11 @@ impl ActorSystem {
   ///
   /// Mirrors the role of Pekko's event stream for the failures of a faulty
   /// actor: a test attaches a sink to watch the `Error` events of a stopped or
-  /// restarted child. A system created without a sink drops the events.
+  /// restarted child. The sink also receives a `Warning` for every message an
+  /// actor reports through `ActorContext::unhandled`, in the place of Pekko's
+  /// `TestEventListener`; the event stream gets the `UnhandledMessage` either
+  /// way. A sink outside tests therefore sees one warning per unhandled
+  /// message. A system created without a sink drops the events.
   pub fn set_event_sink(&self, sink: Arc<dyn crate::kernel::actor::Logging::EventSink>) {
     self.executor.borrow_mut().set_event_sink(sink);
   }

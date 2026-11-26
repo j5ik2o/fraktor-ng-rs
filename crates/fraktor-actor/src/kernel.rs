@@ -17,6 +17,7 @@ pub mod double_linked_list;
 pub mod event;
 pub mod executor;
 pub mod frequency_list;
+pub mod frequency_sketch;
 pub mod io;
 pub mod message;
 pub mod recency_list;

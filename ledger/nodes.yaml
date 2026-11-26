@@ -2164,6 +2164,10 @@ nodes:
   goal: null
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/DeathWatchSpec.scala
   name: actor-tests:DeathWatchSpec
+  # 前提（#207 の独立レビュー F1）: 「fail a monitor which does not handle Terminated()」は
+  # Actor.unhandled の Terminated 分岐（DeathPactException と既定の Stop）が要る。未移植で、
+  # 今の ActorContext::unhandled は Terminated も UnhandledMessage として報告し、Failed は来ない。
+  # 移植は https://github.com/j5ik2o/fraktor-ng-rs/issues/219 。待ちの失敗をケースの除外で済ませない。
   kind: test
   pekko:
     module: actor-tests
@@ -2905,7 +2909,7 @@ nodes:
     module: actor-tests
     class: FrequencySketchSpec
     test_cases_approx: 16
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -2916,14 +2920,16 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 22
+    ported: 22
+    passing: 22
     excluded: []
+    not_built: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/frequency_sketch_spec.rs
+  goal: G0issue177
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/FunctionRefSpec.scala
   name: actor-tests:FunctionRefSpec
   kind: test
