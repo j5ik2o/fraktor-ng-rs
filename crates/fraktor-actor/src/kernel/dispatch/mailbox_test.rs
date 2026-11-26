@@ -352,3 +352,50 @@ fn an_envelope_is_dropped_outside_the_gate_when_the_priority_function_panics() {
   assert!(dropped.load(std::sync::atomic::Ordering::SeqCst), "the drop reached the gate");
   assert!(!mailbox.has_messages());
 }
+
+// The ways the tests make and read a mailbox. A mailbox of an actor is made
+// with `Mailbox::for_actor`, which names its dispatcher.
+impl<C: MailboxCell> Mailbox<C> {
+  /// Creates the mailbox of `cell` with a queue of its own and no way back to
+  /// a dispatcher. Closing the mailbox takes what the queue still holds.
+  pub(crate) fn new(
+    cell: C,
+    queue: Arc<dyn crate::kernel::dispatch::MessageQueue>,
+    limits: RunLimits,
+    locks: &dyn crate::kernel::sync::LockFactory,
+  ) -> Self {
+    Self::with_queue(Some(std::boxed::Box::new(cell)), queue, false, limits, locks, crate::kernel::sync::Weak::new())
+  }
+
+  /// Creates the mailbox of `cell` for a balancing team that shares `queue`.
+  /// Closing the mailbox leaves the queue to the rest of the team.
+  pub(crate) fn sharing(
+    cell: C,
+    queue: Arc<dyn crate::kernel::dispatch::MessageQueue>,
+    limits: RunLimits,
+    locks: &dyn crate::kernel::sync::LockFactory,
+  ) -> Self {
+    Self::with_queue(Some(std::boxed::Box::new(cell)), queue, true, limits, locks, crate::kernel::sync::Weak::new())
+  }
+
+  /// Returns whether the mailbox is suspended.
+  pub(crate) fn is_suspended(&self) -> bool {
+    self.status.is_suspended()
+  }
+
+  /// Returns whether the queue of normal messages holds a message. For a
+  /// shared queue, the messages may be for any member of the team.
+  pub(crate) fn has_messages(&self) -> bool {
+    self.queue.has_messages()
+  }
+
+  /// Returns whether a system message is waiting.
+  pub(crate) fn has_system_messages(&self) -> bool {
+    self.has_queued_system_messages()
+  }
+
+  /// Returns whether the "has system messages" flag is up.
+  pub(crate) fn status_has_system_flag(&self) -> bool {
+    self.status.has_system_messages()
+  }
+}

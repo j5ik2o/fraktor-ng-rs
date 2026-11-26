@@ -77,3 +77,24 @@ fn a_detached_noop_keeps_the_identity_and_path_over_a_separate_delivery() {
   assert!(!original.is_detached(), "the original handle must not be tagged as no-op");
   assert!(!original.clone().is_detached(), "a clone of the original must not become no-op");
 }
+
+// What the tests of stage 3 read of a handle's mailbox (#252).
+impl ActorRef {
+  /// Returns a weak handle to the actor's mailbox, for a test that the
+  /// mailbox goes away.
+  pub(crate) fn mailbox_weak(&self) -> crate::kernel::sync::Weak<Mailbox<ActorCell>> {
+    match &self.endpoint {
+      | Endpoint::Mailbox(mailbox) => Arc::downgrade(mailbox),
+      | Endpoint::Boundary(_) => panic!("{self:?} has no mailbox"),
+    }
+  }
+
+  /// Returns how many strong handles the actor's mailbox has, for a test
+  /// that no clone leaks.
+  pub(crate) fn mailbox_strong_count(&self) -> usize {
+    match &self.endpoint {
+      | Endpoint::Mailbox(mailbox) => Arc::strong_count(mailbox),
+      | Endpoint::Boundary(_) => panic!("{self:?} has no mailbox"),
+    }
+  }
+}

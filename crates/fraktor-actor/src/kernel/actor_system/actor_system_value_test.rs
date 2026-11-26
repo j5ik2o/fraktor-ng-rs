@@ -2720,3 +2720,11 @@ fn named_top_level_creation_on_terminated_system_returns_error() {
   let error = system.actor_of_named(Props::empty(), "late").expect_err("terminated system must return Err");
   assert_eq!(error.to_string(), "cannot create children while terminating or terminated");
 }
+
+// What the tests of stage 3 read of a system (#252).
+impl ActorSystem {
+  /// Returns the executor, for a test that looks inside it.
+  pub(crate) fn executor_for_test(&self) -> &spin::Mutex<crate::kernel::executor::Executor> {
+    &self.executor
+  }
+}

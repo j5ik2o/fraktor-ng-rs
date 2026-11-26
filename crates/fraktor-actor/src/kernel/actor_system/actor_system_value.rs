@@ -439,12 +439,6 @@ impl ActorSystem {
     Executor::lend(&self.executor, |executor| executor.function_ref_is_watching(watcher, target))
   }
 
-  /// Returns the executor, for a test that looks inside it.
-  #[cfg(test)]
-  pub(crate) fn executor_for_test(&self) -> &spin::Mutex<Executor> {
-    &self.executor
-  }
-
   /// Returns a handle that can reach the executor without owning the system.
   pub fn downgrade(&self) -> WeakActorSystem {
     WeakActorSystem::new(self.name.clone(), Arc::downgrade(&self.executor))

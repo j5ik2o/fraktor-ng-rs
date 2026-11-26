@@ -83,20 +83,6 @@ pub(crate) struct Mailbox<C> {
 }
 
 impl<C: MailboxCell> Mailbox<C> {
-  /// Creates the mailbox of `cell` with a queue of its own and no way back to
-  /// a dispatcher. Closing the mailbox takes what the queue still holds.
-  #[cfg(test)]
-  pub(crate) fn new(cell: C, queue: Arc<dyn MessageQueue>, limits: RunLimits, locks: &dyn LockFactory) -> Self {
-    Self::with_queue(Some(Box::new(cell)), queue, false, limits, locks, Weak::new())
-  }
-
-  /// Creates the mailbox of `cell` for a balancing team that shares `queue`.
-  /// Closing the mailbox leaves the queue to the rest of the team.
-  #[cfg(test)]
-  pub(crate) fn sharing(cell: C, queue: Arc<dyn MessageQueue>, limits: RunLimits, locks: &dyn LockFactory) -> Self {
-    Self::with_queue(Some(Box::new(cell)), queue, true, limits, locks, Weak::new())
-  }
-
   /// Creates the mailbox of an actor that `executor` runs, with a queue of its
   /// own and its slot still empty: the actor goes in once it has been built.
   pub(crate) fn for_actor(
@@ -191,12 +177,6 @@ impl<C: MailboxCell> Mailbox<C> {
     #[cfg(test)]
     crate::kernel::sync::counts::count_upgrade();
     self.executor.upgrade()
-  }
-
-  /// Returns whether `executor` is the dispatcher of this mailbox. Compares
-  /// the pointers, without following the way back.
-  pub(crate) fn belongs_to(&self, executor: &ManualExecutor<C>) -> bool {
-    core::ptr::eq(self.executor.as_ptr(), executor)
   }
 
   /// Puts a normal message on the queue.
@@ -324,34 +304,9 @@ impl<C: MailboxCell> Mailbox<C> {
     self.status.is_closed()
   }
 
-  /// Returns whether the mailbox is suspended.
-  #[cfg(test)]
-  pub(crate) fn is_suspended(&self) -> bool {
-    self.status.is_suspended()
-  }
-
-  /// Returns whether the queue of normal messages holds a message. For a
-  /// shared queue, the messages may be for any member of the team.
-  #[cfg(test)]
-  pub(crate) fn has_messages(&self) -> bool {
-    self.queue.has_messages()
-  }
-
   /// Returns how many normal messages the queue holds.
   pub(crate) fn number_of_messages(&self) -> usize {
     self.queue.number_of_messages()
-  }
-
-  /// Returns whether the "has system messages" flag is up.
-  #[cfg(test)]
-  pub(crate) fn status_has_system_flag(&self) -> bool {
-    self.status.has_system_messages()
-  }
-
-  /// Returns whether a system message is waiting.
-  #[cfg(test)]
-  pub(crate) fn has_system_messages(&self) -> bool {
-    self.has_queued_system_messages()
   }
 
   /// Takes the actor out for a run. The actor sits in a box, so a run moves

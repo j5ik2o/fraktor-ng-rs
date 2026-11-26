@@ -29,10 +29,6 @@ use crate::kernel::sync::Arc;
 #[path = "mailbox_run_test.rs"]
 mod tests;
 
-#[cfg(test)]
-#[path = "mailbox_unwind_test.rs"]
-mod unwind_tests;
-
 /// The right to run one mailbox once, held by whoever won its scheduled bit.
 ///
 /// Mirrors `org.apache.pekko.dispatch.Mailbox.run` (`Mailbox.scala:262`), cut

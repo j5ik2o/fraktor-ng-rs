@@ -27,7 +27,6 @@ use crate::kernel::actor::ActorContext;
 use crate::kernel::actor_path::ActorPath;
 use crate::kernel::actor_ref::Endpoint;
 use crate::kernel::dispatch::Mailbox;
-use crate::kernel::dispatch::ManualExecutor;
 use crate::kernel::dispatch::ManualTask;
 use crate::kernel::executor::ActorCell;
 use crate::kernel::executor::ShardBoundary;
@@ -148,45 +147,16 @@ impl ActorRef {
     }
   }
 
-  /// Returns a weak handle to the actor's mailbox, for a test that the
-  /// mailbox goes away.
-  #[cfg(test)]
-  pub(crate) fn mailbox_weak(&self) -> crate::kernel::sync::Weak<Mailbox<ActorCell>> {
-    match &self.endpoint {
-      | Endpoint::Mailbox(mailbox) => Arc::downgrade(mailbox),
-      | Endpoint::Boundary(_) => panic!("{self:?} has no mailbox"),
-    }
-  }
-
-  /// Returns how many strong handles the actor's mailbox has, for a test
-  /// that no clone leaks.
-  #[cfg(test)]
-  pub(crate) fn mailbox_strong_count(&self) -> usize {
-    match &self.endpoint {
-      | Endpoint::Mailbox(mailbox) => Arc::strong_count(mailbox),
-      | Endpoint::Boundary(_) => panic!("{self:?} has no mailbox"),
-    }
-  }
-
   /// Returns whether this handle and `other` send to the same place.
   pub(crate) fn shares_endpoint_with(&self, other: &ActorRef) -> bool {
     self.endpoint.same_as(&other.endpoint)
   }
 
-  /// Returns whether this handle belongs to the system whose dispatcher is
-  /// `executor` and whose shard boundary is `boundary`.
-  pub(crate) fn belongs_to(&self, executor: &ManualExecutor<ActorCell>, boundary: &Arc<dyn ShardBoundary>) -> bool {
-    match &self.endpoint {
-      | Endpoint::Mailbox(mailbox) => mailbox.belongs_to(executor),
-      | Endpoint::Boundary(own) => Arc::ptr_eq(own, boundary),
-    }
-  }
-
-  /// Returns the shard key of the system this handle sends into, for a wait
-  /// that drives that system. A handle to a mailbox whose system is gone has
-  /// no key, and no driver answers to zero.
-  #[cfg(feature = "std")]
-  pub(crate) fn driver_key(&self) -> usize {
+  /// Returns the shard key of the system this handle sends into: the
+  /// address of its shard boundary, which a waiting `ask` drives that system
+  /// by. A handle to a mailbox whose system is gone has no key, and no system
+  /// answers to zero.
+  pub(crate) fn system_key(&self) -> usize {
     match &self.endpoint {
       | Endpoint::Mailbox(mailbox) => mailbox.executor().map_or(0, |executor| executor.key()),
       | Endpoint::Boundary(boundary) => Arc::as_ptr(boundary) as *const () as usize,

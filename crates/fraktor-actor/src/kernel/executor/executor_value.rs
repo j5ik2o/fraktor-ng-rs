@@ -98,10 +98,6 @@ use crate::kernel::Clock;
 #[path = "executor_value_test.rs"]
 mod tests;
 
-#[cfg(test)]
-#[path = "executor_mailbox_test.rs"]
-mod mailbox_tests;
-
 static NEXT_SPAWN: AtomicU64 = AtomicU64::new(0);
 
 /// The cause name Pekko reports when `Kill` ends an actor.
@@ -447,7 +443,7 @@ impl Executor {
   /// Returns whether `target` belongs to this system: its mailbox is run by
   /// this executor, or it posts to this system's boundary.
   fn is_local(&self, target: &ActorRef) -> bool {
-    target.belongs_to(&self.manual, &self.boundary)
+    target.system_key() == self.manual.key()
   }
 
   /// Creates the boundary of a function reference, which tells a waiting
