@@ -2712,7 +2712,7 @@ nodes:
   status: red
   triage:
     kind: pending
-    reason: 移植5件は成功している。ケース5の写し方（弱めた形にするか）と、作らない区分の提案2件は、オーナーの判断待ちであり、承認済みとは記録しない（元帥の項目441の問い3と問い1）
+    reason: 移植5件は成功している。作らない区分の2件は、オーナーが 2026-11-26 に承認した（元帥の項目441の問い1）。ケース5は、オーナーがもう少し調査するとしたため判断待ちであり、承認済みとも除外とも記録しない（元帥の項目441の問い3）
   needs:
     testkit: ['test-kit', 'event-filter']
     premise_flags: []
@@ -2726,11 +2726,15 @@ nodes:
     excluded: []
     not_built:
     - name: log an error if an extension listed in pekko.extensions cannot be loaded
-      reason: 設定に書いた完全修飾クラス名をクラスローダで読み込む仕組みそのものの検査である。移植の設定は型付きの入力であり、存在しない拡張の識別子を書くことはコンパイル時にできない。読み込みの失敗という状態が型の上で作れないため、等価なテストは書けない（docs/design/issue-193-specs.md §7）。オーナーの判断待ちであり、承認済みとは記録しない
+      reason: 設定に書いた完全修飾クラス名をクラスローダで読み込む仕組みそのものの検査である。移植の設定は型付きの入力であり、存在しない拡張の識別子を書くことはコンパイル時にできない。読み込みの失敗という状態が型の上で作れないため、等価なテストは書けない（docs/design/issue-193-specs.md §7）。オーナーが 2026-11-26 に、この検査を作らないことを承認した（元帥の項目441の問い1）
       alternative: 存在しない識別子の型を ExtensionStartup へ渡すコードがコンパイルできないことを、ExtensionStartup の rustdoc の compile_fail の doctest で示す
+      approved_by: j5ik2o
+      approved_at: 2026-11-26
     - name: fail the actor system if a library-extension cannot be loaded
-      reason: ケース4と同じ仕組みの、ライブラリ側の列での検査である。読み込めないクラス名をライブラリ側の列に書いたとき、システムの生成が失敗することを確かめる。ケース4と同じく、失敗の状態が型の上で作れない（docs/design/issue-193-specs.md §7）。オーナーの判断待ちであり、承認済みとは記録しない
+      reason: ケース4と同じ仕組みの、ライブラリ側の列での検査である。読み込めないクラス名をライブラリ側の列に書いたとき、システムの生成が失敗することを確かめる。ケース4と同じく、失敗の状態が型の上で作れない（docs/design/issue-193-specs.md §7）。オーナーが 2026-11-26 に、この検査を作らないことを承認した（元帥の項目441の問い1）
       alternative: ケース4と同じ compile_fail の doctest である。実在しない識別子は列に書けない
+      approved_by: j5ik2o
+      approved_at: 2026-11-26
   rust:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/extension_spec.rs
@@ -3979,7 +3983,7 @@ nodes:
   status: green
   triage:
     kind: pending
-    reason: ケース2からケース5は、JVM に固有の検査（serialize-creators の検証と、リフレクションでのコンストラクタの検索）を移さない形で移植した。その扱いはオーナーの判断待ちであり、承認済みとは記録しない（元帥の項目441の問い2）
+    reason: ケース2からケース5は、JVM に固有の検査を移さない形で移植した。その扱いを、オーナー（j5ik2o）が 2026-11-26 に承認した（元帥の項目441の問い2）。件数は変えず、5件すべてを移植済み・成功のまま数える。ケースごとの注記は次のとおりである。ケース2（classOf）は、実行時のコンストラクタ探しと、serialize-creators の直列化の検査を移していない。ケース3（classOf と null の引数1つ）は、同じ2つの検査を移していない。ケース4（classOf と null の引数2つ）は、同じ2つの検査を移していない。ケース5（create(class, creator)）は、同じ2つの検査を移していない。ケース1からケース4は、引数を捕まえたクロージャを Props::new へ渡す、実質的に同じ形である。性質 I8 は、作り手が捕まえた値を観測するテストで確かめている
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -33619,7 +33623,7 @@ nodes:
     module: testkit
     class: TestFSMRefSpec
     test_cases_approx: 6
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -33630,14 +33634,15 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 6
+    ported: 6
+    passing: 6
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-testkit
+    test_file: crates/fraktor-testkit/tests/test_fsm_ref_spec.rs
+  goal: G0issue181
+  verified_against: v2.0.0
 - id: testkit/src/test/java/org/apache/pekko/testkit/javadsl/TestKitApiTest.java
   name: testkit:TestKitApiTest
   kind: test

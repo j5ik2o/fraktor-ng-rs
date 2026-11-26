@@ -609,7 +609,7 @@ fn stopping_a_parent_stops_its_child_first_and_tells_the_child_watcher() {
     &parent,
     Props::new({
       let order = Arc::clone(&order);
-      move || OrderedSink { order: Arc::clone(&order), label: "child delivered" }
+      move || OrderedSink { order: Arc::clone(&order), label: "child delivered", stopped: "child stopped" }
     }),
     Some("child"),
     crate::kernel::supervision::SupervisorStrategy::default_strategy(),
@@ -628,16 +628,34 @@ fn stopping_a_parent_stops_its_child_first_and_tells_the_child_watcher() {
 
   system.watch(&child_watcher, &child);
   system.watch(&parent_watcher, &parent);
+  let finished = Arc::clone(&order);
+  let stopping = parent.clone();
+  system.downgrade().on_termination(move |actor: &ActorRef| {
+    if actor == &stopping {
+      finished.lock().unwrap().push("parent stopped");
+    }
+  });
 
   system.stop(&parent);
   child.tell("late", parent.clone());
   system.run_until_idle();
 
-  assert_eq!(
-    *order.lock().unwrap(),
-    alloc::vec!["child terminated", "parent terminated"],
-    "the notices arrived in the wrong order"
-  );
+  // Pekko orders the two notices only through the parent's stop: the parent
+  // finishes stopping after its child has, and only then is its own
+  // Terminated sent. The two watchers are different recipients, so the order
+  // in which their notices arrive is not promised
+  // (message-delivery-reliability.md:109-130).
+  let order = order.lock().unwrap();
+  assert!(!order.contains(&"child delivered"), "the stopped child handled a message: {order:?}");
+  let child_stopped = order.iter().position(|label| *label == "child stopped").expect("the child ran post_stop");
+  let parent_stopped = order.iter().position(|label| *label == "parent stopped").expect("the parent stopped");
+  let parent_terminated =
+    order.iter().position(|label| *label == "parent terminated").expect("the parent watcher was told");
+  assert!(child_stopped < parent_stopped, "the parent finished stopping before its child stopped: {order:?}");
+  assert!(child_stopped < parent_terminated, "the parent was reported stopped before its child stopped: {order:?}");
+  assert_eq!(order.iter().filter(|label| **label == "child terminated").count(), 1, "{order:?}");
+  assert_eq!(order.len(), 4, "{order:?}");
+  drop(order);
   let child_notices = child_seen.lock().unwrap();
   assert_eq!(child_notices.len(), 1, "the child watcher was not told that the child stopped");
   assert!(child_notices[0].existence_confirmed());
@@ -649,6 +667,7 @@ fn stopping_a_parent_stops_its_child_first_and_tells_the_child_watcher() {
 struct OrderedSink {
   order: Arc<Mutex<Vec<&'static str>>>,
   label: &'static str,
+  stopped: &'static str,
 }
 
 #[test]
@@ -695,7 +714,10 @@ fn stopping_a_function_ref_stops_its_child_first_and_tells_both_watchers() {
   let target = system.function_ref("target", |_sender: &ActorRef, _message: Message| {});
   let child = system.downgrade().spawn_child(
     &target,
-    Props::new(|| NoOp),
+    Props::new({
+      let order = Arc::clone(&order);
+      move || OrderedSink { order: Arc::clone(&order), label: "child delivered", stopped: "child stopped" }
+    }),
     Some("child"),
     crate::kernel::supervision::SupervisorStrategy::default_strategy(),
   );
@@ -713,15 +735,30 @@ fn stopping_a_function_ref_stops_its_child_first_and_tells_both_watchers() {
 
   system.watch(&child_watcher, &child);
   system.watch(&target_watcher, &target);
+  let finished = Arc::clone(&order);
+  let stopping = target.clone();
+  system.downgrade().on_termination(move |actor: &ActorRef| {
+    if actor == &stopping {
+      finished.lock().unwrap().push("target stopped");
+    }
+  });
 
   system.stop(&target);
   system.run_until_idle();
 
-  assert_eq!(
-    *order.lock().unwrap(),
-    alloc::vec!["child terminated", "target terminated"],
-    "a function reference stopped before its child"
-  );
+  // As for a parent actor: the function reference is reported stopped only
+  // after its child has stopped, and the two watchers' notices are not
+  // ordered against each other.
+  let order = order.lock().unwrap();
+  let child_stopped = order.iter().position(|label| *label == "child stopped").expect("the child ran post_stop");
+  let target_stopped = order.iter().position(|label| *label == "target stopped").expect("the target stopped");
+  let target_terminated =
+    order.iter().position(|label| *label == "target terminated").expect("the target watcher was told");
+  assert!(child_stopped < target_stopped, "a function reference finished stopping before its child: {order:?}");
+  assert!(child_stopped < target_terminated, "a function reference stopped before its child: {order:?}");
+  assert_eq!(order.iter().filter(|label| **label == "child terminated").count(), 1, "{order:?}");
+  assert_eq!(order.len(), 4, "{order:?}");
+  drop(order);
   let child_notices = child_seen.lock().unwrap();
   assert_eq!(child_notices.len(), 1, "the child watcher was not told that the child stopped");
   assert!(child_notices[0].existence_confirmed());
@@ -733,6 +770,10 @@ fn stopping_a_function_ref_stops_its_child_first_and_tells_both_watchers() {
 impl Actor for OrderedSink {
   fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {
     self.order.lock().unwrap().push(self.label);
+  }
+
+  fn post_stop(&mut self) {
+    self.order.lock().unwrap().push(self.stopped);
   }
 }
 
@@ -2621,4 +2662,87 @@ fn a_retried_start_finds_the_cell_again_after_a_child_stop_moves_the_table() {
   assert!(system.is_actor_terminated(&children[0]), "the child of the failed attempt survived the retry");
   assert!(!system.is_actor_terminated(&children[1]), "the child of the retried attempt is not alive");
   assert!(system.is_actor_terminated(&victim_ref), "the stop issued from the child-terminated hook did not happen");
+}
+
+#[test]
+fn named_top_level_creation_verifies_dispatcher_configuration() {
+  let mut system = system("PekkoCustomSpec");
+  let props = Props::empty().with_dispatcher("does not exist");
+
+  let named_err = system.actor_of_named(props, "missing-a").expect_err("unknown dispatcher must be refused");
+  assert!(matches!(named_err, crate::kernel::actor::ActorCreationError::Configuration(_)));
+  assert!(named_err.to_string().contains("does not exist"));
+
+  // A refused creation must not reserve the name.
+  let created = system.actor_of_named(Props::empty(), "missing-a").expect("refused name stays free");
+  assert_eq!(created.path().name(), "missing-a");
+}
+
+#[test]
+fn named_top_level_creation_applies_router_verification_and_head() {
+  use crate::kernel::actor::{PoolKind, RouterConfig};
+  use crate::kernel::dispatch::{DispatcherConfig, DispatcherKind, Dispatchers};
+  use crate::kernel::setup::ActorSystemSetup;
+
+  let dispatchers = Dispatchers::new(alloc::vec![DispatcherConfig {
+    id: "balancing-dispatcher".to_string(),
+    kind: DispatcherKind::Balancing,
+  }]);
+  let setup = ActorSystemSetup::empty().with_setup(dispatchers);
+  let mut system = ActorSystem::with_setup("PekkoCustomSpec", Arc::new(ChannelBoundary::new()), setup);
+
+  let bad_router = Props::empty().with_router(RouterConfig {
+    pool: PoolKind::RoundRobin,
+    nr_of_instances: 2,
+    router_dispatcher: Some("balancing-dispatcher".to_string()),
+  });
+  let named_err = system.actor_of_named(bad_router, "bad-router-a").expect_err("balancing router head must be refused");
+  assert!(matches!(named_err, crate::kernel::actor::ActorCreationError::Configuration(_)));
+
+  // Valid router starts the router head rather than running the routee factory directly.
+  let seen = Arc::new(Mutex::new(Vec::new()));
+  let router_props = Props::new({
+    let seen = Arc::clone(&seen);
+    move || Sink { received: Arc::clone(&seen) }
+  })
+  .with_router(RouterConfig { pool: PoolKind::Broadcast, nr_of_instances: 2, router_dispatcher: None });
+  let head = system.actor_of_named(router_props, "router-a").expect("valid router starts");
+  head.tell("ping", system.dead_letters());
+  system.run_until_idle();
+  assert!(seen.lock().unwrap().is_empty(), "router head must not invoke routee receive directly");
+}
+
+#[test]
+fn named_top_level_creation_reuses_name_after_pre_start_stop() {
+  let mut system = system("PekkoCustomSpec");
+  let first = system.actor_of_named(Props::new(|| StopsItselfInPreStart), "ephemeral").expect("first actor starts");
+  assert!(system.is_actor_terminated(&first), "actor stopped during pre_start");
+
+  let second = system.actor_of_named(Props::empty(), "ephemeral").expect("name must be reusable after pre_start stop");
+  assert_ne!(first, second);
+  assert_eq!(second.path().name(), "ephemeral");
+
+  system.stop(&second);
+  system.run_until_idle();
+  assert!(system.is_actor_terminated(&second));
+
+  let third = system.actor_of_named(Props::empty(), "ephemeral").expect("name must be reusable after stop");
+  assert_ne!(second, third);
+}
+
+#[test]
+fn named_top_level_creation_on_terminated_system_returns_error() {
+  let mut system = system("PekkoCustomSpec");
+  system.terminate();
+
+  let error = system.actor_of_named(Props::empty(), "late").expect_err("terminated system must return Err");
+  assert_eq!(error.to_string(), "cannot create children while terminating or terminated");
+}
+
+// What the tests of stage 3 read of a system (#252).
+impl ActorSystem {
+  /// Returns the executor, for a test that looks inside it.
+  pub(crate) fn executor_for_test(&self) -> &spin::Mutex<crate::kernel::executor::Executor> {
+    &self.executor
+  }
 }

@@ -65,7 +65,7 @@
 | 5 | not retain its original Props when terminated | `does_not_retain_the_original_props_when_terminated` | 移す（形を変える）。番兵の案は取り下げた（H2）。実物では、停止したセルは表から外れて捨てられるため、停止後にセルの `Props` を読む対象が無い。性質は結合テストで確かめる。factory のクロージャに `Arc` を捕まえさせ、テストはその `Weak` を持つ。停止の前に `weak.upgrade()` が `Some` であることを確かめてから（これが無いと、資源がはじめから捕まえられていなかった場合でも通ってしまう）、子が停止した後、`await_assert` で `weak.upgrade()` が `None` になる（元の `Props` が捕まえた資源が解放される）ことを確かめる。本体の追加は要らない |
 | 6 | only create one instance of an actor with a specific address in a concurrent environment | —（#234 の後。§1.4） | この issue では移さない。複数スレッドから同時に同じ名前で作っても成功が 1 件だけで、残りが `InvalidActorNameException` になることを確かめるケースであり、前提は §1.4 に書く |
 | 7 | only create one instance of an actor from within the same message invocation | `creates_only_one_instance_from_within_the_same_message_invocation` | 移す（形を変える）。1 回のメッセージ処理の中で同じ名前（`duplicate`）で 2 回作ると、2 回目が `InvalidActorNameException` になる。原典は投げられた例外を `EventFilter` で傍受するが、移植の `actor_of` は例外を投げず `Result` を返すため、アクターが 2 回目の結果を probe へ送って確かめる形にする。加えて、子が 1 つだけ残ること（子のパスを解決すると 1 回目に作った参照が返ること）も確かめる |
-| 8 | throw suitable exceptions for malformed actor names | `rejects_malformed_actor_names_with_suitable_messages` | 残りを移す。名前の検証そのもの（`ActorPath::validate_path_element`）はすでにあるが、生成の経路へつながっていないため、つなぐ追加が要る（§2.2）。原典の小ケースのうち、名前が `null` の確かめだけは、Rust の `&str` が null を表現できないため作らないことを提案し、**オーナーの判断待ち**とする（独立レビューの推奨は承認であり、台帳には承認が出るまで書かない。§10）。空文字、先頭の `$`、不正な `%` エスケープ（`a%`、`%3`、`%xx`、`%0G`、`%gg`、`%`、`%1t`）、`a?`、非 ASCII（`üß`）、引用符・`$`・`>` の位置の表示はすべて移す |
+| 8 | throw suitable exceptions for malformed actor names | `rejects_malformed_actor_names_with_suitable_messages` | 残りを移す。名前の検証そのもの（`ActorPath::validate_path_element`）はすでにあるが、生成の経路へつながっていないため、つなぐ追加が要る（§2.2）。原典の小ケースのうち、名前が `null` の確かめは、None で移した（元帥の決定 2026-11-26、#289）。ケース 8 の小ケースであるため独立のケースとは数えず、件数は変えない。空文字、先頭の `$`、不正な `%` エスケープ（`a%`、`%3`、`%xx`、`%0G`、`%gg`、`%`、`%1t`）、`a?`、非 ASCII（`üß`）、引用符・`$`・`>` の位置の表示はすべて移す |
 
 ケース 8 の文面は 1 本で足りる（H3）。`Children.checkName` が見るのは null と空だけであり、先頭の `$` は `validatePathElement` が位置 0 として報告する。「not start with `$`」と「include only ASCII」は、不正な名前の文面に毎回入る固定の規則の文であり、`$hallo` と `$hello` と `üß` の期待値はすべて、現行の `ActorPath::validate_path_element` が出す 1 本の文面で満たされる。移植はこの文面をそのまま使い、新しい文面は作らない（§2.2）。
 
@@ -244,7 +244,7 @@ impl core::error::Error for ActorCreationError {}
 
 - `resolve_actor_ref` の意味は原典どおりにする（M2）。見つからないパスについては dead letters ではなく、パスを保った空の参照（Pekko の `EmptyLocalActorRef`）を返す。作り方は既存の `next_actor_ref(path, boundary)` を使う。dead letters を返すのは、要素が空のときと、ルートが別のシステムのときだけである。guardian のパス（`/user` など）は guardian の参照を返す。解決の対象には、実行中のフレーム（表から外れている処理中のアクター自身と、その祖先）を含める。executor は実行中のアクターをセルの表から外すため、表だけを引くと処理中のアクターが「無い」と判定されてしまう。ケース 1 は、§1.3 のとおり `receive` の中からではなくテストの側から呼ぶ。URL エンコード済みの名前は、エンコード済みの文字列のまま要素として保持される（現行の `ActorPath` は要素をデコードしない）ため、ケース 1 の名前はそのまま一致する。
 - guardian の未処理の報告。executor が選択の解決をする場所で、解決先が root（要素なし）、`user`、`system` の guardian のパスそのものである場合は、dead letter へ流さず、その guardian を宛先とする `UnhandledMessage` を発行する。送信者は原典どおり dead letters であり、警告文は既存の `unhandled message from <sender>: <message>` の形を使う。guardian の下の実在の子への配送は変えない。`resolve_actor_ref` が返した guardian の参照へ直接送った場合も、選択の経路と同じく `UnhandledMessage` になるようにそろえる（この扱いを確かめるケースは原典には無い）。なお、fraktor の警告文は `unhandled message from {path}: {message:?}` であり、Pekko の `unhandled message from Actor[{path}]: {message}` と文面が違う。この違いはテストファイルの冒頭に記録する（L11）。
-- 名前の検証の接続。`Executor::spawn_named_child_under` と、新しい `actor_of_named` の経路で、重複の検査の前に名前を検証する。検証は既存の `ActorPath::validate_path_element` をそのまま使い、失敗は新しい生成子で `InvalidActorNameException` にする。入口で別に見るのは空文字（と、Rust では表現できない null）だけであり、文面は「actor name must not be empty」とする。それ以外（先頭の `$`、不正な `%` エスケープ、非 ASCII、禁止文字とその位置）はすべて `validate_path_element` の 1 本の文面で足りる（H3）。Pekko に無い文面（たとえば「actor name must not start with `$`」）は作らない。
+- 名前の検証の接続。`Executor::spawn_named_child_under` と、新しい `actor_of_named` の経路で、重複の検査の前に名前を検証する。検証は既存の `ActorPath::validate_path_element` をそのまま使い、失敗は新しい生成子で `InvalidActorNameException` にする。入口で別に見るのは空文字だけであり、文面は「actor name must not be empty」とする。null は `actor_of_named` が `Option` の `None` として受け、文面「actor name must not be null」で拒む。それ以外（先頭の `$`、不正な `%` エスケープ、非 ASCII、禁止文字とその位置）はすべて `validate_path_element` の 1 本の文面で足りる（H3）。Pekko に無い文面（たとえば「actor name must not start with `$`」）は作らない。
 
 ```rust
 impl InvalidActorNameException {
@@ -255,7 +255,7 @@ impl InvalidActorNameException {
 ```
 
 - `actor_of_named` の一意の検査が使う表を決める（L6）。システム直下の名前は user guardian の子の名前である。executor は、システムの生成時に user guardian の `ParentEntry` に当たる登録を用意し、`spawn_user`（名前の自動生成）と `actor_of_named`（名前の指定）の両方がその登録へ名前を記録する形にする。こうすると、一意の検査と、停止した後の名前の再利用が、親からの生成と同じ仕組みで成り立つ。
-- null の小ケースは作らない提案であり、**オーナーの判断待ち**である（§1.3、§10）。Rust では名前は `&str` であり、null は型で表現できない。記録は、テストファイルの冒頭に「`&str` は null を表せず、型で拒まれる」と書く形にする。
+- null の小ケースは None で移した（元帥の決定 2026-11-26、#289）。名前を受ける入口が `Option` で受け、`None` を `InvalidActorNameException` 相当で拒む。ケース 8 の小ケースであるため、件数は変えない。
 - 停止したセルの `Props` の解放には、本体の追加は要らない（H2）。実物では停止したセルは表から外れて捨てられるため、元の `Props` はセルの破棄と一緒に解放される。ケース 5 は §1.3 のとおり、`Weak` で解放を確かめる結合テストにする。番兵（`terminatedProps`）は作らない。
 - `no_std`：追加はすべて `core` と `alloc` で書ける。解決と検証は文字列と `Vec` の操作だけであり、`std` の機能は要らない。
 
@@ -426,14 +426,14 @@ FSM に書く理由：
 - 既存の公開 API の追加：`Fsm` へのメソッドの追加（`on_transition_with_data`、`when_unhandled`）、`FsmState::replying` の追加、遷移リスナーのメッセージ型の追加、`ActorContext::watch_with` の追加、`ActorSystem::resolve_actor_ref` と `actor_of_named` と `try_actor_of` の追加、`Props::with_router` と `router` の追加、`InvalidActorNameException::invalid_name` の追加、`ConfigurationException`、`ActorCreationError`、`Dispatchers`、`DispatcherConfig`、`DispatcherKind`、`RouterConfig`、`PoolKind` の追加。
 - 既存の公開 API の署名の変更：`Fsm::when` と新しく足す `when_unhandled` のクロージャは、`&FsmView<S>` を引数に取る（H1）。`Fsm` の impl 全体（通常の impl、`Default`、`Actor` の実装）の境界には `S: Send + Sync` が増える（L4）。既存の利用（`fsm_test.rs`、`abstract_fsm_actor_test.rs`、`abstract_fsm_with_stash_actor_test.rs`）は、引数を 1 つ受ける形へ直す。`S` の既存の値は `String` と `&'static str` であり、境界は満たす。
 - 振る舞いの変更：名前の検証が生成経路へつながるため、これまで通っていた不正な名前の生成が失敗するようになる。独立レビューの試作では、既存の 1169 件のうち 1 件が落ちた。`actor_system_value_test.rs` の 2035 行付近の単体テストが、空白を含む名前（`first child`、`second child`）を使っているためである（L7）。第 2 段ではこの単体テストの名前を有効な名前へ直す。guardian のパスへの送信が dead letter から `UnhandledMessage` へ変わるため、dead letter の件数を数える既存のテスト（DeadLetter 系の Spec）への影響も、第 2 段の red の前に `cargo test --workspace` で確かめる。
-- 台帳：第 2 段で対象ノード 3 件を更新する。`FSMTransitionSpec` は total／ported／passing を 8／8／8、`ActorConfigurationVerificationSpec` は 10／10／10 とし、`rust.crate` に `fraktor-actor`、`rust.test_file` に各テストファイル、`status: green`、`verified_against: v2.0.0` を書く。`LocalActorRefProviderSpec` は §1.4 の決定のとおり、`status: unported` のまま 8／7／7 とし、`verified_against` は書かない。null の名前の扱いは**オーナーの判断待ち**であり、台帳の `not_built` にも `excluded` にも書かない。
+- 台帳：第 2 段で対象ノード 3 件を更新する。`FSMTransitionSpec` は total／ported／passing を 8／8／8、`ActorConfigurationVerificationSpec` は 10／10／10 とし、`rust.crate` に `fraktor-actor`、`rust.test_file` に各テストファイル、`status: green`、`verified_against: v2.0.0` を書く。`LocalActorRefProviderSpec` は §1.4 の決定のとおり、`status: unported` のまま 8／7／7 とし、`verified_against` は書かない。null の名前は None で移した（元帥の決定 2026-11-26、#289）。ケース 8 の小ケースであるため件数は変えず、台帳の `not_built` にも `excluded` にも書かない。
 
 ## 8. レビューで見てほしい点への決定
 
-初版の §8 の 8 項目は、独立レビューの推奨を受けて次のとおりに決めた。判断待ちは項目 2 だけである。
+初版の §8 の 8 項目は、独立レビューの推奨を受けて次のとおりに決めた。項目 2 はその後、元帥の決定（2026-11-26）で決まった。
 
 1. ケース 6 を #234 の後に置くこと：§1.4 のとおり、元帥が 2026-11-26 に案 1 で決めた。段 5（#256）の後に置き、後続は [issue #265](https://github.com/j5ik2o/fraktor-ng-rs/issues/265) である。
-2. null の名前を作らないこと：**オーナーの判断待ち**である。独立レビューの推奨は承認であり、記録はテストファイルの冒頭の書き添えとする案である。答えが出るまで、台帳にもテストの冒頭の書き添えにも「承認済み」とは書かない。
+2. null の名前：None で移した（元帥の決定 2026-11-26、#289）。名前を受ける入口が `Option` で受け、`None` を `InvalidActorNameException` 相当で拒む。ケース 8 の小ケースであるため、件数は変えない。
 3. 文面の層：H3 のとおり、層は 1 つで足りる。入口で見るのは空（と null）だけであり、残りは既存の `validate_path_element` の文面をそのまま使う。
 4. FSM のケース 8（`nextStateData`）を型の形で確かめること：型の形でよい。panic する公開 API は足さない。ケースが空の確かめにならないよう、`Arc` の `strong_count` で保持の有無を確かめる形にした（§1.2）。
 5. Local のケース 7 を `Result` で確かめること：`Result` を probe へ送る形でよい。加えて、子が 1 つだけ残ることを確かめる。
@@ -446,7 +446,7 @@ FSM に書く理由：
 - red（失敗するテスト）→ green の順に実装する。先に 3 つの spec ファイル（と PBT 2 件、全数の表のテスト 1 件、Quint 1 件）を書き、コンパイルの失敗かテストの失敗で red を確認してから本体を足す。#234 の段 5（#256）を前提にするケース 6 は書かない（後続は [issue #265](https://github.com/j5ik2o/fraktor-ng-rs/issues/265)）。
 - 既存の 4 つのテストファイル（`fsm_test.rs`、`abstract_fsm_actor_test.rs`、`abstract_fsm_with_stash_actor_test.rs` の `when` の引数と、`actor_system_value_test.rs` の名前）の機械的な直しは、red の工程（テストを書く工程）で行う。移植の規約は「実装ステップはテストファイルを編集しない」と定めているため、署名の変更で既存のテストがコンパイルできなくなる直しを実装の工程へ残さない。
 - ルーターの振り分けと、子の生成への設定の検証の、後続の issue 2 件は、実装に入る前に立て、rustdoc からリンクする。
-- 台帳の対象ノードを §7 のとおりに更新する。PR 本文の 1 行目は、作らない・除外の承認待ち（null の名前）が残る間は `Refs #194` のままにする。
+- 台帳の対象ノードを §7 のとおりに更新する。null の名前は None で移した（元帥の決定 2026-11-26、#289）ため、作らない・除外の承認待ちは残っていない。
 - CI と同じ検査を流す（`cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、ledger/tools の Python テスト、Quint は CI の `scripts/quint-check-specs.sh` をそのまま流し、`crates/fraktor-actor/specs/fsm_transition.qnt` が対象に入っていることを確かめる）。
 - PR をドラフトから外し、マージできる状態まで持つ。マージはしない。
 
@@ -494,10 +494,10 @@ FSM に書く理由：
 | L12：§4 に watch の範囲の外のリスナーを足す | 直した（§4） |
 | L13：既定の dispatcher の id が登録表に入るかを書く | 直した（§2.3、§3 の C6） |
 
-### 上司の判断と、判断待ち
+### 上司の判断
 
 - §1.4（同時実行の 1 件を分けたときのノードの扱い）：元帥が 2026-11-26 に案 1 で決めた。完了条件は「2 ノードを green、`LocalActorRefProviderSpec` は 8 件中 7 件を移し、同時実行の 1 件は #234 の段 5（#256）のあと」に変わり、後続の issue は #265 である。設計の §1.4 を決定のとおりに書き直した。
-- null の名前の 1 件を作らないこと：**オーナーの判断待ち**である。独立レビューの推奨は承認である。答えが出るまで、台帳にもテストの冒頭の書き添えにも「承認済み」とは書かない。
+- null の名前：None で移した（元帥の決定 2026-11-26、#289）。ケース 8 の小ケースであるため、件数は変えない。
 
 ## 11. 設計の再レビュー（PR #244、HEAD 9126560）への回答
 

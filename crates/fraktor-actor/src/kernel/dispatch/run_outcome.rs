@@ -19,7 +19,7 @@
 use crate::kernel::dispatch::MailboxRun;
 
 /// The end of one [`MailboxRun::run`].
-pub enum RunOutcome<C> {
+pub(crate) enum RunOutcome<C> {
   /// The run reserved the mailbox again and still holds its scheduled bit.
   /// The adaptor hands this run back to the pool as it is, without touching
   /// the bit: reserving again would lose to its own bit and drop the work

@@ -23,12 +23,12 @@
 use alloc::string::String;
 use core::time::Duration;
 
+use crate::kernel::actor::ActorCreationError;
 use crate::kernel::actor::Props;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::Executor;
 use crate::kernel::message::Message;
 use crate::kernel::supervision::SupervisorStrategy;
-use crate::kernel::sync::lock;
 use crate::kernel::sync::Arc;
 use crate::kernel::sync::Weak;
 
@@ -81,7 +81,42 @@ impl WeakActorSystem {
     name: Option<&str>,
     strategy: SupervisorStrategy,
   ) -> ActorRef {
-    lock(&self.upgrade()).spawn_child_from_weak(parent, props, name, strategy)
+    match self.try_spawn_child(parent, props, name, strategy) {
+      | Ok(child) => child,
+      | Err(error) => panic!("{error}"),
+    }
+  }
+
+  /// Starts a child of `parent`, answering with the refusal instead of
+  /// throwing it.
+  ///
+  /// The checks are the ones a top-level creation runs: the name, that
+  /// the system and the parent still take children, that the name is
+  /// free, and the configuration of the recipe. A caller that can report
+  /// a refusal, such as a test handle that starts a child under a
+  /// supervisor it was given, uses this entry; [`spawn_child`](Self::spawn_child)
+  /// is this call with the refusal thrown, as Pekko throws it.
+  ///
+  /// This entry verifies the configuration, which
+  /// [`ActorContext::actor_of`](crate::kernel::actor::ActorContext::actor_of)
+  /// does not: the same recipe with an undefined dispatcher name is
+  /// refused here and accepted there. That difference is a known
+  /// deviation; issue #247
+  /// (https://github.com/j5ik2o/fraktor-ng-rs/issues/247) aligns
+  /// `actor_of` with this entry so both verify the configuration.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ActorCreationError`] when the name, the parent's state,
+  /// or the configuration is refused.
+  pub fn try_spawn_child(
+    &self,
+    parent: &ActorRef,
+    props: Props,
+    name: Option<&str>,
+    strategy: SupervisorStrategy,
+  ) -> Result<ActorRef, ActorCreationError> {
+    Executor::lend(&self.upgrade(), |executor| executor.try_spawn_child_from_weak(parent, props, name, strategy))
   }
 
   /// Starts a handle whose shard runs `handler` for each delivered message.
@@ -89,7 +124,7 @@ impl WeakActorSystem {
   where
     H: Fn(&ActorRef, Message) + Send + Sync + 'static,
   {
-    lock(&self.upgrade()).function_ref(name, handler)
+    Executor::lend(&self.upgrade(), |executor| executor.function_ref(name, handler))
   }
 
   /// Registers `callback` to run with the handle of every actor that stops.
@@ -103,19 +138,19 @@ impl WeakActorSystem {
   where
     F: Fn(&ActorRef) + Send + 'static,
   {
-    lock(&self.upgrade()).on_termination(callback);
+    Executor::lend(&self.upgrade(), |executor| executor.on_termination(callback));
   }
 
   /// Registers `watcher` to receive the `Terminated` notice of `target`.
   pub fn watch(&self, watcher: &ActorRef, target: &ActorRef) {
-    lock(&self.upgrade()).watch(watcher, target);
+    Executor::lend(&self.upgrade(), |executor| executor.watch(watcher, target));
   }
 
   /// Stops `watcher` from receiving the notice of `target`.
   ///
   /// Mirrors `ActorContext.unwatch` reached through a non-owning handle.
   pub fn unwatch(&self, watcher: &ActorRef, target: &ActorRef) {
-    lock(&self.upgrade()).unwatch(watcher, target);
+    Executor::lend(&self.upgrade(), |executor| executor.unwatch(watcher, target));
   }
 
   /// Stops `target`, telling its watchers that it is gone.
@@ -123,7 +158,7 @@ impl WeakActorSystem {
   /// Mirrors `ActorSystem.stop` reached through a non-owning handle, which is
   /// how a probe or a test that only holds a `Weak` back-edge stops an actor.
   pub fn stop(&self, target: &ActorRef) {
-    lock(&self.upgrade()).stop_at_boundary(target);
+    Executor::lend(&self.upgrade(), |executor| executor.stop_at_boundary(target));
   }
 
   /// Returns whether `target` no longer has a running actor behind it.
@@ -134,23 +169,39 @@ impl WeakActorSystem {
   /// runs and true once the actor has stopped. The scope and its limits are the
   /// ones `watch` documents.
   pub fn is_actor_terminated(&self, target: &ActorRef) -> bool {
-    lock(&self.upgrade()).is_actor_terminated(target)
+    Executor::lend(&self.upgrade(), |executor| executor.is_actor_terminated(target))
   }
 
-  /// Delivers every message that is waiting until nothing is left.
+  /// Runs every mailbox that has work, and delivers every message waiting at
+  /// the boundary, until nothing is left. A mailbox runs up to the
+  /// throughput of its dispatcher at a time.
   pub fn run_until_idle(&self) {
-    lock(&self.upgrade()).run_until_idle();
+    Executor::lend(&self.upgrade(), |executor| executor.run_until_idle());
   }
 
-  /// Delivers at most one message and returns whether it delivered one.
+  /// Delivers at most one message of the manually driven dispatcher and
+  /// returns whether it delivered one.
+  ///
+  /// This is a stepping aid for tests that check a deadline between
+  /// messages; it is not one run of a mailbox. A run of a mailbox handles up
+  /// to `throughput` messages; `run_one` hands a single message to a single
+  /// actor and then returns, whatever the throughput of its dispatcher is.
+  /// Use `run_until_idle` to drive the system the way a dispatcher does.
+  ///
+  /// It keeps running ready mailboxes that only have system messages to
+  /// handle until it delivers one message or nothing is ready, so `false`
+  /// means there was nothing left to drive.
   pub fn run_one(&self) -> bool {
-    lock(&self.upgrade()).run_one()
+    Executor::lend(&self.upgrade(), |executor| executor.run_one())
   }
 
-  /// Waits at most `max` for one message from the boundary and moves it onto
-  /// the local queue. Returns whether a message arrived.
+  /// Waits at most `max` for work for the system: a mailbox with a message
+  /// to handle, a message at the boundary, or a message that one of the
+  /// system's function references handled. Returns whether work came,
+  /// without delivering anything; call `run_one` or `run_until_idle` to
+  /// deliver it.
   pub fn await_envelope(&self, max: Duration) -> bool {
-    lock(&self.upgrade()).await_envelope(max)
+    Executor::lend(&self.upgrade(), |executor| executor.await_envelope(max))
   }
 }
 

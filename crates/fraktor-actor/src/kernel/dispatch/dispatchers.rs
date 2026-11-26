@@ -35,7 +35,7 @@ pub const DEFAULT_DISPATCHER_ID: &str = "pekko.actor.default-dispatcher";
 /// is always known. The table travels into a system through
 /// [`ActorSystemSetup`](crate::kernel::setup::ActorSystemSetup), as a
 /// `Setup`, and stage 5 of #234 extends this same type with aliases
-/// and execution instead of replacing it (design of #194, M1).
+/// and execution instead of replacing it.
 ///
 /// A dispatcher that a [`DispatchSettings`](crate::kernel::actor::dispatch_settings::DispatchSettings)
 /// defines also counts as configured for verification, because the

@@ -16,9 +16,11 @@
 
 // Stage 1 of #234 (issue #249): the speed measurement of design section 7.5.
 //
-// One ignored test measures S1 to S4 on the manual dispatcher
-// (ActorSystem::new, single thread): 200,000 messages per run, seven runs
-// per scenario, the median of the seven in nanoseconds per message. A
+// One ignored test measures S1 to S7 on the manual dispatcher
+// (ActorSystem::new, single thread): 200,000 messages per run (100,000 for
+// S7), seven runs per scenario, the median of the seven in nanoseconds per
+// message. S5 to S7 came with stage 3 (issue #252): messages from outside to
+// 100, 1,000 and 10,000 actors in turn. A
 // control loop that never touches the executor is measured the same way;
 // scripts/stage1-bench.sh runs this test alternately in two checkouts
 // (A, B, B, A, A, B, B, A), discards a pair whose control values drift by
@@ -152,6 +154,25 @@ fn bench_s4() -> f64 {
   median_ns_per_message(samples)
 }
 
+/// S5 to S7: `messages` from outside to `actors` actors in turn, then
+/// `run_until_idle`.
+fn bench_many(actors: usize, messages: usize) -> f64 {
+  let mut samples = Vec::new();
+  for _ in 0..RUNS {
+    let mut system = ActorSystem::new("Stage3BenchMany", Arc::new(ChannelBoundary::new()));
+    let targets: Vec<_> = (0..actors).map(|_| system.actor_of(Props::new(|| Noop))).collect();
+    let sender = system.dead_letters();
+    let started = Instant::now();
+    for index in 0..messages {
+      targets[index % actors].tell(1_u32, sender.clone());
+    }
+    system.run_until_idle();
+    samples.push(started.elapsed().as_nanos() as f64 / messages as f64);
+    system.terminate();
+  }
+  median_ns_per_message(samples)
+}
+
 fn bench_control() -> f64 {
   let mut samples = Vec::new();
   for _ in 0..RUNS {
@@ -168,10 +189,13 @@ fn bench_control() -> f64 {
 
 #[test]
 #[ignore = "speed measurement of design section 7.5; run it through scripts/stage1-bench.sh"]
-fn stage1_bench_s1_to_s4() {
+fn stage1_bench_s1_to_s7() {
   println!("BENCH CONTROL {:.3}", bench_control());
   println!("BENCH S1 {:.3}", bench_s1());
   println!("BENCH S2 {:.3}", bench_s2());
   println!("BENCH S3 {:.3}", bench_s3());
   println!("BENCH S4 {:.3}", bench_s4());
+  println!("BENCH S5 {:.3}", bench_many(100, MESSAGES));
+  println!("BENCH S6 {:.3}", bench_many(1_000, MESSAGES));
+  println!("BENCH S7 {:.3}", bench_many(10_000, MESSAGES / 2));
 }
