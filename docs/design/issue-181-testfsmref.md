@@ -71,12 +71,18 @@ impl<S: Clone, D: Clone> FsmHandle<S, D> {
   pub fn state_data(&self) -> Option<D>;
   pub fn is_timer_active(&self, name: &str) -> bool;
   pub fn is_state_timer_active(&self) -> bool;
+  /// 何もしない番号付きの制御メッセージ（番兵）を送り、その番号を返す。
+  pub fn send_sentinel(&self) -> u64;
+  /// ハンドルが持つ、処理を終えた制御メッセージの通し番号の最大値を返す。
+  pub fn processed_sequence(&self) -> u64;
 }
 ```
 
+`send_sentinel` と `processed_sequence` は、§3.1 の番兵と通し番号をテスト側から使う口である。テストは `let n = fsm.send_sentinel(); spec.await_cond(|| fsm.processed_sequence() >= n, max)` の形で待ってから読む。kernel 側の番兵の組み立てと処理済みの番号の読み取りは、ほかの読み取りの口と同じく feature `test-support` の下に置く。
+
 - ハンドルは、外から受け取って付ける形にする。`Fsm::attach_handle(&mut self, handle: FsmHandle<S, D>)` を足し、`D: Clone` の境界はこのメソッドにだけ付ける。`Fsm::new()` で作った通常の機械はハンドルを持たず、既存の利用者にコストと制約を足さない。
 - ハンドルは `TestFsmRef` が1つ作り、包んだ factory が機械を作るたびに複製を渡す（§3.3）。再起動で factory が呼ばれ直しても、同じハンドルが新しい個体に付き直す。
-- スナップショットは、次の時点で書く。(1) `attach_handle` の時点と `start_with` の時点で、その時点の開始状態を書く。`initialize()` を呼ばない機械（原典のケース1とケース2は呼ばない）でも、生成の直後から `state_name` が読める。(2) `make_transition` が `current` を置いたら、通知の有無によらず書く（`stay().using(d)` でデータだけが変わる場合を含む）。移る先に状態関数が無いときだけ書かない。(3) `pre_start` の中で、アクター自身の `self_ref` をハンドルへ書く。アクター自身から見た名前と親を、テスト側が後から確かめられるようにするためである。
+- スナップショットは、次の時点で書く。(1) `attach_handle` の時点と `start_with` の時点で、その時点の開始状態を書く。`initialize()` を呼ばない機械（原典のケース1とケース2は呼ばない）でも、生成の直後から `state_name` が読める。(2) `make_transition` が `current` を置いたら、通知の有無によらず書く（`stay().using(d)` でデータだけが変わる場合を含む）。移る先に状態関数が無いときだけ書かない。アクター自身から見た名前と親は、ハンドルではなく、テストの機械の状態関数が記録した `self_ref` で確かめる（§3.3）。
 - ハンドルは「処理を終えた制御メッセージの通し番号の最大値」を持つ。番号は `TestFsmRef` が送るときに振り、制御メッセージに載せて運ぶ。ハンドルは、処理した制御メッセージの番号で最大値を更新する。発火の印は番号を持たず、番号を進めない（印で進むと、繰り返しタイマのケースで、取り消しの処理より先に待ちが抜けてしまう）。番号は、再起動と、停止でスナップショットを空に戻す操作をまたいで保つ（ハンドルのうち、空に戻す対象はスナップショットとタイマの記録だけであり、番号とタイマの世代の数えは戻さない）。テストと性質ベーステストは、送った最後の番号まで進んだことを待ってから読む（値の一致で待つと、途中の状態が最後と同じ値の操作列で空振りするため）。
 - ハンドルが状態データの複製を返すため、`D: Clone` が要る。原典の `stateData` は参照を返すので、これは Rust 側の制約として API 文書に書く。`Clone` でないデータの機械は、ハンドル無しの通常の形で使う。
 - ハンドルの共有には、kernel の `Arc`（`kernel::sync` のもの。ポインタ幅の原子操作が無いターゲットでは `portable-atomic-util` から来る）と `spin::Mutex` を使う。
@@ -192,7 +198,7 @@ supervisor を指定する生成には、名前の拒否を `Result` で返す�
 
 既存の公開 API である `ActorContext::actor_of`（名前ありの子の生成で、`InvalidActorNameException` を返す）は、戻り値の型を変えない。内部の生成の経路は共有するが、設定の検証が誤りを返した場合に、その誤りを運ぶ型が `actor_of` には無いので、`actor_of` では panic する形にし、そのことを API 文書に書く。
 
-ケース3〜6が原典で確かめる `underlyingActor.supervisor` と `underlyingActor.name` は、原典ではアクターが構築時に `context.parent` と `context.self.path.name` を自分のフィールドへ記録したものである。移植では、本体を返さないので、`TestFsmRef` が生成時に決まった supervisor と名前を保持して返す。ただし、それだけをテストで引数と比べるのは、自分の入力を返すだけの同語反復になり、実際にその親の子としてその名前で作られたことを確かめていない。そこで、パスでの確認を必須にする。`actor_ref().path().parent()` が supervisor のパス（ケース3では `resolve_actor_ref` で解決した `/user` の guardian のパス）と等しいことと、`actor_ref().path()` の名前が指定の名前であることを、ケース3〜6のすべてで見る。加えて、`pre_start` でハンドルへ書かれた `self_ref`（アクター自身から見た参照）からも、同じ名前を確かめる。
+ケース3〜6が原典で確かめる `underlyingActor.supervisor` と `underlyingActor.name` は、原典ではアクターが構築時に `context.parent` と `context.self.path.name` を自分のフィールドへ記録したものである。移植では、本体を返さないので、`TestFsmRef` が生成時に決まった supervisor と名前を保持して返す。ただし、それだけをテストで引数と比べるのは、自分の入力を返すだけの同語反復になり、実際にその親の子としてその名前で作られたことを確かめていない。そこで、パスでの確認を必須にする。`actor_ref().path().parent()` が supervisor のパス（ケース3では `resolve_actor_ref` で解決した `/user` の guardian のパス）と等しいことと、`actor_ref().path()` の名前が指定の名前であることを、ケース3〜6のすべてで見る。加えて、テストの機械の状態関数がメッセージを受けたときに `context.self_ref()`（アクター自身から見た参照）を記録し、その path の親と名前も同じであることを確かめる。原典のアクターが `context.parent` と `context.self.path.name` を自分のフィールドへ記録する形と同じで、面は増やさない。
 
 ランダムな名前は、原典の `TestActorRef.randomName` と同じく、既存の名前と衝突しない生成名を使う。既存の生成名の仕組み（`actor_of` が採番する名前）に乗り、独自の採番は作らない。
 
@@ -371,3 +377,5 @@ supervisor を指定する生成には、名前の拒否を `Result` で返す�
 | 低3 | 直す | §3.1 の制御メッセージの一覧に番兵を足し、§8 の確認点を testkit 向けの面一式に揃えた（§3.1、§8） |
 
 採らないとした指摘は無い。
+
+テストの担当が足した面：`TestFsmRef::send_sentinel` と `TestFsmRef::processed_sequence`（kernel 側の番兵の組み立てと処理済みの番号の読み取りは feature `test-support` の下）。理由：§3.1・P1・I5 の番兵の待ちを書くため。
