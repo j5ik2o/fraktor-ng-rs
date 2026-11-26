@@ -16,6 +16,7 @@
 
 //! The mailbox of one actor.
 
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::mem;
@@ -76,7 +77,7 @@ pub(crate) struct Mailbox<C> {
   gate: LockCell<VecDeque<SystemMessage>>,
   queue: Arc<dyn MessageQueue>,
   shares_queue: bool,
-  cell: LockCell<Option<C>>,
+  cell: LockCell<Option<Box<C>>>,
   limits: RunLimits,
   executor: Weak<ManualExecutor<C>>,
 }
@@ -86,14 +87,14 @@ impl<C: MailboxCell> Mailbox<C> {
   /// a dispatcher. Closing the mailbox takes what the queue still holds.
   #[cfg(test)]
   pub(crate) fn new(cell: C, queue: Arc<dyn MessageQueue>, limits: RunLimits, locks: &dyn LockFactory) -> Self {
-    Self::with_queue(Some(cell), queue, false, limits, locks, Weak::new())
+    Self::with_queue(Some(Box::new(cell)), queue, false, limits, locks, Weak::new())
   }
 
   /// Creates the mailbox of `cell` for a balancing team that shares `queue`.
   /// Closing the mailbox leaves the queue to the rest of the team.
   #[cfg(test)]
   pub(crate) fn sharing(cell: C, queue: Arc<dyn MessageQueue>, limits: RunLimits, locks: &dyn LockFactory) -> Self {
-    Self::with_queue(Some(cell), queue, true, limits, locks, Weak::new())
+    Self::with_queue(Some(Box::new(cell)), queue, true, limits, locks, Weak::new())
   }
 
   /// Creates the mailbox of an actor that `executor` runs, with a queue of its
@@ -108,7 +109,7 @@ impl<C: MailboxCell> Mailbox<C> {
   }
 
   fn with_queue(
-    cell: Option<C>,
+    cell: Option<Box<C>>,
     queue: Arc<dyn MessageQueue>,
     shares_queue: bool,
     limits: RunLimits,
@@ -353,15 +354,16 @@ impl<C: MailboxCell> Mailbox<C> {
     self.has_queued_system_messages()
   }
 
-  /// Takes the actor out for a run. Panics when it is not there: another
+  /// Takes the actor out for a run. The actor sits in a box, so a run moves
+  /// a pointer, not the actor. Panics when it is not there: another
   /// thread is running the same actor, which breaks invariant I1.
-  pub(crate) fn take_cell(&self) -> C {
+  pub(crate) fn take_cell(&self) -> Box<C> {
     self.try_take_cell().expect("two runs of one mailbox at once (invariant I1)")
   }
 
   /// Takes the actor out, or returns `None` while a run or the executor has
   /// it out, or before it has been built.
-  pub(crate) fn try_take_cell(&self) -> Option<C> {
+  pub(crate) fn try_take_cell(&self) -> Option<Box<C>> {
     self.cell.with(Option::take)
   }
 
@@ -373,18 +375,18 @@ impl<C: MailboxCell> Mailbox<C> {
   /// Reads the actor in its slot, or returns `None` when it is out. `read`
   /// runs inside the slot's lock and must not run user code (invariant I16).
   pub(crate) fn with_cell<R>(&self, read: impl FnOnce(&C) -> R) -> Option<R> {
-    self.cell.with(|slot| slot.as_ref().map(read))
+    self.cell.with(|slot| slot.as_deref().map(read))
   }
 
   /// Changes the actor in its slot, or returns `None` when it is out.
   /// `change` runs inside the slot's lock and must not run user code
   /// (invariant I16).
   pub(crate) fn with_cell_mut<R>(&self, change: impl FnOnce(&mut C) -> R) -> Option<R> {
-    self.cell.with(|slot| slot.as_mut().map(change))
+    self.cell.with(|slot| slot.as_deref_mut().map(change))
   }
 
   /// Puts the actor back after a run, before the scheduled bit is cleared.
-  pub(crate) fn put_back_cell(&self, cell: C) {
+  pub(crate) fn put_back_cell(&self, cell: Box<C>) {
     let previous = self.cell.with(|slot| slot.replace(cell));
     debug_assert!(previous.is_none(), "the cell was put back twice");
     drop(previous);

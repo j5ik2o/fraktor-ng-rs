@@ -16,6 +16,9 @@
 
 //! The standard library's wake signal: a flag behind a mutex and a condvar.
 
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -31,11 +34,16 @@ mod tests;
 /// A [`WakeSignal`] a waiting thread sleeps on with a condvar.
 ///
 /// The flag stays raised until a wait takes it, so a `notify` before the
-/// wait is not lost. A poisoned lock still yields its flag: a panic while
-/// notifying must not keep a waiter asleep.
+/// wait is not lost. A `notify` with no thread waiting only raises the flag:
+/// it takes the lock and wakes the condvar only for a waiter, so the system
+/// that raises it for every new piece of work does not pay for a wakeup no
+/// one waits for. A poisoned lock still serves: a panic while notifying must
+/// not keep a waiter asleep.
 #[derive(Debug, Default)]
 pub struct CondvarSignal {
-  raised: Mutex<bool>,
+  raised: AtomicBool,
+  waiters: AtomicUsize,
+  sleep: Mutex<()>,
   wakeup: Condvar,
 }
 
@@ -45,31 +53,41 @@ impl CondvarSignal {
     Self::default()
   }
 
-  fn lock(&self) -> MutexGuard<'_, bool> {
-    self.raised.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+  fn lock(&self) -> MutexGuard<'_, ()> {
+    self.sleep.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
   }
 }
 
 impl WakeSignal for CondvarSignal {
   fn notify(&self) {
-    *self.lock() = true;
-    self.wakeup.notify_all();
+    // Sequentially consistent with the waiter's two steps: either this sees
+    // the waiter, or the waiter sees the flag.
+    self.raised.store(true, Ordering::SeqCst);
+    if self.waiters.load(Ordering::SeqCst) > 0 {
+      let _sleep = self.lock();
+      self.wakeup.notify_all();
+    }
   }
 
   fn wait(&self, max: Duration) -> bool {
     let deadline = Instant::now() + max;
-    let mut raised = self.lock();
-    while !*raised {
+    self.waiters.fetch_add(1, Ordering::SeqCst);
+    let mut sleep = self.lock();
+    let raised = loop {
+      if self.raised.swap(false, Ordering::SeqCst) {
+        break true;
+      }
       let left = deadline.saturating_duration_since(Instant::now());
       if left.is_zero() {
-        return false;
+        break false;
       }
-      raised = match self.wakeup.wait_timeout(raised, left) {
+      sleep = match self.wakeup.wait_timeout(sleep, left) {
         | Ok((guard, _)) => guard,
         | Err(poisoned) => poisoned.into_inner().0,
       };
-    }
-    *raised = false;
-    true
+    };
+    drop(sleep);
+    self.waiters.fetch_sub(1, Ordering::SeqCst);
+    raised
   }
 }

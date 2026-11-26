@@ -385,12 +385,12 @@ impl Executor {
   }
 
   /// Takes the cell of `target` out of its mailbox, when it is there.
-  fn take_cell(&self, target: &ActorRef) -> Option<ActorCell> {
+  fn take_cell(&self, target: &ActorRef) -> Option<Box<ActorCell>> {
     self.entry(target)?.mailbox.try_take_cell()
   }
 
   /// Puts a cell the executor took out back into its mailbox.
-  fn put_cell(&self, cell: ActorCell) {
+  fn put_cell(&self, cell: Box<ActorCell>) {
     let entry = self.actors.get(&cell.key()).expect("an actor keeps its entry until it stops");
     entry.mailbox.put_back_cell(cell);
   }
@@ -901,7 +901,7 @@ impl Executor {
     let mailbox = Arc::new(Mailbox::for_actor(queue, limits, &SpinLockFactory, Arc::downgrade(&self.manual)));
     let self_ref = ActorRef::for_mailbox(next_actor_id(), Arc::new(path), Arc::clone(&mailbox));
     let cell = ActorCell::pending(self_ref.clone(), parent, props, strategy, strategy_inherited);
-    mailbox.put_back_cell(cell);
+    mailbox.put_back_cell(Box::new(cell));
     let entry = ActorEntry {
       self_ref: self_ref.clone(),
       mailbox,
@@ -2385,7 +2385,7 @@ impl Executor {
   /// other failure entry passes `None`.
   fn apply_failure(
     &mut self,
-    mut cell: ActorCell,
+    mut cell: Box<ActorCell>,
     target: &ActorRef,
     cause_name: &str,
     message: &str,
@@ -2642,7 +2642,7 @@ impl Executor {
   fn restart_cell(
     &mut self,
     target: &ActorRef,
-    mut cell: ActorCell,
+    mut cell: Box<ActorCell>,
     failure: FailureKind,
     cause_name: &str,
     message: &str,

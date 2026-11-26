@@ -16,6 +16,8 @@
 
 //! One run of a mailbox: the work the kernel hands to the adaptor.
 
+use alloc::boxed::Box;
+
 use crate::kernel::dispatch::Mailbox;
 use crate::kernel::dispatch::MailboxCell;
 use crate::kernel::dispatch::RunOutcome;
@@ -98,7 +100,7 @@ impl<C: MailboxCell> MailboxRun<C> {
 // behind a lowered flag.
 struct RunGuard<'a, C: MailboxCell> {
   mailbox: &'a Arc<Mailbox<C>>,
-  cell: Option<C>,
+  cell: Option<Box<C>>,
   finished: bool,
 }
 

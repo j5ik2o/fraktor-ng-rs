@@ -81,7 +81,7 @@ impl Fixture {
     let limits = RunLimits::new(Throughput::new(5));
     let mailbox = Arc::new(Mailbox::for_actor(queue, limits, &SpinLockFactory, Arc::downgrade(&executor)));
     let seen = Arc::new(Mutex::new(Vec::new()));
-    mailbox.put_back_cell(Fragile { seen: Arc::clone(&seen) });
+    mailbox.put_back_cell(std::boxed::Box::new(Fragile { seen: Arc::clone(&seen) }));
     Self { executor, mailbox, seen }
   }
 

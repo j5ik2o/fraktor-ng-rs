@@ -1,6 +1,7 @@
 #!/bin/bash
-# The alternating speed measurement of design section 7.5 for stage 1 of
-# #234 (issue #249): runs the ignored bench test of
+# The alternating speed measurement of design section 7.5 for #234, from
+# stage 1 (issue #249; S5 to S7 from stage 3, issue #252): runs the ignored
+# bench test of
 # crates/fraktor-actor/tests/actor_system_send_stage1_bench.rs in the
 # checkouts given as arguments, in the order A, B, B, A, A, B, B, A.
 #
@@ -89,7 +90,7 @@ pairs = [(0, 1), (2, 3), (4, 5), (6, 7)]
 valid = 0
 for a in range(1, attempts + 1):
     runs = [parse(work / f"a{a}_run{i}.txt") for i in range(8)]
-    if any(set(r) != {"CONTROL", "S1", "S2", "S3", "S4"} for r in runs):
+    if any(set(r) != {"CONTROL", "S1", "S2", "S3", "S4", "S5", "S6", "S7"} for r in runs):
         continue
     for i, j in pairs:
         a_idx, b_idx = (i, j) if labels[i] == "A" else (j, i)
@@ -115,7 +116,7 @@ def parse(path):
         parts = line.split()
         if len(parts) == 3 and parts[0] == "BENCH":
             values[parts[1]] = float(parts[2])
-    missing = {"CONTROL", "S1", "S2", "S3", "S4"} - set(values)
+    missing = {"CONTROL", "S1", "S2", "S3", "S4", "S5", "S6", "S7"} - set(values)
     if missing:
         raise SystemExit(f"bench output in {path.name} lacks {sorted(missing)}; the run is not usable")
     return values
@@ -145,7 +146,7 @@ if len(adopted) < 4:
 
 a0 = {k: statistics.median([r[k] for r in a0_runs]) for k in a0_runs[0]} if a0_runs else None
 print(f"{'scenario':<9} {'B/A':>7} {'B/A0':>7}  A/A pair ratios")
-for s in ["S1", "S2", "S3", "S4"]:
+for s in ["S1", "S2", "S3", "S4", "S5", "S6", "S7"]:
     ratios = [b[s] / a[s] for a, b in adopted]
     aa = [adopted[k + 1][0][s] / adopted[k][0][s] for k in range(len(adopted) - 1)]
     b_med = statistics.median([b[s] for _, b in adopted])
