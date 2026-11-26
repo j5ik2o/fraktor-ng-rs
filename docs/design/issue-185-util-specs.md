@@ -26,7 +26,7 @@ DurationSpec の4件目の「check its range」は、原典でブロックコメ
 | ByteStringInitializationSpec「not get confused by initializing CompactByteString before ByteString」 | **作らない区分を提案する**（§7） | 原典は、専用のクラスローダで Pekko のクラス群を読み直し、`CompactByteString.empty` を先に触ってから `ByteString.empty` を触り、クラスの静的初期化の順序で壊れないことを確かめる。Rust にはクラスローダも静的初期化も無く、fraktor-actor には `CompactByteString` という型自体が無い（`ByteString` が Pekko の3表現を1つの型で担う。§2）。検証する仕組みが存在しないため、等価なテストは書けない |
 | AsciiStringCopySpec「select working algorithm」 | **作らない区分を提案する**（§7） | 原典は、`org.apache.pekko.util.Unsafe`（Java）の2つのアルゴリズム（`String.getBytes(US_ASCII)` を使う方式0と、`VarHandle` で `String.value` の `byte[]` を直接読む方式1）がどちらも動くことを確かめる。JDK の `String` の内部表現に依存する探りであり、Rust の `str` は UTF-8 で `as_bytes()` が内部のバイト列そのものを返すため、アルゴリズムの選択自体が無い |
 | AsciiStringCopySpec「copy string internal representation successfully」 | **作らない区分を提案する**（§7）。却下された場合の移し先は `crates/fraktor-actor/tests/ascii_string_copy_spec.rs` の `copy_us_ascii_str_to_bytes_copies_the_ascii_bytes` | 原典の観測できる振る舞い（US-ASCII 文字列のバイト列が宛先の配列へそのまま写り、US-ASCII として読み戻すと元の文字列に等しい）は、`str::as_bytes()` と `copy_from_slice` で満たせる。ただしその形のテストが確かめるのは Rust 標準ライブラリであり、fraktor-actor のコードは通らない。`Unsafe.copyUSAsciiStrToBytes` の利用者は Pekko の remote（artery の `EnvelopeBufferPool`）だけであり、fraktor-actor に対応する利用者はいない。この最適化のためだけに公開 API を新しく足すことはしない |
-| AsciiStringCopySpec「hash strings successfully」 | **作らない区分を提案する**（§7） | 原典は `Unsafe.fastHash("abcdefghijklmnopqrstuvxyz")` を呼ぶだけで、戻り値への検査は無い。確かめているのは「JDK の内部表現を読む分岐で落ちないこと」であり、Rust にはその分岐が無い。`fastHash` 自体（xorshift128+、初期状態 `s0 = 391408`、`s1 = 601258`、戻り値は `(int)(s0 + s1)`）の利用者は remote のキャッシュ（`ActorRefResolveCache`、`LruBoundedCache`）であり、fraktor には未移植である。remote のキャッシュを移植するときに JVM と一致するハッシュが必要になる点は、§7 の提案理由に残す |
+| AsciiStringCopySpec「hash strings successfully」 | **作らない区分を提案する**（§7） | 原典は `Unsafe.fastHash("abcdefghijklmnopqrstuvxyz")` を呼ぶだけで、戻り値への検査は無い。確かめているのは「JDK の内部表現を読む分岐で落ちないこと」であり、Rust にはその分岐が無い。`fastHash` 自体（xorshift128+、初期状態 `s0 = 391408`、`s1 = 601258`、戻り値は `(int)(s0 + s1)`）の利用者は remote のキャッシュ（`ActorRefResolveCache`、`LruBoundedCache`）であり、fraktor には未移植である。JVM と同じ値が要るのは、ハッシュで決まる順序を見る remote の Spec を移すときだけであり、その点は §7 の提案理由に残す |
 | DurationSpec「form a one-dimensional vector field」 | `crates/fraktor-actor/tests/duration_spec.rs` の `duration_forms_a_one_dimensional_vector_field` へ移す | `core::time::Duration` は fraktor-actor の kernel 全体が使う時間の型であり（`Timeout` が包み、`Clock` の port が返す）、その加減乗除の契約は fraktor の契約である。原典の演算はすべて `core::time::Duration` の演算で表せる（§2） |
 | DurationSpec「respect correct treatment of infinities」 | **除外を提案する**（§7、承認待ち） | `Duration.Inf`、`Duration.MinusInf`、`Duration.Undefined` とその代数（`MinusInf + Inf = Undefined` など）を検証する。`core::time::Duration` には無限と未定義の値が無く、fraktor のコードは「上限が無い」ことを、使う場所ごとの型で表している（`RestartWindow::duration()` の `Option<Duration>`、adaptor の ask の期限の `AskDeadline::BeyondClockRange` と `AskDeadline::Unspecified`）。今の fraktor-actor には、無限の代数を必要とする利用者はいない。等価には書けないため、作らない区分ではなく除外として提案する |
 | DurationSpec「support fromNow」 | `crates/fraktor-actor/tests/duration_spec.rs` の `duration_from_now_time_left_decreases_when_a_manual_clock_advances` へ移す（適応あり） | 原典は `2.seconds.fromNow` が作る `Deadline` について、直後は残りが1秒より大きく、1秒眠った後は残りが1秒より小さいことを確かめる。issue #185 の注意は「原典は Thread.sleep を使う。実時間に頼らず決定的に検証する（待ちを弱めない）」であり、前例（#117、#119）も手動の時計を使う形である。移植は、公開の `fraktor_actor::kernel::Clock`（`monotonic() -> Duration`）を実装した手動の時計をテストの中に置き、期限を `clock.monotonic() + 2秒`、残りを `deadline.saturating_sub(clock.monotonic())` で求める。実時間では眠らない。適応は §2 に書く。原典は `2.seconds.fromNow` と `2.seconds(fromNow)` の2つの書き方で同じ値を作っているが、これは Scala の DSL の書き方が2つあるだけであり、Rust では1つの作り方になる |
@@ -39,7 +39,7 @@ DurationSpec は原典で `PekkoSpec` を継承し、台帳の `needs` に `exte
 |:---|:---|:---|
 | `org.apache.pekko.util.ByteString` と `CompactByteString` | `crates/fraktor-actor/src/kernel/byte_string/byte_string_value.rs` の `ByteString` がすでにある。`ByteString::empty() -> Self`、`from_string(&str) -> Self`、`from_array(&[u8], usize, usize) -> Self`、`from_ints(&[i32]) -> Self`、`concat(&self, &ByteString) -> Self` などを持つ。型の文書に書かれているとおり、Pekko の `ByteString1C`、`ByteString1`、`ByteStrings` の3表現を、共有するバイト配列の列で1つの型が担う。`CompactByteString` に当たる型は無い | 無し |
 | `org.apache.pekko.util.Unsafe`（Java、`@InternalApi`） | 対応する型も関数も無い。US-ASCII への変換は `ByteString::from_string` が UTF-8 の `as_bytes()` で行っており、US-ASCII 専用の写し関数の利用者は crate の中にいない | 無し |
-| `scala.concurrent.duration.Duration`、`FiniteDuration`、`Deadline` | Pekko のコードではなく Scala 標準ライブラリである。fraktor-actor は `core::time::Duration` を時間の型として使い、`crates/fraktor-actor/src/kernel/timeout/timeout_value.rs` の `Timeout { duration: Duration }`（`Timeout::new(Duration)`、`duration() -> Duration`）が Pekko の `Timeout` に対応する。単調時刻は kernel の `Clock` の port（`monotonic() -> Duration`）が担い、adaptor の `SystemClock` が実装する。テストでは手動の時計が同じ port を実装する（`frequency_list_spec.rs`、`recency_list_spec.rs`、`restart_strategy_spec.rs` の `TestClock` と `ControlledClock` が前例である）。`Deadline` に当たる公開型は無い | 無し |
+| `scala.concurrent.duration.Duration`、`FiniteDuration`、`Deadline` | Pekko のコードではなく Scala 標準ライブラリである。fraktor-actor は `core::time::Duration` を時間の型として使い、`crates/fraktor-actor/src/kernel/timeout/timeout_value.rs` の `Timeout { duration: Duration }`（`Timeout::new(Duration)`、`duration() -> Duration`）が Pekko の `Timeout` に対応する。単調時刻は kernel の `Clock` の port（`monotonic() -> Duration`）が担い、adaptor の `SystemClock` が実装する。テストでは手動の時計が同じ port を実装する（`frequency_list_spec.rs`、`recency_list_spec.rs`、`restart_strategy_spec.rs` の `TestClock` と `ControlledClock` が前例である）。ただし前例の時計は時刻を秒（`TestClock`）かミリ秒（`ControlledClock`）で持ち、1ナノ秒を表せない。この移植の手動の時計は、時刻をナノ秒で持つ（`AtomicU64` にナノ秒を入れ、`Duration::from_nanos` で返す）。「1秒 + 1ナノ秒」進める適応は、この形でなければ書けない。`Deadline` に当たる公開型は無い | 無し |
 
 移植する DurationSpec の2件が使う演算と、`core::time::Duration` の対応は次のとおりである。どれも既存の演算であり、新しい公開 API は要らない。
 
@@ -89,7 +89,7 @@ DurationSpec は原典で `PekkoSpec` を継承し、台帳の `needs` に `exte
 | P3 | 任意の `Duration` について、`d + ZERO = d`、`d - ZERO = d`、`d.div_duration_f64(d) = 1.0`（`d` が0でないとき）である。0でないどの `d` でもこの等式は成り立つ（実測で違いは0件だった）。`(2 * d).div_duration_f64(d) = 2.0` は、`2 * d` の総ナノ秒が 2^53 以下の入力に限って確かめる（I3 の反例が示すとおり、その範囲の外では成り立たない） | I3 |
 | P4 | P1〜P3 が外した入力の中でも守る性質を確かめる。`ZERO.div_duration_f64(ZERO)` は NaN である（実測）。`a.checked_add(b)` が `None` になるのは、`b > Duration::MAX - a` のときに限る（同値である）。`d.checked_mul(n)` が `None` のとき、`d.saturating_mul(n) = Duration::MAX` である | I3 |
 
-入力の作り方も決めておく。一様な `u64` の秒数だけでは、P2 の `checked_mul` がほとんど失敗し、有効な試行が少ないまま性質が通ったように見える。入力は、境界の値（`ZERO`、`Duration::MAX`、ナノ秒が `999_999_999` の値、ナノ秒の繰り上がりが起きる値）、小さな値、大きな値を混ぜて作る。検査は、有効な試行（`checked_*` が成功した試行）の数が下限（全試行の半分）を下回ったら失敗させる。
+入力の作り方も決めておく。一様な `u64` の秒数だけでは、P2 の `checked_mul` がほとんど失敗し、有効な試行が少ないまま性質が通ったように見える。入力は、境界の値（`ZERO`、`Duration::MAX`、ナノ秒が `999_999_999` の値、ナノ秒の繰り上がりが起きる値）、小さな値、大きな値を混ぜて作る。有効な試行（`checked_*` が成功した試行）の数の下限は、性質ごとに決める。分布の作り方によっては、性質が正しくても一律の下限で落ちうるためである。P1 は、入力を小さな値と中くらいの値に寄せ、下限を全試行の半分とする。P2 は、係数を小さい範囲（0から16）から多めに取り、下限を全試行の4分の3とする。P3 と P4 は、外す入力が無いか、外した入力自体を確かめる性質なので、全試行が有効であり、下限は全試行数そのものとする。
 
 ByteString の初期化と Ascii の写しには PBT を足さない。どちらも作らない区分の提案であり、代替例は固定の小さな例で足りる。`fromNow` の性質（I4）は、手動の時計を進める量だけが入力であり、固定の手順（読む、1秒 + 1ナノ秒進める、読む）で足りるため、PBT の対象にしない。
 
@@ -168,3 +168,13 @@ Quint は要らない。3つの Spec はどれも状態遷移を持たず（純�
 | L6 | ByteStringInitializationSpec を作らない区分にする理由が、条件 (1) と合っていない | **直した。** 理由に「`ByteString::empty()` は static も遅延初期化も持たず、`Vec::new()` だけである。初期化の順序に当たるものが無い」を足し、条件 (1) と (2) と但し書きのすべてに答える形にした（§7） |
 
 2つの提案へのレビューの推奨には、どちらも従う。作らない区分の4件は、ハッシュの1件に代替例を足したうえで、3件とあわせて認める推奨であり、無限のケースの除外は、kernel に型を足さない形で認める推奨である。最終的な承認は上司が取るため、§7 の提案は「承認待ち」のままにする。採らなかった指摘は無い。
+
+## 12. 再レビュー（PR #228）への回答
+
+再レビューは判定が「承認（実装に入ってよい）」であり、低い指摘が3件だけ残った。どれも第2段の実装と一緒に直した。
+
+| 番号 | 指摘 | 回答 |
+|:---|:---|:---|
+| N1 | 前例の時計は秒かミリ秒で時刻を持ち、1ナノ秒を表せない | **直した。** 手動の時計は時刻をナノ秒で持つ（`AtomicU64` と `Duration::from_nanos`）と §2 に書いた。実装の時計もその形である |
+| N2 | §1 のハッシュの行に「JVM と一致するハッシュが必要」が残り、§7 と食い違う | **直した。** §1 の文を §7 に揃え、「JVM と同じ値が要るのは、ハッシュで決まる順序を見る remote の Spec を移すときだけ」とした |
+| N3 | 有効な試行の下限（全試行の半分）は、性質が正しくても分布によって落ちうる | **直した。** 下限を性質ごとに決める形にし、P1 は全試行の半分、P2 は係数を小さい範囲から多めに取って全試行の4分の3、P3 と P4 は全試行数そのもの、と §5 に書いた。実装もそのとおりである |
