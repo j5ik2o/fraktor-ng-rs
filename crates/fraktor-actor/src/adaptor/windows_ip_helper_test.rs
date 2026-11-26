@@ -61,7 +61,7 @@ fn dns_server(sockaddr: *mut SOCKADDR, length: usize) -> IP_ADAPTER_DNS_SERVER_A
 #[test]
 fn an_ipv4_socket_address_is_read_in_network_byte_order() {
   let mut sockaddr = ipv4([192, 0, 2, 1], 53);
-  let read = unsafe { socket_address(ptr::from_mut(&mut sockaddr).cast()) };
+  let read = unsafe { socket_address(ptr::from_mut(&mut sockaddr).cast(), size_of::<SOCKADDR_IN>()) };
   assert_eq!(read, Some(addr("192.0.2.1:53")));
 }
 
@@ -69,7 +69,7 @@ fn an_ipv4_socket_address_is_read_in_network_byte_order() {
 #[test]
 fn an_ipv6_socket_address_keeps_its_port_and_scope_id() {
   let mut sockaddr = ipv6("fe80::1", 5353, 7);
-  let read = unsafe { socket_address(ptr::from_mut(&mut sockaddr).cast()) };
+  let read = unsafe { socket_address(ptr::from_mut(&mut sockaddr).cast(), size_of::<SOCKADDR_IN6>()) };
   let SocketAddr::V6(read) = read.expect("an IPv6 address") else {
     panic!("not an IPv6 address");
   };
@@ -82,8 +82,29 @@ fn an_ipv6_socket_address_keeps_its_port_and_scope_id() {
 #[test]
 fn another_family_or_no_address_is_none() {
   let mut sockaddr = SOCKADDR { sa_family: AF_UNSPEC, ..Default::default() };
-  assert_eq!(unsafe { socket_address(ptr::from_mut(&mut sockaddr)) }, None);
-  assert_eq!(unsafe { socket_address(ptr::null()) }, None);
+  assert_eq!(unsafe { socket_address(ptr::from_mut(&mut sockaddr), size_of::<SOCKADDR>()) }, None);
+  assert_eq!(unsafe { socket_address(ptr::null(), size_of::<SOCKADDR>()) }, None);
+  assert_eq!(unsafe { socket_address(ptr::null(), 0) }, None);
+}
+
+// A reported length shorter than the family's socket address is skipped,
+// for a length of 0, a length one byte short, and a length that would fit
+// the other family but not this one. The exact length is read.
+#[test]
+fn a_socket_address_whose_reported_length_is_too_short_is_none() {
+  let mut v4 = ipv4([192, 0, 2, 1], 53);
+  let v4_ptr = ptr::from_mut(&mut v4).cast::<SOCKADDR>();
+  assert_eq!(unsafe { socket_address(v4_ptr, 0) }, None);
+  assert_eq!(unsafe { socket_address(v4_ptr, 1) }, None);
+  assert_eq!(unsafe { socket_address(v4_ptr, size_of::<SOCKADDR_IN>() - 1) }, None);
+  assert_eq!(unsafe { socket_address(v4_ptr, size_of::<SOCKADDR_IN>()) }, Some(addr("192.0.2.1:53")));
+
+  let mut v6 = ipv6("2001:db8::1", 53, 0);
+  let v6_ptr = ptr::from_mut(&mut v6).cast::<SOCKADDR>();
+  assert_eq!(unsafe { socket_address(v6_ptr, 0) }, None);
+  assert_eq!(unsafe { socket_address(v6_ptr, size_of::<SOCKADDR_IN>()) }, None);
+  assert_eq!(unsafe { socket_address(v6_ptr, size_of::<SOCKADDR_IN6>() - 1) }, None);
+  assert_eq!(unsafe { socket_address(v6_ptr, size_of::<SOCKADDR_IN6>()) }, Some(addr("[2001:db8::1]:53")));
 }
 
 // The adapter list and each DNS server list are read in order, with each
@@ -117,6 +138,25 @@ fn the_adapter_list_is_read_in_order() {
       WindowsAdapter::new(false, vec![addr("192.0.2.2:0")]),
     ]
   );
+}
+
+// The list walk passes each node's reported length on: a node whose
+// reported length is too short is skipped, and the walk goes on to the
+// next node.
+#[test]
+fn a_dns_server_whose_reported_length_is_too_short_is_skipped_in_the_list() {
+  let mut short_v4 = ipv4([192, 0, 2, 1], 0);
+  let mut valid_v4 = ipv4([192, 0, 2, 2], 0);
+  let mut valid_node = dns_server(ptr::from_mut(&mut valid_v4).cast(), size_of::<SOCKADDR_IN>());
+  let mut short_node = dns_server(ptr::from_mut(&mut short_v4).cast(), size_of::<SOCKADDR_IN>() - 1);
+  short_node.Next = ptr::from_mut(&mut valid_node);
+  let first = IP_ADAPTER_ADDRESSES_LH {
+    OperStatus: IfOperStatusUp,
+    FirstDnsServerAddress: ptr::from_mut(&mut short_node),
+    ..Default::default()
+  };
+
+  assert_eq!(unsafe { adapters(ptr::from_ref(&first)) }, vec![WindowsAdapter::new(true, vec![addr("192.0.2.2:0")])]);
 }
 
 #[test]
