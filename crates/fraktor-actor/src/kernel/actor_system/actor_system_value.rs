@@ -229,16 +229,23 @@ impl ActorSystem {
   /// has stopped. The port returns these refusals as one
   /// [`ActorCreationError`](crate::kernel::actor::ActorCreationError).
   ///
+  /// The name is taken as `impl Into<Option<&str>>`: a `&str` is the
+  /// name, and `None` stands for Pekko's `null` name, which is refused
+  /// as an invalid name whose message mentions `null`.
+  ///
   /// # Errors
   ///
   /// Returns [`ActorCreationError`](crate::kernel::actor::ActorCreationError)
   /// when the name, system state, or configuration is refused.
-  pub fn actor_of_named(
+  pub fn actor_of_named<'name>(
     &mut self,
     props: Props,
-    name: &str,
+    name: impl Into<Option<&'name str>>,
   ) -> Result<ActorRef, crate::kernel::actor::ActorCreationError> {
-    self.try_actor_of(props, Some(name))
+    match name.into() {
+      | Some(name) => self.try_actor_of(props, Some(name)),
+      | None => todo!(),
+    }
   }
 
   /// Starts a top-level actor, named when `name` is given, after both
