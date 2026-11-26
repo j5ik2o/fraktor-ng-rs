@@ -364,7 +364,8 @@ impl Executor {
         if let Some(bus) = bus.as_ref() {
           bus.publish(info.clone());
         }
-        if let Some(current) = sink.lock().clone() {
+        let current = sink.lock().clone();
+        if let Some(current) = current {
           current.publish(&info);
         }
       }
@@ -1924,7 +1925,8 @@ impl Executor {
     if let Some(stream) = self.event_stream.as_ref() {
       stream.publish(event.clone());
     }
-    if let Some(sink) = self.event_sink.lock().clone() {
+    let sink = self.event_sink.lock().clone();
+    if let Some(sink) = sink {
       sink.publish(&event);
     }
   }
@@ -1942,7 +1944,8 @@ impl Executor {
     if let Some(stream) = self.event_stream.as_ref() {
       stream.publish(unhandled);
     }
-    if let Some(sink) = self.event_sink.lock().clone() {
+    let sink = self.event_sink.lock().clone();
+    if let Some(sink) = sink {
       let source = recipient.path().to_string();
       let text = alloc::format!("unhandled message from {}: {:?}", sender.path(), message);
       sink.publish(&Warning::new(source, ACTOR_LOG_CLASS, &text));
