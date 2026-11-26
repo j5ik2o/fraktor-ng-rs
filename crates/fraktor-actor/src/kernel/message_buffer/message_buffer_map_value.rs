@@ -29,8 +29,7 @@ use super::MessageBuffer;
 /// through. Ids iterate in sorted order, where the original's hash map order
 /// is unspecified. The original's `drop` method, which reports a buffer's
 /// contents to dead letters, is not ported: it needs the actor system's dead
-/// letters, which this kernel type does not have (see the design document
-/// for #187, section 2.3).
+/// letters, which this kernel type does not have.
 #[derive(Debug, Clone)]
 pub struct MessageBufferMap<I, M, S> {
   buffers: BTreeMap<I, MessageBuffer<M, S>>,

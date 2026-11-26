@@ -42,7 +42,7 @@ pub trait ExtensionId: Any + Send + Sync {
   /// keeps the `Throwable` a creation raised. The system is handed over
   /// as `&mut`, so a creation may itself start actors (including named
   /// top-level actors through
-  /// [`ActorSystem::actor_of_with_name`]) and register other extensions.
+  /// [`ActorSystem::actor_of_named`]) and register other extensions.
   ///
   /// Requesting this same id again from inside the creation fails with
   /// an in-progress error instead of recursing. If the creation panics,

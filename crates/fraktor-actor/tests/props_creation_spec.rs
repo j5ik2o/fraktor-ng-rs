@@ -45,8 +45,13 @@
 //   which `actorOf` verifies on the spot that the Props arguments and the
 //   creator can be serialized, and the runtime constructor lookup is part of
 //   cases 2 to 5. Both are specific to the JVM, so the port does not carry
-//   them. Whether that omission is accepted is awaiting the owner's decision
-//   (marshal's item 441, question 2); nothing here records it as approved.
+//   them. The owner approved that omission on 2026-11-26 (marshal's item
+//   441, question 2); the ledger records the approval with a note for each
+//   case, and the five cases stay in the count.
+// - A further test below observes the design's property I8 from the
+//   creator's side: the creator records the argument it captured at the
+//   moment it is called, and the test checks that the creator's record
+//   and the actor's own record agree entry for entry.
 
 use std::sync::{Arc, Mutex};
 
@@ -135,6 +140,42 @@ impl OneParamActorCreator {
   }
 }
 
+/// Builds the recipe of a `OneParamActor` whose creator records the
+/// argument it captured into `creator_log` at the moment it is called,
+/// then builds the actor from a clone of that same captured value. The
+/// actor records what it was built with into `actor_log` from
+/// `pre_start`, so a test can compare the creator's record with the
+/// actor's record.
+fn one_param_props_recording_captured(
+  captured: Option<A>,
+  creator_log: &Arc<Mutex<Vec<Observed>>>,
+  actor_log: &Arc<Mutex<Vec<Observed>>>,
+) -> Props {
+  let creator_log = Arc::clone(creator_log);
+  let actor_log = Arc::clone(actor_log);
+  Props::new(move || {
+    creator_log.lock().expect("observation log").push(Observed::One(captured.is_some()));
+    OneParamActor::new(captured.clone(), Arc::clone(&actor_log))
+  })
+}
+
+/// The two-argument counterpart of `one_param_props_recording_captured`:
+/// the creator records both captured arguments when it is called.
+fn two_param_props_recording_captured(
+  first: Option<A>,
+  second: Option<B>,
+  creator_log: &Arc<Mutex<Vec<Observed>>>,
+  actor_log: &Arc<Mutex<Vec<Observed>>>,
+) -> Props {
+  let creator_log = Arc::clone(creator_log);
+  let actor_log = Arc::clone(actor_log);
+  Props::new(move || {
+    let observed = Observed::Two(first.is_some(), second.is_some());
+    creator_log.lock().expect("observation log").push(observed);
+    TwoParamActor::new(first.clone(), second.clone(), Arc::clone(&actor_log))
+  })
+}
+
 fn new_system() -> ActorSystem {
   ActorSystem::new("props-creation", Arc::new(ChannelBoundary::new()))
 }
@@ -218,5 +259,39 @@ fn props_work_with_create_class_and_creator() {
   system.run_until_idle();
 
   assert_eq!(observed(&log), vec![Observed::One(false)]);
+  system.terminate();
+}
+
+// Property I8 of the design (docs/design/issue-193-specs.md), observed from
+// the creator's side. The five cases above observe the argument from the
+// actor's `pre_start`. This test observes the value the creator itself
+// captured, recorded at the moment the creator is called, and checks that
+// the creator's record and the actor's record agree entry for entry: the
+// argument the creator held is the argument the actor was built with, for
+// a present argument and for `None` alike.
+#[test]
+fn creator_captured_arguments_agree_with_the_actors_records() {
+  let creator_log = Arc::new(Mutex::new(Vec::new()));
+  let actor_log = Arc::new(Mutex::new(Vec::new()));
+  let mut system = new_system();
+
+  let _one = system.actor_of(one_param_props_recording_captured(Some(A), &creator_log, &actor_log));
+  let _none = system.actor_of(one_param_props_recording_captured(None, &creator_log, &actor_log));
+  let _two = system.actor_of(two_param_props_recording_captured(Some(A), Some(B), &creator_log, &actor_log));
+  let _two_first_only = system.actor_of(two_param_props_recording_captured(Some(A), None, &creator_log, &actor_log));
+  let _two_second_only = system.actor_of(two_param_props_recording_captured(None, Some(B), &creator_log, &actor_log));
+  let _two_none = system.actor_of(two_param_props_recording_captured(None, None, &creator_log, &actor_log));
+  system.run_until_idle();
+
+  let expected = vec![
+    Observed::One(true),
+    Observed::One(false),
+    Observed::Two(true, true),
+    Observed::Two(true, false),
+    Observed::Two(false, true),
+    Observed::Two(false, false),
+  ];
+  assert_eq!(observed(&creator_log), expected);
+  assert_eq!(observed(&actor_log), expected);
   system.terminate();
 }

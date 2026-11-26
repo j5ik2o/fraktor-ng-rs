@@ -43,8 +43,7 @@ mod tests;
 /// prefix the element starts with (the original iterates a hash map, so its
 /// suffix order is unspecified; the port's is deterministic).
 ///
-/// Two behaviours differ from the original on purpose; both are recorded as
-/// intentional differences in the design document for #187, section 2.2.
+/// Two behaviours differ from the original on purpose.
 /// First, a suffix child is looked up by the same stripped key it is stored
 /// under, where the original looks it up by the unstripped element and loses
 /// the earlier subtree when the same suffix pattern is inserted twice.

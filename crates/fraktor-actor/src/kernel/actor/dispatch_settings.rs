@@ -19,7 +19,7 @@
 //! Mirrors the dispatcher and mailbox resolution of
 //! `org.apache.pekko.dispatch.Mailboxes`: a dispatcher names a mailbox,
 //! a mailbox may be an alias of another, and the stash capacity falls
-//! back mailbox, then dispatcher, then the default (design N1).
+//! back mailbox, then dispatcher, then the default.
 
 mod capacity_limit;
 mod dispatch_resolution_error;

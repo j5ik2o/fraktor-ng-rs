@@ -40,6 +40,10 @@ impl Envelope {
     &self.recipient == recipient
   }
 
+  pub(crate) fn message(&self) -> &Message {
+    &self.message
+  }
+
   pub(crate) fn into_parts(self) -> (ActorRef, Message, ActorRef) {
     (self.recipient, self.message, self.sender)
   }

@@ -34,6 +34,7 @@ mod dead_letter_log_limit;
 mod dead_letter_settings;
 mod dead_letter_suppression;
 mod dead_letters_shared;
+pub mod deploy;
 pub mod dispatch_settings;
 mod dropped;
 mod fsm;
