@@ -11,6 +11,17 @@
 // (suspend, resume, terminate), clears the scheduled bit, and then asks to be
 // scheduled again in case a message arrived while the bit was still set.
 //
+// Terminate stands for the whole stop of an actor that has no children: the
+// run that handles it reaches finishTerminate, detaches the actor, and closes
+// the mailbox (FaultHandling.finishTerminate, AbstractDispatcher.unregister).
+// An actor with children stays open and suspended until its last child is
+// gone; that state belongs to actor_termination.qnt (design section 5.4).
+// Closing moves every normal message and every system message the mailbox
+// still holds to dead letters, and a system message that arrives later goes
+// there too (Mailbox.processAllSystemMessages, Mailbox.systemEnqueue). Pekko
+// needs this for DeathWatch: a Watch that reaches a closed mailbox is answered
+// from dead letters with a DeathWatchNotification.
+//
 // The modes other than Fixed are the mistakes the design avoids. They are
 // reached only through initWith in the runs below, so `init` (and the CI's
 // `quint run --invariant=invariant`) explores the fixed mailbox only.
@@ -19,6 +30,8 @@
 //   ExternalSuspend : a suspend from outside changes the count directly,
 //                     while the runner may be inside `receive`.
 //   LateEnqueue     : a sender checks `closed` and enqueues in two steps.
+//   DropSystemOnClose : closing throws away the system messages that are left,
+//                     as the first version of this model did (design review H2).
 module mailbox_scheduling {
   pure val SENDERS = Set("s1", "s2")
   pure val WORKERS = Set("w1", "w2")
@@ -26,7 +39,7 @@ module mailbox_scheduling {
   pure val THROUGHPUT = 2
   pure val CONTROL_BUDGET = 2
 
-  type Mode = Fixed | LostWakeup | CheckThenAct | ExternalSuspend | LateEnqueue
+  type Mode = Fixed | LostWakeup | CheckThenAct | ExternalSuspend | LateEnqueue | DropSystemOnClose
   type SysMsg = Suspend | Resume | Terminate
   // SChecked: under CheckThenAct, the sender saw the bit clear and will set it.
   // SEnqueuing: under LateEnqueue, the sender saw the mailbox open and will enqueue.
@@ -47,6 +60,12 @@ module mailbox_scheduling {
     sent: int,
     processed: int,
     deadLettered: int,
+    // System messages: sent, applied by the runner, and moved to dead letters.
+    sysSent: int,
+    sysProcessed: int,
+    sysDeadLettered: int,
+    // Ghost: whether anybody has asked from outside to suspend the actor.
+    externalSuspendIssued: bool,
   }
   type Worker = { phase: WorkerPhase, batch: int }
   type Sender = { phase: SenderPhase, left: int }
@@ -98,8 +117,26 @@ module mailbox_scheduling {
     st.sent == st.processed + st.queue + st.deadLettered + countIn(Set(Invoking))
       + SENDERS.filter(s => senders.get(s).phase == SEnqueuing).size()
 
+  // Every system message sent is applied, still queued, or a dead letter.
+  val systemMessagesConserved = st.sysSent == st.sysProcessed + st.sys.length() + st.sysDeadLettered
+  // A submitted mailbox always has something its run may do. Written with
+  // hasWork, not canBeScheduled, so that a wrong scheduling rule cannot also
+  // weaken the check of itself.
+  val submittedOnlyWithWork = st.submitted > 0 implies (not(st.closed) and hasWork)
+  // When nothing is in flight (no sender between its steps, no run, no
+  // submission, no decision owed by the parent), an open mailbox has handled
+  // everything it may handle, and it is suspended only if somebody asked for it.
+  def settled: bool =
+    SENDERS.forall(s => senders.get(s).phase == SReady) and countIn(Set(Free)) == WORKERS.size()
+      and st.submitted == 0 and st.pendingDecision == 0
+  val settledMeansIdle =
+    (settled and not(st.closed)) implies
+      (st.sys.length() == 0 and (st.suspendCount == 0 implies st.queue == 0)
+        and (st.suspendCount > 0 implies st.externalSuspendIssued))
+
   val invariant = atMostOneRunner and scheduledMatchesTheRun and noStrandedMessage and noInvokeWhileSuspended
     and noInvokeAfterClose and closedHoldsNothing and throughputRespected and messagesConserved
+    and systemMessagesConserved and submittedOnlyWithWork and settledMeansIdle
 
   // ---- initial states ----------------------------------------------------
 
@@ -108,6 +145,7 @@ module mailbox_scheduling {
     st' = {
       closed: false, scheduled: false, suspendCount: 0, queue: 0, sys: [], submitted: 0,
       controlLeft: CONTROL_BUDGET, pendingDecision: 0, sent: 0, processed: 0, deadLettered: 0,
+      sysSent: 0, sysProcessed: 0, sysDeadLettered: 0, externalSuspendIssued: false,
     },
     workers' = WORKERS.mapBy(_ => { phase: Free, batch: 0 }),
     senders' = SENDERS.mapBy(_ => { phase: SReady, left: SENDS_PER_SENDER }),
@@ -166,13 +204,22 @@ module mailbox_scheduling {
     mode' = mode,
   }
 
-  // systemEnqueue followed by registerForExecution. Under ExternalSuspend a
-  // suspend changes the count directly instead of going through the runner.
+  // systemEnqueue followed by registerForExecution. A system message to a
+  // closed mailbox is a dead letter (Mailbox.systemEnqueue hands it to the
+  // dead-letter mailbox). Under ExternalSuspend a suspend changes the count
+  // directly instead of going through the runner.
   action control(k: SysMsg): bool = all {
     st.controlLeft > 0,
-    not(st.closed),
-    val spent = { ...st, controlLeft: st.controlLeft - 1 }
-    if (mode == ExternalSuspend and k == Suspend) setState({ ...spent, suspendCount: spent.suspendCount + 1 })
+    val spent = {
+      ...st,
+      controlLeft: st.controlLeft - 1,
+      sysSent: st.sysSent + 1,
+      externalSuspendIssued: st.externalSuspendIssued or k == Suspend,
+    }
+    if (st.closed)
+      setState(if (mode == DropSystemOnClose) spent else { ...spent, sysDeadLettered: spent.sysDeadLettered + 1 })
+    else if (mode == ExternalSuspend and k == Suspend)
+      setState({ ...spent, suspendCount: spent.suspendCount + 1, sysProcessed: spent.sysProcessed + 1 })
     else setState(registered({ ...spent, sys: spent.sys.append(k) })),
   }
 
@@ -180,7 +227,12 @@ module mailbox_scheduling {
   action decide: bool = all {
     st.pendingDecision > 0,
     not(st.closed),
-    setState(registered({ ...st, pendingDecision: st.pendingDecision - 1, sys: st.sys.append(Resume) })),
+    setState(registered({
+      ...st,
+      pendingDecision: st.pendingDecision - 1,
+      sys: st.sys.append(Resume),
+      sysSent: st.sysSent + 1,
+    })),
   }
 
   // ---- workers -----------------------------------------------------------
@@ -200,12 +252,13 @@ module mailbox_scheduling {
   }
 
   // processAllSystemMessages, one message at a time. Terminate closes the
-  // mailbox and moves what it holds to dead letters (Mailbox.cleanUp).
+  // mailbox and moves what it holds, normal and system messages alike, to dead
+  // letters (Mailbox.processAllSystemMessages and Mailbox.cleanUp).
   action processSystem(w: str): bool = all {
     phaseOf(w) == Running,
     not(st.closed),
     st.sys.length() > 0,
-    val rest = { ...st, sys: st.sys.tail() }
+    val rest = { ...st, sys: st.sys.tail(), sysProcessed: st.sysProcessed + 1 }
     val after = match st.sys.head() {
       | Suspend => { ...rest, suspendCount: rest.suspendCount + 1 }
       | Resume => { ...rest, suspendCount: if (rest.suspendCount > 0) rest.suspendCount - 1 else 0 }
@@ -216,6 +269,8 @@ module mailbox_scheduling {
           queue: 0,
           sys: [],
           deadLettered: rest.deadLettered + rest.queue,
+          sysDeadLettered:
+            if (mode == DropSystemOnClose) rest.sysDeadLettered else rest.sysDeadLettered + rest.sys.length(),
         }
     }
     setWorker(w, Running, workers.get(w).batch, after),
@@ -341,7 +396,22 @@ module mailbox_scheduling {
       .then(processSystem("w1")).then(send("s2"))
       .expect(st.closed and st.deadLettered == 2 and closedHoldsNothing and messagesConserved)
 
+  // The system messages behind Terminate, such as a Watch, go to dead letters
+  // with the rest, so the watcher still hears that the actor is gone.
+  run remainingSystemMessagesAreDeadLettersTest =
+    initWith(Fixed).then(control(Terminate)).then(control(Resume)).then(take("w1")).then(processSystem("w1"))
+      .expect(st.closed and st.sysDeadLettered == 1 and systemMessagesConserved)
+
+  run systemMessageAfterCloseIsADeadLetterTest =
+    initWith(Fixed).then(control(Terminate)).then(take("w1")).then(processSystem("w1")).then(control(Suspend))
+      .expect(st.sysDeadLettered == 1 and systemMessagesConserved and closedHoldsNothing)
+
   // ---- runs: the mistakes (negative controls) ----------------------------
+
+  run dropSystemOnCloseLosesAWatchTest =
+    initWith(DropSystemOnClose).then(control(Terminate)).then(control(Resume)).then(take("w1"))
+      .then(processSystem("w1"))
+      .expect(not(systemMessagesConserved))
 
   run lostWakeupStrandsAMessageTest =
     initWith(LostWakeup).then(send("s1")).then(register("s1")).then(take("w1"))
