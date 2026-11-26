@@ -41,6 +41,12 @@ pub enum EventFilter {
   },
   /// A warning filter.
   Warning,
+  /// An info filter narrowed, optionally, to a message prefix.
+  Info {
+    /// The prefix the message of the event must start with, when the
+    /// filter names one.
+    start: Option<String>,
+  },
 }
 
 impl EventFilter {
@@ -57,6 +63,13 @@ impl EventFilter {
   /// Mirrors `EventFilter.warning()`.
   pub fn warning() -> Self {
     Self::Warning
+  }
+
+  /// Creates the filter for info events.
+  ///
+  /// Mirrors `EventFilter.info()`.
+  pub fn info() -> Self {
+    Self::Info { start: None }
   }
 
   /// Creates the error filter narrowed to the cause whose class name is
@@ -86,6 +99,9 @@ impl EventFilter {
           && message.as_ref().is_none_or(|expected| event.message() == expected.as_str())
       },
       | Self::Warning => event.level() == LogLevel::Warning,
+      | Self::Info { ref start } => {
+        event.level() == LogLevel::Info && start.as_ref().is_none_or(|prefix| event.message().starts_with(prefix))
+      },
     }
   }
 }
@@ -100,6 +116,20 @@ impl EventFilter {
   pub fn with_message(mut self, message: &str) -> Self {
     if let Self::Error { message: ref mut slot, .. } = self {
       *slot = Some(message.to_string());
+    }
+    self
+  }
+
+  /// Returns this filter narrowed to the events whose message starts with
+  /// `prefix`.
+  ///
+  /// Mirrors the `start` argument of Pekko's `EventFilter.info(start =
+  /// ...)`: the expected text of a log line is long, and the ported tests
+  /// name its beginning, which carries the type, the parties, and the
+  /// count.
+  pub fn start(mut self, prefix: &str) -> Self {
+    if let Self::Info { start: ref mut slot } = self {
+      *slot = Some(prefix.to_string());
     }
     self
   }

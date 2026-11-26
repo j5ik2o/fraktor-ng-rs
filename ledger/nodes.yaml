@@ -2141,7 +2141,7 @@ nodes:
     module: actor-tests
     class: DeadLetterSupressionSpec
     test_cases_approx: 0
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -2152,14 +2152,15 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 2
+    ported: 2
+    passing: 2
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/dead_letter_supression_spec.rs
+  goal: G0issue191
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/DeadLetterSuspensionSpec.scala
   name: actor-tests:DeadLetterSuspensionSpec
   kind: test
@@ -2167,7 +2168,7 @@ nodes:
     module: actor-tests
     class: DeadLetterSuspensionSpec
     test_cases_approx: 1
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -2178,14 +2179,15 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 1
+    ported: 1
+    passing: 1
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/dead_letter_suspension_spec.rs
+  goal: G0issue191
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/DeathWatchSpec.scala
   name: actor-tests:DeathWatchSpec
   # 前提（#207 の独立レビュー F1）: 「fail a monitor which does not handle Terminated()」は
