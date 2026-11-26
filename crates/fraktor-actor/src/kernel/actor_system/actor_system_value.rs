@@ -11,6 +11,8 @@
 //
 // Copyright (C) 2017-2022 Lightbend Inc. <https://www.lightbend.com>
 //
+// Copyright (C) 2009-2022 Lightbend Inc. <https://www.lightbend.com>
+//
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE and NOTICE
 // at the repository root.
 //
@@ -24,12 +26,22 @@ use core::cell::RefCell;
 use core::fmt;
 use core::time::Duration;
 
+use crate::kernel::actor::ActorSelection;
+use crate::kernel::actor::AllDeadLetters;
+use crate::kernel::actor::DeadLetter;
+use crate::kernel::actor::DeadLetterLogLimit;
+use crate::kernel::actor::DeadLetterSettings;
+use crate::kernel::actor::DeadLetterSuppression;
+use crate::kernel::actor::Dropped;
 use crate::kernel::actor::Props;
+use crate::kernel::actor::SuppressedDeadLetter;
+use crate::kernel::actor::UnhandledMessage;
 use crate::kernel::actor_path::ActorPath;
 use crate::kernel::actor_path::RootActorPath;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::actor_system::weak_actor_system::WeakActorSystem;
 use crate::kernel::address::Address;
+use crate::kernel::event::EventClass;
 use crate::kernel::event::EventStream;
 use crate::kernel::executor::Executor;
 use crate::kernel::executor::ShardBoundary;
@@ -85,6 +97,13 @@ impl ActorSystem {
     let system = WeakActorSystem::new(name.to_string(), Rc::downgrade(&executor));
     let event_stream = EventStream::new(system, false);
     executor.borrow_mut().set_event_stream(event_stream.clone());
+    executor.borrow().set_dead_letter_bus(event_stream.downgrade());
+    // The four dead letter classes are subclasses of the AllDeadLetters
+    // channel, as the trait links declare in Pekko.
+    event_stream.declare_subclass::<DeadLetter, AllDeadLetters>();
+    event_stream.declare_subclass::<SuppressedDeadLetter, AllDeadLetters>();
+    event_stream.declare_subclass::<Dropped, AllDeadLetters>();
+    event_stream.declare_subclass::<UnhandledMessage, AllDeadLetters>();
     Self { name: name.to_string(), executor, event_stream, setup }
   }
 
@@ -218,6 +237,52 @@ impl ActorSystem {
   /// that the system publishes its own events to.
   pub fn event_stream(&self) -> EventStream {
     self.event_stream.clone()
+  }
+
+  /// Registers the payload type `T` for dead letter suppression.
+  ///
+  /// Mirrors the run-time half of Pekko's `DeadLetterSuppression` marker
+  /// trait: Rust cannot test trait membership at run time, so the system
+  /// records the type's identity in the table the dead letter routing
+  /// rules read. A message whose payload is a registered type is reported
+  /// as a `SuppressedDeadLetter` and never counted by the dead letter
+  /// listener.
+  pub fn register_dead_letter_suppression<T: core::any::Any + DeadLetterSuppression>(&self) {
+    self.executor.borrow().register_dead_letter_suppression(core::any::TypeId::of::<T>());
+  }
+
+  /// Starts the dead letter listener with `settings` and returns its
+  /// handle.
+  ///
+  /// Mirrors the `DeadLetterListener` a Pekko system starts at start-up
+  /// when `pekko.log-dead-letters` is not off. The port has no
+  /// configuration layer for the two settings, so the caller hands them in
+  /// as a value; a system that never calls this starts no listener, and
+  /// dead letters are still published to the event stream.
+  pub fn start_dead_letter_listener(&mut self, settings: DeadLetterSettings) -> ActorRef {
+    // The subscription is made here, after the executor borrow is
+    // released: subscribing registers the listener with the unsubscriber,
+    // whose watch borrows the executor again and would panic on the
+    // borrow the executor's own start still holds. With the limit `Off`
+    // the listener is not subscribed at all (design L7): Pekko's listener
+    // with dead letter logging off never receives an event, so the handle
+    // is created and returned without a subscription.
+    let limit = settings.limit();
+    let listener = self.executor.borrow_mut().start_dead_letter_listener(settings);
+    if limit != DeadLetterLogLimit::Off {
+      let _ = self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<DeadLetter>());
+      let _ = self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<Dropped>());
+      let _ = self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<UnhandledMessage>());
+    }
+    listener
+  }
+
+  /// Returns a selection that resolves `path` when a message is delivered.
+  ///
+  /// Mirrors `ActorSystem.actorSelection`. The selection captures the
+  /// shard boundary, so it never borrows the executor when it sends.
+  pub fn actor_selection(&self, path: &ActorPath) -> ActorSelection {
+    self.executor.borrow().actor_selection(path.clone())
   }
 
   /// Returns the handle that absorbs messages which no actor takes.

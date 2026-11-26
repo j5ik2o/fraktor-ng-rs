@@ -100,6 +100,23 @@ impl<'a> ActorContext<'a> {
     self.executor.publish_unhandled(message, sender, recipient);
   }
 
+  /// Returns the dead letters handle of the system.
+  ///
+  /// Mirrors `context.system.deadLetters`. An actor that reports a message
+  /// it dropped on purpose names this handle as the sender of the report,
+  /// which is the port's convention for a report with no real sender.
+  pub fn dead_letters(&self) -> ActorRef {
+    self.executor.dead_letters()
+  }
+
+  /// Publishes `event` on the event stream of the system.
+  ///
+  /// Mirrors `context.system.eventStream.publish(event)`, which is how an
+  /// actor reports a [`Dropped`](crate::kernel::actor::Dropped) message.
+  pub fn publish_event<E: core::any::Any + Send + Sync>(&mut self, event: E) {
+    self.executor.publish_event(event);
+  }
+
   /// Replaces the current behaviour with `behavior`; the frames below it stay.
   ///
   /// Mirrors `context.become(behavior, discardOld = true)`, which is
