@@ -33464,7 +33464,7 @@ nodes:
     module: testkit
     class: MetricsKitSpec
     test_cases_approx: 5
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -33475,14 +33475,15 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 5
+    ported: 5
+    passing: 5
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-testkit
+    test_file: crates/fraktor-testkit/tests/metrics_kit_spec.rs
+  goal: G0issue183
+  verified_against: v2.0.0
 - id: testkit/src/test/scala/org/apache/pekko/testkit/PekkoSpec.scala
   name: testkit:PekkoSpec
   kind: fixture
