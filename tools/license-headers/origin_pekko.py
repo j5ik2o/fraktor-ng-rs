@@ -9,12 +9,15 @@ import subprocess
 import tempfile
 from collections import defaultdict
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from notice_render import (
+    PEKKO_COMMIT,
+    leading_blocks,
+    third_party_blocks_from_tree,
+)
 from origin_evidence import MIRRORS, TEXT_THIRD_PARTY, best_path
-
-PEKKO_COMMIT = "9fbd2283b1cf701c90a1223bf621942c191db61f"
 
 # 原典のファイルを引く記述（ヘッダーに写す表示の出どころを決めるため）。
 PEKKO_FILE = re.compile(r"\b[\w-]+(?:/[\w-]+)*/src/[\w/.-]+?\.(?:scala|java)\b")
@@ -166,35 +169,6 @@ def source_files(text, ledger_hit, evidence_paths, pekko):
         add(path)
     return found
 
-def leading_blocks(source_text):
-    """原典のファイルの、package 文より前にあるコメントを、文面を変えずに行で返す。"""
-    lines = []
-    in_block = False
-    for line in source_text.splitlines():
-        stripped = line.strip()
-        if not in_block and stripped.startswith("package "):
-            break
-        if not in_block and stripped.startswith("/*"):
-            in_block = True
-            stripped = stripped[2:].lstrip("*").strip()
-            if stripped:
-                lines.append(stripped)
-            continue
-        if in_block:
-            if stripped.endswith("*/"):
-                in_block = False
-                body = stripped[:-2].rstrip()
-                body = body[1:] if body.startswith("*") else body
-                if body.strip():
-                    lines.append(body.strip())
-                lines.append("")
-                continue
-            lines.append(stripped[2:] if stripped.startswith("* ") else stripped.lstrip("*"))
-            continue
-        if stripped.startswith("//"):
-            lines.append(stripped)
-    return lines
-
 def third_party_notices(tree, pekko_paths_list):
     """原典のファイル先頭に、ASF と Lightbend 以外の Copyright 行があるファイル。"""
     notices = {}
@@ -233,6 +207,8 @@ class PekkoIndex:
     types: dict
     folded: dict
     notices: dict
+    tree: Path | None = None
+    third_party_blocks: dict = field(default_factory=dict)
 
 
 @contextmanager
@@ -243,12 +219,15 @@ def open_pekko(git_repo, tree_dir=None):
     tree, temporary = pekko_tree(git_repo, tree_dir)
     try:
         types = pekko_types(tree)
+        notices = third_party_notices(tree, all_paths)
         yield PekkoIndex(
             paths=frozenset(all_paths),
             stems=pekko_index(all_paths),
             types=types,
             folded=fold_types(types),
-            notices=third_party_notices(tree, all_paths),
+            notices=notices,
+            tree=tree,
+            third_party_blocks=third_party_blocks_from_tree(tree, notices),
         )
     finally:
         if temporary:

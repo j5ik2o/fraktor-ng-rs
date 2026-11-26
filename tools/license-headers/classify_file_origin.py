@@ -43,6 +43,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from header_core import SPDX_APACHE, notice_hash, strip_header_for_scan
+from notice_render import render_pekko_notice_lines
 from origin_decisions import DECISIONS_DEFAULT, apply_decisions, load_decisions
 from origin_evidence import H1_KINDS, classify, evidence_path
 from origin_pekko import open_pekko, source_files, third_party_evidence
@@ -61,6 +63,7 @@ TSV_HEADER = [
     "決定の出典",
     "原典ファイル",
     "第三者の表示",
+    "表示のハッシュ",
 ]
 
 SKIP_DIRS = {".git", "target", "node_modules", "pekko", ".takt", ".venv", "__pycache__"}
@@ -76,6 +79,7 @@ SELF_EXCLUDE_FILES = {
     "docs/design/issue-206-file-origin.tsv",
     "docs/design/issue-206-origin-decisions.tsv",
     "docs/design/issue-206-mit-candidates.md",
+    "docs/design/issue-206-known-exceptions.md",
 }
 
 SELF_EXCLUDE_DIRS = ("tools/license-headers/",)
@@ -137,7 +141,7 @@ def build_rows(repo, ledger, pekko):
     rows = []
     texts = {}
     for rel in crates:
-        texts[rel] = read_text(repo / rel)
+        texts[rel] = strip_header_for_scan(read_text(repo / rel))
         rows.append((rel, "crates") + classify(rel, texts[rel], "crates", ledger, pekko))
     for rel in others:
         verdict = classify(rel, read_text(repo / rel), "other", ledger, pekko)
@@ -188,13 +192,34 @@ def mask_moved(text, moved):
     return text
 
 
-def write_tsv(path, rows, decided, origins, moved):
+def build_notice_hashes(rows, decided, origins, pekko):
+    """C6 用の `表示のハッシュ` を計算する（crates の Apache-2.0 / 外部式の行のみ）。"""
+    hashes = {}
+
+    def read_source(rel_path):
+        return (pekko.tree / rel_path).read_text(encoding="utf-8", errors="replace")
+
+    def resolve_third_party(owner, filename):
+        return pekko.third_party_blocks.get((owner, filename), [])
+
+    for rel, scope, _verdict, _kind, _snippet, _flag, _reason in rows:
+        spdx = decided[rel][0]
+        if scope == "crates" and (spdx == SPDX_APACHE or spdx.startswith(f"{SPDX_APACHE} AND ")):
+            sources, third = origins[rel]
+            lines = render_pekko_notice_lines(sources, third, read_source, resolve_third_party)
+            hashes[rel] = notice_hash(lines)
+        else:
+            hashes[rel] = ""
+    return hashes
+
+
+def write_tsv(path, rows, decided, origins, hashes, moved):
     lines = ["\t".join(TSV_HEADER)]
     for rel, scope, verdict, kind, snippet, flag, reason in rows:
         spdx, source = decided[rel]
         sources, third = origins[rel]
         cells = [rel, verdict, kind, mask_moved(snippet.replace("\t", " "), moved), flag, reason, scope]
-        lines.append("\t".join(cells + [spdx, source, ";".join(sources), ";".join(third)]))
+        lines.append("\t".join(cells + [spdx, source, ";".join(sources), ";".join(third), hashes[rel]]))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -260,7 +285,8 @@ def main(argv=None):
         rows, texts = build_rows(repo, ledger, pekko)
         decided = apply_decisions(rows, load_decisions(decisions_path), decisions_path.name)
         origins = build_origins(rows, texts, ledger, pekko)
-    write_tsv(args.out_tsv, rows, decided, origins, moved_ids(repo))
+        hashes = build_notice_hashes(rows, decided, origins, pekko)
+    write_tsv(args.out_tsv, rows, decided, origins, hashes, moved_ids(repo))
     summary = summarize(rows, decided, origins, ledger)
     if args.out_summary:
         args.out_summary.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

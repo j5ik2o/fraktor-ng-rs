@@ -388,7 +388,7 @@ Apache License 2.0 第 4 条 (b)（変更したことを示す目立つ表示）
 
 線引きの一覧は機械判定で作る。判定の根拠は 1 ファイルずつ TSV に残してあり、人が根拠を見て覆せる。人の決定は別のファイルに置き、スクリプトが最後に重ねる（M2）。
 
-- 一覧の本体：[`docs/design/issue-206-file-origin.tsv`](./issue-206-file-origin.tsv)（433 行＋見出し、11 列）
+- 一覧の本体：[`docs/design/issue-206-file-origin.tsv`](./issue-206-file-origin.tsv)（433 行＋見出し、12 列）
 - 人の決定：[`docs/design/issue-206-origin-decisions.tsv`](./issue-206-origin-decisions.tsv)（5 列。下の「人の決定」）
 - 判定のスクリプト：[`tools/license-headers/classify_file_origin.py`](../../tools/license-headers/classify_file_origin.py)（入口と出力）、`origin_evidence.py`（本文の材料）、`origin_pekko.py`（原典の索引と表示）、`origin_decisions.py`（人の決定）。テストは `classify_file_origin_test.py`（原典の git は要らない）
 - 再実行：`PEKKO_REPO=<Pekko v2.0.0 の git リポジトリ> uv run --with pyyaml python3 tools/license-headers/classify_file_origin.py`（既定の出力先は上の TSV）。この版を作業ツリーで流し直し、TSV とバイト単位で一致することを確かめた。対象の集合は `git ls-files` で決める（L7）。`crates/` の下は、名前で飛ばすディレクトリを持たない。ライセンス作業のファイル（`LICENSE*`、`NOTICE`、この文書、TSV、決定のファイル、候補の一覧、`tools/license-headers/`）は走査から外してあるので、TSV を書き直しても自分自身は増えない。
@@ -408,6 +408,7 @@ TSV の列：
 | `決定の出典` | `判定`（機械の判定のまま）か、決定のファイルの行（例 `issue-206-origin-decisions.tsv:2（元帥 2026-11-26）`） |
 | `原典ファイル` | ヘッダーへ表示を写す原典のファイル（`;` 区切り、強い順。§3.1） |
 | `第三者の表示` | ヘッダーへ写す第三者の表示（§2.1） |
+| `表示のハッシュ` | 写した原典・第三者の表示ブロック（SPDX 行・直後の `//`・固定末尾 5 行を除いた行の並び）の SHA-256（C6、§3.4.4） |
 
 #### 件数の内訳（main `f54008c` を取り込んだ作業ツリー）
 
@@ -574,7 +575,7 @@ Pekko 由来 295 件のうち 210 件で決まり、85 件は決まらない（7
 
 #### 3.4.2 CLI モード
 
-`--manifest` は §3.3 の TSV（11 列）を読む。ツールが使う列は `path`、`走査範囲`、`付けるSPDX`、`原典ファイル`、`第三者の表示`。`判定` と `要確認` は読まない（人の決定を重ねた結果が `付けるSPDX` にある）。原典の表示を写すモードは、原典の git（`--pekko`、既定は `PEKKO_REPO`）を読む。
+`--manifest` は §3.3 の TSV（12 列）を読む。ツールが使う列は `path`、`走査範囲`、`付けるSPDX`、`原典ファイル`、`第三者の表示`、`表示のハッシュ`。`判定` と `要確認` は読まない（人の決定を重ねた結果が `付けるSPDX` にある）。原典の表示を写すモードは、原典の git（`--pekko`、既定は `PEKKO_REPO`）を読む。
 
 | モード | 動作 | 終了コード |
 |:---|:---|:---|
@@ -643,7 +644,7 @@ Pekko 由来 295 件のうち 210 件で決まり、85 件は決まらない（7
   - **行を消したとき**：既存のファイルの行を TSV から消すと、そのファイルは「新しいファイル」に見える。上の規則で、付けられる式は `Apache-2.0` だけになるので、消しても MIT は通らない（試作 M-c、M-j）。消したこと自体は、判定スクリプトで TSV を作り直して `cmp` で比べると見つかる（原典が要る。移植の手順では push の前に流す。§6）。CI には原典が無いので、CI が保証するのは「消しても MIT と外部の式は付かない」ところまでである。
 - **C6（写した表示。設計レビュー 3 回目の M3、決定 7.2）**：原典の要らない検査で、`--check --manifest` が `Apache-2.0` と外部の式のファイルに効かせる。
   - TSV の `第三者の表示` にあるラベルのうち、原典のファイル先頭から写すもの（`Copyright 2017 The Netty Project（DnsSettings.scala）` など、`（<原典>.scala）` か `（<原典>.java）` で終わるもの）は、`（` より前の行（`Copyright 2017 The Netty Project`）がヘッダーのブロックに含まれること。本文のコメントに残すもの（`hash-prospector: public domain（Unlicense）`）は、`hash-prospector` を含むコメントがファイルにあること。無ければ `notice-missing <path> <ラベル>` で落ちる。
-  - Lightbend の行と、写したブロック全体：ツールの改修（段 2）で、判定スクリプトが TSV に列 `表示のハッシュ`（写したブロックの行の並びの SHA-256）を足す。C6 は、ヘッダーの SPDX の行と固定の終わりの 4 行を除いた部分のハッシュがこの列と一致することを確かめる。年を変えた、ブロックを消した、行を足したのどれでも落ちる（`notice-mismatch <path> expected=<hash> actual=<hash>`）。
+  - Lightbend の行と、写したブロック全体：ツールの改修（段 2）で、判定スクリプトが TSV に列 `表示のハッシュ`（写したブロックの行の並びの SHA-256）を足す。C6 は、ヘッダー先頭の 2 行（`// SPDX-License-Identifier: ...` と直後の `//`）と、固定末尾の 5 行（区切りの `//`、`// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE and NOTICE`、`// at the repository root.`、`//`、`// This file has been modified from the Apache Pekko original.`）を除いた部分のハッシュがこの列と一致することを確かめる。年を変えた、ブロックを消した、行を足したのどれでも落ちる（`notice-mismatch <path> expected=<hash> actual=<hash>`）。
   - テストの案（`license_headers_test.py`）：`dns_settings.rs` に当たる入力で、(1) 適用した直後は合格、(2) Netty のブロックを消すと `notice-missing`、(3) Lightbend の年を `2018-2022` から `2018-2023` に変えると `notice-mismatch`、(4) ヘッダーの外（本文）に Netty の行を書いても合格にならない、(5) 原典のファイルが決まらない行（既定の表示）でも、ASF の表示を消すと落ちる、(6) `fast_frequency_sketch.rs` に当たる入力で、hash-prospector のコメントを消すと落ちる。
 
 ### 3.5 前回設計レビュー（`pr215-design-review.md`）全 10 指摘への回答
@@ -728,7 +729,7 @@ Pekko 由来ファイル（`Apache-2.0` のみ）と自作ファイル（`MIT OR
 ```text
 checked: 351  apache: 295  dual: 0  held: 55  missing: 1  errors: 1
 ERROR missing-spdx crates/fraktor-actor/src/kernel/new_feature.rs
-Hint: run `python3 tools/license-headers/license_headers.py --apply --kind pekko|original <path>`
+Hint: run `python3 tools/license-headers/license_headers.py --apply --kind pekko <path>`
 ```
 
 - 移植マーカーや `Mirrors \`org.apache.pekko.` があるのに `MIT OR Apache-2.0` を付けた場合も `ERROR origin-conflict <path>` で終了コード 1 を返す。
@@ -836,8 +837,8 @@ Hint: run `python3 tools/license-headers/license_headers.py --apply --kind pekko
 |:---:|:---|:---|
 | 0 | **設計の独立レビュー**（3 回目は済み。いまは変わった点の再レビュー） | 実装に関わっていない Claude Opus（`claude-opus-5-5`）が本設計をレビューし、全指摘を「直す／別件／採らない」で処理完了（3 回目の処理は §10） |
 | 1 | **線引き一覧と決定の確定** | この設計のコミットで、TSV（433 行）、判定スクリプト、決定のファイル（要確認は一括で `Apache-2.0`、決定 6.2）、候補の一覧を置いた。ゲートは、TSV が判定スクリプトと決定のファイルから作り直せて、バイト単位で一致すること |
-| 2 | **ツール改修と検証** | `tools/license-headers/license_headers.py` と `license_headers_test.py`（F1〜F8・PBT、§3.1 の原典の表示の写し、C5、外部のヘッダー、L3 の断り、I6〜I9 のテストを含む）を実装し、旧 `apply_ported_headers.*` を削除。`classify_file_origin.py` を新しいマーカー定義にそろえて TSV を作り直し、§3.3 の件数と一致を確かめる（§7.4 の最終行）。テスト全件合格 |
-| A | **段 A：`Apache-2.0` だけを付けて push する** | 中身：`LICENSE` の削除、`LICENSE-APACHE`（201 行）、`NOTICE`（原典 74 行全文）、段 A の `README.md`（§2.5）、各 `Cargo.toml` の `license = "Apache-2.0"`、`--apply --manifest` で `付けるSPDX = Apache-2.0` の 295 件にヘッダー（保留の 55 件は書き換えない）、CI の `License headers`（`--check --manifest`。保留は SPDX が無い限り `held` で合格）。ゲート：`--check --manifest` が `held 55` で 0、`cargo test` / `clippy` / `fmt` / `syn-check` / `aislop` / 全 Python テスト / 台帳検査がすべて 0。**push の前に `git grep -l 'MIT OR Apache-2.0' -- crates` が 0 件で、`LICENSE-MIT` が無いことを確かめる** |
+| 2 | **ツール改修と検証** | `tools/license-headers/license_headers.py` と `license_headers_test.py`（F1〜F8・PBT、§3.1 の原典の表示の写し、C5、C6（`表示のハッシュ` の列を含む）、外部のヘッダー、L3 の断り、I6〜I9 のテストを含む）を実装し、旧 `apply_ported_headers.*` を削除。`classify_file_origin.py` を新しいマーカー定義にそろえて TSV を作り直し、§3.3 の件数と一致を確かめる（§7.4 の最終行）。テスト全件合格 |
+| A | **段 A：`Apache-2.0` だけを付けて push する** | 中身：`LICENSE` の削除、`LICENSE-APACHE`（201 行）、`NOTICE`（原典 74 行全文に加え、`pekko/LICENSE` の hash-prospector の節（272〜299 行）と Caffeine の節（303〜305 行）を原文どおり写す）、段 A の `README.md`（§2.5）、各 `Cargo.toml` の `license = "Apache-2.0"`、`fast_frequency_sketch.rs` のコメントを原典 334〜336 行の文面に直す、85 件の「既知の例外」の一覧（[`issue-206-known-exceptions.md`](./issue-206-known-exceptions.md)。年と著作権者は未確認と書く）、`--apply --manifest` で `付けるSPDX = Apache-2.0` の 295 件にヘッダー（保留の 55 件は書き換えない）、CI の `License headers`（`--check --manifest`。保留は SPDX が無い限り `held` で合格）。ゲート：`--check --manifest` が `held 55` で 0、`cargo test` / `clippy` / `fmt` / `syn-check` / `aislop` / 全 Python テスト / 台帳検査がすべて 0。**push の前に `git grep -l 'MIT OR Apache-2.0' -- crates` が 0 件で、`LICENSE-MIT` が無いことを確かめる** |
 | B1 | **候補の照合** | [候補の一覧](./issue-206-mit-candidates.md) の 55 件を、実装に関わっていない担当が 1 件ずつ原典（Pekko 2.0.x のどのファイルにも、型・関数・テストの形の対応が無いこと）と照らし、結果と根拠を書く。「Pekko に対応が無い」と 1 件ずつ決めるのは muse か Claude の 1 本で、pi は材料を集めるところまで（決定 7.4）。`tools/syn-check` の移植元は、オーナーの公開リポジトリ `j5ik2o/fraktor-rs` の `lints/` と確かめた（決定 7.3。下の注） |
 | B2 | **元帥の確認** | 元帥が、照合の一覧（件数と各ファイルの根拠）を読む。ファイルごとの決定を決定のファイルに足す（自作と確かめたものは `MIT OR Apache-2.0`、ほかは `Apache-2.0`）。TSV を作り直し、`付けるSPDX` に `保留` が残らない |
 | B | **段 B：`MIT OR Apache-2.0` を付けて push する** | 中身：`LICENSE-MIT`、段 B の `README.md`（二重ライセンスと貢献条項、§2.5）、`tools/syn-check/Cargo.toml` の `license = "MIT OR Apache-2.0"`、`--apply --manifest` で B2 の決定どおりのヘッダー。ゲート：`--check --manifest` が `held 0` で 0、段 A と同じ全検査が 0。**この push で `MIT OR Apache-2.0` の許諾が公開され、取り消せなくなる** |

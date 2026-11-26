@@ -347,6 +347,17 @@ class Robustness(unittest.TestCase):
         old = "actor-testkit-typed/src/test/java/org/apache/pekko/X/JUnit5Test.java"
         self.assertEqual(cli.mask_moved(f"move {old} new/path", [old]), f"move {cli.MOVED_ID_MASK} new/path")
 
+    def test_strict_marker_and_structured_header_stripping(self):
+        import header_core as core
+
+        self.assertIsNone(e.marker_evidence("// Imported from Pekko\n"))
+        self.assertIsNone(e.marker_evidence("// ported from pekko\n"))
+        self.assertIsNotNone(e.marker_evidence("// Ported from Pekko v2.0.0\n"))
+        body = "//! plain module\nfn f() {}\n"
+        headed = core.apply_header(body, "pekko")
+        self.assertEqual(e.strip_own_header(headed), body)
+        self.assertEqual(e.classify("crates/a/src/own.rs", e.strip_own_header(headed), "crates", {}, PEKKO)[0], "自分で書いた")
+
 
 if __name__ == "__main__":
     unittest.main()

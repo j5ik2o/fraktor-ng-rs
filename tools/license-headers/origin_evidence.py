@@ -5,15 +5,7 @@
 import re
 from pathlib import Path
 
-MARKER = re.compile(r"(Ported from Pekko|Port of Pekko|Checked against Pekko)", re.IGNORECASE)
-
-MARKER_WINDOW = 20
-
-HEADER_FIRST = "// SPDX-License-Identifier: Apache-2.0"
-
-HEADER_LAST = "// This file has been modified from the Apache Pekko original."
-
-NEWLINES = ("\r\n", "\n")
+from header_core import MARKER_WINDOW, PORTED_MARKER as MARKER, split_lines_strict, strip_header_for_scan
 
 # 2. 原典への対応（強い根拠）。上から順に採用する。
 PORTED = re.compile(r"\b(Ported from|Port of)\b")
@@ -64,34 +56,17 @@ COMMENT_PREFIX = re.compile(r"^\s*(?://[/!]?|/\*+|\*+/?)\s?")
 
 
 def strip_own_header(text):
-    """apply_ported_headers.py が付けたヘッダーを除く（冪等判定のため）。"""
-    for newline in NEWLINES:
-        header = newline.join(
-            [
-                HEADER_FIRST,
-                "//",
-                "// Derived from Apache Pekko, which was derived from Akka.",
-                "// Copyright (C) 2009-2022 Lightbend Inc. <https://www.lightbend.com>",
-                "// Copyright 2022-2026 The Apache Software Foundation",
-                "//",
-                "// Licensed under the Apache License, Version 2.0. See LICENSE and NOTICE",
-                "// at the repository root.",
-                "//",
-                HEADER_LAST,
-            ]
-        )
-        prefix = header + newline + newline
-        if text.startswith(prefix):
-            return text[len(prefix):]
-    return text
+    """ツール管理のライセンスヘッダーブロックを除く（冪等判定のため）。"""
+    return strip_header_for_scan(text)
+
 
 def marker_evidence(text):
     body = strip_own_header(text)
-    head_lines = body.splitlines()[:MARKER_WINDOW]
+    head_lines = [content for content, _eol in split_lines_strict(body)[:MARKER_WINDOW]]
     for line in head_lines:
         found = MARKER.search(line)
         if found:
-            return found.group(1), line.strip()
+            return found.group(0), line.strip()
     return None
 
 def shorten(line):

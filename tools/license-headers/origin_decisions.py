@@ -3,37 +3,23 @@ import datetime
 import re
 from pathlib import Path
 
+from header_core import (
+    EXTERNAL_IDS,
+    HELD,
+    SPDX_APACHE,
+    SPDX_DUAL,
+    mentions_mit,
+    valid_expression,
+)
 from origin_evidence import STRONG
 
 DECISIONS_DEFAULT = Path("docs") / "design" / "issue-206-origin-decisions.tsv"
 
 DECISION_FLAGGED = "@要確認"
 
-SPDX_APACHE = "Apache-2.0"
-
-SPDX_DUAL = "MIT OR Apache-2.0"
-
-HELD = "保留"
-
 DECISION_HEADER = ["対象", "決定", "決めた人", "日付", "理由"]
 
-# 決定の式の文法（設計レビュー 3 回目の M2）。許すのは `Apache-2.0`、`MIT OR Apache-2.0`、
-# `Apache-2.0 AND <id>` の 3 つだけで、<id> はこの固定の一覧から選ぶ。一覧を広げるのは設計の変更。
-EXTERNAL_IDS = ("BSD-2-Clause", "BSD-3-Clause", "CC0-1.0", "Unlicense")
-
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-
-MIT_TOKEN = re.compile(r"\bmit\b", re.IGNORECASE)
-
-
-def valid_expression(spdx):
-    """決定の式が 3 つの形のどれかと、綴りまで一致するか。"""
-    return spdx in (SPDX_APACHE, SPDX_DUAL) or spdx in {f"{SPDX_APACHE} AND {i}" for i in EXTERNAL_IDS}
-
-
-def mentions_mit(spdx):
-    """`MIT` を含む式は、綴りや並びによらず、すべて MIT として扱う（M2）。"""
-    return bool(MIT_TOKEN.search(spdx or ""))
 
 
 def valid_date(text):
@@ -150,8 +136,12 @@ def manifest_errors(manifest, decisions, decisions_name, spdx_by_path):
     decided = apply_decisions(rows, decisions, decisions_name)
     mit_decided = {target for _n, target, spdx, *_rest in decisions if not target.startswith("@") and mentions_mit(spdx)}
     errors = []
+    seen_paths = set()
     for number, cells in manifest:
         rel = cells.get("path", "")
+        if rel in seen_paths:
+            errors.append(f"manifest-duplicate-path {rel} line={number}")
+        seen_paths.add(rel)
         expected = decided[rel]
         actual = (cells.get("付けるSPDX", ""), cells.get("決定の出典", ""))
         if actual != expected:
