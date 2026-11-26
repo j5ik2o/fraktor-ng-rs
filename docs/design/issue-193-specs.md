@@ -343,7 +343,7 @@ PropsCreationSpec と ExtensionSpec の2ノードが green になると、`docs/
 オーナーの答えが元帥の項目441を通して出たため、結果をここに記録する。上の判断材料の本文は、判断を求めた時点の記録として、そのまま残す。
 
 - 判断材料1（PropsCreationSpec のケース2からケース5）：オーナーが承認した。クロージャが引数を捕まえる形のまま移植し、JVM に固有の検査（実行時のコンストラクタ探しと `serialize-creators` の直列化の検査）は移さない。件数は変えず、移さなかった検査は台帳にケースごとの注記として書いた。条件だった I8 の観測は、作り手が捕まえた値を記録するテスト（`creator_captured_arguments_agree_with_the_actors_records`）を足して確かめている。
-- 判断材料2（ExtensionSpec のケース4とケース8）：オーナーが承認した。台帳では、`approved_by` と `approved_at` を付けた記録を `cases.excluded` に置いた。代わりの例は `compile_fail` の doctest のままである。
+- 判断材料2（ExtensionSpec のケース4とケース8）：オーナーが承認した。台帳では、`approved_by` と `approved_at` を付けた記録を、作らない区分の `cases.not_built` に置いた。代わりの例は `compile_fail` の doctest のままである。
 - 判断材料5（ExtensionSpec のケース5）：元帥の決定（2026-11-26）で、ケース5とケース6は後続の [Issue #277](https://github.com/j5ik2o/fraktor-ng-rs/issues/277) へ分けた。[Issue #193](https://github.com/j5ik2o/fraktor-ng-rs/issues/193) の完了条件は、この2件を除いた形に書き換えられた。台帳では2件とも未移植のまま触らず、ExtensionSpec のノードは red のままである。ノードを green にするのは #277 の仕事である。
 
 ## 9. 影響

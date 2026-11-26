@@ -2721,7 +2721,8 @@ nodes:
     total: 8
     ported: 5
     passing: 5
-    excluded:
+    excluded: []
+    not_built:
     - name: log an error if an extension listed in pekko.extensions cannot be loaded
       reason: 設定に書いた完全修飾クラス名をクラスローダで読み込む仕組みそのものの検査である。移植の設定は型付きの入力であり、存在しない拡張の識別子を書くことはコンパイル時にできない。読み込みの失敗という状態が型の上で作れないため、等価なテストは書けない（docs/design/issue-193-specs.md §7）。オーナーが 2026-11-26 に、この検査を作らないことを承認した（元帥の項目441の問い1）
       alternative: 存在しない識別子の型を ExtensionStartup へ渡すコードがコンパイルできないことを、ExtensionStartup の rustdoc の compile_fail の doctest で示す
@@ -2732,7 +2733,6 @@ nodes:
       alternative: ケース4と同じ compile_fail の doctest である。実在しない識別子は列に書けない
       approved_by: j5ik2o
       approved_at: 2026-11-26
-    not_built: []
   rust:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/extension_spec.rs
