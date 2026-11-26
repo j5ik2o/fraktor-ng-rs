@@ -226,6 +226,18 @@ impl Actor for Guardian {
   fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
 }
 
+/// Regression (review of PR #230): the dead letters handler used to
+/// capture its own handle strongly, cycling handle -> boundary ->
+/// handler -> handle, so dropping an executor leaked the boundary, the
+/// handler, and the shared routing state.
+#[test]
+fn dropping_the_executor_releases_the_dead_letters_boundary() {
+  let executor = death_watch_executor();
+  let boundary = Arc::downgrade(executor.dead_letters().boundary());
+  drop(executor);
+  assert!(boundary.upgrade().is_none(), "the dead letters handle must not keep its own boundary alive");
+}
+
 fn death_watch_executor() -> Executor {
   let address = crate::kernel::address::Address::new("pekko", "DeathWatch");
   let root = crate::kernel::actor_path::RootActorPath::new(address);
@@ -837,11 +849,16 @@ type DeadLetterLog = Arc<Mutex<Vec<(ActorRef, &'static str)>>>;
 
 /// Stands in for the system's dead letters with a handle that records what
 /// reaches it, so the routing of a stash is observable.
+///
+/// A leftover reaches the dead letters handle wrapped in a `DeadLetter`
+/// that names its original sender and recipient, as the mailbox clean-up
+/// hands it over; the recorder reads the pair back out of the report.
 fn record_dead_letters(executor: &mut Executor) -> DeadLetterLog {
   let delivered: DeadLetterLog = Arc::new(Mutex::new(Vec::new()));
   let inbox = delivered.clone();
-  executor.dead_letters = executor.function_ref("recordedDeadLetters", move |sender: &ActorRef, message: Message| {
-    inbox.lock().unwrap().push((sender.clone(), *message.downcast_ref::<&'static str>().unwrap()));
+  executor.dead_letters = executor.function_ref("recordedDeadLetters", move |_: &ActorRef, message: Message| {
+    let dead = message.downcast_ref::<crate::kernel::actor::DeadLetter>().unwrap();
+    inbox.lock().unwrap().push((dead.sender().clone(), *dead.message().downcast_ref::<&'static str>().unwrap()));
   });
   delivered
 }

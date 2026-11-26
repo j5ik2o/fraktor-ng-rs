@@ -30,16 +30,24 @@ use core::sync::atomic::Ordering;
 use core::time::Duration;
 
 use crate::kernel::actor::ActorContext;
+use crate::kernel::actor::ActorSelection;
+use crate::kernel::actor::ActorSelectionMessage;
+use crate::kernel::actor::AnyDeadLetter;
 use crate::kernel::actor::BehaviorStack;
+use crate::kernel::actor::DeadLetter;
+use crate::kernel::actor::DeadLetterSettings;
+use crate::kernel::actor::DeadLettersShared;
 use crate::kernel::actor::InvalidActorNameException;
 use crate::kernel::actor::Logging::Error;
 use crate::kernel::actor::Logging::EventSink;
+use crate::kernel::actor::Logging::Info;
 use crate::kernel::actor::Logging::Warning;
 use crate::kernel::actor::Props;
 use crate::kernel::actor::Terminated;
 use crate::kernel::actor::UnhandledMessage;
 use crate::kernel::actor_path::ActorPath;
 use crate::kernel::actor_ref::ActorRef;
+use crate::kernel::event::DeadLetterListener;
 use crate::kernel::event::EventStream;
 use crate::kernel::executor::ActorCell;
 use crate::kernel::executor::ShardQueue;
@@ -135,6 +143,17 @@ struct ParentEntry {
 /// One callback that the executor runs with the handle of a stopped actor.
 type TerminationCallback = Box<dyn Fn(&ActorRef)>;
 
+/// The notice the dead letter listener's handler posts to the shard
+/// boundary when its state machine stops itself.
+///
+/// The handler runs on a sender's stack and must not borrow the
+/// executor, so it cannot stop its own reference there. It posts this
+/// envelope to the boundary instead, and the delivery of the notice is
+/// what carries the stop out, so a limit reached outside any delivery
+/// (a direct tell to the dead letters handle, a stash a stop releases)
+/// is not lost.
+struct StopDeadLetterListener;
+
 /// A DeathWatch notice that can still be cancelled before local delivery.
 struct PendingTermination {
   watcher: ActorRef,
@@ -161,7 +180,7 @@ pub(crate) struct Executor {
   pending_terminations: Vec<Arc<PendingTermination>>,
   function_refs: Vec<ActorRef>,
   catcher: Option<Arc<dyn FailureCatcher>>,
-  event_sink: Option<Arc<dyn EventSink>>,
+  event_sink: Arc<spin::Mutex<Option<Arc<dyn EventSink>>>>,
   event_stream: Option<EventStream>,
   deferred_replies: Vec<(ActorRef, DeferredReply)>,
   parents: Vec<ParentEntry>,
@@ -171,6 +190,8 @@ pub(crate) struct Executor {
   running: Vec<ActorRef>,
   termination_callbacks: Vec<TerminationCallback>,
   dead_letters: ActorRef,
+  dead_letters_shared: Arc<DeadLettersShared>,
+  dead_letter_listener: Option<ActorRef>,
   boundary_active: bool,
   hook_child_creation_refused: bool,
   terminated: bool,
@@ -181,7 +202,8 @@ pub(crate) struct Executor {
 
 impl Executor {
   pub(crate) fn new(root: ActorPath, boundary: Arc<dyn crate::kernel::executor::ShardBoundary>) -> Self {
-    let dead_letters = Self::create_dead_letters(&root);
+    let dead_letters_shared = Arc::new(DeadLettersShared::new());
+    let dead_letters = Self::create_dead_letters(&root, dead_letters_shared.clone());
     let mut executor = Self {
       cells: Vec::new(),
       queue: ShardQueue::new(boundary),
@@ -190,7 +212,7 @@ impl Executor {
       pending_terminations: Vec::new(),
       function_refs: Vec::new(),
       catcher: None,
-      event_sink: None,
+      event_sink: Arc::new(spin::Mutex::new(None)),
       event_stream: None,
       deferred_replies: Vec::new(),
       parents: Vec::new(),
@@ -200,6 +222,8 @@ impl Executor {
       running: Vec::new(),
       termination_callbacks: Vec::new(),
       dead_letters,
+      dead_letters_shared,
+      dead_letter_listener: None,
       boundary_active: false,
       hook_child_creation_refused: false,
       terminated: false,
@@ -227,20 +251,139 @@ impl Executor {
 
   /// Returns the handle that absorbs messages which no actor takes.
   ///
-  /// Mirrors `ActorSystem.deadLetters`. The handle posts to a boundary that
-  /// drops the envelope. The executor makes one such handle when it is created,
-  /// below the root path, and answers that same handle for the life of the
-  /// system.
+  /// Mirrors `ActorSystem.deadLetters`. The handle posts to a boundary whose
+  /// handler routes the message through the dead letter rules, publishing
+  /// the event the rules name. The executor makes one such handle when it is
+  /// created, below the root path, and answers that same handle for the life
+  /// of the system.
   pub(crate) fn dead_letters(&self) -> ActorRef {
     self.dead_letters.clone()
   }
 
-  fn create_dead_letters(root: &ActorPath) -> ActorRef {
+  fn create_dead_letters(root: &ActorPath, shared: Arc<DeadLettersShared>) -> ActorRef {
     let path = root.with_child("deadLetters");
-    let handler = Arc::new(|_: &ActorRef, _: Message| {});
+    // The handler routes through the shared state, which the executor fills
+    // with the event stream's table once the system is built. The routing
+    // rules name the handle itself as the processing reference, so the
+    // handler rebuilds it from the identifier, the path, and the boundary.
+    // The boundary is held weakly: a strong slot would cycle handle ->
+    // boundary -> handler -> handle, and dropping a system would leak the
+    // boundary, the handler, and the shared routing state with it. The
+    // slot is filled in once, here, so it sits in a `spin::Once` that the
+    // handler reads without a lock, and it holds the path in an `Arc`, so
+    // rebuilding the handle for one message clones no path.
+    type HandleParts = (u64, Arc<ActorPath>, alloc::sync::Weak<dyn crate::kernel::executor::ShardBoundary>);
+    let slot: Arc<spin::Once<HandleParts>> = Arc::new(spin::Once::new());
+    let slot_in_handler = slot.clone();
+    let handler = Arc::new(move |sender: &ActorRef, message: Message| {
+      if let Some((id, path, boundary)) = slot_in_handler.get() {
+        if let Some(boundary) = boundary.upgrade() {
+          let dead_letters = ActorRef::new(*id, 0, path.clone(), boundary);
+          shared.route_at_dead_letters(message, sender.clone(), &dead_letters);
+        }
+      }
+    });
     let boundary: Arc<dyn crate::kernel::executor::ShardBoundary> =
       Arc::new(crate::kernel::executor::FunctionBoundary::new(handler));
-    next_actor_ref(path, boundary)
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let path = Arc::new(path);
+    let reference = ActorRef::new(id, 0, path.clone(), boundary.clone());
+    slot.call_once(|| (id, path, Arc::downgrade(&boundary)));
+    reference
+  }
+
+  /// Records the subscription table the dead letter routing rules publish
+  /// to, once the system has built its event stream.
+  pub(crate) fn set_dead_letter_bus(&self, bus: crate::kernel::event::EventStreamBusWeak) {
+    self.dead_letters_shared.set_bus(bus);
+  }
+
+  /// Registers a payload type for dead letter suppression.
+  ///
+  /// Mirrors the run-time half of Pekko's `DeadLetterSuppression` marker:
+  /// Rust cannot test trait membership at run time, so the system records
+  /// the type's identity here.
+  pub(crate) fn register_dead_letter_suppression(&self, id: core::any::TypeId) {
+    self.dead_letters_shared.register_suppression(id);
+  }
+
+  /// Publishes `event` on the event stream of the system, if one is set.
+  pub(crate) fn publish_event<E: core::any::Any + Send + Sync>(&self, event: E) {
+    if let Some(stream) = self.event_stream.as_ref() {
+      stream.publish(event);
+    }
+  }
+
+  /// Creates a selection for `path` on this shard.
+  ///
+  /// The selection captures the shard boundary and the dead letters handle
+  /// (which carries envelopes addressed to it), so it never borrows the
+  /// executor when it sends.
+  pub(crate) fn actor_selection(&self, path: ActorPath) -> ActorSelection {
+    ActorSelection::new(self.queue.boundary().clone(), self.dead_letters.clone(), path)
+  }
+
+  /// Starts the dead letter listener with `settings` and returns its
+  /// handle.
+  ///
+  /// Mirrors the `DeadLetterListener` a Pekko system starts when
+  /// `pekko.log-dead-letters` is not off: a function reference subscribed
+  /// to the `DeadLetter`, `Dropped`, and `UnhandledMessage` channels,
+  /// whose handler feeds the counting state machine and publishes the
+  /// `Info` it produces to the event stream and the event sink. The
+  /// handler captures the clock, the bus, the sink, and the dead letters
+  /// handle at start, so it never borrows the executor.
+  pub(crate) fn start_dead_letter_listener(&mut self, settings: DeadLetterSettings) -> ActorRef {
+    let shared = self.dead_letters_shared.clone();
+    let dead_letters = self.dead_letters.clone();
+    let clock = self.clock.clone();
+    let boundary = self.queue.boundary().clone();
+    let now_of = Arc::new(move || -> Duration {
+      match clock.as_ref() {
+        | Some(clock) => clock.monotonic(),
+        | None => boundary.monotonic_time().unwrap_or(Duration::ZERO),
+      }
+    });
+    let bus = self.event_stream.as_ref().map(|stream| stream.downgrade());
+    let sink = self.event_sink.clone();
+    let state = Arc::new(spin::Mutex::new(DeadLetterListener::new(settings, dead_letters.clone())));
+    let post_boundary = self.queue.boundary().clone();
+    let listener = self.function_ref("DeadLetterListener", move |_: &ActorRef, message: Message| {
+      let Some(event) = AnyDeadLetter::from_message(&message) else {
+        return;
+      };
+      let is_suppressed = |candidate: &Message| shared.is_suppressed(candidate);
+      let (text, stopped) = {
+        let mut state = state.lock();
+        let text = state.on_event(&event, now_of(), &is_suppressed);
+        let stopped = text.is_some() && state.is_stopped();
+        (text, stopped)
+      };
+      if let Some(text) = text {
+        let info = Info::new(event.recipient().path().to_string(), 0, &text);
+        if let Some(bus) = bus.as_ref() {
+          bus.publish(info.clone());
+        }
+        let current = sink.lock().clone();
+        if let Some(current) = current {
+          current.publish(&info);
+        }
+      }
+      if stopped {
+        // The state machine stopped itself with this event: Pekko's
+        // listener calls `context.stop(self)` here. This handler runs on
+        // a sender's stack and must not borrow the executor, so it posts
+        // the stop notice to the shard boundary instead, and the
+        // delivery of that notice carries the stop out.
+        post_boundary.post(Envelope::new(
+          dead_letters.clone(),
+          Message::new(StopDeadLetterListener),
+          dead_letters.clone(),
+        ));
+      }
+    });
+    self.dead_letter_listener = Some(listener.clone());
+    listener
   }
 
   pub(crate) fn function_ref<H>(&mut self, name: &str, handler: H) -> ActorRef
@@ -261,7 +404,7 @@ impl Executor {
   }
 
   pub(crate) fn set_event_sink(&mut self, sink: Arc<dyn EventSink>) {
-    self.event_sink = Some(sink);
+    *self.event_sink.lock() = Some(sink);
   }
 
   /// Installs the monotonic clock that a time-windowed strategy reads.
@@ -303,7 +446,7 @@ impl Executor {
   }
 
   pub(crate) fn event_sink(&self) -> Option<Arc<dyn EventSink>> {
-    self.event_sink.clone()
+    self.event_sink.lock().clone()
   }
 
   /// Starts an actor that the system owns directly, below `/user`.
@@ -958,16 +1101,17 @@ impl Executor {
   ///
   /// Mirrors what Pekko does with the stash of a stopped actor:
   /// `UnrestrictedStash.postStop` returns it to the mailbox, and the mailbox
-  /// clean-up hands every message left there to `deadLetters`. The port's dead
-  /// letters do not yet publish a `DeadLetter` event, so the messages are not
-  /// observable there.
+  /// clean-up hands every message left there to `deadLetters`. Each message
+  /// keeps its original recipient inside the `DeadLetter` it is wrapped in,
+  /// so the dead letters handle publishes it as it is.
   fn stash_to_dead_letters(&mut self, owner: &ActorRef) {
     if let Some(index) = self.stashes.iter().position(|(held, _)| held == owner) {
       let (_, stash) = self.stashes.swap_remove(index);
       let dead_letters = self.dead_letters();
       for (_, envelope) in stash {
         let (_, message, sender) = envelope.into_parts();
-        self.send(sender, &dead_letters, message);
+        let wrapped = DeadLetter::from_message(message, sender.clone(), owner.clone());
+        self.send(sender, &dead_letters, Message::new(wrapped));
       }
     }
   }
@@ -989,7 +1133,8 @@ impl Executor {
         | Some(pending) => Message::new(pending.notice.clone()),
         | None => message,
       };
-      self.send(sender, &dead_letters, message);
+      let wrapped = DeadLetter::from_message(message, sender.clone(), target.clone());
+      self.send(sender, &dead_letters, Message::new(wrapped));
     }
   }
 
@@ -1203,6 +1348,29 @@ impl Executor {
 
   /// Returns whether `target` can still be watched for its end.
   ///
+  /// Delivers the message a selection envelope carries, resolving its
+  /// path now.
+  ///
+  /// Mirrors `ActorSelection.deliverSelection`: a path that names a live
+  /// actor or a function reference of this shard is delivered to it; any
+  /// other path is routed by the dead letter rules with an empty reference
+  /// for that path as the recipient, and a suppressed payload names that
+  /// empty reference as the reference that processed it.
+  fn deliver_selection(&mut self, path: &ActorPath, message: Message, sender: ActorRef) {
+    if let Some(cell) = self.cells.iter().find(|cell| &cell.self_ref().path() == path) {
+      let target = cell.self_ref();
+      self.deliver(Envelope::new(target, message, sender));
+      return;
+    }
+    if let Some(reference) = self.function_refs.iter().find(|reference| &reference.path() == path) {
+      let target = reference.clone();
+      self.send(sender, &target, message);
+      return;
+    }
+    let empty = next_actor_ref(path.clone(), self.queue.boundary().clone());
+    self.dead_letters_shared.route_unresolved(message, sender, empty);
+  }
+
   /// The cell table does not hold the actor that is currently executing it, so
   /// a frame that is running counts as live as well; otherwise an actor would
   /// see itself as terminated from inside `receive`, `pre_start`,
@@ -1239,6 +1407,23 @@ impl Executor {
   /// carries out a stop-after-reply once the actor returns.
   fn deliver(&mut self, envelope: Envelope) {
     let (recipient, message, sender) = envelope.into_parts();
+    if message.downcast_ref::<StopDeadLetterListener>().is_some() {
+      // The dead letter listener's handler posted this notice when its
+      // state machine stopped itself. Carry the stop out here, where the
+      // executor can be borrowed, and run the boundary work so this same
+      // pass drains the stop.
+      if let Some(listener) = self.dead_letter_listener.take() {
+        self.request_stop(listener);
+      }
+      self.finish_boundary();
+      return;
+    }
+    if let Some(selection) = message.downcast_ref::<ActorSelectionMessage>() {
+      let selection = selection.clone();
+      self.deliver_selection(selection.path(), selection.message().clone(), selection.sender().clone());
+      self.finish_boundary();
+      return;
+    }
     let message = if let Some(pending) = message.downcast_ref::<Arc<PendingTermination>>() {
       let Some(index) = self.pending_terminations.iter().position(|queued| Arc::ptr_eq(queued, pending)) else {
         return;
@@ -1249,6 +1434,16 @@ impl Executor {
       message
     };
     let Some(index) = self.cells.iter().position(|cell| cell.accepts(&recipient)) else {
+      // No actor answers for the recipient: the message is routed by the
+      // dead letter rules, as a Pekko mailbox hands a message for a
+      // stopped actor to the dead letters provider.
+      let dead_letters = self.dead_letters.clone();
+      self.dead_letters_shared.route_undeliverable(message, sender, recipient, &dead_letters);
+      // The routing publishes synchronously, so the dead letter listener
+      // may have reached its limit inside this delivery; the boundary
+      // work (including the listener's own stop) runs here as it does at
+      // the end of a delivered message.
+      self.finish_boundary();
       return;
     };
     if message == KILL {
@@ -1730,7 +1925,8 @@ impl Executor {
     if let Some(stream) = self.event_stream.as_ref() {
       stream.publish(event.clone());
     }
-    if let Some(sink) = self.event_sink.as_ref() {
+    let sink = self.event_sink.lock().clone();
+    if let Some(sink) = sink {
       sink.publish(&event);
     }
   }
@@ -1748,7 +1944,8 @@ impl Executor {
     if let Some(stream) = self.event_stream.as_ref() {
       stream.publish(unhandled);
     }
-    if let Some(sink) = self.event_sink.as_ref() {
+    let sink = self.event_sink.lock().clone();
+    if let Some(sink) = sink {
       let source = recipient.path().to_string();
       let text = alloc::format!("unhandled message from {}: {:?}", sender.path(), message);
       sink.publish(&Warning::new(source, ACTOR_LOG_CLASS, &text));
