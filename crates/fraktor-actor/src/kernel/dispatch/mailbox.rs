@@ -341,6 +341,12 @@ impl<C: MailboxCell> Mailbox<C> {
     self.queue.number_of_messages()
   }
 
+  /// Returns whether the "has system messages" flag is up.
+  #[cfg(test)]
+  pub(crate) fn status_has_system_flag(&self) -> bool {
+    self.status.has_system_messages()
+  }
+
   /// Returns whether a system message is waiting.
   #[cfg(test)]
   pub(crate) fn has_system_messages(&self) -> bool {

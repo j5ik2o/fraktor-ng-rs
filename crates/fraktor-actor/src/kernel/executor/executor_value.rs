@@ -98,6 +98,10 @@ use crate::kernel::Clock;
 #[path = "executor_value_test.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "executor_mailbox_test.rs"]
+mod mailbox_tests;
+
 static NEXT_SPAWN: AtomicU64 = AtomicU64::new(0);
 
 /// The cause name Pekko reports when `Kill` ends an actor.

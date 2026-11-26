@@ -148,6 +148,26 @@ impl ActorRef {
     }
   }
 
+  /// Returns a weak handle to the actor's mailbox, for a test that the
+  /// mailbox goes away.
+  #[cfg(test)]
+  pub(crate) fn mailbox_weak(&self) -> crate::kernel::sync::Weak<Mailbox<ActorCell>> {
+    match &self.endpoint {
+      | Endpoint::Mailbox(mailbox) => Arc::downgrade(mailbox),
+      | Endpoint::Boundary(_) => panic!("{self:?} has no mailbox"),
+    }
+  }
+
+  /// Returns how many strong handles the actor's mailbox has, for a test
+  /// that no clone leaks.
+  #[cfg(test)]
+  pub(crate) fn mailbox_strong_count(&self) -> usize {
+    match &self.endpoint {
+      | Endpoint::Mailbox(mailbox) => Arc::strong_count(mailbox),
+      | Endpoint::Boundary(_) => panic!("{self:?} has no mailbox"),
+    }
+  }
+
   /// Returns whether this handle and `other` send to the same place.
   pub(crate) fn shares_endpoint_with(&self, other: &ActorRef) -> bool {
     self.endpoint.same_as(&other.endpoint)
