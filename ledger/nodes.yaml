@@ -2707,10 +2707,10 @@ nodes:
     module: actor-tests
     class: ExtensionSpec
     test_cases_approx: 8
-  status: unported
+  status: red
   triage:
     kind: pending
-    reason: null
+    reason: 移植5件は成功している。ケース5の写し方（弱めた形にするか）と、作らない区分の提案2件は、オーナーの判断待ちであり、承認済みとは記録しない（元帥の項目441の問い3と問い1）
   needs:
     testkit: ['test-kit', 'event-filter']
     premise_flags: []
@@ -2718,14 +2718,21 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 8
+    ported: 5
+    passing: 5
     excluded: []
+    not_built:
+    - name: log an error if an extension listed in pekko.extensions cannot be loaded
+      reason: 設定に書いた完全修飾クラス名をクラスローダで読み込む仕組みそのものの検査である。移植の設定は型付きの入力であり、存在しない拡張の識別子を書くことはコンパイル時にできない。読み込みの失敗という状態が型の上で作れないため、等価なテストは書けない（docs/design/issue-193-specs.md §7）。オーナーの判断待ちであり、承認済みとは記録しない
+      alternative: 存在しない識別子の型を ExtensionStartup へ渡すコードがコンパイルできないことを、ExtensionStartup の rustdoc の compile_fail の doctest で示す
+    - name: fail the actor system if a library-extension cannot be loaded
+      reason: ケース4と同じ仕組みの、ライブラリ側の列での検査である。読み込めないクラス名をライブラリ側の列に書いたとき、システムの生成が失敗することを確かめる。ケース4と同じく、失敗の状態が型の上で作れない（docs/design/issue-193-specs.md §7）。オーナーの判断待ちであり、承認済みとは記録しない
+      alternative: ケース4と同じ compile_fail の doctest である。実在しない識別子は列に書けない
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/extension_spec.rs
+  goal: G0issue193
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/FSMActorSpec.scala
   name: actor-tests:FSMActorSpec
   kind: test
@@ -3967,10 +3974,10 @@ nodes:
     module: actor-tests
     class: PropsCreationSpec
     test_cases_approx: 6
-  status: unported
+  status: green
   triage:
     kind: pending
-    reason: null
+    reason: ケース2からケース5は、JVM に固有の検査（serialize-creators の検証と、リフレクションでのコンストラクタの検索）を移さない形で移植した。その扱いはオーナーの判断待ちであり、承認済みとは記録しない（元帥の項目441の問い2）
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec']
     premise_flags: []
@@ -3978,14 +3985,16 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 5
+    ported: 5
+    passing: 5
     excluded: []
+    not_built: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/props_creation_spec.rs
+  goal: G0issue193
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ProviderSelectionSpec.scala
   name: actor-tests:ProviderSelectionSpec
   kind: test

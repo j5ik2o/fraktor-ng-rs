@@ -22,6 +22,14 @@
   満たさないノードは一覧に出し、ゴールの完了に数えない。台帳は除外の検査と同じ
   専用ローダ（excluded_approvals.ledger_loader）で読む。
 
+混在ノード（status=green で cases.not_built を持つノード）の検査:
+  移植したケースと作らないケースが 1 つのノードに混ざる場合も、作らない要素は
+  全件作らないノードと同じ記録（name・reason・alternative と人による承認記録）を
+  持ち、ケース名が重複せず、件数が total = passing + 除外の記録件数 + 作らない件数
+  に合うこと。満たさない green ノードは記録不足として一覧に出し、ゴールの完了に
+  数えない。ケースの勘定（case_counts）でも、green ノードの作らない要素は、
+  記録の有効な要素だけを有効な件数に数える。
+
 ゴール完了判定:
   ゴールに属するノード（goal 欄が一致するもの）がすべて green か do_not_port か、
   記録の揃った not_built で、かつ1件以上あること。未完了の内訳（status 別の件数）も出す。
@@ -70,8 +78,76 @@ def is_valid_not_built_case(record) -> bool:
             and is_approved_by_human(record))
 
 
+def mixed_not_built_problems(node: dict) -> list[str]:
+    """status=green のノードが持つ cases.not_built の記録の不足を返す。
+
+    混在ノード（移植したケースと作らないケースが混ざる green ノード）専用の検査。
+    cases.not_built の欄が無い・null のノードは対象でない。各要素の記録
+    （name・reason・alternative と人による承認記録）と、除外の各要素の承認記録と、
+    除外と作らないの内外のケース名の重複と、移植した件数と通過した件数の一致と、
+    件数の一致（total = passing + 除外の件数 + 作らない件数）を確かめる。除外の
+    件数は承認記録の揃った要素だけではなく記録の件数を数えるが、承認記録が
+    欠けた要素があれば、そのことを不足として別に挙げる（未承認の除外で件数を
+    埋めて完了にしない）。
+    """
+    if node.get("status") != "green":
+        return []
+    cases = node.get("cases")
+    if not isinstance(cases, dict):
+        return []
+    if cases.get("not_built") is None:
+        return []
+    records = cases.get("not_built")
+    if not isinstance(records, list):
+        return ["cases.not_built が配列でない"]
+    problems = []
+    for index, record in enumerate(records):
+        if not is_valid_not_built_case(record):
+            problems.append(f"cases.not_built[{index}] の name・reason・alternative・承認記録が揃っていない")
+    names = [r.get("name").strip() for r in records
+             if isinstance(r, dict) and is_text(r.get("name"))]
+    duplicated = sorted({name for name in names if names.count(name) > 1})
+    if duplicated:
+        problems.append(f"cases.not_built のケース名が重複している: {', '.join(duplicated)}")
+    excluded = cases.get("excluded")
+    excluded_records: list = []
+    if excluded is not None:
+        if not isinstance(excluded, list):
+            problems.append("cases.excluded が配列でない")
+        else:
+            excluded_records = excluded
+            for index, record in enumerate(excluded_records):
+                if not (isinstance(record, dict) and is_approved_by_human(record)):
+                    problems.append(f"cases.excluded[{index}] の承認記録が揃っていない")
+            ex_names = [r.get("name").strip() for r in excluded_records
+                        if isinstance(r, dict) and is_text(r.get("name"))]
+            ex_duplicated = sorted({name for name in ex_names if ex_names.count(name) > 1})
+            if ex_duplicated:
+                problems.append(f"cases.excluded のケース名が重複している: {', '.join(ex_duplicated)}")
+            cross = sorted(set(names) & set(ex_names))
+            if cross:
+                problems.append(f"除外と作らないに同じケース名がある: {', '.join(cross)}")
+    total, ported, passing = cases.get("total"), cases.get("ported"), cases.get("passing")
+    if type(total) is int and type(ported) is int and type(passing) is int:
+        if total < 0 or ported < 0 or passing < 0:
+            problems.append("cases.total と cases.ported と cases.passing が負である")
+        if ported != passing:
+            problems.append("cases.ported と cases.passing が一致しない")
+        if total != passing + len(excluded_records) + len(records):
+            problems.append("cases の件数が合わない（total ≠ passing + 除外 + 作らない）")
+    else:
+        problems.append("cases.total と cases.ported と cases.passing が整数でない")
+    return problems
+
+
 def not_built_problems(node: dict) -> list[str]:
-    """status=not_built のノードの記録の不足を返す。不足が無ければ空。"""
+    """作らない区分の記録の不足を返す。不足が無ければ空。
+
+    status=not_built のノードは全件の検査、status=green のノードは混在の検査
+    （mixed_not_built_problems）を行う。それ以外の status は対象でない。
+    """
+    if node.get("status") == "green":
+        return mixed_not_built_problems(node)
     if node.get("status") != "not_built":
         return []
     problems = []
@@ -118,7 +194,8 @@ def case_counts(test_nodes: list[dict]) -> dict:
     """ケースの勘定。除外と作らないは、承認記録の有効な要素の数と、記録された要素の数を分けて出す。
 
     有効な要素の判定は、除外が is_approved_by_human、作らないが is_valid_not_built_case である。
-    作らないは、記録の揃ったノード（not_built_problems が空）の要素だけを有効に数える。
+    作らないは、全件作らないノードでは記録の揃ったノード（not_built_problems が空）の要素だけを、
+    green の混在ノードでは記録の有効な要素だけを、有効に数える。
     status が not_built のノードの除外は、区分が二重になるので有効に数えない（記録件数には入る）。
     """
     counts = {"ported": 0, "excluded": 0, "excluded_recorded": 0,
@@ -145,6 +222,8 @@ def case_counts(test_nodes: list[dict]) -> dict:
             counts["not_built_recorded"] += len(not_built)
             if n.get("status") == "not_built" and not not_built_problems(n):
                 counts["not_built"] += len(not_built)
+            elif n.get("status") == "green":
+                counts["not_built"] += sum(1 for r in not_built if is_valid_not_built_case(r))
     return counts
 
 
