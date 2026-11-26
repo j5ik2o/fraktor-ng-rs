@@ -14,8 +14,9 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # About 3x the slowest recent successful run, so that a hung test fails on
-    # time instead of being killed for memory (#221).
+    # About 3x the slowest recent successful run. This bounds the job's run time
+    # instead of the 6-hour default; a test that runs out of memory before then
+    # is still killed with exit code 137 (#221).
     timeout-minutes: 18
     outputs:
       last-step-result: ${{ steps.syn_checker.outcome }}
