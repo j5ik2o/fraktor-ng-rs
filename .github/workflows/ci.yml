@@ -66,6 +66,7 @@ jobs:
           uv run --with pyyaml python3 tools/pekko-source/prepare_pekko_source_test.py
           uv run --with pyyaml python3 tools/takt-facets/knowledge_budget_test.py
           uv run python3 scripts/check_src_hygiene_test.py
+          uv run python3 scripts/pub_api_diff_test.py
       - name: Pekko baseline
         run: |
           uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger --ledger ledger/nodes.yaml
@@ -100,6 +101,20 @@ jobs:
           for dir in crates/*/; do
             cargo run --quiet --release --locked --manifest-path tools/syn-check/Cargo.toml -- --format json "${dir%/}"
           done
+      # Lists the `pub` items this PR adds, in the job summary, so that the
+      # items of PRs merged in parallel can be checked for overlap (#279).
+      # It only reports: it never fails the job. The checkout is the test
+      # merge of base and head, so base..HEAD is what the PR adds.
+      - name: PR public API additions
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          fi
+          uv run python3 scripts/pub_api_diff.py --base "$BASE_SHA" --head HEAD --summary "$GITHUB_STEP_SUMMARY"
 
   # Every crates/*/specs/*.qnt is typechecked, its runs are executed and its
   # `invariant` is simulated (scripts/quint-check-specs.sh). This checks the

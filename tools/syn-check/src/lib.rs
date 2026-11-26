@@ -13,6 +13,7 @@ pub mod options;
 pub mod parse_failure;
 mod paths;
 pub mod position;
+pub mod pub_api;
 pub mod report;
 pub mod rule;
 mod rules;
