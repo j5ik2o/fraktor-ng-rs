@@ -26,7 +26,7 @@ Switch ノードの前提フラグ（`thread-sleep`）は外した。原典の�
 - 移植テスト：`crates/fraktor-actor/tests/pretty_duration_spec.rs`（13件）、`glob_spec.rs`（6件）、`switch_spec.rs`（6件）
 - 原典の外のテスト：`pretty_duration_format_test.rs`（`%g` の HALF_UP の固定ケースと i64 の範囲の外）、`pretty_duration_property_test.rs`、`glob_property_test.rs`、`switch_model_test.rs`、`switch_extra_test.rs`（S5、panic のときの戻し、引数なし版）、`crates/fraktor-actor/src/kernel/switch/switch_value_test.rs`（drop ガードの単体テスト）
 - Quint：`crates/fraktor-actor/specs/switch.qnt`
-- 台帳：対象3ノードを green にし、PrettyDurationSpec の件数を実数13件にした
+- 台帳：対象3ノードを green にし、PrettyDurationSpec の件数を実数13件にした。あわせて `docs/baseline/v2.0.0-undocumented-nodes.tsv` を作り直し、対象3ノードを未記載（no-report）として載せた（`report_ledger_1to1.py list-undocumented`）
 
 ## 進め方
 
