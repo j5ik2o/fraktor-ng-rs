@@ -2032,7 +2032,7 @@ fn default_pre_restart_stops_all_children_before_the_parent_post_stop() {
     move || RecordsRestartOrder { order: Arc::clone(&order), label: "parent" }
   }));
   let mut children = Vec::new();
-  for label in ["first child", "second child"] {
+  for label in ["first-child", "second-child"] {
     let order = Arc::clone(&order);
     children.push(system.downgrade().spawn_child(
       &parent,
@@ -2047,8 +2047,8 @@ fn default_pre_restart_stops_all_children_before_the_parent_post_stop() {
 
   let order = order.lock().unwrap();
   assert_eq!(order.len(), 4, "both children must stop before the parent restarts: {order:?}");
-  assert!(order[..2].contains(&"first child"), "the first child stopped too late: {order:?}");
-  assert!(order[..2].contains(&"second child"), "the second child stopped too late: {order:?}");
+  assert!(order[..2].contains(&"first-child"), "the first child stopped too late: {order:?}");
+  assert!(order[..2].contains(&"second-child"), "the second child stopped too late: {order:?}");
   assert_eq!(&order[2..], &["parent", "restarted"]);
   assert!(children.iter().all(|child| system.is_actor_terminated(child)), "a child survived the default hook");
   assert!(!system.is_actor_terminated(&parent), "the parent must restart rather than stop");

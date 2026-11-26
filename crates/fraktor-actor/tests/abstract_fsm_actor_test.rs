@@ -63,11 +63,11 @@ fn my_fsm(probe: ActorRef) -> Fsm<String, String> {
     probe.tell(format!("Transitioning from {from} to {to}."), context.self_ref());
   });
   fsm.start_with(String::from("start"), String::from("data"));
-  fsm.when(String::from("start"), |_context: &mut ActorContext<'_>, event: &Message, _data: &String| {
+  fsm.when(String::from("start"), |_context: &mut ActorContext<'_>, _view: &fraktor_actor::kernel::actor::FsmView<String>, event: &Message, _data: &String| {
     let new_state = event.downcast_ref::<&'static str>().filter(|event| **event == "next")?;
     Some(FsmState::goto(String::from(*new_state)))
   });
-  fsm.when(String::from("next"), |_context: &mut ActorContext<'_>, _event: &Message, _data: &String| None);
+  fsm.when(String::from("next"), |_context: &mut ActorContext<'_>, _view: &fraktor_actor::kernel::actor::FsmView<String>, _event: &Message, _data: &String| None);
   fsm.initialize();
   fsm
 }

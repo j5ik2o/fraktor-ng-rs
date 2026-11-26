@@ -71,7 +71,7 @@ const SPEC_SYSTEM_NAME: &str = "AbstractFSMWithStashActorTest";
 fn my_fsm(probe: ActorRef) -> Fsm<String, String> {
   let mut fsm = Fsm::new();
   fsm.start_with(String::from("start"), String::from("data"));
-  fsm.when(String::from("start"), |context: &mut ActorContext<'_>, event: &Message, _data: &String| {
+  fsm.when(String::from("start"), |context: &mut ActorContext<'_>, _view: &fraktor_actor::kernel::actor::FsmView<String>, event: &Message, _data: &String| {
     let event = event.downcast_ref::<&'static str>()?;
     if *event == "go" {
       context.unstash_all();
@@ -81,7 +81,7 @@ fn my_fsm(probe: ActorRef) -> Fsm<String, String> {
       Some(FsmState::stay())
     }
   });
-  fsm.when(String::from("next"), move |context: &mut ActorContext<'_>, event: &Message, _data: &String| {
+  fsm.when(String::from("next"), move |context: &mut ActorContext<'_>, _view: &fraktor_actor::kernel::actor::FsmView<String>, event: &Message, _data: &String| {
     event.downcast_ref::<&'static str>()?;
     probe.tell(event.clone(), context.self_ref());
     Some(FsmState::stay())
