@@ -19,7 +19,13 @@ Pekko v2.0.0 の `actor-tests` の3つの Spec（ProviderSelectionSpec、ActorWi
 
 - E1（ProviderSelectionSpec）：原典のケースは HOCON の設定文字列を `Settings` 経由で読み、選択の `fqcn` と `hasCluster` と、設定から読んだ provider クラスが一致することを確かめる。移植は設定ファイルを持たないため、数えている4件すべてを、HOCON の代わりの型付き入力（設定文字列そのもの）で、原典と同じことを確かめる形にした。ケースの除外ではない。
 - E2（ActorWithBoundedStashSpec）：原典のケースは dispatcher と mailbox の定義を HOCON で与える。移植は設定ファイルを持たないため、数えている5件すべてを、HOCON の代わりの型付き入力（`DispatchSettings` と `MailboxDefinition`）で、原典と同じ容量の解決と振る舞いを確かめる形にした。ケースの除外ではない。
-- ケースに出てこない振る舞い（bounded mailbox への通常の tell のあふれの扱い、bounded mailbox の push timeout（500ms））は移していない。
+- ケースに出てこない振る舞い（bounded mailbox の push timeout（500ms））は移していない。通常の tell のあふれは、下記の既知のずれとして扱う。
+
+## 既知のずれ
+
+- E2（bounded mailbox への普通の tell のあふれ）：原典では push の時間切れ（500ms）のあと DeadLetter になるが、移植では未移植である。#192 では直さず、[issue #246]( https://github.com/j5ik2o/fraktor-ng-rs/issues/246 ) で、#234 の段で入れる。「作らない・除外」として書くものではなく、台帳の `cases.excluded` にも入れない（元帥の決定、2026-11-26）。
+- H2（定義に無い dispatcher／mailbox の名前）：移植は定義に無い名前を無制限のまま受け入れているが、原典は `ConfigurationException` で拒む。一時的な互換の判断（green の SupervisorMiscSpec を守るため）であり、[issue #247]( https://github.com/j5ik2o/fraktor-ng-rs/issues/247 ) で直す。台帳の `cases.excluded` には入れない（元帥の決定、2026-11-26）。
+- M7（他のセルの FunctionRef の除去）：忠実さの判断として書く。他のセルの FunctionRef の除去は、原典の `require` に対応して panic にする形で移した。黙って何もしない形は採らなかった。除去のあとの判定も、登録表ではなくパスの親との比較で行う。
 
 ## 除外の承認
 
@@ -27,7 +33,7 @@ Pekko v2.0.0 の `actor-tests` の3つの Spec（ProviderSelectionSpec、ActorWi
 
 ## 成果物
 
-- 本体：`crates/fraktor-actor/src/kernel/actor/` の `provider_selection.rs`（`ProviderSelection::from_setting`）、`dispatch_settings.rs`（`CapacityLimit`、`DispatchSettings`、`MailboxDefinition`）、`stash_overflow_exception.rs`、`function_ref.rs`（`FunctionRef` newtype）。あわせて `ActorContext::try_stash`、`Props::with_mailbox`、`ActorSystem` と `ActorContext` の function ref の watch 系メソッドを足した。DeadLetter の観測手段は、当初この issue で新設したが、main へ先に入った #191 の DeadLetter 移植に合わせてそちらを使う形へ改めた（型と dead letters ハンドルの経路は #191 のものを使い、この issue の発行箇所は包んで送る形にそろえた）
+- 本体：`crates/fraktor-actor/src/kernel/actor/` の `provider_selection.rs`（`ProviderSelection::from_setting`）、`dispatch_settings.rs`（`CapacityLimit`、`DispatchSettings`、`MailboxDefinition`）、`stash_overflow_exception.rs`、`function_ref.rs`（`FunctionRef` newtype）。あわせて `ActorContext::try_stash`、`Props::with_mailbox`、`ActorSystem` と `ActorContext` の function ref の watch 系メソッドを足した。DeadLetter の観測手段は、当初この issue で新設したが、main へ先に入った #191 の DeadLetter 移植に合わせてそちらを使う形へ改めた（型と dead letters ハンドルの経路は #191 のものを使い、この issue の発行箇所は #191 の `publish_dead_letter` にそろえた。閉じた FunctionRef の境界だけは、原典の `deadLetterMessageHandler` のとおり包まずに生のまま dead letters ハンドルへ渡し、recipient は deadLetters 自身になる）
 - 移植テスト：`provider_selection_spec.rs`（4件）、`actor_with_bounded_stash_spec.rs`（5件）、`function_ref_spec.rs`（8件）
 - 原典の外のテスト：`provider_selection_property_test.rs`（任意文字列とモデルの照合）、`bounded_stash_property_test.rs`（VecDeque の参照モデルとの照合）、`function_ref_model_test.rs`（登録表モデルとの照合）、本体の単体テスト3件
 - Quint：`crates/fraktor-actor/specs/bounded_stash.qnt`、`crates/fraktor-actor/specs/function_ref.qnt`（ProviderSelection には書かない。設計の判断）
@@ -45,8 +51,8 @@ Mac mini（`~/muse-work/fraktor-ng-rs-192`）で実行した。
 |:---|:---|
 | `cargo fmt --check` | 通過 |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 通過 |
-| `cargo test --workspace` | 1191件、失敗0 |
-| `bash scripts/quint-check-specs.sh` | bounded_stash は 5 passing、function_ref は 6 passing、どちらも `No violation found` |
+| `cargo test --workspace` | 1202件、失敗0 |
+| `bash scripts/quint-check-specs.sh` | bounded_stash は 5 passing、function_ref は 11 passing、どちらも `No violation found` |
 | syn-check（`crates/*/`） | 違反0 |
 | `npm run check:aislop` | 受理済みの指摘と一致 |
 | `uv run --with pytest --with pyyaml python -m pytest ledger/tools` | 189件、全件通過 |

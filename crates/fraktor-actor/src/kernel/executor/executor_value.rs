@@ -563,7 +563,15 @@ impl Executor {
       | None => (CapacityLimit::Unlimited, CapacityLimit::Unlimited),
     };
     let self_ref = next_actor_ref(path, self.queue.boundary().clone());
-    self.actor_capacities.push((self_ref.clone(), mailbox_capacity, stash_capacity));
+    // Only a bounded actor needs an entry: an actor whose capacities
+    // both resolved to unlimited reads as unlimited without one, so
+    // a system without bounded definitions does not grow the table
+    // on every spawn (re-review 2, low 5 of #192). Moving the
+    // capacities onto the cell itself waits for the per-actor
+    // mailbox of #234, where the mailbox moves there too.
+    if mailbox_capacity != CapacityLimit::Unlimited || stash_capacity != CapacityLimit::Unlimited {
+      self.actor_capacities.push((self_ref.clone(), mailbox_capacity, stash_capacity));
+    }
     let cell = ActorCell::pending(self_ref.clone(), parent, props, strategy, strategy_inherited);
     self.cells.push(cell);
     let index = self.cells.len() - 1;
@@ -1363,9 +1371,16 @@ impl Executor {
   /// messages go to dead letters.
   pub(crate) fn remove_function_ref(&mut self, parent: &ActorRef, target: &FunctionRef) {
     let target = target.as_actor_ref();
-    if let Some((_, owner)) = self.function_parents.iter().find(|(held, _)| held == &target) {
-      assert!(owner == parent, "removeFunctionRef: {} is not a function ref of {}", target.path(), parent.path());
-    }
+    // The original's `require(ref.path.parent eq self.path)` compares
+    // paths, so the refusal does not depend on the registry: a
+    // reference that was already removed still refuses a removal by
+    // another cell (re-review 2, low 4 of #192).
+    assert!(
+      target.path().parent() == parent.path(),
+      "removeFunctionRef: {} is not a function ref of {}",
+      target.path(),
+      parent.path()
+    );
     if self.function_refs.contains(&target) {
       self.stop_function_ref(&target);
     }
@@ -2200,28 +2215,32 @@ impl Executor {
   }
 
   fn notify_watchers(&mut self, target: &ActorRef, existence_confirmed: bool, address_terminated: bool) {
-    let watchers: Vec<ActorRef> = self
-      .watchers
-      .iter()
-      .filter(|(_, watched)| Self::same_watch_target(watched, target))
-      .map(|(watcher, _)| watcher.clone())
-      .collect();
-    self.watchers.retain(|(_, watched)| !Self::same_watch_target(watched, target));
-    for watcher in &watchers {
-      self.enqueue_to(watcher.clone(), Terminated::new(target.clone(), existence_confirmed, address_terminated));
-    }
     // Function references that watch through the dedicated table are
     // told apart by that table, not by the delivery branch (re-review
     // N4 of #192): they receive the notice as a message whose sender
     // is the ended target itself (design M5), and their registration
-    // survives the notice until they unwatch or stop (design F3).
+    // survives the notice until they unwatch or stop (design F3). A
+    // watcher registered in both tables is told once, through this
+    // table, so the notice keeps the original's sender (the ended
+    // target) instead of the delivery table's (re-review 2, low 3
+    // of #192).
     let function_watchers: Vec<ActorRef> = self
       .function_watching
       .iter()
       .filter(|(_, watched)| Self::same_watch_target(watched, target))
       .map(|(watcher, _)| watcher.clone())
-      .filter(|watcher| !watchers.contains(watcher))
       .collect();
+    let watchers: Vec<ActorRef> = self
+      .watchers
+      .iter()
+      .filter(|(_, watched)| Self::same_watch_target(watched, target))
+      .map(|(watcher, _)| watcher.clone())
+      .filter(|watcher| !function_watchers.contains(watcher))
+      .collect();
+    self.watchers.retain(|(_, watched)| !Self::same_watch_target(watched, target));
+    for watcher in &watchers {
+      self.enqueue_to(watcher.clone(), Terminated::new(target.clone(), existence_confirmed, address_terminated));
+    }
     for watcher in function_watchers {
       let notice = Terminated::new(target.clone(), existence_confirmed, address_terminated);
       Envelope::new(watcher, Message::new(notice), target.clone()).post_to_boundary();

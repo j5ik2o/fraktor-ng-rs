@@ -58,8 +58,9 @@ impl FunctionBoundary {
     Self { handler, open: AtomicBool::new(true), dead_letters: None }
   }
 
-  /// Creates a boundary that, once closed, hands a [`DeadLetter`]
-  /// wrapping every later post to the `dead_letters` handle, as Pekko's
+  /// Creates a boundary that, once closed, hands every later post to
+  /// the `dead_letters` handle as it is, so the dead letters route
+  /// wraps it naming the handle itself as the recipient, as Pekko's
   /// `deadLetterMessageHandler` receives the messages of a stopped
   /// function reference. The route is fixed at creation and read
   /// without a lock, so the post path stays as cheap as it was
@@ -72,7 +73,7 @@ impl FunctionBoundary {
 impl ShardBoundary for FunctionBoundary {
   fn post(&self, envelope: Envelope) {
     if !self.open.load(Ordering::Acquire) {
-      let (recipient, message, sender) = envelope.into_parts();
+      let (_, message, sender) = envelope.into_parts();
       // A dead letter that cannot be delivered is dropped, as the
       // dead letters route itself drops one: wrapping it again and
       // handing it back would make a stopped subscriber of
@@ -81,8 +82,12 @@ impl ShardBoundary for FunctionBoundary {
         return;
       }
       if let Some(dead_letters) = &self.dead_letters {
-        let wrapped = DeadLetter::from_message(message, sender.clone(), recipient);
-        dead_letters.tell(wrapped, sender);
+        // The raw message goes to the dead letters handle, as Pekko's
+        // `deadLetterMessageHandler` tells `system.deadLetters` the
+        // message itself: the dead letters route then wraps it naming
+        // the handle itself as the recipient (re-review 2, middle 1
+        // of #192), not the stopped function reference.
+        Envelope::new(dead_letters.clone(), message, sender).post_to_boundary();
       }
       return;
     }

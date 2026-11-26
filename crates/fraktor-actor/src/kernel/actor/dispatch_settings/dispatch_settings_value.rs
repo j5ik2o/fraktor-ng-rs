@@ -43,7 +43,6 @@ pub struct DispatchSettings {
   dispatchers: BTreeMap<String, MailboxDefinition>,
   mailboxes: BTreeMap<String, MailboxDefinition>,
   dispatcher_aliases: BTreeMap<String, String>,
-  mailbox_aliases: BTreeMap<String, String>,
 }
 
 impl DispatchSettings {
@@ -66,11 +65,12 @@ impl DispatchSettings {
 
   /// Defines the mailbox `name`.
   ///
-  /// A name is either a definition or an alias, never both: defining
-  /// a name drops an alias of the same name, and aliasing a name
-  /// drops its definition. The later registration wins.
+  /// Defining a name replaces the definition it held before: the
+  /// later registration wins. Mailboxes have no aliases: the
+  /// original reads a mailbox's configuration with `getConfig(id)`
+  /// directly, so a string alias never resolves (re-review 2, low 1
+  /// of #192).
   pub fn define_mailbox(&mut self, name: &str, definition: MailboxDefinition) -> &mut Self {
-    self.mailbox_aliases.remove(name);
     self.mailboxes.insert(String::from(name), definition);
     self
   }
@@ -86,17 +86,6 @@ impl DispatchSettings {
     self
   }
 
-  /// Makes the mailbox name `alias` another name for `target`.
-  ///
-  /// Aliasing a name drops a definition of the same name, as
-  /// [`define_mailbox`](Self::define_mailbox) drops an alias: the
-  /// later registration wins.
-  pub fn alias_mailbox(&mut self, alias: &str, target: &str) -> &mut Self {
-    self.mailboxes.remove(alias);
-    self.mailbox_aliases.insert(String::from(alias), String::from(target));
-    self
-  }
-
   /// Resolves the dispatcher `name`, following aliases.
   ///
   /// # Errors
@@ -108,14 +97,15 @@ impl DispatchSettings {
     Self::resolve(&self.dispatchers, &self.dispatcher_aliases, name)
   }
 
-  /// Resolves the mailbox `name`, following aliases, as
-  /// [`resolve_dispatcher`](Self::resolve_dispatcher) does.
+  /// Resolves the mailbox `name` to its definition.
   ///
-  /// # Errors
-  ///
-  /// Returns [`DispatchResolutionError`] under the same conditions.
+  /// Unlike [`resolve_dispatcher`](Self::resolve_dispatcher), no
+  /// aliases are followed: the original has aliases only for
+  /// dispatchers (`Dispatchers.getConfig`), and a mailbox name that
+  /// is not defined resolves to `Ok(None)`.
   pub fn resolve_mailbox(&self, name: &str) -> Result<Option<MailboxDefinition>, DispatchResolutionError> {
-    Self::resolve(&self.mailboxes, &self.mailbox_aliases, name)
+    let no_aliases: BTreeMap<String, String> = BTreeMap::new();
+    Self::resolve(&self.mailboxes, &no_aliases, name)
   }
 
   fn resolve(

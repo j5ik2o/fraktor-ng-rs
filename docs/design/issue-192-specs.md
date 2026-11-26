@@ -138,7 +138,7 @@ no_std: `Custom` の `String` が alloc、それ以外は core のみで書け�
 | `crates/fraktor-actor/src/kernel/actor/actor_context.rs`（変更） | `try_stash()` を足し、`stash()` の文書の「not ported」を更新する |
 | `crates/fraktor-actor/src/kernel/actor/actor_system_value.rs`（変更） | `with_setup` の文書（「setup は起動と実行に影響しない」）を更新する。`DispatchSettings` は実行に影響する Setup であるためである（レビュー L5） |
 | `crates/fraktor-actor/src/kernel/executor/executor_value.rs`（変更） | spawn 時に定義を解決して actor ごとに保持する。stash の容量検査、`unstash_all` のあふれの dead letters 送り、DeadLetter の発行（§2.3） |
-| `crates/fraktor-actor/src/kernel/actor/dead_letter.rs`（新規） | `DeadLetter` の値の型（§2.3） |
+| `crates/fraktor-actor/src/kernel/actor/dead_letter.rs`（#191 で新設。本 issue では新設しない） | #191 の `DeadLetter` の値の型をそのまま使う（§2.3。再レビュー2の中2で実物に合わせて修正） |
 | `crates/fraktor-actor/tests/actor_with_bounded_stash_spec.rs` | 原典5ケース |
 | `crates/fraktor-actor/tests/bounded_stash_property_test.rs` | PBT／モデル照合（§3。原典外で台帳の件数に含めない） |
 | `crates/fraktor-actor/specs/bounded_stash.qnt` | Quint（§4） |
@@ -225,7 +225,7 @@ impl DeadLetter {
 
 発行先は既存の event stream とする。原典も `system.eventStream.subscribe(testActor, classOf[DeadLetter])` で受ける形であり、対応が直接である。event stream の購読は統合テストの probe から使える（`EventStream::subscribe(Some(ActorRef), EventClass::of::<T>())` があり、executor には `publish_unhandled` の前例がある。レビュー L6）。したがって「使えるかを最初に確かめ、使えない場合は testkit に受け口を足す」という分岐は置かない。testkit には何も足さない。
 
-DeadLetter を発行する範囲は、executor が dead letters へ送る3か所（停止時の stash の始末、キューの始末、`unstash_all` のあふれ）だけとする。`system.dead_letters()` への直接の tell は含めない。
+DeadLetter の発行は、#191 の型と経路を使う（再レビュー2の中2で実物に合わせて書き直した）。発行は executor の `publish_dead_letter` が dead letters のハンドルへ包んで送り、ハンドル側の `route_at_dead_letters` が publish する。発行する場所は、停止時の始末（stash の始末とキューの始末）、`unstash_all` のあふれ、閉じた FunctionRef の境界の4か所である。閉じた FunctionRef の境界だけは、原典の `deadLetterMessageHandler` のとおり包まずに生のメッセージを dead letters のハンドルへ tell し、`route_at_dead_letters` が recipient＝deadLetters 自身を付ける（再レビュー2の中1）。`system.dead_letters()` への直接の tell は、`route_at_dead_letters` がそのまま処理する。
 
 ### 2.4 FunctionRef の公開 API（新規）
 
@@ -400,12 +400,12 @@ E1・E2 と E3 では扱いが違う。混同しないように分けて書く�
 
 E1（ProviderSelection の Settings／HOCON の部分）と E2（bounded stash の HOCON の定義・FQCN による型生成）は、**`cases.excluded` には入れない**。移植の忠実さの判断として、第2段でゴールの文書（`docs/goals/issue-192-specs.md`）と PR 本文に書く。前例は、G0b の決定 E（HOCON の設定の体系をどこまで再現するかは未決であり、設定体系は作らない）と、#154 の D1（原典の設定キーを写した型付きの入力にし、HOCON のパーサーは作らない。DnsSettingsSpec は 10／10／10、excluded [] で green）である。台帳では、ProviderSelectionSpec は 4／4／4 で excluded []、ActorWithBoundedStashSpec は 5／5／5 で excluded [] として green にできる。
 
-この扱いの条件は、**数えているケースがすべて、HOCON の代わりの型付きの入力で、原典と同じことを確かめていること**である。本設計のケースはこの条件を満たす（ProviderSelection は `from_setting`、bounded stash は `DispatchSettings` の値で、原典の設定と同じ対応・同じ容量を確かめる）。push timeout（500ms）のように**ケースに出てこない振る舞い**を移さないことは、ゴールの文書と PR 本文に1行で書く。今回の PR #238 の本文にも、E1・E2 の扱いを1行で整合させてある（本文1行目の `Refs #192` は変えていない）。
+この扱いの条件は、**数えているケースがすべて、HOCON の代わりの型付きの入力で、原典と同じことを確かめていること**である。本設計のケースはこの条件を満たす（ProviderSelection は `from_setting`、bounded stash は `DispatchSettings` の値で、原典の設定と同じ対応・同じ容量を確かめる）。push timeout（500ms）のように**ケースに出てこない振る舞い**については、ゴールの文書と PR 本文に1行で書く。通常の tell のあふれは「移さない」で閉じず、既知のずれとして issue #246 で #234 の段で入れる（元帥の決定、2026-11-26。再レビュー2への対応）。今回の PR #238 の本文にも、E1・E2 の扱いを1行で整合させてある（本文1行目の `Refs #192` は変えていない）。
 
 | 番号 | 対象 | 扱い | 理由 |
 |:---|:---|:---|:---|
 | E1 | ProviderSelectionSpec の全4ケースのうち、設定読み取りの部分 | 除外にしない。HOCON の設定文字列と Typesafe Config の `Settings.ProviderClass`、クラスローダ経由の解決は作らず、キーと FQCN を受ける型付きの入口 `from_setting`（原典の `apply` の写し）に置き換えて、ケース自体は移す。忠実さの判断としてゴールの文書と PR 本文に書く | fraktor-ng-rs には設定ファイルの仕組みが無く、provider の選択はプログラム的に与える設計である。fqcn は JVM のクラス名であり、Rust では識別子の文字列として保持する以上の意味を持たない |
-| E2 | ActorWithBoundedStashSpec の設定方法と、ケースに出ない振る舞い | 除外にしない。HOCON の文字列による dispatcher／mailbox の定義、クラス名（FQCN）による mailbox 型の生成（`Bounded10`／`Bounded100`）は作らず、定義は Rust の値（`DispatchSettings`）で与える。push timeout（500ms）と、通常の tell のあふれの扱い（M10）は、ケースに出てこない振る舞いとして移さず、その旨をゴールの文書と PR 本文に1行で書く | 設定ファイルとリフレクションによる型生成は JVM 固有である。timeout は同期的な kernel の実行系に対応が無く、ケースの観測（あふれの行き先と順序）には現れない |
+| E2 | ActorWithBoundedStashSpec の設定方法と、ケースに出ない振る舞い | 除外にしない。HOCON の文字列による dispatcher／mailbox の定義、クラス名（FQCN）による mailbox 型の生成（`Bounded10`／`Bounded100`）は作らず、定義は Rust の値（`DispatchSettings`）で与える。push timeout（500ms）と、通常の tell のあふれの扱い（M10）はケースに出てこない振る舞いであり、その旨をゴールの文書と PR 本文に1行で書く。とくに通常の tell のあふれ（原典では push の時間切れのあと DeadLetter）は未移植の既知のずれであり、「移さない」では閉じず、issue #246 で #234 の段で入れる（元帥の決定、2026-11-26） | 設定ファイルとリフレクションによる型生成は JVM 固有である。timeout は同期的な kernel の実行系に対応が無く、ケースの観測（あふれの行き先と順序）には現れない |
 
 ### E3 は除外として承認済み（オーナーの承認、2026-11-26）
 
@@ -480,3 +480,19 @@ E1（ProviderSelection の Settings／HOCON の部分）と E2（bounded stash �
 | N2（低） | `FunctionRef` の `#[derive(Copy)]` は E0204 でコンパイルできない | **直した**。derive から `Copy` を外し、「core の値である」という文も直した（§2.4） |
 | N3（低） | 除去した FunctionRef の宛先の差し替えの実装（ホットパスにロックを入れない） | **実装の注意として注記した**（§2.4）。`open` の原子フラグと生成時に持たせた dead letters 経路で分け、ロックは入れない |
 | N4（低） | Terminated の sender を差し替える範囲の見分け方 | **実装の注意として注記した**（§2.4）。`enqueue_to` の枝ではなく、watcher が function ref の登録表にあるかで見分ける |
+
+## 10. 再々レビュー回答（2026-11-26、条件つき承認）
+
+再々レビュー（`pr238-design-rereview2.md`、判定「条件つき承認」）への対応である。中1と中2は直した。低は、低2を含めてゴールの文書への記録まで行った（元帥の決定、2026-11-26）。
+
+| 番号 | 指摘 | 対応 |
+|:---|:---|:---|
+| 中1 | 止まった FunctionRef 宛ての DeadLetter の recipient が原典と違う | **直した**。閉じた FunctionRef の境界は、包まずに生のメッセージを dead letters のハンドルへ渡し、`route_at_dead_letters` が recipient＝deadLetters 自身を付ける形にした。回帰テスト2件の期待も dead letters 自身に直し、モデルテストの DeadLetter の分類も合わせた（§2.3） |
+| 中2 | DeadLetter を #191 に寄せたことが設計に反映されていない | **直した（文書だけ）**。§2.2 の表と §2.3 を #191 の型と経路に書き直し、本節を足した。#191 の設計の D1 にも、`add_function_ref` の FunctionRef は dead letter になる旨の注記を足した。ゴールの文書の検証表の function_ref の件数も現在の 11 passing に直した |
+| 低1 | `alias_mailbox` は設計にも原典にも無い | **直した**。`alias_mailbox` と mailbox の alias の表を消した。原典の別名は dispatcher だけであり、mailbox は `getConfig(id)` で直接読む |
+| 低2 | M7 と H2 の忠実さの判断がゴールの文書に無い | **書いた**。ゴールの文書の「既知のずれ」の節に、M7（他のセルの FunctionRef の除去は原典の `require` どおり panic）と、H2（定義に無い名前は無制限のまま。既知のずれとして issue #247 で直す）を書いた |
+| 低3 | 二重通知の重複を除くと M5 の sender が失われる | **直した**。両方の表にいる watcher は function ref の表の通知（sender＝終わった相手）を残す形にし、回帰テストに sender の確認を足した。Quint にも両方の表に同じ watcher がいる状態（`watchByRefDelivery`）と、その run を足した |
+| 低4 | 除去のあとの「他のセルの FunctionRef」の判定が登録表に頼っている | **直した**。`remove_function_ref` の判定を、原典の `require` どおりパスの親との比較にした。除去のあとでも他のセルからの除去は panic する |
+| 低5 | `actor_capacities` が DispatchSettings の無いシステムでも全 spawn で足され、`try_stash` のたびに走査される | **一部直した**。容量が両方とも無制限の actor には項目を作らない形にし、無制限のシステムでは表が育たないようにした。容量をセルの側へ移すことは、#234 で mailbox が actor ごとになる段でそちらへ移す |
+| 判断材料1（E2） | bounded mailbox への通常の tell のあふれ | **#192 では直さない（元帥の決定、2026-11-26）**。既知のずれとしてゴールの文書に書き、issue #246 で #234 の段で入れる。「移さない」で閉じる扱いにはしない。台帳の `cases.excluded` には入れない |
+| 判断材料2（H2） | 定義に無い dispatcher／mailbox の名前は無制限のまま | **#192 では直さない（元帥の決定、2026-11-26）**。一時的な互換の判断として既知のずれに明記したうえで残し、issue #247 で直す。台帳の `cases.excluded` には入れない |

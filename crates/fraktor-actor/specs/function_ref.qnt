@@ -215,6 +215,39 @@ module function_ref {
     watchByActor(r)
   }
 
+  // A function ref registered in the delivery table as the watcher
+  // of another ref, as `ActorSystem::watch` with a function ref as
+  // the watcher does. Together with `watchByRef`, this is the state
+  // in which one watcher sits in both tables: `watchersOf` unions
+  // the two sets, so the end is told once, and the one notice is
+  // the function table's, whose sender is the ended ref itself
+  // (re-review 2, low 3 of #192).
+  action watchByRefDelivery(w: int, r: int): bool = all {
+    registered.contains(w),
+    registered.contains(r),
+    deliveryWatchers' = deliveryWatchers.union(Set((w, r))),
+    registered' = registered,
+    parentOf' = parentOf,
+    aliveActors' = aliveActors,
+    actorParent' = actorParent,
+    watching' = watching,
+    terminatedList' = terminatedList,
+    endNotices' = endNotices,
+    mustStayWatching' = mustStayWatching,
+    nextRef' = nextRef,
+    forwarded' = forwarded,
+    deadMessages' = deadMessages,
+    runLog' = runLog,
+    endLog' = endLog,
+    clock' = clock,
+  }
+
+  action watchByRefDeliveryStep = {
+    nondet w = registered.oneOf()
+    nondet r = registered.oneOf()
+    watchByRefDelivery(w, r)
+  }
+
   // A function ref watching another ref. Watching a ref that already
   // ended answers with a notice at once, as the code does.
   action watchByRef(w: int, r: int): bool = all {
@@ -359,7 +392,7 @@ module function_ref {
 
   action step = any {
     init, addRefStep, removeRefStep, stopActorStep,
-    watchByActorStep, watchByRefStep, unwatchByRefStep, sendToStep,
+    watchByActorStep, watchByRefStep, watchByRefDeliveryStep, unwatchByRefStep, sendToStep,
   }
 
   def endNoticeSet: Set[(int, int)] = endNotices.foldl(Set(), (s, p) => s.union(Set(p)))
@@ -390,6 +423,15 @@ module function_ref {
       .expect(terminatedList == [(0, 1)] and watching == Set((0, 1)))
       .then(unwatchByRef(0, 1))
       .expect(watching == Set())
+
+  run watchedThroughBothTablesIsToldOnceTest =
+    init
+      .then(addRef(2))
+      .then(addRef(2))
+      .then(watchByRefDelivery(0, 1))
+      .then(watchByRef(0, 1))
+      .then(removeRef(1))
+      .expect(terminatedList == [(0, 1)] and endNotices == [(0, 1)])
 
   run parentStopEndsRefsThroughTheChainTest =
     init

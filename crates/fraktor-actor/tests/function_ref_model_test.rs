@@ -127,8 +127,10 @@ enum Observed {
   ForwardedTerminated(usize, usize),
   // A payload forwarded by a ref: the payload text.
   Forwarded(String),
-  // A dead letter: (payload, recipient index).
-  Dead(String, usize),
+  // A dead letter: the payload text. The recipient is the dead
+  // letters handle itself, as the original's `DeadLetterActorRef`
+  // names it, so the payload (unique per send) identifies it.
+  Dead(String),
 }
 
 struct Model {
@@ -160,7 +162,7 @@ impl Model {
   }
 }
 
-fn classify(refs: &[FunctionRef], parent: &ActorRef, message: &Message) -> Observed {
+fn classify(refs: &[FunctionRef], parent: &ActorRef, dead_letters: &ActorRef, message: &Message) -> Observed {
   if let Some(terminated) = message.downcast_ref::<Terminated>() {
     let ended = terminated.target();
     if ended == parent {
@@ -181,8 +183,8 @@ fn classify(refs: &[FunctionRef], parent: &ActorRef, message: &Message) -> Obser
   }
   if let Some(dead) = message.downcast_ref::<DeadLetter>() {
     let payload = dead.message().downcast_ref::<String>().cloned().unwrap_or_default();
-    let index = refs.iter().position(|reference| reference.as_actor_ref() == *dead.recipient()).expect("known ref");
-    return Observed::Dead(payload, index);
+    assert_eq!(dead.recipient(), dead_letters, "a dead letter names the dead letters handle as its recipient");
+    return Observed::Dead(payload);
   }
   panic!("unexpected message {message:?}");
 }
@@ -192,7 +194,7 @@ fn drain(kit: &mut TestKit, refs: &[FunctionRef], parent: &ActorRef, count: usiz
   for _ in 0..count {
     let received = kit.receive_n(1, Duration::from_secs(3));
     assert_eq!(received.len(), 1, "a predicted delivery did not arrive");
-    observed.push(classify(refs, parent, received[0].message()));
+    observed.push(classify(refs, parent, &kit.system().dead_letters(), received[0].message()));
   }
   observed
 }
@@ -282,11 +284,8 @@ fn function_ref_matches_the_registry_model() {
           sends += 1;
           let payload = format!("ping-{round}-{sends}");
           parent.tell(format!("send:{target}:{payload}"), test_actor.clone());
-          let expected = if model.registered[target] {
-            vec![Observed::Forwarded(payload)]
-          } else {
-            vec![Observed::Dead(payload, target)]
-          };
+          let expected =
+            if model.registered[target] { vec![Observed::Forwarded(payload)] } else { vec![Observed::Dead(payload)] };
           let observed = drain(&mut kit, &refs, &parent, 1);
           assert_eq!(sorted(&observed), sorted(&expected), "seed {seed} round {round} step {step} send {target}");
         },

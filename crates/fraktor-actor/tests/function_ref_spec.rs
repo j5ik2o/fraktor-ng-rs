@@ -275,7 +275,10 @@ fn function_ref_created_in_post_stop_ends_with_its_parent() {
   fref.tell("hello", test_actor.clone());
   let dead = kit.expect_msg_type::<DeadLetter>();
   assert_eq!(dead.message().downcast_ref::<&'static str>().copied(), Some("hello"));
-  assert!(dead.recipient() == &fref.as_actor_ref());
+  // The original's `DeadLetterActorRef` wraps a message told to a
+  // stopped function ref naming the dead letters handle itself as
+  // the recipient (re-review 2, middle 1 of #192).
+  assert!(dead.recipient() == &kit.system().dead_letters());
   kit.expect_no_message(Duration::from_millis(300));
 }
 
@@ -295,6 +298,10 @@ fn function_ref_watched_through_both_tables_is_told_once() {
   let forwarded = kit.expect_msg_type::<Forwarded>();
   let notice = forwarded.0.downcast_ref::<Terminated>().expect("the forwarded message is a Terminated");
   assert_eq!(notice.target(), &target.as_actor_ref());
+  // The one notice comes through the function ref table, whose
+  // sender is the ended target itself, as the original's notice is
+  // (re-review 2, low 3 of #192).
+  assert_eq!(&forwarded.1, &target.as_actor_ref());
   kit.expect_no_message(Duration::from_millis(300));
 }
 
@@ -314,6 +321,6 @@ fn removed_function_ref_subscribed_to_dead_letters_does_not_loop() {
   f.tell("hello", test_actor.clone());
   let dead = kit.expect_msg_type::<DeadLetter>();
   assert_eq!(dead.message().downcast_ref::<&'static str>().copied(), Some("hello"));
-  assert!(dead.recipient() == &f.as_actor_ref());
+  assert!(dead.recipient() == &kit.system().dead_letters());
   kit.expect_no_message(Duration::from_millis(500));
 }
