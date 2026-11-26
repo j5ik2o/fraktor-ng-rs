@@ -1569,9 +1569,17 @@ I1 と同じく panic する（停止を捨てると、名前の解放と watche
   添える
   - path をメールボックスへ移す（`ActorRef` を id、世代、endpoint にする）：届く経路は 1〜3、断られる経路は 3 になる。
     `Mailbox<C>` に path を持たせると、段 2 の型と単体テストの形が広く変わる
-  - 断られたものを、送り手のスレッドで dead letters へ流す：宛先の複製も `upgrade` も要らず 2 になる。原典の
+  - 断られたものを、送り手のスレッドで dead letters へ流す：Arc の複製は 4（送り手 2＋DeadLetter の宛先 2）、原子操作は 4、`upgrade` は 0。1-2 は満たし、1-1 は宛先の endpoint の複製で満たさない（元帥へ記録）。前の版の「2 になる」は、原典の `DeadLetter(message, sender, receiver)` が宛先のハンドルを持つことを数えていなかった（#286、中将の判断 2026-11-27）。原典の
     `DeadLetterMailbox` も送り手のスレッドで流すので原典には近いが、dead letters の購読者が `run_until_idle` の前に通知を
     受け取り、今の時点が変わる。今の時点に頼るテストを洗い出してからでないと採れない
+
+  上の 4／4・`upgrade` 0 は、数える範囲を限った数である（プルリクエスト #295 のレビューで明記した）。数えるのは、
+  数え上げを置いた場所（`ActorRef` と `Endpoint` の複製、予約、`Mailbox::executor` の `upgrade`）で、`tell` から
+  送り手のスレッドで dead letters へ流し終えるまでの区間であり、数え上げのテストが購読者の無い形で確かめた数で
+  ある。流したあとの EventStream への発行は数に入らない。発行には、購読表の弱参照の `upgrade`
+  （`EventStreamBusWeak::publish`）と、購読者 1 件ごとのハンドルの複製があり、抑制されたメッセージを
+  `SuppressedDeadLetter` に包むときは dead letters のハンドルの複製も加わる。これらは、実行器が流していた形でも
+  発行の側にあったものであり、断られる経路全体の上限ではなく、発行 1 回あたりの数として別に読む。
 
 **条件 1 の数え方**：kernel の `sync::Arc` は標準の `Arc`（CAS の無い target では `portable_atomic_util::Arc`）の別名で、
 複製の回数を数える仕掛けが無い。`strong_count` を見るだけでは、見る前に捨てられた複製を数えられない。そこで、複製が
