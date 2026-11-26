@@ -1,6 +1,6 @@
 # 設計：#194 actor の FSMTransitionSpec／LocalActorRefProviderSpec／ActorConfigurationVerificationSpec
 
-[Issue #194](https://github.com/j5ik2o/fraktor-ng-rs/issues/194) の設計の記録である。Pekko v2.0.0（commit `9fbd2283b1cf701c90a1223bf621942c191db61f`）の actor-tests にある `FSMTransitionSpec`、`LocalActorRefProviderSpec`、`ActorConfigurationVerificationSpec` の 3 本を Rust へ移植し、台帳の対象ノード 3 件を green にする。
+[Issue #194](https://github.com/j5ik2o/fraktor-ng-rs/issues/194) の設計の記録である。Pekko v2.0.0（commit `9fbd2283b1cf701c90a1223bf621942c191db61f`）の actor-tests にある `FSMTransitionSpec`、`LocalActorRefProviderSpec`、`ActorConfigurationVerificationSpec` の 3 本を Rust へ移植する。完了条件は、元帥の決定（2026-11-26、§1.4）により「2 ノードを green にし、`LocalActorRefProviderSpec` は 8 件中 7 件を移す」である。
 
 この文書は第 1 段（設計）の記録であり、第 2 段（実装）は設計レビューを通ってから red → green の順に行う。台帳は第 2 段で更新する。依存する issue は無い。ただし `LocalActorRefProviderSpec` の 1 件だけが複数スレッドの実行器の設計（[issue #234](https://github.com/j5ik2o/fraktor-ng-rs/issues/234)、設計は [PR #236](https://github.com/j5ik2o/fraktor-ng-rs/pull/236)）を前提にするため、その 1 件を分けて書き、残りの 25 件は #234 を待たずに進められるようにする（§1.4）。
 
@@ -62,7 +62,7 @@
 | 2 | not handle messages other than those it will act upon（root guardian） | `root_guardian_reports_messages_it_does_not_handle_as_unhandled` | 移す（本体の追加が要る）。`/` への送信が dead letter ではなく `UnhandledMessage` の警告（送信者は dead letters）になることを `EventFilter` 相当で確かめる。現行は guardian のパスが実在のアクターでないため、未解決パスとして dead letter へ流れる（§2.2） |
 | 3 | not handle messages other than those it will act upon（user guardian） | `user_guardian_reports_messages_it_does_not_handle_as_unhandled` | 移す（本体の追加が要る）。`/user` についてケース 2 と同じことを確かめる |
 | 4 | not handle messages other than those it will act upon（system guardian） | `system_guardian_reports_messages_it_does_not_handle_as_unhandled` | 移す（本体の追加が要る）。`/system` についてケース 2 と同じことを確かめる |
-| 5 | not retain its original Props when terminated | `does_not_retain_the_original_props_when_terminated` | 移す（形を変える）。番兵の案は取り下げた（H2）。実物では、停止したセルは表から外れて捨てられるため、停止後にセルの `Props` を読む対象が無い。性質は結合テストで確かめる。factory のクロージャに `Arc` を捕まえさせ、テストはその `Weak` を持ち、子が停止した後、`await_assert` で `weak.upgrade()` が `None` になる（元の `Props` が捕まえた資源が解放される）ことを確かめる。本体の追加は要らない |
+| 5 | not retain its original Props when terminated | `does_not_retain_the_original_props_when_terminated` | 移す（形を変える）。番兵の案は取り下げた（H2）。実物では、停止したセルは表から外れて捨てられるため、停止後にセルの `Props` を読む対象が無い。性質は結合テストで確かめる。factory のクロージャに `Arc` を捕まえさせ、テストはその `Weak` を持つ。停止の前に `weak.upgrade()` が `Some` であることを確かめてから（これが無いと、資源がはじめから捕まえられていなかった場合でも通ってしまう）、子が停止した後、`await_assert` で `weak.upgrade()` が `None` になる（元の `Props` が捕まえた資源が解放される）ことを確かめる。本体の追加は要らない |
 | 6 | only create one instance of an actor with a specific address in a concurrent environment | —（#234 の後。§1.4） | この issue では移さない。複数スレッドから同時に同じ名前で作っても成功が 1 件だけで、残りが `InvalidActorNameException` になることを確かめるケースであり、前提は §1.4 に書く |
 | 7 | only create one instance of an actor from within the same message invocation | `creates_only_one_instance_from_within_the_same_message_invocation` | 移す（形を変える）。1 回のメッセージ処理の中で同じ名前（`duplicate`）で 2 回作ると、2 回目が `InvalidActorNameException` になる。原典は投げられた例外を `EventFilter` で傍受するが、移植の `actor_of` は例外を投げず `Result` を返すため、アクターが 2 回目の結果を probe へ送って確かめる形にする。加えて、子が 1 つだけ残ること（子のパスを解決すると 1 回目に作った参照が返ること）も確かめる |
 | 8 | throw suitable exceptions for malformed actor names | `rejects_malformed_actor_names_with_suitable_messages` | 残りを移す。名前の検証そのもの（`ActorPath::validate_path_element`）はすでにあるが、生成の経路へつながっていないため、つなぐ追加が要る（§2.2）。原典の小ケースのうち、名前が `null` の確かめだけは、Rust の `&str` が null を表現できないため作らないことを提案し、**オーナーの判断待ち**とする（独立レビューの推奨は承認であり、台帳には承認が出るまで書かない。§10）。空文字、先頭の `$`、不正な `%` エスケープ（`a%`、`%3`、`%xx`、`%0G`、`%gg`、`%`、`%1t`）、`a?`、非 ASCII（`üß`）、引用符・`$`・`>` の位置の表示はすべて移す |
@@ -172,7 +172,7 @@ impl<S, D> Fsm<S, D> {
 }
 ```
 
-`FsmView` は、状態関数を呼ぶ直前に作るスナップショットである（リスナーの数と状態名）。状態関数の実行中にリスナーの集合は変わらない。購読と解除は状態関数より先にさばくメッセージであり、リスナーの停止は `Terminated` の処理で変わるが、それも 1 件のメッセージ処理の中では状態関数の前後どちらかで起きる。したがってスナップショットの数は、そのメッセージの処理中は正しい。`when` の署名も同じく `&FsmView<S>` を足す形に変わる。これは既存の公開 API の署名の変更であり、既存の利用（`fsm_test.rs`、`abstract_fsm_actor_test.rs`、`abstract_fsm_with_stash_actor_test.rs`）は引数を 1 つ受ける形へ直す（§7）。
+`FsmView` は、状態関数を呼ぶ直前に作るスナップショットである（リスナーの数と状態名）。状態関数の実行中にリスナーの集合は変わらない。購読と解除は状態関数より先にさばくメッセージであり、リスナーの停止は、`watch_with` の専用の内部メッセージの処理で変わるが、それも 1 件のメッセージ処理の中では状態関数の前後どちらかで起きる。したがってスナップショットの数は、そのメッセージの処理中は正しい。`when` の署名も同じく `&FsmView<S>` を足す形に変わる。これは既存の公開 API の署名の変更であり、既存の利用（`fsm_test.rs`、`abstract_fsm_actor_test.rs`、`abstract_fsm_with_stash_actor_test.rs`）は引数を 1 つ受ける形へ直す（§7）。
 
 決まりは次のとおりである。
 
@@ -184,8 +184,16 @@ impl ActorContext<'_> {
   /// Mirrors `ActorContext.watchWith`: when `target` stops, this actor
   /// receives `message` instead of the plain `Terminated`.
   pub fn watch_with<M: core::any::Any + Send + Sync>(&mut self, target: &ActorRef, message: M) -> ActorRef;
+  /// Mirrors `ActorContext.isWatching` (Pekko's `DeathWatch.isWatching`).
+  pub fn is_watching(&self, target: &ActorRef) -> bool;
 }
 ```
+
+重なったときの決まり（R1）：
+
+- fraktor の watch の表は（監視する側、される側）の組で 1 件であり、1 つの組には届くメッセージが 1 つだけである。`watch` と `watch_with` が同じ相手について重なった場合の扱いは、Pekko の `checkWatchingSame` を写す。すでに監視している相手へ、違うメッセージで `watch_with` を呼ぶことと、すでに `watch_with` で監視している相手へ素の `watch` を呼ぶことは、どちらも契約違反であり panic する（Pekko の `IllegalStateException` に当たる）。同じメッセージでの再呼び出しと、素の `watch` の再呼び出しは冪等である。
+- FSM は、購読を受けるたびに `is_watching` で確かめる（Pekko の `FSM.addListener` の分岐の写し）。まだ監視していない相手だけを `watch_with` で監視し、`watchedListeners` に当たる集合へ入れる。すでに監視している相手（利用者が状態関数の中で `context.watch` した場合を含む）は、警告をログへ出し、自動では外さない。解除と停止のどちらでも、その相手の監視は FSM の側からは触らない。
+- したがって、状態関数が `context.watch(L)` した後に L を購読しても、購読した後に状態関数が `context.watch(L)` を呼んでも、FSM が利用者の監視を消したり、利用者向けの `Terminated` を横取りしたりすることはない。
 - `when_unhandled` は、現在の状態の状態関数がすべて `None` を返したときにだけ呼ばれる。現行の「未処理なら現状態を保つ」既定は、`when_unhandled` が登録されていない場合の振る舞いとして残る。
 - `FsmState` に返信を足す。Pekko の `State.replying(msg)` の写しである。
 
@@ -199,7 +207,7 @@ impl<S, D> FsmState<S, D> {
 
 返信の順序は原典に合わせる（M6）。Pekko の `makeTransition` は、返信を遷移ハンドラとリスナーへの通知より前に送る。そのため移植も、返信は遷移ハンドラの実行とリスナーへの `Transition` の送信より前に、イベントの sender へ送る。返信の値は `Vec` で持ち、`replying` を何度か呼ぶと呼んだ順に全部送る。次の状態が存在しない（登録されていない状態への `goto`）ときは、原典どおり返信しない。ケース 4 の `ListenerCount` への応答（`stay().replying(...)`）もこの経路である。
 
-- データの渡し方。ケース 5 は `onTransition` の中で前のデータと次のデータの組を読む。ハンドラは 1 本の `Vec` で持ち、データ付きのハンドラを正とする（L5）。`on_transition` は、データを捨てる包みとして同じ `Vec` へ登録する。こうすると 2 種類のハンドラが登録した順に呼ばれる。`make_transition` は、遷移前のデータと遷移後のデータの両方をその間だけ保持してハンドラへ渡す。メッセージとして送る `CurrentState<S>` と `Transition<S>` は `Message::new` の境界から `S: core::any::Any + Send + Sync` を要するため、`Fsm` の `Actor` の実装の境界に `Send + Sync` が増える（L4）。既存の利用の `S` は `String` と `&'static str` であり、どちらも境界を満たすため壊れない。
+- データの渡し方。ケース 5 は `onTransition` の中で前のデータと次のデータの組を読む。ハンドラは 1 本の `Vec` で持ち、データ付きのハンドラを正とする（L5）。`on_transition` は、データを捨てる包みとして同じ `Vec` へ登録する。こうすると 2 種類のハンドラが登録した順に呼ばれる。`make_transition` は、遷移前のデータと遷移後のデータの両方をその間だけ保持してハンドラへ渡す。メッセージとして送る `CurrentState<S>` と `Transition<S>` は `Message::new` の境界から `S: core::any::Any + Send + Sync` を要するため、`Send + Sync` の境界は `Fsm` の impl 全体（通常の impl、`Default`、`Actor` の実装）に要る（再レビューの試作で、`make_transition` を含む通常の impl と `Default` にも境界が要ることが E0277 で確かめられた）。既存の利用の `S` は `String` と `&'static str` であり、どちらも境界を満たすため壊れない。
 - ケース 8（`nextStateData` の漏れ）への形。次データは `on_transition_with_data` の引数としてだけ存在し、遷移が終わればハンドラの外からは読めない。panic する公開 API は足さない（§8 の項目 4）。ケースが空の確かめにならないよう、 §1.2 のとおり `Arc` の `strong_count` で、遷移のあとに次データを保持し続けていないことを確かめる。原典との形の違いはテストファイルの冒頭に記録する。
 - `no_std`：追加はすべて `core` と `alloc` で書ける。リスナーは `alloc::vec::Vec`、メッセージ型は通常の構造体であり、`std` の機能は要らない。
 
@@ -227,12 +235,15 @@ pub enum ActorCreationError {
   InvalidName(InvalidActorNameException),
   Configuration(ConfigurationException),
 }
+impl core::fmt::Display for ActorCreationError { /* delegates to the inner error */ }
+impl core::fmt::Debug for ActorCreationError { /* delegates to the inner error */ }
+impl core::error::Error for ActorCreationError {}
 ```
 
 決まりは次のとおりである。
 
 - `resolve_actor_ref` の意味は原典どおりにする（M2）。見つからないパスについては dead letters ではなく、パスを保った空の参照（Pekko の `EmptyLocalActorRef`）を返す。作り方は既存の `next_actor_ref(path, boundary)` を使う。dead letters を返すのは、要素が空のときと、ルートが別のシステムのときだけである。guardian のパス（`/user` など）は guardian の参照を返す。解決の対象には、実行中のフレーム（表から外れている処理中のアクター自身と、その祖先）を含める。executor は実行中のアクターをセルの表から外すため、表だけを引くと処理中のアクターが「無い」と判定されてしまう。ケース 1 は、§1.3 のとおり `receive` の中からではなくテストの側から呼ぶ。URL エンコード済みの名前は、エンコード済みの文字列のまま要素として保持される（現行の `ActorPath` は要素をデコードしない）ため、ケース 1 の名前はそのまま一致する。
-- guardian の未処理の報告。executor が選択の解決をする場所で、解決先が root（要素なし）、`user`、`system` の guardian のパスそのものである場合は、dead letter へ流さず、その guardian を宛先とする `UnhandledMessage` を発行する。送信者は原典どおり dead letters であり、警告文は既存の `unhandled message from <sender>: <message>` の形を使う。guardian の下の実在の子への配送は変えない。なお、fraktor の警告文は `unhandled message from {path}: {message:?}` であり、Pekko の `unhandled message from Actor[{path}]: {message}` と文面が違う。この違いはテストファイルの冒頭に記録する（L11）。
+- guardian の未処理の報告。executor が選択の解決をする場所で、解決先が root（要素なし）、`user`、`system` の guardian のパスそのものである場合は、dead letter へ流さず、その guardian を宛先とする `UnhandledMessage` を発行する。送信者は原典どおり dead letters であり、警告文は既存の `unhandled message from <sender>: <message>` の形を使う。guardian の下の実在の子への配送は変えない。`resolve_actor_ref` が返した guardian の参照へ直接送った場合も、選択の経路と同じく `UnhandledMessage` になるようにそろえる（この扱いを確かめるケースは原典には無い）。なお、fraktor の警告文は `unhandled message from {path}: {message:?}` であり、Pekko の `unhandled message from Actor[{path}]: {message}` と文面が違う。この違いはテストファイルの冒頭に記録する（L11）。
 - 名前の検証の接続。`Executor::spawn_named_child_under` と、新しい `actor_of_named` の経路で、重複の検査の前に名前を検証する。検証は既存の `ActorPath::validate_path_element` をそのまま使い、失敗は新しい生成子で `InvalidActorNameException` にする。入口で別に見るのは空文字（と、Rust では表現できない null）だけであり、文面は「actor name must not be empty」とする。それ以外（先頭の `$`、不正な `%` エスケープ、非 ASCII、禁止文字とその位置）はすべて `validate_path_element` の 1 本の文面で足りる（H3）。Pekko に無い文面（たとえば「actor name must not start with `$`」）は作らない。
 
 ```rust
@@ -351,7 +362,7 @@ impl ActorSystem {
 - F1：`stay()` は遷移を通知しない。`onTransition` ハンドラにも、遷移リスナーにも届かない。
 - F2：同じ状態への `goto` は遷移を通知する。状態名が等しくても、ハンドラとリスナーへ届く。
 - F3：`initialize()` は初期状態から初期状態への遷移を 1 回だけ通知する。
-- F4：購読したリスナーへは、購読の直後に `CurrentState` が 1 回届き、それ以降の通知される遷移ごとに `Transition` がちょうど 1 回ずつ、遷移の順序どおりに届く。重複して購読しても二重には届かない。
+- F4：購読したリスナーへは、購読のメッセージが来るたびに `CurrentState` が届く（Pekko の `FSM.receive` が購読のたびに送る）。それ以降の通知される遷移ごとに `Transition` がちょうど 1 回ずつ、遷移の順序どおりに届く。重複して購読しても、`Transition` が二重には届かない（リスナーの集合は重複を持たない）。
 - F5：停止したリスナーは、その停止の通知（`Terminated`）を FSM が処理した後は集合に無い。停止と通知の処理の間に遷移が来た場合、その遷移はまだ集合に残っている停止済みのリスナーへ送られ、dead letters へ流れる。これは Pekko でも起きることであり、生きた配送にはならない。停止したリスナーへの送信で FSM が失敗することはない。
 - F6：遷移ハンドラの中で読める前のデータは遷移前のデータであり、次のデータは遷移後のデータである。`using` で差し替えた場合は差し替え後の値が次のデータになる。
 - F7：次データは遷移の間だけ存在する。遷移の外（状態関数の中、通常のメッセージ処理の中）では、次データを指す値が無い。
@@ -413,7 +424,7 @@ FSM に書く理由：
 ## 7. 影響
 
 - 既存の公開 API の追加：`Fsm` へのメソッドの追加（`on_transition_with_data`、`when_unhandled`）、`FsmState::replying` の追加、遷移リスナーのメッセージ型の追加、`ActorContext::watch_with` の追加、`ActorSystem::resolve_actor_ref` と `actor_of_named` と `try_actor_of` の追加、`Props::with_router` と `router` の追加、`InvalidActorNameException::invalid_name` の追加、`ConfigurationException`、`ActorCreationError`、`Dispatchers`、`DispatcherConfig`、`DispatcherKind`、`RouterConfig`、`PoolKind` の追加。
-- 既存の公開 API の署名の変更：`Fsm::when` と新しく足す `when_unhandled` のクロージャは、`&FsmView<S>` を引数に取る（H1）。`Fsm` の `Actor` の実装の境界には `S: Send + Sync` が増える（L4）。既存の利用（`fsm_test.rs`、`abstract_fsm_actor_test.rs`、`abstract_fsm_with_stash_actor_test.rs`）は、引数を 1 つ受ける形へ直す。`S` の既存の値は `String` と `&'static str` であり、境界は満たす。
+- 既存の公開 API の署名の変更：`Fsm::when` と新しく足す `when_unhandled` のクロージャは、`&FsmView<S>` を引数に取る（H1）。`Fsm` の impl 全体（通常の impl、`Default`、`Actor` の実装）の境界には `S: Send + Sync` が増える（L4）。既存の利用（`fsm_test.rs`、`abstract_fsm_actor_test.rs`、`abstract_fsm_with_stash_actor_test.rs`）は、引数を 1 つ受ける形へ直す。`S` の既存の値は `String` と `&'static str` であり、境界は満たす。
 - 振る舞いの変更：名前の検証が生成経路へつながるため、これまで通っていた不正な名前の生成が失敗するようになる。独立レビューの試作では、既存の 1169 件のうち 1 件が落ちた。`actor_system_value_test.rs` の 2035 行付近の単体テストが、空白を含む名前（`first child`、`second child`）を使っているためである（L7）。第 2 段ではこの単体テストの名前を有効な名前へ直す。guardian のパスへの送信が dead letter から `UnhandledMessage` へ変わるため、dead letter の件数を数える既存のテスト（DeadLetter 系の Spec）への影響も、第 2 段の red の前に `cargo test --workspace` で確かめる。
 - 台帳：第 2 段で対象ノード 3 件を更新する。`FSMTransitionSpec` は total／ported／passing を 8／8／8、`ActorConfigurationVerificationSpec` は 10／10／10 とし、`rust.crate` に `fraktor-actor`、`rust.test_file` に各テストファイル、`status: green`、`verified_against: v2.0.0` を書く。`LocalActorRefProviderSpec` は §1.4 の決定のとおり、`status: unported` のまま 8／7／7 とし、`verified_against` は書かない。null の名前の扱いは**オーナーの判断待ち**であり、台帳の `not_built` にも `excluded` にも書かない。
 
@@ -433,6 +444,8 @@ FSM に書く理由：
 ## 9. 第 2 段ですること（本書の範囲の外）
 
 - red（失敗するテスト）→ green の順に実装する。先に 3 つの spec ファイル（と PBT 2 件、全数の表のテスト 1 件、Quint 1 件）を書き、コンパイルの失敗かテストの失敗で red を確認してから本体を足す。#234 の段 5（#256）を前提にするケース 6 は書かない（後続は [issue #265](https://github.com/j5ik2o/fraktor-ng-rs/issues/265)）。
+- 既存の 4 つのテストファイル（`fsm_test.rs`、`abstract_fsm_actor_test.rs`、`abstract_fsm_with_stash_actor_test.rs` の `when` の引数と、`actor_system_value_test.rs` の名前）の機械的な直しは、red の工程（テストを書く工程）で行う。移植の規約は「実装ステップはテストファイルを編集しない」と定めているため、署名の変更で既存のテストがコンパイルできなくなる直しを実装の工程へ残さない。
+- ルーターの振り分けと、子の生成への設定の検証の、後続の issue 2 件は、実装に入る前に立て、rustdoc からリンクする。
 - 台帳の対象ノードを §7 のとおりに更新する。PR 本文の 1 行目は、作らない・除外の承認待ち（null の名前）が残る間は `Refs #194` のままにする。
 - CI と同じ検査を流す（`cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、ledger/tools の Python テスト、Quint は CI の `scripts/quint-check-specs.sh` をそのまま流し、`crates/fraktor-actor/specs/fsm_transition.qnt` が対象に入っていることを確かめる）。
 - PR をドラフトから外し、マージできる状態まで持つ。マージはしない。
@@ -485,3 +498,20 @@ FSM に書く理由：
 
 - §1.4（同時実行の 1 件を分けたときのノードの扱い）：元帥が 2026-11-26 に案 1 で決めた。完了条件は「2 ノードを green、`LocalActorRefProviderSpec` は 8 件中 7 件を移し、同時実行の 1 件は #234 の段 5（#256）のあと」に変わり、後続の issue は #265 である。設計の §1.4 を決定のとおりに書き直した。
 - null の名前の 1 件を作らないこと：**オーナーの判断待ち**である。独立レビューの推奨は承認である。答えが出るまで、台帳にもテストの冒頭の書き添えにも「承認済み」とは書かない。
+
+## 11. 設計の再レビュー（PR #244、HEAD 9126560）への回答
+
+再レビューの判定は「要修正（軽い）」であり、中の 2 点を書き足せば実装に入ってよいとされた。高の 3 件は直っており、`FsmView` の形でケース 2 とケース 4 がコンパイルできて通ることが試作で確かめられている。
+
+| 指摘 | 対応 |
+|:---|:---|
+| R1：`watch_with` と利用者の watch が重なったときの決まりが無く、M4 が半分しか直っていない | 書き足した。`ActorContext::is_watching` を足し、`watch` と `watch_with` が違うメッセージで重なった場合は Pekko の `checkWatchingSame` を写して panic すること、FSM は `is_watching` の分岐で、すでに監視している相手を自動では外さないことを、§2.1 に決まりとして書いた |
+| R2：既存のテストの書き換えをどの工程で行うかが書かれていない | 書き足した。既存の 4 つのテストファイルの機械的な直しは red の工程で行うことを §9 に書いた |
+| L-a：`S: Send + Sync` の境界は `Fsm` の impl 全体に要る | 直した（§2.1、§7） |
+| L-b：冒頭 3 行目の完了条件が古い | 直した。元帥の決定の完了条件に合わせた（冒頭） |
+| L-c：後続の issue 2 件に番号が無い | 実装に入る前に立て、rustdoc からリンクすることを §9 に書いた。番号は第 2 段の報告で知らせる |
+| L-d：ケース 5 で停止の前に `weak.upgrade()` が `Some` であることを確かめる | 直した（§1.3） |
+| L-e：guardian の参照へ直接送ったときの扱いが書かれていない | 直した。選択の経路と同じく `UnhandledMessage` になるようにそろえる（§2.2） |
+| L-f：F4 の二重に届かないのは `Transition` のことである | 直した。`CurrentState` は購読のたびに届くと書き分けた（§3 の F4） |
+| L-g：`ActorCreationError` には `Display` と `Debug` が要る | 直した（§2.2） |
+| L-h：リスナーの停止は専用の内部メッセージの処理になる | 直した（§2.1） |
