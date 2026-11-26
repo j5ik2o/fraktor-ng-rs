@@ -65,8 +65,8 @@
 //   the ledger's `needs` lists for this node; the error-log case those
 //   entries belong to is the not-built proposal above.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use fraktor_actor::adaptor::ChannelBoundary;
 use fraktor_actor::kernel::actor::Props;
@@ -75,6 +75,7 @@ use fraktor_actor::kernel::extension::{Extension, ExtensionError, ExtensionId, E
 
 /// The original's `TestExtension`: an extension that keeps the system it was
 /// created for. The port keeps the system's name.
+#[derive(Debug)]
 struct TestExtension {
   system_name: String,
 }
@@ -96,6 +97,7 @@ impl ExtensionId for TestExtensionId {
 
 /// The original's `FailingTestExtension`: creating it starts an actor named
 /// "uniqueName" as a side effect and then fails with `TestException`.
+#[derive(Debug)]
 struct FailingTestExtension;
 
 impl Extension for FailingTestExtension {}
@@ -124,15 +126,15 @@ impl ExtensionId for FailingTestExtensionId {
     self.creations.fetch_add(1, Ordering::SeqCst);
     // The side effect comes first, as in the original: the named actor is
     // created before the failure.
-    let _actor = system
-      .actor_of_with_name(Props::empty(), "uniqueName")
-      .expect("the name uniqueName is free on a fresh system");
+    let _actor =
+      system.actor_of_with_name(Props::empty(), "uniqueName").expect("the name uniqueName is free on a fresh system");
     Err(ExtensionError::new("TestException", "ERR"))
   }
 }
 
 /// The original's `InstanceCountingExtension`: an extension whose creation
 /// is counted.
+#[derive(Debug)]
 struct InstanceCountingExtension;
 
 impl Extension for InstanceCountingExtension {}
@@ -220,10 +222,8 @@ fn does_not_create_duplicate_instances_when_auto_loading_library_extensions() {
   let id = InstanceCountingExtensionId::new();
   // The same extension is offered three times in the library column, as the
   // original lists it three times (once with a `$` suffix) in its config.
-  let startup = ExtensionStartup::new()
-    .library_extension(id.clone())
-    .library_extension(id.clone())
-    .library_extension(id.clone());
+  let startup =
+    ExtensionStartup::new().library_extension(id.clone()).library_extension(id.clone()).library_extension(id.clone());
   let mut system = ActorSystem::with_extensions("extensions", boundary(), startup).expect("startup succeeds");
 
   assert_eq!(id.count(), 1);

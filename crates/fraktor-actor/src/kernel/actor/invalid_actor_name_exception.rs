@@ -40,6 +40,12 @@ impl InvalidActorNameException {
     Self { cause: format!("Actor name [{}] is not unique!", name) }
   }
 
+  /// Creates the error for a name the path validation rejected, carrying
+  /// the message of `ActorPath::validate_path_element` unchanged.
+  pub fn invalid_name(message: String) -> Self {
+    Self { cause: message }
+  }
+
   /// Creates the error for a parent that is terminating or terminated.
   ///
   /// Mirrors the `IllegalStateException` that `Children.attachChild` throws

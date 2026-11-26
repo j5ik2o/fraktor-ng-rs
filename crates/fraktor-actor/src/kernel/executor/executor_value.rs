@@ -211,6 +211,7 @@ pub(crate) struct Executor {
   actor_capacities: Vec<(ActorRef, CapacityLimit, CapacityLimit)>,
   function_parents: Vec<(ActorRef, ActorRef)>,
   function_watching: Vec<(ActorRef, ActorRef)>,
+  user_names: Vec<(String, ActorRef)>,
 }
 
 impl Executor {
@@ -247,6 +248,7 @@ impl Executor {
       actor_capacities: Vec::new(),
       function_parents: Vec::new(),
       function_watching: Vec::new(),
+      user_names: Vec::new(),
     };
     executor.function_refs.push(executor.dead_letters.clone());
     executor
@@ -501,6 +503,45 @@ impl Executor {
     let name = alloc::format!("${}", next_spawn_name());
     let path = self.root.with_child("user").with_child(&name);
     self.spawn_at(props, path, None, SupervisorStrategy::default_strategy(), false)
+  }
+
+  /// Starts a top-level actor below `/user` with a caller-chosen `name`.
+  ///
+  /// Mirrors `ActorSystem.actorOf(props, name)`, whose documentation
+  /// promises `InvalidActorNameException` when the name is invalid or
+  /// already in use. The name is validated by
+  /// `ActorPath::validate_path_element`, whose message the error carries
+  /// unchanged. The registry of live top-level names is pruned on each
+  /// call, so the name of an actor that has stopped is free again, as a
+  /// child's name is once its parent unreserves it. A terminated system
+  /// refuses with `InvalidActorNameException::terminating()`. The
+  /// generated names of [`Executor::spawn_user`] are not registered: a
+  /// caller-chosen name can never collide with them, because the
+  /// validation refuses a leading `$`.
+  pub(crate) fn spawn_user_named(&mut self, props: Props, name: &str) -> Result<ActorRef, InvalidActorNameException> {
+    if self.terminated {
+      return Err(InvalidActorNameException::terminating());
+    }
+    if let Err(message) = ActorPath::validate_path_element(name) {
+      return Err(InvalidActorNameException::invalid_name(message));
+    }
+    let mut index = 0;
+    while index < self.user_names.len() {
+      if self.is_actor_terminated(&self.user_names[index].1) {
+        self.user_names.remove(index);
+      } else {
+        index += 1;
+      }
+    }
+    if self.user_names.iter().any(|(used, _)| used == name) {
+      return Err(InvalidActorNameException::name_taken(name));
+    }
+    let path = self.root.with_child("user").with_child(name);
+    let child = self.spawn_at(props, path, None, SupervisorStrategy::default_strategy(), false);
+    if self.cells.iter().any(|cell| cell.accepts(&child)) {
+      self.user_names.push((name.to_string(), child.clone()));
+    }
+    Ok(child)
   }
 
   /// Starts an actor below `parent`, using `name` when one is given.
