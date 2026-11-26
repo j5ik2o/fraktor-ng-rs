@@ -129,6 +129,8 @@ def mixed_not_built_problems(node: dict) -> list[str]:
                 problems.append(f"除外と作らないに同じケース名がある: {', '.join(cross)}")
     total, ported, passing = cases.get("total"), cases.get("ported"), cases.get("passing")
     if type(total) is int and type(ported) is int and type(passing) is int:
+        if total < 0 or ported < 0 or passing < 0:
+            problems.append("cases.total と cases.ported と cases.passing が負である")
         if ported != passing:
             problems.append("cases.ported と cases.passing が一致しない")
         if total != passing + len(excluded_records) + len(records):

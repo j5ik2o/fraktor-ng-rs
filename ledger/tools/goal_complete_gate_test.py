@@ -402,6 +402,32 @@ def test_mixed_green_with_ported_above_passing_is_not_complete():
         print("46. mixed green + ported above passing: exit_code =", result["exit_code"])
 
 
+def test_mixed_green_with_negative_counts_is_not_complete():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        ids = ["a/A.java"]
+        cases = (
+            "    total: 1\n"
+            "    ported: -1\n"
+            "    passing: -1\n"
+            "    excluded: []\n"
+            "    not_built:\n"
+            "    - name: someCase\n"
+            "      reason: the original checks a JVM-only helper\n"
+            "      alternative: a compile_fail doctest\n"
+            + APPROVAL +
+            "    - name: otherCase\n"
+            "      reason: the original checks a JVM-only helper\n"
+            "      alternative: a compile_fail doctest\n"
+        )
+        ledger = "nodes:\n" + mixed_green_node(ids[0], "G0v", APPROVAL, cases)
+        response = make_run(root, order_with(["docs/goals/g0v-stub.md"]), ledger,
+                            one_goal_doc("G0v", ids))
+        result = run_gate(root, response)
+        assert result["exit_code"] != 0, result
+        print("48. mixed green + negative counts: exit_code =", result["exit_code"])
+
+
 def test_mixed_green_with_scalar_not_built_is_not_complete():
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -1402,6 +1428,7 @@ def main() -> int:
         test_mixed_green_with_cross_list_duplicate_is_not_complete,
         test_mixed_green_with_ported_above_passing_is_not_complete,
         test_mixed_green_with_scalar_not_built_is_not_complete,
+        test_mixed_green_with_negative_counts_is_not_complete,
         test_not_built_without_approval_is_not_complete,
         test_not_built_with_malformed_approval_is_not_complete,
         test_not_built_with_duplicated_case_names_is_not_complete,
