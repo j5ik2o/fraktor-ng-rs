@@ -23,7 +23,7 @@
 /// name. The view is a snapshot taken just before the function runs;
 /// subscriptions and listener stops are handled before or after a
 /// state function within one delivery, never during it, so the counts
-/// are exact for the delivery being handled (design of #194, H1).
+/// are exact for the delivery being handled.
 pub struct FsmView<S> {
   listener_count: usize,
   state_name: S,

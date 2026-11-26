@@ -85,6 +85,26 @@ impl ActorPath {
     }
   }
 
+  /// Validates a path element in the context of a full path, and
+  /// returns an error message when it is illegal.
+  ///
+  /// Mirrors the two-argument `ActorPath.validatePathElement`, which
+  /// `Deployer.deploy` calls with the deployment's path: the message
+  /// names the full path after the element. The empty message keeps
+  /// the original's trailing space before the path part.
+  pub fn validate_path_element_in_path(element: &str, full_path: &str) -> Result<(), String> {
+    match find_invalid_path_element_char_position(element) {
+      | PathCode::Valid => Ok(()),
+      | PathCode::Empty => Err(format!("Actor path element must not be empty  (in path [{}])", full_path)),
+      | PathCode::Invalid(position, illegal) => Err(format!(
+        "Invalid actor path element [{}] (in path [{}]), illegal character [{}] at position: {}. \
+                     Actor paths MUST: not start with `$`, include only ASCII letters and can \
+                     only contain these special characters: {}.",
+        element, full_path, illegal, position, VALID_SYMBOLS
+      )),
+    }
+  }
+
   /// Returns the child path with `child` appended.
   ///
   /// # Panics

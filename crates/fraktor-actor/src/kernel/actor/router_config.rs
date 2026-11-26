@@ -25,13 +25,12 @@ use crate::kernel::actor::PoolKind;
 /// verification reads. The dispatcher of the routees is the recipe's
 /// own dispatcher (`Props::with_dispatcher`); the head's dispatcher is
 /// `router_dispatcher`, which is what the original's pool
-/// `withDispatcher` sets in the ported cases; see the design of #194,
-/// section 2.3, rules 2 and 3.
+/// `withDispatcher` sets in the ported cases.
 ///
-/// The router of this issue is minimal: verification runs and the head
-/// is created, but no routees are created and no routing happens, so a
+/// The router here is minimal: verification runs and the head is
+/// created, but no routees are created and no routing happens, so a
 /// message to the head is reported as unhandled. Routing itself is
-/// issue #269 (https://github.com/j5ik2o/fraktor-ng-rs/issues/269).
+/// issue #269 (<https://github.com/j5ik2o/fraktor-ng-rs/issues/269>).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RouterConfig {
   /// The pool the routees would form.

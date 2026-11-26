@@ -42,7 +42,7 @@ type TransitionHandler<S, D> = Box<dyn FnMut(&mut ActorContext<'_>, &S, &S, &D, 
 /// The internal message the machine receives when a listener it watches
 /// stops, through `watch_with`. It is not part of the public protocol:
 /// a listener's stop is the machine's own bookkeeping, kept apart from
-/// the `Terminated` a user's own watch would receive (design of #194, M4).
+/// the `Terminated` a user's own watch would receive.
 #[derive(Clone, Debug)]
 struct ListenerTerminated(ActorRef);
 
@@ -195,8 +195,7 @@ where
     let (state, data) = self.current.as_ref()?;
     let state = state.clone();
     let mut result = None;
-    for (name, function) in self.state_functions.iter_mut().filter(|(name, _)| name == &state) {
-      let _ = name;
+    for (_, function) in self.state_functions.iter_mut().filter(|(name, _)| name == &state) {
       if let Some(next) = function(context, &view, event, data) {
         result = Some(next);
         break;
