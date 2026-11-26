@@ -1,6 +1,6 @@
 //! The window into a switch whose lock the caller already holds.
 
-use core::sync::atomic::Ordering;
+use core::{marker::PhantomData, sync::atomic::Ordering};
 
 use super::switch_value::Switch;
 
@@ -10,14 +10,19 @@ use super::switch_value::Switch;
 /// Every operation here works on the switch's single atomic state without
 /// taking the lock again, which is how the port expresses the reentrancy
 /// of the original's monitor. The window borrows the switch, so it cannot
-/// be carried out of the `locked` call.
+/// be carried out of the `locked` call, and the marker field makes it
+/// neither `Send` nor `Sync`: it cannot be handed to another thread, so a
+/// change through the window always comes from the thread holding the
+/// lock, as the Quint model in `crates/fraktor-actor/specs/switch.qnt`
+/// assumes.
 pub struct LockedSwitch<'a> {
   switch: &'a Switch,
+  not_send_or_sync: PhantomData<*mut ()>,
 }
 
 impl<'a> LockedSwitch<'a> {
   pub(super) fn new(switch: &'a Switch) -> Self {
-    Self { switch }
+    Self { switch, not_send_or_sync: PhantomData }
   }
 
   /// Returns whether the switch is on.

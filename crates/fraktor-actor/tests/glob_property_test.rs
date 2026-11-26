@@ -93,6 +93,20 @@ fn glob_empty_and_star_only_patterns() {
 }
 
 #[test]
+fn glob_star_in_input_follows_the_original() {
+  // The original checks literal equality before the `*` branch, so an
+  // input `*` met by a pattern `*` is consumed as a literal and no resume
+  // point is recorded. The port keeps the original's behavior exactly:
+  // these are false in the original as well, although the pure glob
+  // meaning (and the regular expression of makePattern) would match.
+  assert!(!GlobPattern::new("a*b").matches("a*xb"));
+  assert!(!GlobPattern::new("*").matches("*x"));
+  // An input `*` is an ordinary character for a literal or `?`.
+  assert!(GlobPattern::new("a?b").matches("a*b"));
+  assert!(GlobPattern::new("a*b").matches("ab"));
+}
+
+#[test]
 fn glob_question_mark_matches_one_whole_character() {
   // The original counts UTF-16 code units, so its `?` can match half of a
   // surrogate pair. The port counts scalar values (design §2.2).

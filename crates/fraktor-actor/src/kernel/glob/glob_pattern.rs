@@ -14,6 +14,12 @@ use alloc::vec::Vec;
 /// counts UTF-16 code units with `charAt`. The two agree except for
 /// characters outside the BMP, where the original's `?` can match half of
 /// a surrogate pair and this port's `?` matches the whole character.
+///
+/// Like the original, the matcher checks literal equality before the `*`
+/// branch, so an input `*` that meets a pattern `*` is consumed as a
+/// literal character and no resume point is recorded for that `*`. A
+/// pattern `*` therefore does not match an input that starts with `*`
+/// through that position; this is the original's behavior, kept as is.
 pub struct GlobPattern {
   pattern: Vec<char>,
 }

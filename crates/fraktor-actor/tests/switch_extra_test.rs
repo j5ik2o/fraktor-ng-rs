@@ -86,14 +86,24 @@ fn switch_change_from_other_thread_does_not_complete_while_locked_is_held() {
 
     // While the lock is held, the other thread's change must not complete.
     // A correct implementation never completes here; catching a broken one
-    // depends on the changer being scheduled within the window.
-    assert!(done_rx.recv_timeout(Duration::from_millis(300)).is_err(), "the change completed while `locked` was held");
+    // depends on the changer being scheduled within the window. The result
+    // is recorded first and asserted only after both threads are joined,
+    // so a broken implementation fails this test instead of leaving the
+    // holder waiting for a release that never comes.
+    let early = done_rx.recv_timeout(Duration::from_millis(300)).ok();
+    let completed_while_held = early.is_some();
 
     release_tx.send(()).expect("release the holder");
     holder.join().expect("the holder finishes");
     // The switch was off the whole time, so the change reports false once
-    // it finally runs.
-    assert!(!done_rx.recv().expect("the changer completes"), "the change reports false: the switch was off");
+    // it finally runs (or already reported, if it wrongly completed).
+    let changed = match early {
+      | Some(value) => value,
+      | None => done_rx.recv().expect("the changer completes"),
+    };
     changer.join().expect("the changer finishes");
+
+    assert!(!completed_while_held, "the change completed while `locked` was held");
+    assert!(!changed, "the change reports false: the switch was off");
   });
 }
