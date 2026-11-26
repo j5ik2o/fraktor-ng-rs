@@ -28,6 +28,7 @@ module dead_letter_listener {
   var lastLogCount: int
   var loggedAtSuspend: int
   var lastKind: Kind
+  var lastNotLogged: int
   var resumeNow: int
   var resumeDeadline: int
   var justResumed: bool
@@ -45,6 +46,7 @@ module dead_letter_listener {
     lastLogCount' = -1,
     loggedAtSuspend' = -1,
     lastKind' = SuppressedKind,
+    lastNotLogged' = -1,
     resumeNow' = -2,
     resumeDeadline' = -2,
     justResumed' = false,
@@ -75,6 +77,7 @@ module dead_letter_listener {
         deadline' = now + duration,
         loggedAtSuspend' = logged + 1,
         base' = base,
+        lastNotLogged' = lastNotLogged,
         resumeNow' = resumeNow,
         resumeDeadline' = resumeDeadline,
       } else all {
@@ -83,6 +86,7 @@ module dead_letter_listener {
         deadline' = deadline,
         loggedAtSuspend' = loggedAtSuspend,
         base' = base,
+        lastNotLogged' = lastNotLogged,
         resumeNow' = resumeNow,
         resumeDeadline' = resumeDeadline,
       },
@@ -99,6 +103,7 @@ module dead_letter_listener {
       resumeNow' = now,
       resumeDeadline' = deadline,
       justResumed' = true,
+      lastNotLogged' = count - limit,
       base' = received + 1,
     } else all {
       received' = received + 1,
@@ -108,6 +113,7 @@ module dead_letter_listener {
       count' = count + 1,
       deadline' = deadline,
       loggedAtSuspend' = loggedAtSuspend,
+      lastNotLogged' = lastNotLogged,
       resumeNow' = resumeNow,
       resumeDeadline' = resumeDeadline,
       justResumed' = false,
@@ -126,6 +132,7 @@ module dead_letter_listener {
     limit' = limit, duration' = duration,
     received' = received, logged' = logged, lastLogCount' = lastLogCount,
     loggedAtSuspend' = loggedAtSuspend,
+    lastNotLogged' = lastNotLogged,
     resumeNow' = resumeNow, resumeDeadline' = resumeDeadline,
     justResumed' = false,
     base' = base,
@@ -138,6 +145,7 @@ module dead_letter_listener {
     limit' = limit, duration' = duration,
     received' = received, logged' = logged, lastLogCount' = lastLogCount,
     loggedAtSuspend' = loggedAtSuspend, lastKind' = lastKind,
+    lastNotLogged' = lastNotLogged,
     resumeNow' = resumeNow, resumeDeadline' = resumeDeadline,
     justResumed' = false,
     base' = base,
@@ -159,9 +167,12 @@ module dead_letter_listener {
   val resumeResetsCount = justResumed implies (count == 0 and mode == Logging)
   // L5: a resume happens only strictly after the deadline.
   val deadlineIsStrict = resumeNow == -2 or resumeNow > resumeDeadline
+  // L6: the resume line's not-logged count is the pre-reset count minus
+  // the limit minus the resume event itself.
+  val resumeNotLoggedIsExact = justResumed implies lastNotLogged == lastLogCount - limit - 1
 
   val invariant = countIsUnsuppressedSeen and noLogWhileSuspended and suspendAtLimit
-    and resumeResetsCount and deadlineIsStrict
+    and resumeResetsCount and deadlineIsStrict and resumeNotLoggedIsExact
 
   // The original settings: limit 4, suspend duration 2. The event at the
   // deadline itself does not resume; the first one after it does, with
@@ -180,7 +191,7 @@ module dead_letter_listener {
       .then(all { assert(now == 2 and mode == Suspended), receiveDeadLetter })
       .then(all { assert(mode == Suspended and count == 5 and logged == 4), tick })
       .then(receiveDeadLetter)
-      .expect(mode == Logging and count == 0 and logged == 5 and lastLogCount == 6)
+      .expect(mode == Logging and count == 0 and logged == 5 and lastLogCount == 6 and lastNotLogged == 1)
 
   // Limit 1: the first event already suspends.
   run limit1Test =
@@ -198,7 +209,7 @@ module dead_letter_listener {
       .then(all { assert(mode == Suspended and deadline == 0), receiveDeadLetter })
       .then(all { assert(mode == Suspended and count == 3 and logged == 2), tick })
       .then(receiveDeadLetter)
-      .expect(mode == Logging and count == 0 and logged == 3 and lastLogCount == 4)
+      .expect(mode == Logging and count == 0 and logged == 3 and lastLogCount == 4 and lastNotLogged == 1)
 
   // Unlimited: logging never suspends.
   run unlimitedTest =

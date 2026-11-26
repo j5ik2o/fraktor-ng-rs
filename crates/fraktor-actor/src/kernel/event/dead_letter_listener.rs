@@ -58,6 +58,15 @@ impl DeadLetterListener {
     Self { settings, dead_letters, count: 0, suspended_until: None, stopped: false }
   }
 
+  /// Returns whether the listener has stopped itself: the count reached
+  /// the limit while no suspend duration was set, which is where Pekko's
+  /// listener stops its own actor. The executor reads this at a delivery
+  /// boundary and carries out the stop, because the handler that runs
+  /// this state machine must not borrow the executor.
+  pub fn is_stopped(&self) -> bool {
+    self.stopped
+  }
+
   /// Feeds one event at time `now` and returns the log line to publish, if
   /// the event is logged.
   ///

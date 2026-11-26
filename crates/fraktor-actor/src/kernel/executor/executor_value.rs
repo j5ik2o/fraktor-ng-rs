@@ -48,7 +48,6 @@ use crate::kernel::actor::UnhandledMessage;
 use crate::kernel::actor_path::ActorPath;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::event::DeadLetterListener;
-use crate::kernel::event::EventClass;
 use crate::kernel::event::EventStream;
 use crate::kernel::executor::ActorCell;
 use crate::kernel::executor::ShardQueue;
@@ -181,6 +180,7 @@ pub(crate) struct Executor {
   termination_callbacks: Vec<TerminationCallback>,
   dead_letters: ActorRef,
   dead_letters_shared: Arc<DeadLettersShared>,
+  dead_letter_listener: Option<(ActorRef, Arc<spin::Mutex<DeadLetterListener>>)>,
   boundary_active: bool,
   hook_child_creation_refused: bool,
   terminated: bool,
@@ -212,6 +212,7 @@ impl Executor {
       termination_callbacks: Vec::new(),
       dead_letters,
       dead_letters_shared,
+      dead_letter_listener: None,
       boundary_active: false,
       hook_child_creation_refused: false,
       terminated: false,
@@ -251,21 +252,29 @@ impl Executor {
   fn create_dead_letters(root: &ActorPath, shared: Arc<DeadLettersShared>) -> ActorRef {
     let path = root.with_child("deadLetters");
     // The handler routes through the shared state, which the executor fills
-    // with the event stream's table once the system is built. The handle
-    // itself is named by a cell the handler captures after creation,
-    // because the routing rules name it as the processing reference.
-    let slot: Arc<spin::Mutex<Option<ActorRef>>> = Arc::new(spin::Mutex::new(None));
+    // with the event stream's table once the system is built. The routing
+    // rules name the handle itself as the processing reference, so the
+    // handler rebuilds it from the identifier, the path, and the boundary.
+    // The boundary is held weakly: a strong slot would cycle handle ->
+    // boundary -> handler -> handle, and dropping a system would leak the
+    // boundary, the handler, and the shared routing state with it.
+    type HandleParts = (u64, ActorPath, alloc::sync::Weak<dyn crate::kernel::executor::ShardBoundary>);
+    let slot: Arc<spin::Mutex<Option<HandleParts>>> = Arc::new(spin::Mutex::new(None));
     let slot_in_handler = slot.clone();
     let handler = Arc::new(move |sender: &ActorRef, message: Message| {
-      let dead_letters = slot_in_handler.lock().clone();
-      if let Some(dead_letters) = dead_letters {
-        shared.route_at_dead_letters(message, sender.clone(), &dead_letters);
+      let parts = slot_in_handler.lock().clone();
+      if let Some((id, path, boundary)) = parts {
+        if let Some(boundary) = boundary.upgrade() {
+          let dead_letters = ActorRef::new(id, 0, Arc::new(path), boundary);
+          shared.route_at_dead_letters(message, sender.clone(), &dead_letters);
+        }
       }
     });
     let boundary: Arc<dyn crate::kernel::executor::ShardBoundary> =
       Arc::new(crate::kernel::executor::FunctionBoundary::new(handler));
-    let reference = next_actor_ref(path, boundary);
-    *slot.lock() = Some(reference.clone());
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let reference = ActorRef::new(id, 0, Arc::new(path.clone()), boundary.clone());
+    *slot.lock() = Some((id, path, Arc::downgrade(&boundary)));
     reference
   }
 
@@ -324,6 +333,7 @@ impl Executor {
     let bus = self.event_stream.as_ref().map(|stream| stream.downgrade());
     let sink = self.event_sink.clone();
     let state = Arc::new(spin::Mutex::new(DeadLetterListener::new(settings, dead_letters)));
+    let kept_state = state.clone();
     let listener = self.function_ref("DeadLetterListener", move |_: &ActorRef, message: Message| {
       let Some(event) = AnyDeadLetter::from_message(&message) else {
         return;
@@ -340,11 +350,7 @@ impl Executor {
         }
       }
     });
-    if let Some(stream) = self.event_stream.as_ref() {
-      let _ = stream.subscribe(Some(listener.clone()), EventClass::of::<DeadLetter>());
-      let _ = stream.subscribe(Some(listener.clone()), EventClass::of::<crate::kernel::actor::Dropped>());
-      let _ = stream.subscribe(Some(listener.clone()), EventClass::of::<UnhandledMessage>());
-    }
+    self.dead_letter_listener = Some((listener.clone(), kept_state));
     listener
   }
 
@@ -634,6 +640,15 @@ impl Executor {
       return;
     }
     self.boundary_active = true;
+    // Pekko's listener stops itself when the count reaches the limit with
+    // no suspend duration. The handler only records that in the state
+    // machine (it runs on a sender's stack and must not borrow the
+    // executor), so the stop is carried out here, at the next boundary.
+    if self.dead_letter_listener.as_ref().is_some_and(|(_, state)| state.lock().is_stopped()) {
+      if let Some((listener, _)) = self.dead_letter_listener.take() {
+        self.request_stop(listener);
+      }
+    }
     loop {
       self.flush_ready_child_terminated();
       let applied = self.apply_pending_decider_failures();
@@ -1321,7 +1336,7 @@ impl Executor {
   fn deliver_selection(&mut self, path: &ActorPath, message: Message, sender: ActorRef) {
     if let Some(cell) = self.cells.iter().find(|cell| &cell.self_ref().path() == path) {
       let target = cell.self_ref();
-      self.send(sender, &target, message);
+      self.deliver(Envelope::new(target, message, sender));
       return;
     }
     if let Some(reference) = self.function_refs.iter().find(|reference| &reference.path() == path) {
@@ -1389,6 +1404,11 @@ impl Executor {
       // stopped actor to the dead letters provider.
       let dead_letters = self.dead_letters.clone();
       self.dead_letters_shared.route_undeliverable(message, sender, recipient, &dead_letters);
+      // The routing publishes synchronously, so the dead letter listener
+      // may have reached its limit inside this delivery; the boundary
+      // work (including the listener's own stop) runs here as it does at
+      // the end of a delivered message.
+      self.finish_boundary();
       return;
     };
     if message == KILL {

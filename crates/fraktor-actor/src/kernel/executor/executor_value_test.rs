@@ -226,6 +226,18 @@ impl Actor for Guardian {
   fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
 }
 
+/// Regression (review of PR #230): the dead letters handler used to
+/// capture its own handle strongly, cycling handle -> boundary ->
+/// handler -> handle, so dropping an executor leaked the boundary, the
+/// handler, and the shared routing state.
+#[test]
+fn dropping_the_executor_releases_the_dead_letters_boundary() {
+  let executor = death_watch_executor();
+  let boundary = Arc::downgrade(executor.dead_letters().boundary());
+  drop(executor);
+  assert!(boundary.upgrade().is_none(), "the dead letters handle must not keep its own boundary alive");
+}
+
 fn death_watch_executor() -> Executor {
   let address = crate::kernel::address::Address::new("pekko", "DeathWatch");
   let root = crate::kernel::actor_path::RootActorPath::new(address);

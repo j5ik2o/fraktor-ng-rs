@@ -29,6 +29,7 @@ use core::time::Duration;
 use crate::kernel::actor::ActorSelection;
 use crate::kernel::actor::AllDeadLetters;
 use crate::kernel::actor::DeadLetter;
+use crate::kernel::actor::DeadLetterLogLimit;
 use crate::kernel::actor::DeadLetterSettings;
 use crate::kernel::actor::DeadLetterSuppression;
 use crate::kernel::actor::Dropped;
@@ -40,6 +41,7 @@ use crate::kernel::actor_path::RootActorPath;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::actor_system::weak_actor_system::WeakActorSystem;
 use crate::kernel::address::Address;
+use crate::kernel::event::EventClass;
 use crate::kernel::event::EventStream;
 use crate::kernel::executor::Executor;
 use crate::kernel::executor::ShardBoundary;
@@ -258,7 +260,21 @@ impl ActorSystem {
   /// as a value; a system that never calls this starts no listener, and
   /// dead letters are still published to the event stream.
   pub fn start_dead_letter_listener(&mut self, settings: DeadLetterSettings) -> ActorRef {
-    self.executor.borrow_mut().start_dead_letter_listener(settings)
+    // The subscription is made here, after the executor borrow is
+    // released: subscribing registers the listener with the unsubscriber,
+    // whose watch borrows the executor again and would panic on the
+    // borrow the executor's own start still holds. With the limit `Off`
+    // the listener is not subscribed at all (design L7): Pekko's listener
+    // with dead letter logging off never receives an event, so the handle
+    // is created and returned without a subscription.
+    let limit = settings.limit();
+    let listener = self.executor.borrow_mut().start_dead_letter_listener(settings);
+    if limit != DeadLetterLogLimit::Off {
+      let _ = self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<DeadLetter>());
+      let _ = self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<Dropped>());
+      let _ = self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<UnhandledMessage>());
+    }
+    listener
   }
 
   /// Returns a selection that resolves `path` when a message is delivered.

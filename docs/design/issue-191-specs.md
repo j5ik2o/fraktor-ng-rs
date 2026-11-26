@@ -440,3 +440,21 @@ impl ActorSelection {
 | 低 5（Quint の書き方） | 上限と期間を状態の変数と `initWith` で与える形に直し、負の対照の流し方を `quint test --main=…` に直した |
 | 低 6（Consistency の追加の実行と割り当て） | ConsistencySpec がこの issue から外れたため、対象が無くなった |
 | 低 7（停止した function ref） | D1 の対象をセルのアクターに限ると書いた |
+
+## 11. 実装レビュー（PR #230 のボットレビュー）への対応
+
+実装後に Cursor と Devin が付けた指摘 11 件について、一次情報で確かめてから対応した。直したものには、落ちることを確かめた回帰テストを足している。
+
+| 指摘 | 判定 | 対応 |
+|:---|:---|:---|
+| Cursor：リスナーの状態が `!Send`（設計の旧案） | 直した | 設計レビュー H3 で直し済みであり、実装は `Arc<spin::Mutex<DeadLetterListener>>` である |
+| Cursor：期間 0 が L5 と矛盾する | 直した | 設計レビューで直し済みであり、再開は期限より後（`>`）だけであり、期間 0 では同じ時刻の到着は再開しない。Quint の `limit2shortTest` が固定している |
+| Devin BUG：配送できない `SuppressedDeadLetter` が巡り続ける | 直した | 振り分けの入口 `route_undeliverable` で、`SuppressedDeadLetter` 自体は `DeadLetter` に包んで 1 回だけ出し直すようにした。その配送が失敗すれば D7 で落ちるので、巡らない。購読したまま止まったアクターへの配送が失敗する回帰テストを足した（修正前は `run_until_idle` が終わらない） |
+| Devin BUG：リスナーの開始が unsubscriber 有効時に panic する | 直した | 購読を `Executor` から `ActorSystem::start_dead_letter_listener` へ移し、executor の借用を解いた後に購読するようにした。unsubscriber を先に始める回帰テストを足した（修正前は panic） |
+| Devin ANALYSIS：上限 `Off` でも購読している（L7 と違う） | 直した | `Off` のときは購読せず、ハンドルだけを作って返すようにした（上の移設と同時） |
+| Devin BUG：選択で解決したメッセージが後から来た直接の送信に追い越される | 直した | セル宛ての解決は、その配送の段の中で `deliver` するようにした。function ref 宛ては従来どおり同期に実行される。選択の直後に `PoisonPill` を送る回帰テストを足した（修正前は選択のメッセージが dead letter になった） |
+| Devin BUG：dead letters ハンドルが自分自身を強く捕まえて漏れる | 直した | ハンドラが持つスロットを境界への弱い参照と識別子とパスに変え、呼ぶたびにハンドルを作り直すようにした。executor を落とすと境界が解放される回帰テストを足した（修正前は解放されなかった） |
+| Devin BUG：時計の無い特注の境界ではリスナーが再開しない | 採らない | 既定の `ChannelBoundary` は `monotonic_time` を返し、`ActorSystem::set_clock` が明示の上書きである。境界が時刻を返さないのは、その境界を使う側が時刻の無い設計を選んだということであり、再レビュー低 4 で決めた fallback（`Duration::ZERO`）のとおりにする。開始時に落とす変更は、この issue の範囲を超える |
+| Devin BUG：期間が無いとき、リスナーが止まらず watcher へ `Terminated` が届かない | 直した | Pekko は上限で `context.stop(self)` を呼ぶ。状態機械の停止印を executor が配送の境界で読み、保留中の停止として実行するようにした。あわせて、dead letter の振り分けで終わる配送でも境界の仕事を回すようにした。watcher へ `Terminated` が届く回帰テストを足した |
+| Devin ANALYSIS：PBT の手順に選択宛てが無く、ゴール文書の表と違う | 直した | PBT の手順に、止まったアクターへの選択、生きているアクターへの選択、生きているアクターへの抑制対象の 3 つを足した（設計 §5 が部品として挙げていたもの） |
+| Devin ANALYSIS：Quint の本体に再開の文面の件数の ghost が無い | 直した | 本体の仕様に `lastNotLogged` の ghost と不変条件 `resumeNotLoggedIsExact` を足し、再開する 2 つの run で値 1 を固定した。負の対照 `bugOffByOneNotLogged` と対になる |

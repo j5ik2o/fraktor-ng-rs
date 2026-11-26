@@ -73,6 +73,22 @@ fn system(name: &str) -> ActorSystem {
   ActorSystem::new(name, Arc::new(QueueBoundary::new()))
 }
 
+/// Regression (review of PR #230): starting the dead letter listener
+/// while the unsubscriber is active used to panic, because the executor
+/// subscribed the listener while its own borrow was held, and the
+/// subscription's watch borrows the executor again.
+#[test]
+fn starting_the_dead_letter_listener_after_the_unsubscriber_does_not_panic() {
+  let mut system = system("DeadLetterListenerStart");
+  system.event_stream().start_unsubscriber();
+  let settings = crate::kernel::actor::DeadLetterSettings::new(
+    crate::kernel::actor::DeadLetterLogLimit::Unlimited,
+    Some(Duration::from_secs(1)),
+  );
+  let listener = system.start_dead_letter_listener(settings);
+  assert!(listener.path().to_string().ends_with("DeadLetterListener"));
+}
+
 struct NoOp;
 
 impl Actor for NoOp {

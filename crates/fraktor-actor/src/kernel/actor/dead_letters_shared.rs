@@ -105,6 +105,18 @@ impl DeadLettersShared {
     if message.downcast_ref::<DeadLetter>().is_some() {
       return;
     }
+    if let Some(suppressed) = message.downcast_ref::<SuppressedDeadLetter>() {
+      // A suppressed event that itself could not be delivered (for example
+      // to a subscriber that stopped while subscribed) is published once
+      // more, wrapped in a `DeadLetter` naming the actor it was addressed
+      // to. Republishing it as a fresh `SuppressedDeadLetter` would fail
+      // the same delivery again and circulate for ever; wrapped in a
+      // `DeadLetter` it is dropped by the rule above when its own delivery
+      // fails, so the chain ends.
+      let suppressed = suppressed.clone();
+      self.publish(DeadLetter::new(suppressed, sender, recipient));
+      return;
+    }
     if self.is_suppressed(&message) {
       self.publish(SuppressedDeadLetter::from_message(message, sender, dead_letters.clone()));
     } else {

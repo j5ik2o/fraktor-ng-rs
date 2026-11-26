@@ -90,6 +90,9 @@ enum Step {
   DeadLetterToStopped,
   SuppressedDeadLetterToDeadLetters,
   NormalDeadLetterToDeadLetters,
+  SelectionToStopped,
+  SelectionToLive,
+  SuppressedToLive,
 }
 
 /// The summary of one published event, in the order events were published.
@@ -132,6 +135,15 @@ fn model_step(step: Step, stopped: &ActorRef, dead_letters: &ActorRef, live: &Ac
     | Step::SuppressedDeadLetterToDeadLetters => vec![format!("suppressed:suppressed-msg:to={dead_path}")],
     // A DeadLetter that reaches the dead letters handle is published as it is.
     | Step::NormalDeadLetterToDeadLetters => vec![format!("dead:normal:to={live_path}")],
+    // A selection to a stopped actor resolves to nothing: the empty
+    // reference for the path names the actor's path, so the event reads
+    // the same as a direct send to the stopped actor.
+    | Step::SelectionToStopped => vec![format!("dead:normal:to={stopped_path}")],
+    // A selection to a live actor is delivered, so nothing is published.
+    | Step::SelectionToLive => Vec::new(),
+    // Suppression only applies once a message becomes a dead letter: a
+    // suppressed payload sent to a live actor is delivered as usual.
+    | Step::SuppressedToLive => Vec::new(),
   }
 }
 
@@ -167,14 +179,17 @@ fn routing_matches_the_model_for_random_sequences() {
     let mut rng = SplitMix64::new(seed.wrapping_mul(0x1000) + 7);
     let mut expected: Vec<String> = Vec::new();
     for index in 0..40 {
-      let step = match rng.below(7) {
+      let step = match rng.below(10) {
         | 0 => Step::NormalToStopped,
         | 1 => Step::SuppressedToStopped,
         | 2 => Step::NormalToDeadLetters,
         | 3 => Step::SuppressedToDeadLetters,
         | 4 => Step::DeadLetterToStopped,
         | 5 => Step::SuppressedDeadLetterToDeadLetters,
-        | _ => Step::NormalDeadLetterToDeadLetters,
+        | 6 => Step::NormalDeadLetterToDeadLetters,
+        | 7 => Step::SelectionToStopped,
+        | 8 => Step::SelectionToLive,
+        | _ => Step::SuppressedToLive,
       };
       expected.extend(model_step(step, &stopped, &dead_letters, &live));
       let payload = NormalMsg(index);
@@ -192,6 +207,9 @@ fn routing_matches_the_model_for_random_sequences() {
         | Step::NormalDeadLetterToDeadLetters => {
           dead_letters.tell(DeadLetter::new(payload, sender.clone(), live.clone()), sender.clone())
         },
+        | Step::SelectionToStopped => spec.system().actor_selection(&stopped.path()).tell(payload, sender.clone()),
+        | Step::SelectionToLive => spec.system().actor_selection(&live.path()).tell(payload, sender.clone()),
+        | Step::SuppressedToLive => live.tell(SuppressedMsg, sender.clone()),
       }
       // Drive the shard after each step: a tell to the dead letters handle
       // publishes at once, while a tell to a stopped actor is routed when
@@ -296,4 +314,106 @@ fn limit_value(limit: DeadLetterLogLimit) -> u32 {
     | DeadLetterLogLimit::Count(n) => n.get(),
     | _ => u32::MAX,
   }
+}
+
+/// Regression (review of PR #230): a `SuppressedDeadLetter` published to a
+/// subscriber that has already stopped must not circulate. The subscriber
+/// stays in the bus table because this system never starts the
+/// unsubscriber, so every republication fails the same delivery again;
+/// the routing wraps the event in a `DeadLetter` once, and that delivery
+/// failing would be dropped, so the queue drains.
+#[test]
+fn suppressed_event_for_a_stopped_subscriber_does_not_circulate() {
+  let mut spec = FraktorSpec::new("DeadLetterSuppressedCirculation");
+  spec.system_mut().register_dead_letter_suppression::<SuppressedMsg>();
+  let sender = spec.test_actor();
+  let stream = spec.system().event_stream();
+
+  let collected = Arc::new(Mutex::new(Vec::<String>::new()));
+  let sink = collected.clone();
+  let collector = spec.system_mut().function_ref("collector", move |_: &ActorRef, message: Message| {
+    if let Some(event) = AnyDeadLetter::from_message(&message) {
+      sink.lock().expect("the collector lock is not poisoned").push(describe(&event));
+    }
+  });
+  stream.subscribe(Some(collector), EventClass::of::<DeadLetter>()).expect("the collector is not null");
+
+  let subscriber = spec.system_mut().actor_of(echo_actor_props());
+  stream
+    .subscribe(Some(subscriber.clone()), EventClass::of::<SuppressedDeadLetter>())
+    .expect("the subscriber is not null");
+  subscriber.tell("PoisonPill", sender.clone());
+
+  let stopped = spec.system_mut().actor_of(echo_actor_props());
+  stopped.tell("PoisonPill", sender.clone());
+  spec.system_mut().run_until_idle();
+
+  // A suppressed payload to the stopped actor publishes a
+  // SuppressedDeadLetter, whose delivery to the stopped subscriber fails.
+  stopped.tell(SuppressedMsg, sender.clone());
+  spec.system_mut().run_until_idle();
+
+  let actual = collected.lock().expect("the collector lock is not poisoned").clone();
+  assert_eq!(actual, vec![format!("dead:other:to={}", subscriber.path())]);
+  spec.terminate();
+}
+
+/// Regression (review of PR #230): a message sent through a selection is
+/// delivered in the same step that resolves it, so a `PoisonPill` the
+/// same sender sends directly afterwards cannot overtake it. With the
+/// resolved envelope re-enqueued, the pill was processed first and the
+/// selection message became a dead letter instead.
+#[test]
+fn selection_message_is_not_overtaken_by_a_later_direct_send() {
+  let mut spec = FraktorSpec::new("DeadLetterSelectionOrder");
+  let sender = spec.test_actor();
+  let stream = spec.system().event_stream();
+
+  let collected = Arc::new(Mutex::new(Vec::<String>::new()));
+  let sink = collected.clone();
+  let collector = spec.system_mut().function_ref("collector", move |_: &ActorRef, message: Message| {
+    if let Some(event) = AnyDeadLetter::from_message(&message) {
+      sink.lock().expect("the collector lock is not poisoned").push(describe(&event));
+    }
+  });
+  stream.subscribe(Some(collector), EventClass::of::<DeadLetter>()).expect("the collector is not null");
+
+  let target = spec.system_mut().actor_of(echo_actor_props());
+  spec.system().actor_selection(&target.path()).tell(NormalMsg(1), sender.clone());
+  target.tell("PoisonPill", sender.clone());
+  spec.system_mut().run_until_idle();
+
+  // The echo actor received the selection message and replied before it
+  // stopped, and nothing became a dead letter. The reply lands in the
+  // test actor's queue as a NormalMsg.
+  let _: NormalMsg = spec.expect_msg_type();
+  let actual = collected.lock().expect("the collector lock is not poisoned").clone();
+  assert_eq!(actual, Vec::<String>::new());
+  spec.terminate();
+}
+
+/// Regression (review of PR #230): with a count limit and no suspend
+/// duration, Pekko's listener stops itself at the limit
+/// (`DeadLetterListener.receiveWithMaxCountLogging` calls
+/// `context.stop(self)`), so a watcher receives its `Terminated` and
+/// later dead letters are not logged by it any more.
+#[test]
+fn listener_with_no_suspend_duration_stops_itself_at_the_limit() {
+  let mut spec = FraktorSpec::new("DeadLetterListenerSelfStop");
+  let sender = spec.test_actor();
+  let limit = DeadLetterLogLimit::Count(core::num::NonZeroU32::new(2).expect("the limit is not zero"));
+  let listener = spec.system_mut().start_dead_letter_listener(DeadLetterSettings::new(limit, None));
+  spec.test_kit_mut().watch(&listener);
+
+  let stopped = spec.system_mut().actor_of(echo_actor_props());
+  stopped.tell("PoisonPill", sender.clone());
+  spec.system_mut().run_until_idle();
+  for index in 0..3 {
+    stopped.tell(NormalMsg(index), sender.clone());
+  }
+  spec.system_mut().run_until_idle();
+
+  let terminated: Terminated = spec.expect_msg_type();
+  assert_eq!(terminated.target(), &listener);
+  spec.terminate();
 }
