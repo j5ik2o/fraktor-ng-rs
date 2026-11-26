@@ -325,6 +325,24 @@ def _remove_stale_result() -> None:
         return
 
 
+def _classify(out: str, passed: int | None, original_cases: int | None,
+              excluded: int | None, not_built: int | None, overlap: bool) -> str:
+    """cargo の出力と件数から分類を決める。already_green は、件数式が一致し、
+    除外と作らない区分に同じケース名の重なりが無く、対象テストが全件成功の
+    ときだけである。"""
+    if (passed is not None and original_cases is not None and excluded is not None
+            and not_built is not None and not overlap
+            and passed + excluded + not_built == original_cases):
+        return "already_green"
+    if "test result: ok" in out:
+        return "unexpected_pass"
+    if "test result: FAILED" in out:
+        return "expected_assertion"
+    if re.search(r"^error(\[|:)", out, re.MULTILINE):
+        return "expected_compile_error"
+    return "unclassifiable"
+
+
 def main() -> int:
     info = parse_previous_response()
     node = info.get("node")
@@ -375,22 +393,9 @@ def main() -> int:
     passed = parse_passed(out)
     excluded = count_excluded(node)
     not_built = excluded_approvals.count_not_built(LEDGER, node)
+    overlap = excluded_approvals.case_names_overlap(LEDGER, node)
 
-    already_green = (
-        passed is not None and original_cases is not None and excluded is not None
-        and not_built is not None
-        and passed + excluded + not_built == original_cases
-    )
-    if already_green:
-        classification = "already_green"
-    elif "test result: ok" in out:
-        classification = "unexpected_pass"
-    elif "test result: FAILED" in out:
-        classification = "expected_assertion"
-    elif re.search(r"^error(\[|:)", out, re.MULTILINE):
-        classification = "expected_compile_error"
-    else:
-        classification = "unclassifiable"
+    classification = _classify(out, passed, original_cases, excluded, not_built, overlap)
 
     red_recorded = False
     green_recorded = False

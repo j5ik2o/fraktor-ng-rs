@@ -82,18 +82,24 @@ def mixed_not_built_problems(node: dict) -> list[str]:
     """status=green のノードが持つ cases.not_built の記録の不足を返す。
 
     混在ノード（移植したケースと作らないケースが混ざる green ノード）専用の検査。
-    作らない要素が無ければ不足は無い。要各要素の記録（name・reason・alternative と
-    人による承認記録）と、ケース名の重複と、件数の一致
-    （total = passing + 除外の記録件数 + 作らない件数）を確かめる。
+    cases.not_built の欄が無い・null のノードは対象でない。各要素の記録
+    （name・reason・alternative と人による承認記録）と、除外の各要素の承認記録と、
+    除外と作らないの内外のケース名の重複と、移植した件数と通過した件数の一致と、
+    件数の一致（total = passing + 除外の件数 + 作らない件数）を確かめる。除外の
+    件数は承認記録の揃った要素だけではなく記録の件数を数えるが、承認記録が
+    欠けた要素があれば、そのことを不足として別に挙げる（未承認の除外で件数を
+    埋めて完了にしない）。
     """
     if node.get("status") != "green":
         return []
     cases = node.get("cases")
     if not isinstance(cases, dict):
         return []
-    records = cases.get("not_built")
-    if not isinstance(records, list) or not records:
+    if cases.get("not_built") is None:
         return []
+    records = cases.get("not_built")
+    if not isinstance(records, list):
+        return ["cases.not_built が配列でない"]
     problems = []
     for index, record in enumerate(records):
         if not is_valid_not_built_case(record):
@@ -104,13 +110,31 @@ def mixed_not_built_problems(node: dict) -> list[str]:
     if duplicated:
         problems.append(f"cases.not_built のケース名が重複している: {', '.join(duplicated)}")
     excluded = cases.get("excluded")
-    excluded_count = len(excluded) if isinstance(excluded, list) else 0
-    total, passing = cases.get("total"), cases.get("passing")
-    if type(total) is int and type(passing) is int:
-        if total != passing + excluded_count + len(records):
+    excluded_records: list = []
+    if excluded is not None:
+        if not isinstance(excluded, list):
+            problems.append("cases.excluded が配列でない")
+        else:
+            excluded_records = excluded
+            for index, record in enumerate(excluded_records):
+                if not (isinstance(record, dict) and is_approved_by_human(record)):
+                    problems.append(f"cases.excluded[{index}] の承認記録が揃っていない")
+            ex_names = [r.get("name").strip() for r in excluded_records
+                        if isinstance(r, dict) and is_text(r.get("name"))]
+            ex_duplicated = sorted({name for name in ex_names if ex_names.count(name) > 1})
+            if ex_duplicated:
+                problems.append(f"cases.excluded のケース名が重複している: {', '.join(ex_duplicated)}")
+            cross = sorted(set(names) & set(ex_names))
+            if cross:
+                problems.append(f"除外と作らないに同じケース名がある: {', '.join(cross)}")
+    total, ported, passing = cases.get("total"), cases.get("ported"), cases.get("passing")
+    if type(total) is int and type(ported) is int and type(passing) is int:
+        if ported != passing:
+            problems.append("cases.ported と cases.passing が一致しない")
+        if total != passing + len(excluded_records) + len(records):
             problems.append("cases の件数が合わない（total ≠ passing + 除外 + 作らない）")
     else:
-        problems.append("cases.total と cases.passing が整数でない")
+        problems.append("cases.total と cases.ported と cases.passing が整数でない")
     return problems
 
 

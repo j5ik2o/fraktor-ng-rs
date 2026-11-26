@@ -16,7 +16,8 @@ verify_red.py は「直前の port-test 応答」から node/crate/test_file を
   AG-EXCLUDED  台帳の cases.excluded の件数を passed に足して原典件数と突き合わせ、
                green の保存は total=原典件数、ported=passing=passed。除外が無いときは
                従来と同じ結果になる
-  AG-NOTBUILT  台帳の cases.not_built の件数も passed に足す（混在の勘定）。
+  AG-NOTBUILT  台帳の cases.not_built の件数も passed に足す（混在の勘定）。同じ
+               ケース名の重複（除外との重なりを含む）は数えない。
                要素は name/reason/alternative と人による承認記録を持つときだけ数え、
                未承認の要素が 1 件でもあれば already_green にしない。欄が無いノードは
                0 件として扱い、従来の結果を変えない
@@ -395,6 +396,41 @@ def test_unapproved_not_built_is_not_already_green():
         assert result["classification"] == "unexpected_pass", result
         assert result["not_built"] is None, result
         print("1c. unapproved not_built:", result["classification"])
+
+
+def test_duplicate_not_built_names_are_not_already_green():
+    """作らない区分に同じケース名が 2 件あれば、件数が合っても already_green にしない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(NODE_ID, None, None, None,
+                                               not_built=["someCase", "someCase"])]),
+            cargo_body=CARGO_STUB_OK, passed=1,
+            original_cases=3, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["classification"] == "unexpected_pass", result
+        assert result["not_built"] is None, result
+        print("1d. duplicate not_built names:", result["classification"])
+
+
+def test_same_name_in_excluded_and_not_built_is_not_already_green():
+    """同じケース名が除外と作らない区分の両方にあれば、件数が合っても already_green にしない。"""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scenario = make_scenario(
+            root,
+            nodes_yaml=ledger_yaml([case_block(NODE_ID, None, None, None,
+                                               excluded=["sharedCase"],
+                                               not_built=["sharedCase"])]),
+            cargo_body=CARGO_STUB_OK, passed=1,
+            original_cases=3, with_original=True,
+        )
+        result = run_verify_red(scenario)
+        assert result["classification"] == "unexpected_pass", result
+        assert result["excluded"] == 1 and result["not_built"] == 1, result
+        print("1e. cross-list duplicate name:", result["classification"])
 
 
 def test_already_green_writes_result_file():
@@ -2051,6 +2087,8 @@ def main() -> int:
         test_already_green_when_ported_and_satisfied,
         test_already_green_with_approved_not_built,
         test_unapproved_not_built_is_not_already_green,
+        test_duplicate_not_built_names_are_not_already_green,
+        test_same_name_in_excluded_and_not_built_is_not_already_green,
         test_already_green_writes_result_file,
         test_non_already_green_result_file_has_no_reason,
         test_unexpected_pass_when_original_missing,

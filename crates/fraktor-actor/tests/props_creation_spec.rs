@@ -36,9 +36,11 @@
 //   struct with a `create()` method whose return value the closure returns.
 //   No Java interface is built.
 // - The original only checks that `system.actorOf(p)` returns without
-//   throwing. The port also observes the argument the factory captured: the
-//   factory records it in a shared log when it runs, and the test reads the
-//   log after `actor_of` and `run_until_idle`.
+//   throwing. The port also observes the argument the actor itself was
+//   constructed with: the actor records it in a shared log from `pre_start`,
+//   and the test reads the log after `actor_of` and `run_until_idle`. The
+//   record comes from the actor's own field, so a factory that built the
+//   actor with a different argument than the case prescribes is caught.
 // - The original runs with `pekko.actor.serialize-creators = on`, under
 //   which `actorOf` verifies on the spot that the Props arguments and the
 //   creator can be serialized, and the runtime constructor lookup is part of
@@ -61,9 +63,9 @@ struct A;
 #[derive(Clone, Debug, PartialEq)]
 struct B;
 
-/// What a factory observed when it ran: whether the captured argument of a
-/// `OneParamActor` was present, as a `(one, two)` pair of the same for a
-/// `TwoParamActor`.
+/// What an actor observed about its own construction: whether the
+/// constructor argument of a `OneParamActor` was present, as a `(one, two)`
+/// pair of the same for a `TwoParamActor`.
 #[derive(Clone, Debug, PartialEq)]
 enum Observed {
   One(bool),
@@ -71,15 +73,16 @@ enum Observed {
 }
 
 /// The original's `OneParamActor`: takes one argument and handles no message
-/// (`Actor.emptyBehavior`, which reports each message as unhandled).
+/// (`Actor.emptyBehavior`, which reports each message as unhandled). It
+/// records the argument it was constructed with from `pre_start`.
 struct OneParamActor {
-  #[allow(dead_code)]
   param: Option<A>,
+  log: Arc<Mutex<Vec<Observed>>>,
 }
 
 impl OneParamActor {
-  fn new(param: Option<A>) -> Self {
-    Self { param }
+  fn new(param: Option<A>, log: Arc<Mutex<Vec<Observed>>>) -> Self {
+    Self { param, log }
   }
 }
 
@@ -87,20 +90,24 @@ impl Actor for OneParamActor {
   fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
     context.unhandled(message);
   }
+
+  fn pre_start(&mut self, _context: &mut ActorContext<'_>) {
+    self.log.lock().expect("observation log").push(Observed::One(self.param.is_some()));
+  }
 }
 
 /// The original's `TwoParamActor`: takes two arguments and handles no
-/// message.
+/// message. It records the arguments it was constructed with from
+/// `pre_start`.
 struct TwoParamActor {
-  #[allow(dead_code)]
   first: Option<A>,
-  #[allow(dead_code)]
   second: Option<B>,
+  log: Arc<Mutex<Vec<Observed>>>,
 }
 
 impl TwoParamActor {
-  fn new(first: Option<A>, second: Option<B>) -> Self {
-    Self { first, second }
+  fn new(first: Option<A>, second: Option<B>, log: Arc<Mutex<Vec<Observed>>>) -> Self {
+    Self { first, second, log }
   }
 }
 
@@ -108,16 +115,23 @@ impl Actor for TwoParamActor {
   fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
     context.unhandled(message);
   }
+
+  fn pre_start(&mut self, _context: &mut ActorContext<'_>) {
+    let observed = Observed::Two(self.first.is_some(), self.second.is_some());
+    self.log.lock().expect("observation log").push(observed);
+  }
 }
 
 /// The original's `OneParamActorCreator`, an object implementing the Java
 /// `Creator[Actor]` interface whose `create()` returns
 /// `new OneParamActor(null)`.
-struct OneParamActorCreator;
+struct OneParamActorCreator {
+  log: Arc<Mutex<Vec<Observed>>>,
+}
 
 impl OneParamActorCreator {
   fn create(&self) -> OneParamActor {
-    OneParamActor::new(None)
+    OneParamActor::new(None, Arc::clone(&self.log))
   }
 }
 
@@ -133,11 +147,8 @@ fn observed(log: &Arc<Mutex<Vec<Observed>>>) -> Vec<Observed> {
 #[test]
 fn props_work_with_creator() {
   let log = Arc::new(Mutex::new(Vec::new()));
-  let recorded = Arc::clone(&log);
-  let props = Props::new(move || {
-    recorded.lock().expect("observation log").push(Observed::One(false));
-    OneParamActor::new(None)
-  });
+  let factory_log = Arc::clone(&log);
+  let props = Props::new(move || OneParamActor::new(None, Arc::clone(&factory_log)));
 
   let mut system = new_system();
   let _actor = system.actor_of(props);
@@ -152,11 +163,8 @@ fn props_work_with_creator() {
 #[test]
 fn props_work_with_class_of() {
   let log = Arc::new(Mutex::new(Vec::new()));
-  let recorded = Arc::clone(&log);
-  let props = Props::new(move || {
-    recorded.lock().expect("observation log").push(Observed::One(false));
-    OneParamActor::new(None)
-  });
+  let factory_log = Arc::clone(&log);
+  let props = Props::new(move || OneParamActor::new(None, Arc::clone(&factory_log)));
 
   let mut system = new_system();
   let _actor = system.actor_of(props);
@@ -172,11 +180,8 @@ fn props_work_with_class_of() {
 #[test]
 fn props_work_with_class_of_and_one_null_param() {
   let log = Arc::new(Mutex::new(Vec::new()));
-  let recorded = Arc::clone(&log);
-  let props = Props::new(move || {
-    recorded.lock().expect("observation log").push(Observed::One(false));
-    OneParamActor::new(None)
-  });
+  let factory_log = Arc::clone(&log);
+  let props = Props::new(move || OneParamActor::new(None, Arc::clone(&factory_log)));
 
   let mut system = new_system();
   let _actor = system.actor_of(props);
@@ -190,11 +195,8 @@ fn props_work_with_class_of_and_one_null_param() {
 #[test]
 fn props_work_with_class_of_and_two_null_params() {
   let log = Arc::new(Mutex::new(Vec::new()));
-  let recorded = Arc::clone(&log);
-  let props = Props::new(move || {
-    recorded.lock().expect("observation log").push(Observed::Two(false, false));
-    TwoParamActor::new(None, None)
-  });
+  let factory_log = Arc::clone(&log);
+  let props = Props::new(move || TwoParamActor::new(None, None, Arc::clone(&factory_log)));
 
   let mut system = new_system();
   let _actor = system.actor_of(props);
@@ -208,12 +210,8 @@ fn props_work_with_class_of_and_two_null_params() {
 #[test]
 fn props_work_with_create_class_and_creator() {
   let log = Arc::new(Mutex::new(Vec::new()));
-  let recorded = Arc::clone(&log);
-  let creator = OneParamActorCreator;
-  let props = Props::new(move || {
-    recorded.lock().expect("observation log").push(Observed::One(false));
-    creator.create()
-  });
+  let creator = OneParamActorCreator { log: Arc::clone(&log) };
+  let props = Props::new(move || creator.create());
 
   let mut system = new_system();
   let _actor = system.actor_of(props);
