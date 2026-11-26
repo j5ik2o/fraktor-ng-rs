@@ -98,6 +98,7 @@ impl AveragingGauge {
   pub fn add_slice(&self, values: &[i64]);       // 原典 add(Seq[Long])
   pub fn value(&self) -> f64;                    // 原典 getValue（個数 0 では NaN、§3）
 }
+impl Default for AveragingGauge;                 // new と同じ値
 
 // hdr_histogram.rs — 原典 HdrHistogram（単位は表示専用の文字列）
 #[derive(Clone)]
@@ -109,6 +110,8 @@ impl HdrHistogram {
   pub fn update_with_count(&self, value: i64, count: i64) -> Result<(), MetricsError>;
   pub fn count(&self) -> u64;
   pub fn unit(&self) -> &str;
+  pub fn min(&self) -> u64;                       // 原典 getData.getMinValue。空では 0
+  pub fn max(&self) -> u64;                       // 原典 getData.getMaxValue。空では 0
 }
 
 // known_ops_in_timespan_timer.rs — 原典 KnownOpsInTimespanTimer
@@ -121,6 +124,15 @@ impl KnownOpsInTimespanTimer {
   pub fn elapsed(&self) -> Option<core::time::Duration>; // 未停止では None（§3 の I5）
   pub fn avg_duration_nanos(&self) -> Option<i64>;  // 原典 avgDuration。未停止では None
   pub fn ops_per_second(&self) -> Option<f64>;      // 原典 opsPerSecond。未停止では None
+}
+
+// metric.rs — 登録される計測。値はレジストリと状態を共有するハンドル
+#[derive(Clone)]
+pub enum Metric {
+  AveragingGauge(AveragingGauge),
+  HdrHistogram(HdrHistogram),
+  KnownOpsInTimespanTimer(KnownOpsInTimespanTimer),
+  // ファイルディスクリプタのゲージの列挙子は実装の担当が決める
 }
 
 // metrics_kit_value.rs — 原典 MetricsKit と MetricsKitOps のうち、5件が使う範囲
@@ -147,6 +159,8 @@ impl MetricsKit {
 }
 impl Drop for MetricsKit;                        // shutdown_metrics 未呼出でも定期報告スレッドを止めて接合する
 ```
+
+`Metric` の3つの列挙子、`HdrHistogram::min` と `HdrHistogram::max`、`impl Default for AveragingGauge` は、テストの担当が足した面である（§12 の末尾）。テストは `registered_metrics()` の値を `let Metric::KnownOpsInTimespanTimer(timer) = ... else { ... }` の形で取り出し、列挙子を網羅する `match` は書かない。そのため、ファイルディスクリプタの列挙子を足してもテストは変わらない。
 
 設計上の判断を6点書く。
 
@@ -302,3 +316,5 @@ unix でないプラットフォーム（CI の Windows を含む）でも、3�
 | 低-3 `hdr_histogram` の既存キー再取得と引数検証の順序 | 直す | 原典の `getOrRegister` の遅延評価の意味を確かめ、導出したキーで先にレジストリを照会し、同種の既存ハンドルがあれば引数を検証せずに返すことを §2 の判断5に明記した。 |
 
 内訳は、直す12件、別件0件、採らない0件である。新しい依存2件（`hdrhistogram` を `default-features = false` で、`libc` を unix 限定で）の採用は妥当であるというレビューの結論に従い、§2 の依存の設計は維持した。
+
+テストの担当が足した面：`Metric` の列挙子 `AveragingGauge`・`HdrHistogram`・`KnownOpsInTimespanTimer`（`#[derive(Clone)]`。ファイルディスクリプタの列挙子は実装の担当が決める）、`HdrHistogram::min` と `HdrHistogram::max`（原典 `getMinValue`・`getMaxValue`、空では 0）、`impl Default for AveragingGauge`（`new` と同じ値）。理由：ケース2の暗黙の検査（登録されたタイマーの件数と停止）と P3 の最小・最大を書くため。また、引数の無い `new` には `Default` が無いと clippy の `new_without_default` が `-D warnings` で落ちるため（中将の判断、2026-11-27）。
