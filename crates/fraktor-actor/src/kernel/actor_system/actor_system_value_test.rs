@@ -73,6 +73,22 @@ fn system(name: &str) -> ActorSystem {
   ActorSystem::new(name, Arc::new(QueueBoundary::new()))
 }
 
+/// Regression (review of PR #230): starting the dead letter listener
+/// while the unsubscriber is active used to panic, because the executor
+/// subscribed the listener while its own borrow was held, and the
+/// subscription's watch borrows the executor again.
+#[test]
+fn starting_the_dead_letter_listener_after_the_unsubscriber_does_not_panic() {
+  let mut system = system("DeadLetterListenerStart");
+  system.event_stream().start_unsubscriber();
+  let settings = crate::kernel::actor::DeadLetterSettings::new(
+    crate::kernel::actor::DeadLetterLogLimit::Unlimited,
+    Some(Duration::from_secs(1)),
+  );
+  let listener = system.start_dead_letter_listener(settings);
+  assert!(listener.path().to_string().ends_with("DeadLetterListener"));
+}
+
 struct NoOp;
 
 impl Actor for NoOp {
@@ -1237,6 +1253,26 @@ impl crate::kernel::actor::Logging::EventSink for RecordingSink {
   fn into_any(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync> {
     self
   }
+}
+
+#[test]
+fn the_dead_letter_listener_publishes_to_the_event_sink_installed_after_it_started() {
+  let mut system = system("DeadLetterListenerLateSink");
+  let settings =
+    crate::kernel::actor::DeadLetterSettings::new(crate::kernel::actor::DeadLetterLogLimit::Unlimited, None);
+  let _listener = system.start_dead_letter_listener(settings);
+  let events = Arc::new(Mutex::new(Vec::new()));
+  system.set_event_sink(Arc::new(RecordingSink { events: Arc::clone(&events) }));
+
+  let dead_letters = system.dead_letters();
+  dead_letters.tell("hello", dead_letters.clone());
+  system.run_until_idle();
+
+  let recorded = events.lock().unwrap();
+  assert!(
+    recorded.iter().any(|(_, message)| message.contains("was not delivered")),
+    "the listener kept the sink captured at its start: {recorded:?}"
+  );
 }
 
 fn with_catcher(name: &str) -> ActorSystem {
