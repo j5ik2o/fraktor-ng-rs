@@ -1,3 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// license agreements; and to You under the Apache License, version 2.0:
+//
+//   https://www.apache.org/licenses/LICENSE-2.0
+//
+// This file is part of the Apache Pekko project, which was derived from Akka.
+//
+// Copyright (C) 2009-2022 Lightbend Inc. <https://www.lightbend.com>
+//
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE and NOTICE
+// at the repository root.
+//
+// This file has been modified from the Apache Pekko original.
+
 // Ported from Pekko v1.7.1 (SHA 9a54d1294c3ac7821bbed3c940769c3d5027d1ff):
 // actor-tests/src/test/scala-2.13+/org/apache/pekko/actor/ActorSystemScala213PlusSpec.scala
 //
