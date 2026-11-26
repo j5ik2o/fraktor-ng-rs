@@ -38,7 +38,6 @@ crates の Pekko 由来の行には、ヘッダーへ表示を写す元の `原�
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 from collections import Counter
@@ -46,8 +45,10 @@ from pathlib import Path
 
 from origin_decisions import DECISIONS_DEFAULT, apply_decisions, load_decisions
 from origin_evidence import H1_KINDS, classify, evidence_path
-from origin_pekko import load_pekko, source_files, third_party_evidence
+from origin_pekko import open_pekko, source_files, third_party_evidence
 
+RELOCATE_TABLE = Path("docs") / "baseline" / "v2.0.0-port-targets.tsv"
+MOVED_ID_MASK = "<移動前の id>"
 TSV_HEADER = [
     "path",
     "判定",
@@ -172,12 +173,27 @@ def inherit_notices(own, root):
     return own + [label for label in from_source if label not in own]
 
 
-def write_tsv(path, rows, decided, origins):
+def moved_ids(repo):
+    """台帳の根拠表で移動した旧 id。一覧に書くと `relocate_nodes.py check` が
+    「旧 id の参照が残っている」で落とすので、根拠の中身から伏せる。"""
+    sys.path.insert(0, str(repo / "ledger" / "tools"))
+    from relocate_table import read_table
+
+    return sorted({row.old_id for row in read_table(repo / RELOCATE_TABLE) if row.kind == "move"}, key=len, reverse=True)
+
+
+def mask_moved(text, moved):
+    for old_id in moved:
+        text = text.replace(old_id, MOVED_ID_MASK)
+    return text
+
+
+def write_tsv(path, rows, decided, origins, moved):
     lines = ["\t".join(TSV_HEADER)]
     for rel, scope, verdict, kind, snippet, flag, reason in rows:
         spdx, source = decided[rel]
         sources, third = origins[rel]
-        cells = [rel, verdict, kind, snippet.replace("\t", " "), flag, reason, scope]
+        cells = [rel, verdict, kind, mask_moved(snippet.replace("\t", " "), moved), flag, reason, scope]
         lines.append("\t".join(cells + [spdx, source, ";".join(sources), ";".join(third)]))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -238,21 +254,18 @@ def parse_args(argv):
 def main(argv=None):
     args = parse_args(argv)
     repo = args.repo.resolve()
-    pekko, tree, temporary_tree = load_pekko(args.pekko.resolve(), args.pekko_tree)
-    ledger = ledger_index(repo)
-    rows, texts = build_rows(repo, ledger, pekko)
     decisions_path = args.decisions if args.decisions.is_absolute() else repo / args.decisions
-    decided = apply_decisions(rows, load_decisions(decisions_path), decisions_path.name)
-    origins = build_origins(rows, texts, ledger, pekko)
-    write_tsv(args.out_tsv, rows, decided, origins)
+    with open_pekko(args.pekko.resolve(), args.pekko_tree) as pekko:
+        ledger = ledger_index(repo)
+        rows, texts = build_rows(repo, ledger, pekko)
+        decided = apply_decisions(rows, load_decisions(decisions_path), decisions_path.name)
+        origins = build_origins(rows, texts, ledger, pekko)
+    write_tsv(args.out_tsv, rows, decided, origins, moved_ids(repo))
     summary = summarize(rows, decided, origins, ledger)
     if args.out_summary:
         args.out_summary.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    if temporary_tree:
-        shutil.rmtree(tree, ignore_errors=True)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

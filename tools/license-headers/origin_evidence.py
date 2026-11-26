@@ -134,8 +134,10 @@ def mention_evidence(text, suffix):
         for line in lines:
             if RUST_COMMENT.match(line) and MENTION.search(line):
                 return shorten(line)
+    # `pekko_mentioned` は `org.apache.pekko` だけの行でも真になるので、ここでも拾う
+    # （拾わないと根拠が None になり、TSV を書く前に落ちる）。
     for line in lines:
-        if MENTION.search(line):
+        if MENTION.search(line) or PEKKO_PATH_ANY.search(line):
             return shorten(line)
     return None
 

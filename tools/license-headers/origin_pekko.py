@@ -4,9 +4,11 @@
 Lightbend の表示、第三者の著作権表示）で、文面は変えない（docs/design/issue-206-license-policy.md §3.1）。
 """
 import re
+import shutil
 import subprocess
 import tempfile
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,23 +49,43 @@ def pekko_paths(git_repo):
     )
     return [line for line in out.stdout.splitlines() if line]
 
+TREE_STAMP = ".pekko-commit"
+
+
 def pekko_tree(git_repo, target=None):
     """原典の tree を展開して、そのパスを返す（読むだけ。フェッチはしない）。
 
     戻り値は (展開先, 一時ディレクトリを作ったか)。呼び出し側が後始末に使う。
+    `target` を渡すと、固定コミット専用の展開先として使う。展開したときに `.pekko-commit`
+    へ固定コミットを書き、次からはそれが一致するときだけ再利用する。別のリビジョンの作業
+    ツリーや、印の無い空でないディレクトリは使わずに止める（中身は消さない）。
     """
     temporary = target is None
     if target is None:
         target = Path(tempfile.mkdtemp(prefix="pekko-v2.0.0-"))
-    elif (target / "build.sbt").exists():
-        return target, False
     else:
+        stamp = target / TREE_STAMP
+        if stamp.is_file() and stamp.read_text(encoding="utf-8").strip() == PEKKO_COMMIT:
+            return target, False
+        if target.exists() and any(target.iterdir()):
+            raise SystemExit(
+                f"--pekko-tree {target} は固定コミット {PEKKO_COMMIT} の展開先ではない"
+                f"（{TREE_STAMP} が無いか違う）。空のディレクトリか、新しいパスを指定する"
+            )
         target.mkdir(parents=True, exist_ok=True)
-    archive = subprocess.run(
-        ["git", "-C", str(git_repo), "archive", PEKKO_COMMIT], check=True, capture_output=True
-    )
-    subprocess.run(["tar", "-x", "-C", str(target)], input=archive.stdout, check=True)
+    try:
+        archive = subprocess.run(
+            ["git", "-C", str(git_repo), "archive", PEKKO_COMMIT], check=True, capture_output=True
+        )
+        subprocess.run(["tar", "-x", "-C", str(target)], input=archive.stdout, check=True)
+    except BaseException:
+        if temporary:
+            shutil.rmtree(target, ignore_errors=True)
+        raise
+    if not temporary:
+        (target / TREE_STAMP).write_text(PEKKO_COMMIT + "\n", encoding="utf-8")
     return target, temporary
+
 
 def pekko_index(paths):
     """原典のファイル名（拡張子抜き、小文字）から原典パスへの索引。"""
@@ -213,16 +235,21 @@ class PekkoIndex:
     notices: dict
 
 
-def load_pekko(git_repo, tree_dir=None):
-    """原典の git リポジトリから索引を作る。戻り値は (索引, 展開先, 一時ディレクトリか)。"""
+@contextmanager
+def open_pekko(git_repo, tree_dir=None):
+    """原典の git リポジトリから索引を作る。一時の展開先は、例外のときも抜けるときに消す
+    （利用者が `--pekko-tree` で渡した展開先は消さない）。"""
     all_paths = pekko_paths(git_repo)
     tree, temporary = pekko_tree(git_repo, tree_dir)
-    types = pekko_types(tree)
-    index = PekkoIndex(
-        paths=frozenset(all_paths),
-        stems=pekko_index(all_paths),
-        types=types,
-        folded=fold_types(types),
-        notices=third_party_notices(tree, all_paths),
-    )
-    return index, tree, temporary
+    try:
+        types = pekko_types(tree)
+        yield PekkoIndex(
+            paths=frozenset(all_paths),
+            stems=pekko_index(all_paths),
+            types=types,
+            folded=fold_types(types),
+            notices=third_party_notices(tree, all_paths),
+        )
+    finally:
+        if temporary:
+            shutil.rmtree(tree, ignore_errors=True)

@@ -163,5 +163,44 @@ class LeadingBlocks(unittest.TestCase):
         self.assertEqual(cli.inherit_notices([], [label, "hash-prospector: public domain（Unlicense）"]), [label])
 
 
+class Robustness(unittest.TestCase):
+    """PR #215 のレビュー（CodeRabbit）の指摘の回帰テスト。"""
+
+    def test_a_bare_package_name_still_yields_evidence(self):
+        text = "// See org.apache.pekko\nfn f() {}\n"
+        self.assertTrue(e.pekko_mentioned(text))
+        self.assertEqual(e.mention_evidence(text, ".rs"), "// See org.apache.pekko")
+        verdict = e.classify("docs/x.md", text, "other", {}, PEKKO)
+        self.assertEqual(verdict[2], "// See org.apache.pekko")
+
+    def test_a_reused_tree_must_carry_the_pinned_commit(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as raw:
+            tree = Path(raw)
+            (tree / "build.sbt").write_text("// another revision\n", encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                p.pekko_tree(Path("/nonexistent"), tree)
+            self.assertTrue((tree / "build.sbt").exists(), "利用者の展開先を消さない")
+            (tree / p.TREE_STAMP).write_text(p.PEKKO_COMMIT + "\n", encoding="utf-8")
+            self.assertEqual(p.pekko_tree(Path("/nonexistent"), tree), (tree, False))
+
+    def test_a_temporary_tree_is_removed_when_extraction_fails(self):
+        import glob
+        import tempfile
+
+        before = set(glob.glob(str(Path(tempfile.gettempdir()) / "pekko-v2.0.0-*")))
+        with self.assertRaises(Exception):
+            p.pekko_tree(Path("/nonexistent-pekko-repo"))
+        after = set(glob.glob(str(Path(tempfile.gettempdir()) / "pekko-v2.0.0-*")))
+        self.assertEqual(after - before, set())
+
+    def test_moved_ids_are_masked_in_evidence(self):
+        import classify_file_origin as cli
+
+        old = "actor-testkit-typed/src/test/java/org/apache/pekko/X/JUnit5Test.java"
+        self.assertEqual(cli.mask_moved(f"move {old} new/path", [old]), f"move {cli.MOVED_ID_MASK} new/path")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -368,7 +368,8 @@ Apache License 2.0 第 4 条 (b)（変更したことを示す目立つ表示）
 - 人の決定：[`docs/design/issue-206-origin-decisions.tsv`](./issue-206-origin-decisions.tsv)（5 列。下の「人の決定」）
 - 判定のスクリプト：[`tools/license-headers/classify_file_origin.py`](../../tools/license-headers/classify_file_origin.py)（入口と出力）、`origin_evidence.py`（本文の材料）、`origin_pekko.py`（原典の索引と表示）、`origin_decisions.py`（人の決定）。テストは `classify_file_origin_test.py`（原典の git は要らない）
 - 再実行：`PEKKO_REPO=<Pekko v2.0.0 の git リポジトリ> uv run --with pyyaml python3 tools/license-headers/classify_file_origin.py`（既定の出力先は上の TSV）。この版を作業ツリーで流し直し、TSV とバイト単位で一致することを確かめた。対象の集合は `git ls-files` で決める（L7）。`crates/` の下は、名前で飛ばすディレクトリを持たない。ライセンス作業のファイル（`LICENSE*`、`NOTICE`、この文書、TSV、決定のファイル、候補の一覧、`tools/license-headers/`）は走査から外してあるので、TSV を書き直しても自分自身は増えない。
-- 原典は Apache Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）。
+- 原典は Apache Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）。`--pekko-tree` で展開先を渡すと、固定コミット専用の展開先として使う。展開したときに `.pekko-commit` を書き、それが固定コミットと一致するときだけ再利用する。別のリビジョンの作業ツリーや、印の無い空でないディレクトリは使わずに止める。省略時の一時の展開先は、例外で止まったときも消す。
+- `根拠の中身` には、台帳の根拠表（`docs/baseline/v2.0.0-port-targets.tsv`）で移動した旧 id を書かない。`<移動前の id>` に置き換える。旧 id が残ると、CI の `relocate_nodes.py check` が「旧 id の参照が残っている」で落とすからである（根拠表そのものを引く行がこれに当たる）。
 
 TSV の列：
 
@@ -556,6 +557,7 @@ Pekko 由来 295 件のうち 210 件で決まり、85 件は決まらない（7
 | `--apply --kind {pekko\|original} <path...>` | 指定した個別ファイル（新規移植・新規自作ファイル等）に該当ヘッダーを冪等適用。`pekko` は `--source <原典のパス>` を 1 つ以上とり、その表示を写す（無ければ §3.1 の既定の表示）。既に別種別や未知 SPDX がある場合、本文に `SPDX-License-Identifier:` がある場合、`original` なのに C3 のマーカーがある場合は、書き換えずにエラー（L3） | 成功 0 / 失敗 1 |
 | `--remove` | マニフェストやマーカーを見ず、`crates/**/*.rs` のうちツール管理のライセンスヘッダーブロックを持つ全ファイルからヘッダーを除去する（F4 解消）。決定のファイルで許した外部のヘッダー（M3）は消さずに飛ばし、パスを一覧に出す。それ以外の未知形式の SPDX ブロックは誤削除を防ぐためエラーで止める（事前検証で Fail-first） | 成功 0 / 失敗 1 |
 | `--check` | `crates/**/*.rs` の全ファイルに対し C1〜C4 を検証する（一覧を使わない簡易の検査） | 全合格 0 / 違反あり 1 |
+| `--list`（どのモードにも付けられる） | ファイルごとの状態を出す。`--apply` と `--remove` では、**書き込んだ後の本文**で状態を出す（旧 `apply_ported_headers.py` は書き込む前の本文で出していた。PR #215 の CodeRabbit の指摘。旧ツールは段 2 で消す） | − |
 | `--check --manifest <path.tsv>`（**CI はこれを使う**。M1） | C1〜C4 に加えて C5（一覧との照合）を、TSV の全 433 行と、TSV に無い新しい `crates/**/*.rs` のすべてに効かせる。`保留` の行は、SPDX が無いときだけ合格（`held` と数える）。違反は種別・パス・修正コマンド例を出す | 全合格 0 / 違反あり 1 |
 
 #### 3.4.3 文言の完全一致に頼らない構造化ヘッダーブロック認識（F1 の解決）
@@ -730,8 +732,8 @@ Hint: run `python3 tools/license-headers/license_headers.py --apply --kind pekko
 
 | 番号 | 不変条件 |
 |:---|:---|
-| I1 | **往復性**：ヘッダーを持たず（`parse_header(x).state == NONE`）、かつ「改行を含まない shebang 単独 1 行」でない任意の UTF-8 文字列 `x` と任意の `k ∈ {pekko, original}` に対し、`remove(apply(x, k)) == x`（バイト単位完全一致、BOM・CRLF・先頭空行・末尾改行有無を保持）。 |
-| I2 | **冪等性**：有効なヘッダーを既に持つか持たないかに関わらず、同じ種別 `k` での適用は冪等：`apply(apply(x, k), k) == apply(x, k)`。 |
+| I1 | **往復性**：ヘッダーを持たず（`parse_header(x).state == NONE`）、かつ「改行を含まない shebang 単独 1 行」でない任意の UTF-8 文字列 `x` と任意の `k ∈ {pekko, original}` に対し、**`apply(x, k)` が成功するなら** `remove(apply(x, k)) == x`。`apply` が断る入力（I3。本文に SPDX がある、`original` なのに C3 のマーカーがある）は I1 の対象外で、I3 と拒否のテストで確かめる（PR #215 の CodeRabbit の指摘）（バイト単位完全一致、BOM・CRLF・先頭空行・末尾改行有無を保持）。 |
+| I2 | **冪等性**：ヘッダーを持たないか、`k` と同じ種別のヘッダーを持つ入力で、`apply(x, k)` が成功するなら `apply(apply(x, k), k) == apply(x, k)`。別の種別のヘッダーを持つ入力は I3 で扱う。 |
 | I3 | **種別衝突・未知 SPDX の拒否**：既に異なる種別のヘッダーを持つ、または `UNRECOGNIZED` な SPDX ブロックを持つ入力に対する `apply` は例外／エラーを返し、入力を 1 バイトも変更しない（二重付与も無断上書きもしない）。本文に `SPDX-License-Identifier:` があるとき（C1 の再出現）と、`original` なのに C3 のマーカーがあるときも、`apply` が断る（L3）。 |
 | I4 | **マーカー判定の位置不変性**：ヘッダーの適用前後で、本文に対する移植マーカー判定 `has_pekko_marker(strip_body(x))` の結果が変わらない（マーカーが元の 20 行目にあっても適用後に窓の外へ落ちない）。 |
 | I5 | **非完全一致ヘッダーの安全な除去と本文非破壊**：先頭行が `// SPDX-License-Identifier:` で既知の終端アンカーを持つヘッダーブロックは、内部の年号・`Copyright` 行・`LICENSE` 参照文言が変わっていても、直後の区切り空行が欠けていても（E6）、`remove` はヘッダーブロックのみを除去し、直後の出典コメントや本文を 1 バイトも削らない。例外が 1 つある：区切りの空行が消え、しかも本文が空行で始まるときは、本文の先頭の空行 1 行を区切りとみなして消す（L4。内容としては害が無い）。 |
@@ -746,7 +748,7 @@ Hint: run `python3 tools/license-headers/license_headers.py --apply --kind pekko
 
 | 性質 | 内容 |
 |:---|:---|
-| P1（往復） | `parse_header(x).state == NONE` かつ「改行なし shebang 単独 1 行」でない `x` に対し、`remove(apply(x, k)) == x`。 |
+| P1（往復） | `parse_header(x).state == NONE` かつ「改行なし shebang 単独 1 行」でない `x` で、`apply(x, k)` が成功するものに対し、`remove(apply(x, k)) == x`。生成器は断られる入力も混ぜ、その割合を出す（断られる入力ばかりで P1 が空振りしないことを確かめる）。 |
 | P2（除外集合の安全保証） | 除外集合（改行を含まない `#!/...` のみの 1 行入力）に対しては、`apply` と `check` が必ずエラーを返し、サイレントな破損や不整合な変換を行わない。 |
 | P3（冪等） | `apply(x, k)` が成功して `y` を返すとき、`apply(y, k) == y`。 |
 | P4（種別衝突拒否） | `apply(x, pekko)` の結果に対し `apply(..., original)` は必ずエラー。逆も同様。 |
@@ -858,6 +860,21 @@ Hint: run `python3 tools/license-headers/license_headers.py --apply --kind pekko
 | 規則 4 と、行をまたぐ「the original」 | H1 の 3 つの規則だけでは `murmur3.rs`（scala-library の MurmurHash3 を写す）と `sketch_depth.rs` が「自分で書いた」に残る。迷ったら `Apache-2.0` に倒す（決定 6） |
 | `原典ファイル` と `第三者の表示` の列 | 決定 6.4 の「原文どおり」を、ファイルごとに機械で再現できるようにするため（§3.1） |
 | 判定スクリプトを 4 つのファイルに分け、テストを足した。前の版の `--out-md` を消した | `aislop` の `complexity/file-too-large`（400 行）などに当たったため。受け入れ一覧に足すのは抑制なので人が決めることで、ここではコードを直した。`--out-md` の内容（件数の表）は §3.3 にある |
+
+---
+
+#### PR #215 のレビューボット（`2b43004` に付いた CodeRabbit の 6 件）
+
+| 場所 | 指摘 | 扱い | 中身 |
+|:---|:---|:---|:---|
+| 設計 §7.1 I1・I2、§7.2 P1 | 往復性と冪等性の対象から、`apply` が断る入力を外す | 直す | I1、I2、P1 を「`apply(x, k)` が成功するなら」に直した。断る入力は I3 と拒否のテストで見る |
+| `NOTICE` | 省略した節の理由が、この版の移植（Netty、scala-library）と合わない | 段 A で直す | 段 A で原典 `NOTICE` の全文に差し替える（§2.4、§8.1）。ルートのファイルの差し替えは、設計の独立レビューの後と決まっているので、この段では変えない |
+| `apply_ported_headers.py` の `--list` | 書き込む前の本文で状態を出す | 新しいツールで直す | 指摘どおりだった（`entries` が書き込む前の本文）。旧ツールは段 2 で消すので、新しいツールの `--list` が書き込んだ後の本文で出すことを §3.4.2 に書いた |
+| `classify_file_origin.py` | 例外で止まると一時の展開先が残る | 直す | 展開と索引づくりを `open_pekko` のコンテキストマネージャーにまとめ、例外のときも消す。展開の途中で失敗したときも消す。テストを足した |
+| `origin_evidence.py` の `mention_evidence` | `org.apache.pekko` だけの行で根拠が None になり、TSV を書く前に落ちる | 直す | 最後の照合で `org.apache.pekko` も拾う。テストを足した。今の木では TSV は変わらない |
+| `origin_pekko.py` の `--pekko-tree` | 別のリビジョンの展開先を、`build.sbt` があるだけで再利用する | 直す | 固定コミット専用の展開先にした（`.pekko-commit` の印。一致しなければ止まり、中身は消さない）。テストを足した |
+
+CI の `relocate_nodes.py check` が、TSV の `根拠の中身` に引いた旧 id（根拠表の `move` の行）で落ちた。`b6a4d69` から潜んでいた（そのときの CI は merge parents の検査で先に止まっていた）。根拠の中身では旧 id を `<移動前の id>` に置き換える（§3.3）。
 
 ---
 
