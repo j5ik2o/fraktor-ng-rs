@@ -49,11 +49,13 @@ impl Clone for Endpoint {
   fn clone(&self) -> Self {
     match self {
       | Self::Mailbox(mailbox) => {
+        // syn-check: allow(tests-location) -- 所有権モデルの条件1の数え上げ（設計 §11.11.7、オーナーの許可 2026-11-27、元帥の項目472）
         #[cfg(test)]
         crate::kernel::sync::counts::count_mailbox_endpoint();
         Self::Mailbox(Arc::clone(mailbox))
       },
       | Self::Boundary(boundary) => {
+        // syn-check: allow(tests-location) -- 所有権モデルの条件1の数え上げ（設計 §11.11.7、オーナーの許可 2026-11-27、元帥の項目472）
         #[cfg(test)]
         crate::kernel::sync::counts::count_boundary_endpoint();
         Self::Boundary(Arc::clone(boundary))

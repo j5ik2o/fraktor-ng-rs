@@ -28,6 +28,7 @@
 //! [`SpinLockFactory`] is the kernel's default for a system that one thread
 //! drives.
 
+// syn-check: allow(tests-location, module-wiring) -- 所有権モデルの条件1の数え上げ（設計 §11.11.7、オーナーの許可 2026-11-27、元帥の項目472）
 #[cfg(test)]
 pub(crate) mod counts;
 mod lock_cell;

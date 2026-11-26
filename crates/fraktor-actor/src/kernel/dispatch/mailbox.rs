@@ -174,6 +174,7 @@ impl<C: MailboxCell> Mailbox<C> {
   /// Returns the dispatcher of this mailbox, while its system is alive. The
   /// only place that follows the way back.
   pub(crate) fn executor(&self) -> Option<Arc<ManualExecutor<C>>> {
+    // syn-check: allow(tests-location) -- 所有権モデルの条件1の数え上げ（設計 §11.11.7、オーナーの許可 2026-11-27、元帥の項目472）
     #[cfg(test)]
     crate::kernel::sync::counts::count_upgrade();
     self.executor.upgrade()
@@ -233,6 +234,7 @@ impl<C: MailboxCell> Mailbox<C> {
   /// empty run, and the user never sees it (design of #234, section 3.10).
   pub(crate) fn try_schedule(mailbox: &Arc<Self>) -> Option<MailboxRun<C>> {
     if mailbox.reserve() {
+      // syn-check: allow(tests-location) -- 所有権モデルの条件1の数え上げ（設計 §11.11.7、オーナーの許可 2026-11-27、元帥の項目472）
       #[cfg(test)]
       crate::kernel::sync::counts::count_run();
       Some(MailboxRun::new(Arc::clone(mailbox)))

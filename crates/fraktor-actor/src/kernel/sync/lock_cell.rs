@@ -54,6 +54,7 @@ impl<T> LockCell<T> {
   /// Calling `with` on the same cell from inside `f` never returns: the lock
   /// is not re-entrant. A spin lock spins and a thread lock blocks.
   pub(crate) fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+    // syn-check: allow(tests-location) -- 所有権モデルの条件1の数え上げ（設計 §11.11.7、オーナーの許可 2026-11-27、元帥の項目472）
     #[cfg(test)]
     crate::kernel::sync::counts::count_lock();
     let mut f = Some(f);
