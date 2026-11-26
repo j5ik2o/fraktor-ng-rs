@@ -43,6 +43,7 @@ mod tests;
 pub struct Props {
   factory: Arc<dyn Fn() -> Box<dyn Actor> + Send + Sync>,
   dispatcher: Option<Arc<str>>,
+  mailbox: Option<Arc<str>>,
 }
 
 /// The actor that [`Props::empty`] builds.
@@ -89,7 +90,7 @@ impl Props {
     F: Fn() -> A + Send + Sync + 'static,
     A: Actor + 'static,
   {
-    Self { factory: Arc::new(move || Box::new(factory())), dispatcher: None }
+    Self { factory: Arc::new(move || Box::new(factory())), dispatcher: None, mailbox: None }
   }
 
   /// Records the name of the dispatcher the actor should run on.
@@ -98,7 +99,11 @@ impl Props {
   /// name records states that the port keeps the name only: interpreting a
   /// configuration text and modelling a thread pool belong to a later goal.
   /// The name therefore travels with the recipe and is readable through
-  /// [`Props::dispatcher`] without changing how the actor runs.
+  /// [`Props::dispatcher`]. It is not inert, though: at spawn the
+  /// executor resolves it against the system's
+  /// [`DispatchSettings`](crate::kernel::actor::dispatch_settings::DispatchSettings)
+  /// and the resolved definition decides the actor's stash and mailbox
+  /// capacities.
   pub fn with_dispatcher(mut self, name: &str) -> Self {
     self.dispatcher = Some(Arc::from(name));
     self
@@ -111,6 +116,30 @@ impl Props {
     self.dispatcher.as_deref()
   }
 
+  /// Records the name of the mailbox the actor should use.
+  ///
+  /// Mirrors `Props.withMailbox(name)`. As with
+  /// [`with_dispatcher`](Self::with_dispatcher), the port keeps the name
+  /// only: the executor resolves it against the system's
+  /// [`DispatchSettings`](crate::kernel::actor::dispatch_settings::DispatchSettings) when
+  /// the actor is spawned. Naming a mailbox selects that mailbox's
+  /// definition: its mailbox capacity is the definition's value, or
+  /// unlimited when the definition leaves it open or the name is not
+  /// defined at all — the dispatcher's mailbox capacity does not carry
+  /// over to a named mailbox. Only the stash capacity falls back to
+  /// the dispatcher's definition.
+  pub fn with_mailbox(mut self, name: &str) -> Self {
+    self.mailbox = Some(Arc::from(name));
+    self
+  }
+
+  /// Returns the mailbox name the recipe records, when one was set.
+  ///
+  /// Mirrors `Props.mailbox`, narrowed to the name record this port keeps.
+  pub fn mailbox(&self) -> Option<&str> {
+    self.mailbox.as_deref()
+  }
+
   pub(crate) fn create_actor(&self) -> Box<dyn Actor> {
     (self.factory)()
   }
@@ -118,6 +147,6 @@ impl Props {
 
 impl Clone for Props {
   fn clone(&self) -> Self {
-    Self { factory: Arc::clone(&self.factory), dispatcher: self.dispatcher.clone() }
+    Self { factory: Arc::clone(&self.factory), dispatcher: self.dispatcher.clone(), mailbox: self.mailbox.clone() }
   }
 }

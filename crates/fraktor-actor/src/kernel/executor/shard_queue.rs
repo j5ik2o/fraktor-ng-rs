@@ -115,6 +115,11 @@ impl ShardQueue {
     taken
   }
 
+  /// Counts the locally queued envelopes addressed to `recipient`.
+  pub(crate) fn count_addressed_to(&self, recipient: &ActorRef) -> usize {
+    self.local.iter().filter(|envelope| envelope.is_addressed_to(recipient)).count()
+  }
+
   /// Pops the oldest queued envelope.
   pub(crate) fn pop(&mut self) -> Option<Envelope> {
     self.local.pop_front()
