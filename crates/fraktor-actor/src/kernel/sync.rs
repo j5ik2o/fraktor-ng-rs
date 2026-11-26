@@ -30,3 +30,14 @@ pub(crate) type Arc<T> = portable_atomic_util::Arc<T>;
 pub(crate) type Weak<T> = alloc::sync::Weak<T>;
 #[cfg(not(target_has_atomic = "ptr"))]
 pub(crate) type Weak<T> = portable_atomic_util::Weak<T>;
+
+/// Takes `mutex` with `try_lock`, panicking when it is already held.
+///
+/// Stage 1 of #234 replaces the `RefCell` borrows of the system handles with
+/// this lock: a re-entrant or concurrent call must fail with the same
+/// "already borrowed" panic the double borrow produced, and must not spin
+/// waiting for a lock its own call stack already holds (design section 2.3
+/// and decision D5 in section 9.3).
+pub(crate) fn lock<T>(mutex: &spin::Mutex<T>) -> spin::MutexGuard<'_, T> {
+  mutex.try_lock().unwrap_or_else(|| panic!("already borrowed: re-entrant or concurrent use"))
+}

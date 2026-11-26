@@ -20,6 +20,9 @@ use core::any::Any;
 use core::fmt;
 use core::hash::{Hash, Hasher};
 
+use portable_atomic::AtomicU64;
+use portable_atomic::Ordering;
+
 use crate::kernel::actor::ActorContext;
 use crate::kernel::actor_path::ActorPath;
 use crate::kernel::executor::ShardBoundary;
@@ -101,13 +104,28 @@ impl ActorRef {
 
   /// Returns the identity of the shard this handle posts to, for a wait that
   /// drives that shard.
-  pub(crate) fn boundary_key(&self) -> usize {
-    Arc::as_ptr(&self.boundary) as *const () as usize
-  }
-
   pub(crate) fn shares_boundary_with(&self, boundary: &Arc<dyn ShardBoundary>) -> bool {
     Arc::ptr_eq(&self.boundary, boundary)
   }
+}
+
+/// The counter the fresh handles take their identifiers from.
+///
+/// The counter sits with the handle it numbers: the executor and the `ask`
+/// adaptor both create handles through [`next_actor_ref`] and
+/// [`next_actor_id`], so the factory lives here instead of behind the
+/// executor's module, whose re-export nothing in the kernel used (the
+/// no_std check warned on it while only the adaptor took that path).
+static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+/// Returns the identifier the next fresh handle carries.
+pub(crate) fn next_actor_id() -> u64 {
+  NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Creates one handle with a fresh identifier and generation zero.
+pub(crate) fn next_actor_ref(path: ActorPath, boundary: Arc<dyn ShardBoundary>) -> ActorRef {
+  ActorRef::new(next_actor_id(), 0, Arc::new(path), boundary)
 }
 
 impl Clone for ActorRef {

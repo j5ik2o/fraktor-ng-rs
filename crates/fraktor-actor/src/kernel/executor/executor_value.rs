@@ -52,6 +52,8 @@ use crate::kernel::actor::StashOverflowException;
 use crate::kernel::actor::Terminated;
 use crate::kernel::actor::UnhandledMessage;
 use crate::kernel::actor_path::ActorPath;
+use crate::kernel::actor_ref::next_actor_id;
+use crate::kernel::actor_ref::next_actor_ref;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::event::DeadLetterListener;
 use crate::kernel::event::EventStream;
@@ -75,7 +77,6 @@ use crate::kernel::Clock;
 #[path = "executor_value_test.rs"]
 mod tests;
 
-static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 static NEXT_SPAWN: AtomicU64 = AtomicU64::new(0);
 
 /// The cause name Pekko reports when `Kill` ends an actor.
@@ -100,12 +101,6 @@ const KILL: &str = "Kill";
 
 /// The log class the ported tests pass for an event an actor raises.
 const ACTOR_LOG_CLASS: i32 = 3;
-
-/// Creates one handle with a fresh identifier and generation zero.
-pub(crate) fn next_actor_ref(path: ActorPath, boundary: Arc<dyn crate::kernel::executor::ShardBoundary>) -> ActorRef {
-  let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-  ActorRef::new(id, 0, Arc::new(path), boundary)
-}
 
 /// Returns the next number from the counter that names children without a name.
 pub(crate) fn next_spawn_name() -> u64 {
@@ -150,7 +145,7 @@ struct ParentEntry {
 }
 
 /// One callback that the executor runs with the handle of a stopped actor.
-type TerminationCallback = Box<dyn Fn(&ActorRef)>;
+type TerminationCallback = Box<dyn Fn(&ActorRef) + Send>;
 
 /// The notice the dead letter listener's handler posts to the shard
 /// boundary when its state machine stops itself.
@@ -258,10 +253,10 @@ impl Executor {
   /// receives for a watched subscriber: the executor is the only place that
   /// knows an actor has stopped, so a component that is not an actor registers
   /// here. The callback runs after the watchers have been told and must not
-  /// borrow the executor, which is already borrowed by the caller.
+  /// lock the executor, which is already locked by the caller.
   pub(crate) fn on_termination<F>(&mut self, callback: F)
   where
-    F: Fn(&ActorRef) + 'static,
+    F: Fn(&ActorRef) + Send + 'static,
   {
     self.termination_callbacks.push(Box::new(callback));
   }
@@ -302,7 +297,7 @@ impl Executor {
     });
     let boundary: Arc<dyn crate::kernel::executor::ShardBoundary> =
       Arc::new(crate::kernel::executor::FunctionBoundary::new(handler));
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let id = next_actor_id();
     let path = Arc::new(path);
     let reference = ActorRef::new(id, 0, path.clone(), boundary.clone());
     slot.call_once(|| (id, path, Arc::downgrade(&boundary)));
