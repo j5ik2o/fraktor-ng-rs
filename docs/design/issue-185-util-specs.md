@@ -2,7 +2,7 @@
 
 [Issue #185](https://github.com/j5ik2o/fraktor-ng-rs/issues/185) の設計の記録である。対象は Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）の actor-tests にある util の3つの Spec で、依存する issue は無い。この文書は第1段（設計だけ）であり、実装と台帳の更新は、設計レビューが通ってから第2段で行う。
 
-結論を先に書く。**本体の新規追加は無い。** 3つの Spec が検証する対象は、fraktor-ng-rs のコードではなく、JVM と Scala 標準ライブラリの仕組み（クラスローダによるクラス初期化の順序、JDK の `String` の内部表現を読む最適化、`scala.concurrent.duration.Duration`）である。fraktor-actor の中で対応する役割を担うのは、既存の `ByteString` と、kernel 全体が使う `core::time::Duration` と、kernel の `Clock` の port を実装する手動の時計であり、この3つで足りる。残るケースは、作らない区分（`not_built`）と除外（`excluded`）の提案として §7 にまとめ、レビューで決めてほしい点として §8 に挙げた。作らない区分と除外の最終的な承認は上司が取るため、この設計ではどちらも「承認待ち」と記す。提案が承認されれば、台帳の3ノードのうち DurationSpec は green に、ByteStringInitializationSpec と AsciiStringCopySpec は全件が作らない区分になるため green ではなく `not_built` になる（§7）。issue の文面は「対象ノードを green にする」だが、作らない区分は rollup が処理済みとして数える区分であり、状態の名前が変わる点をレビューで確認してほしい。
+結論を先に書く。**本体の新規追加は無い。** 3つの Spec が検証する対象は、fraktor-ng-rs のコードではなく、JVM と Scala 標準ライブラリの仕組み（クラスローダによるクラス初期化の順序、JDK の `String` の内部表現を読む最適化、`scala.concurrent.duration.Duration`）である。fraktor-actor の中で対応する役割を担うのは、既存の `ByteString` と、kernel 全体が使う `core::time::Duration` と、kernel の `Clock` の port を実装する手動の時計であり、この3つで足りる。残るケースは、作らない区分（`not_built`）と除外（`excluded`）の提案として §7 にまとめ、レビューで決めてほしい点として §8 に挙げた。作らない区分と除外は、オーナーが承認した（元帥の項目406、2026-11-26）。提案が承認されれば、台帳の3ノードのうち DurationSpec は green に、ByteStringInitializationSpec と AsciiStringCopySpec は全件が作らない区分になるため green ではなく `not_built` になる（§7）。issue の文面は「対象ノードを green にする」だが、作らない区分は rollup が処理済みとして数える区分であり、状態の名前が変わる点をレビューで確認してほしい。
 
 ## 1. 何を移植するか
 
@@ -28,7 +28,7 @@ DurationSpec の4件目の「check its range」は、原典でブロックコメ
 | AsciiStringCopySpec「copy string internal representation successfully」 | **作らない区分を提案する**（§7）。却下された場合の移し先は `crates/fraktor-actor/tests/ascii_string_copy_spec.rs` の `copy_us_ascii_str_to_bytes_copies_the_ascii_bytes` | 原典の観測できる振る舞い（US-ASCII 文字列のバイト列が宛先の配列へそのまま写り、US-ASCII として読み戻すと元の文字列に等しい）は、`str::as_bytes()` と `copy_from_slice` で満たせる。ただしその形のテストが確かめるのは Rust 標準ライブラリであり、fraktor-actor のコードは通らない。`Unsafe.copyUSAsciiStrToBytes` の利用者は Pekko の remote（artery の `EnvelopeBufferPool`）だけであり、fraktor-actor に対応する利用者はいない。この最適化のためだけに公開 API を新しく足すことはしない |
 | AsciiStringCopySpec「hash strings successfully」 | **作らない区分を提案する**（§7） | 原典は `Unsafe.fastHash("abcdefghijklmnopqrstuvxyz")` を呼ぶだけで、戻り値への検査は無い。確かめているのは「JDK の内部表現を読む分岐で落ちないこと」であり、Rust にはその分岐が無い。`fastHash` 自体（xorshift128+、初期状態 `s0 = 391408`、`s1 = 601258`、戻り値は `(int)(s0 + s1)`）の利用者は remote のキャッシュ（`ActorRefResolveCache`、`LruBoundedCache`）であり、fraktor には未移植である。JVM と同じ値が要るのは、ハッシュで決まる順序を見る remote の Spec を移すときだけであり、その点は §7 の提案理由に残す |
 | DurationSpec「form a one-dimensional vector field」 | `crates/fraktor-actor/tests/duration_spec.rs` の `duration_forms_a_one_dimensional_vector_field` へ移す | `core::time::Duration` は fraktor-actor の kernel 全体が使う時間の型であり（`Timeout` が包み、`Clock` の port が返す）、その加減乗除の契約は fraktor の契約である。原典の演算はすべて `core::time::Duration` の演算で表せる（§2） |
-| DurationSpec「respect correct treatment of infinities」 | **除外を提案する**（§7、承認待ち） | `Duration.Inf`、`Duration.MinusInf`、`Duration.Undefined` とその代数（`MinusInf + Inf = Undefined` など）を検証する。`core::time::Duration` には無限と未定義の値が無く、fraktor のコードは「上限が無い」ことを、使う場所ごとの型で表している（`RestartWindow::duration()` の `Option<Duration>`、adaptor の ask の期限の `AskDeadline::BeyondClockRange` と `AskDeadline::Unspecified`）。今の fraktor-actor には、無限の代数を必要とする利用者はいない。等価には書けないため、作らない区分ではなく除外として提案する |
+| DurationSpec「respect correct treatment of infinities」 | **除外を提案する**（§7、承認済み） | `Duration.Inf`、`Duration.MinusInf`、`Duration.Undefined` とその代数（`MinusInf + Inf = Undefined` など）を検証する。`core::time::Duration` には無限と未定義の値が無く、fraktor のコードは「上限が無い」ことを、使う場所ごとの型で表している（`RestartWindow::duration()` の `Option<Duration>`、adaptor の ask の期限の `AskDeadline::BeyondClockRange` と `AskDeadline::Unspecified`）。今の fraktor-actor には、無限の代数を必要とする利用者はいない。等価には書けないため、作らない区分ではなく除外として提案する |
 | DurationSpec「support fromNow」 | `crates/fraktor-actor/tests/duration_spec.rs` の `duration_from_now_time_left_decreases_when_a_manual_clock_advances` へ移す（適応あり） | 原典は `2.seconds.fromNow` が作る `Deadline` について、直後は残りが1秒より大きく、1秒眠った後は残りが1秒より小さいことを確かめる。issue #185 の注意は「原典は Thread.sleep を使う。実時間に頼らず決定的に検証する（待ちを弱めない）」であり、前例（#117、#119）も手動の時計を使う形である。移植は、公開の `fraktor_actor::kernel::Clock`（`monotonic() -> Duration`）を実装した手動の時計をテストの中に置き、期限を `clock.monotonic() + 2秒`、残りを `deadline.saturating_sub(clock.monotonic())` で求める。実時間では眠らない。適応は §2 に書く。原典は `2.seconds.fromNow` と `2.seconds(fromNow)` の2つの書き方で同じ値を作っているが、これは Scala の DSL の書き方が2つあるだけであり、Rust では1つの作り方になる |
 
 DurationSpec は原典で `PekkoSpec` を継承し、台帳の `needs` に `extends-pekko-spec` と `pekko-spec`、`premise_flags` に `thread-sleep` が付いている。移植する2件はどちらも ActorSystem を使わず、TestKit の前提は要らない。第2段で台帳を更新するときは、`needs.testkit` を空にし、`premise_flags` も空にする（#119 と同じ扱いである。手動の時計を使うため、`thread-sleep` の前提は残らない）。
@@ -99,7 +99,7 @@ Quint は要らない。3つの Spec はどれも状態遷移を持たず（純�
 
 ## 7. 台帳の見込みと、区分の提案
 
-第2段で、承認を台帳へ写す。ゴールの識別子は、#177 の命名に倣って `G0issue185` とする。承認の欄（`approved_by` と `approved_at`）は、移植の規約により人間とレビューの決定を写す欄であり、この設計文書の作成者が自分で書くものではない。作らない区分と除外の最終的な承認は上司が取るため、この節の提案はすべて「承認待ち」である。独立レビューの推奨は §8 と §11 の回答表に書いた。
+第2段で、承認を台帳へ写す。ゴールの識別子は、#177 の命名に倣って `G0issue185` とする。承認の欄（`approved_by` と `approved_at`）は、移植の規約により人間とレビューの決定を写す欄であり、この設計文書の作成者が自分で書くものではない。作らない区分と除外はオーナーが承認した（元帥の項目406、2026-11-26）ため、この節の提案はすべて承認済みである。独立レビューの推奨は §8 と §11 の回答表に書いた。
 
 | ノード | 総数 | 移植 | 作らない区分の提案 | 除外の提案 | 承認後の状態の見込み |
 |:---|---:|---:|---:|---:|:---|
@@ -124,7 +124,7 @@ Quint は要らない。3つの Spec はどれも状態遷移を持たず（純�
 
 ## 8. レビューで決めてほしい点
 
-判断材料は次の4点である。独立レビュー（PR #228 の設計レビュー）は、1 について「3件は認める。ハッシュの1件は代替例を足してから認める」、2 について「認める。kernel に型は足さない」と推奨した。この版でハッシュの代替例を足した（§7）ため、残るのは上司による最終的な承認であり、提案は「承認待ち」である。
+判断材料は次の4点である。独立レビュー（PR #228 の設計レビュー）は、1 について「3件は認める。ハッシュの1件は代替例を足してから認める」、2 について「認める。kernel に型は足さない」と推奨した。この版でハッシュの代替例を足した（§7）。その後、オーナーが5件とも承認した（元帥の項目406、2026-11-26）。
 
 1. **作らない区分の提案（ByteStringInitializationSpec の1件と AsciiStringCopySpec の3件）を認めるか。** 認めれば、2つのノードの状態は green ではなく `not_built` になる。issue の文面の「green にする」とは名前が違うが、rollup は作らない区分を処理済みとして数える。認めない場合は、少なくとも AsciiStringCopySpec の写しのケースは §1 の移し先へ移植できる（その場合、そのノードは移植1件と作らない区分2件の混在で green になる）。ただし、混在の勘定は台帳のツールにまだ入っていない。`docs/decisions/ledger-schema-draft.md` によると、混在の勘定は `verify_red.py` と `verify_green.py` に未実装であり、「最初に混在のノードを扱うゴールで入れる」とされている。そのため、却下された場合は、台帳のツール2本への混在の勘定の追加と、その Python テストの追加も範囲に入る。規模の見込みは、ツールの変更が2ファイルとテストが2ファイルであり、本体の実装より小さく、第2段の検査時間に Python テストの実行が加わる程度である。
 2. **DurationSpec の無限のケースを除外として認めるか。** 認めない場合は、無限と未定義を持つ時間の型を kernel に新しく足すことになり、公開 API の追加として範囲が大きく変わる。その場合は第2段へ進まず、型の設計を別途起こす必要がある。
