@@ -56,10 +56,19 @@ impl InvalidActorNameException {
   /// Creates the error for an empty name.
   ///
   /// Mirrors the empty half of `Children.checkName`'s
-  /// "actor name must not be empty" refusal. The null half has no
-  /// counterpart: a Rust `&str` cannot be null.
+  /// "actor name must not be empty" refusal.
   pub fn empty_name() -> Self {
     Self { cause: String::from("actor name must not be empty") }
+  }
+
+  /// Creates the error for a null name.
+  ///
+  /// Mirrors the null half of `Children.checkName`'s
+  /// "actor name must not be null" refusal. A Rust `&str` cannot be
+  /// null, so the port reaches this error through the `None` a caller
+  /// passes where Pekko receives `null`.
+  pub fn null_name() -> Self {
+    Self { cause: String::from("actor name must not be null") }
   }
 
   /// Creates the error for a parent that is terminating or terminated.

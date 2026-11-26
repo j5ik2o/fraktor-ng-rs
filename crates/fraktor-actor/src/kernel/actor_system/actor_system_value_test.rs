@@ -376,6 +376,9 @@ fn run_until_idle_delivers_from_the_boundary_while_the_queue_keeps_filling() {
   let boundary = Arc::new(EndlessBoundary::new(Arc::clone(&received), 1000));
   let mut system = ActorSystem::new("PekkoCustomSpec", Arc::clone(&boundary) as Arc<_>);
   let sink = system.actor_of(Props::new(move || Sink { received: Arc::clone(&observer) }));
+  // The sink starts in its own run (Pekko's `Create`); the boundary feeds it
+  // once it has started.
+  system.run_until_idle();
   *boundary.target.lock().unwrap() = Some(sink.clone());
 
   system.run_until_idle();
@@ -609,7 +612,7 @@ fn stopping_a_parent_stops_its_child_first_and_tells_the_child_watcher() {
     &parent,
     Props::new({
       let order = Arc::clone(&order);
-      move || OrderedSink { order: Arc::clone(&order), label: "child delivered" }
+      move || OrderedSink { order: Arc::clone(&order), label: "child delivered", stopped: "child stopped" }
     }),
     Some("child"),
     crate::kernel::supervision::SupervisorStrategy::default_strategy(),
@@ -628,16 +631,34 @@ fn stopping_a_parent_stops_its_child_first_and_tells_the_child_watcher() {
 
   system.watch(&child_watcher, &child);
   system.watch(&parent_watcher, &parent);
+  let finished = Arc::clone(&order);
+  let stopping = parent.clone();
+  system.downgrade().on_termination(move |actor: &ActorRef| {
+    if actor == &stopping {
+      finished.lock().unwrap().push("parent stopped");
+    }
+  });
 
   system.stop(&parent);
   child.tell("late", parent.clone());
   system.run_until_idle();
 
-  assert_eq!(
-    *order.lock().unwrap(),
-    alloc::vec!["child terminated", "parent terminated"],
-    "the notices arrived in the wrong order"
-  );
+  // Pekko orders the two notices only through the parent's stop: the parent
+  // finishes stopping after its child has, and only then is its own
+  // Terminated sent. The two watchers are different recipients, so the order
+  // in which their notices arrive is not promised
+  // (message-delivery-reliability.md:109-130).
+  let order = order.lock().unwrap();
+  assert!(!order.contains(&"child delivered"), "the stopped child handled a message: {order:?}");
+  let child_stopped = order.iter().position(|label| *label == "child stopped").expect("the child ran post_stop");
+  let parent_stopped = order.iter().position(|label| *label == "parent stopped").expect("the parent stopped");
+  let parent_terminated =
+    order.iter().position(|label| *label == "parent terminated").expect("the parent watcher was told");
+  assert!(child_stopped < parent_stopped, "the parent finished stopping before its child stopped: {order:?}");
+  assert!(child_stopped < parent_terminated, "the parent was reported stopped before its child stopped: {order:?}");
+  assert_eq!(order.iter().filter(|label| **label == "child terminated").count(), 1, "{order:?}");
+  assert_eq!(order.len(), 4, "{order:?}");
+  drop(order);
   let child_notices = child_seen.lock().unwrap();
   assert_eq!(child_notices.len(), 1, "the child watcher was not told that the child stopped");
   assert!(child_notices[0].existence_confirmed());
@@ -649,6 +670,7 @@ fn stopping_a_parent_stops_its_child_first_and_tells_the_child_watcher() {
 struct OrderedSink {
   order: Arc<Mutex<Vec<&'static str>>>,
   label: &'static str,
+  stopped: &'static str,
 }
 
 #[test]
@@ -695,7 +717,10 @@ fn stopping_a_function_ref_stops_its_child_first_and_tells_both_watchers() {
   let target = system.function_ref("target", |_sender: &ActorRef, _message: Message| {});
   let child = system.downgrade().spawn_child(
     &target,
-    Props::new(|| NoOp),
+    Props::new({
+      let order = Arc::clone(&order);
+      move || OrderedSink { order: Arc::clone(&order), label: "child delivered", stopped: "child stopped" }
+    }),
     Some("child"),
     crate::kernel::supervision::SupervisorStrategy::default_strategy(),
   );
@@ -713,15 +738,30 @@ fn stopping_a_function_ref_stops_its_child_first_and_tells_both_watchers() {
 
   system.watch(&child_watcher, &child);
   system.watch(&target_watcher, &target);
+  let finished = Arc::clone(&order);
+  let stopping = target.clone();
+  system.downgrade().on_termination(move |actor: &ActorRef| {
+    if actor == &stopping {
+      finished.lock().unwrap().push("target stopped");
+    }
+  });
 
   system.stop(&target);
   system.run_until_idle();
 
-  assert_eq!(
-    *order.lock().unwrap(),
-    alloc::vec!["child terminated", "target terminated"],
-    "a function reference stopped before its child"
-  );
+  // As for a parent actor: the function reference is reported stopped only
+  // after its child has stopped, and the two watchers' notices are not
+  // ordered against each other.
+  let order = order.lock().unwrap();
+  let child_stopped = order.iter().position(|label| *label == "child stopped").expect("the child ran post_stop");
+  let target_stopped = order.iter().position(|label| *label == "target stopped").expect("the target stopped");
+  let target_terminated =
+    order.iter().position(|label| *label == "target terminated").expect("the target watcher was told");
+  assert!(child_stopped < target_stopped, "a function reference finished stopping before its child: {order:?}");
+  assert!(child_stopped < target_terminated, "a function reference stopped before its child: {order:?}");
+  assert_eq!(order.iter().filter(|label| **label == "child terminated").count(), 1, "{order:?}");
+  assert_eq!(order.len(), 4, "{order:?}");
+  drop(order);
   let child_notices = child_seen.lock().unwrap();
   assert_eq!(child_notices.len(), 1, "the child watcher was not told that the child stopped");
   assert!(child_notices[0].existence_confirmed());
@@ -733,6 +773,10 @@ fn stopping_a_function_ref_stops_its_child_first_and_tells_both_watchers() {
 impl Actor for OrderedSink {
   fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {
     self.order.lock().unwrap().push(self.label);
+  }
+
+  fn post_stop(&mut self) {
+    self.order.lock().unwrap().push(self.stopped);
   }
 }
 
@@ -1149,6 +1193,7 @@ fn a_start_failure_is_offered_to_the_decider() {
     Some("child"),
     strategy,
   );
+  system.run_until_idle();
   assert_eq!(attempts.load(Ordering::SeqCst), 2, "the decider was not asked about the start failure");
 
   child.tell("hello", child.clone());
@@ -1169,6 +1214,7 @@ fn a_name_is_free_again_after_a_child_that_failed_its_start_stopped() {
     Some("bob"),
     crate::kernel::supervision::SupervisorStrategy::stopping_strategy(),
   );
+  system.run_until_idle();
   assert!(system.is_actor_terminated(&failed), "the child that failed its start is still alive");
 
   let replacement = system.downgrade().spawn_child(
@@ -1455,9 +1501,15 @@ fn a_retried_start_does_not_keep_the_children_of_the_failed_attempt() {
   system.run_until_idle();
 
   assert_eq!(attempts.load(Ordering::SeqCst), 2, "the failed start was not retried exactly once");
+  // The child starts in its own run, after `actor_of` has returned to the
+  // parent (Pekko's `Dispatch.init` only enqueues `Create`,
+  // Dispatch.scala:108), so the parent's record is not ordered against the
+  // child's.
+  let mut results = results.lock().unwrap().clone();
+  results.sort_unstable();
   assert_eq!(
-    *results.lock().unwrap(),
-    alloc::vec!["worker-spawned", "worker-spawned", "started"],
+    results,
+    alloc::vec!["started", "worker-spawned", "worker-spawned"],
     "the retried start did not reuse the name its first attempt took"
   );
   let workers = workers.lock().unwrap();
@@ -1766,6 +1818,7 @@ fn a_panicking_decider_on_a_message_failure_restarts_the_supervisor_and_keeps_th
     let post_restarts = Arc::clone(&post_restarts);
     move || StartsSupervisor { supervisor: Arc::clone(&supervisor), post_restarts: Arc::clone(&post_restarts) }
   }));
+  system.run_until_idle();
   let supervisor = supervisor_handle.lock().unwrap().clone().expect("the grandparent started its supervisor");
 
   let child = system.downgrade().spawn_child(
@@ -1826,10 +1879,13 @@ fn a_panicking_decider_on_a_start_failure_stops_the_idle_supervisor_and_frees_it
     let supervisor = Arc::clone(&supervisor_handle);
     move || StartsStoppingSupervisor { supervisor: Arc::clone(&supervisor) }
   }));
+  system.run_until_idle();
   let supervisor = supervisor_handle.lock().unwrap().clone().expect("the grandparent started its supervisor");
 
+  // The child starts, and its parent decides, in the runs after the spawn
+  // (Pekko's `Create` and `Failed`), so the decider panic is caught there.
   let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    system.downgrade().spawn_child(
+    let child = system.downgrade().spawn_child(
       &supervisor,
       Props::new(|| FailsStartUntil {
         attempts: Arc::new(AtomicUsize::new(0)),
@@ -1838,7 +1894,9 @@ fn a_panicking_decider_on_a_start_failure_stops_the_idle_supervisor_and_frees_it
       }),
       Some("kid"),
       strategy_with_a_panicking_decider(crate::kernel::supervision::FailureKind::Initialization),
-    )
+    );
+    system.run_until_idle();
+    child
   }));
   let child = match spawned {
     | Ok(child) => child,
@@ -1886,6 +1944,7 @@ fn a_panicking_decider_on_a_kill_stops_the_supervisor_and_tells_the_watcher() {
     let supervisor = Arc::clone(&supervisor_handle);
     move || StartsStoppingSupervisor { supervisor: Arc::clone(&supervisor) }
   }));
+  system.run_until_idle();
   let supervisor = supervisor_handle.lock().unwrap().clone().expect("the grandparent started its supervisor");
   let watcher = system.actor_of(Props::new({
     let observed = Arc::clone(&observed);
@@ -2045,11 +2104,17 @@ fn default_pre_restart_stops_all_children_before_the_parent_post_stop() {
   parent.tell("boom", parent.clone());
   system.run_until_idle();
 
+  // Pekko's default `preRestart` asks the children to stop and then runs
+  // `postStop` (Actor.scala:627-633); the children stop in their own runs,
+  // so their `postStop` is not ordered against the parent's, and
+  // `postRestart` runs once they have gone (FaultHandling.scala:114 and
+  // `finishRecreate`).
   let order = order.lock().unwrap();
   assert_eq!(order.len(), 4, "both children must stop before the parent restarts: {order:?}");
-  assert!(order[..2].contains(&"first-child"), "the first child stopped too late: {order:?}");
-  assert!(order[..2].contains(&"second-child"), "the second child stopped too late: {order:?}");
-  assert_eq!(&order[2..], &["parent", "restarted"]);
+  assert!(order[..3].contains(&"first-child"), "the first child stopped too late: {order:?}");
+  assert!(order[..3].contains(&"second-child"), "the second child stopped too late: {order:?}");
+  assert!(order[..3].contains(&"parent"), "the parent's post_stop did not run before its restart: {order:?}");
+  assert_eq!(order[3], "restarted");
   assert!(children.iter().all(|child| system.is_actor_terminated(child)), "a child survived the default hook");
   assert!(!system.is_actor_terminated(&parent), "the parent must restart rather than stop");
 }
@@ -2081,7 +2146,14 @@ fn a_kill_restart_without_a_catcher_stops_children_before_post_stop() {
   parent.tell("Kill", root);
   system.run_until_idle();
 
-  assert_eq!(*order.lock().unwrap(), alloc::vec!["child", "parent", "restarted"]);
+  // Pekko's default `preRestart` asks the child to stop and then runs
+  // `postStop` (Actor.scala:627-633); the child stops in its own run, so its
+  // `postStop` is not ordered against the parent's, and `postRestart` runs
+  // once it has gone (FaultHandling.scala:114).
+  let order = order.lock().unwrap().clone();
+  assert_eq!(order.len(), 3, "{order:?}");
+  assert!(order[..2].contains(&"child") && order[..2].contains(&"parent"), "{order:?}");
+  assert_eq!(order[2], "restarted");
   assert!(system.is_actor_terminated(&child));
   assert!(!system.is_actor_terminated(&parent));
 }
@@ -2352,6 +2424,8 @@ fn a_weak_named_child_of_a_stopped_parent_is_refused() {
   let mut system = with_catcher("PekkoCustomSpec");
   let parent = system.actor_of(Props::new(|| NoOp));
   system.stop(&parent);
+  // The parent stops in its own run (Pekko's `Terminate`).
+  system.run_until_idle();
 
   system.downgrade().spawn_child(
     &parent,
@@ -2367,6 +2441,8 @@ fn a_weak_unnamed_child_of_a_stopped_parent_is_refused() {
   let mut system = with_catcher("PekkoCustomSpec");
   let parent = system.actor_of(Props::new(|| NoOp));
   system.stop(&parent);
+  // The parent stops in its own run (Pekko's `Terminate`).
+  system.run_until_idle();
 
   let attempted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     let creations = Arc::clone(&creations);
@@ -2399,8 +2475,12 @@ fn a_stopped_actor_leaves_no_parent_entry_behind() {
   let mut system = with_catcher("PekkoCustomSpec");
   for _ in 0..3 {
     let actor = system.actor_of(Props::new(|| NoOp));
+    // The actor registers as a parent in its own run (Pekko's `Create`),
+    // and stops in its own run (Pekko's `Terminate`).
+    system.run_until_idle();
     system.stop(&actor);
   }
+  system.run_until_idle();
 
   assert_eq!(
     crate::kernel::sync::lock(&system.executor).parent_entry_count(),
@@ -2477,6 +2557,7 @@ fn a_child_follows_the_strategy_of_its_restarted_parent() {
     }
   }));
 
+  system.run_until_idle();
   let kid_handle = kid.lock().unwrap().clone().expect("the parent created its kid");
   parent.tell("panic", parent.clone());
   system.run_until_idle();
@@ -2516,6 +2597,7 @@ fn unlimited_one_for_one_restarts_do_not_spend_a_later_limit() {
     }
   }));
 
+  system.run_until_idle();
   let child = kid.lock().unwrap().clone().expect("the parent created its child");
   child.tell("boom", parent.clone());
   system.run_until_idle();
@@ -2613,6 +2695,7 @@ fn a_retried_start_finds_the_cell_again_after_a_child_stop_moves_the_table() {
     None,
     crate::kernel::supervision::SupervisorStrategy::one_for_one_restarting_initialization_failures(3),
   );
+  system.run_until_idle();
 
   assert_eq!(attempts.load(Ordering::SeqCst), 2, "the failed start was not retried exactly once");
   assert!(!system.is_actor_terminated(&failing), "the second start did not succeed");
@@ -2675,6 +2758,9 @@ fn named_top_level_creation_applies_router_verification_and_head() {
 fn named_top_level_creation_reuses_name_after_pre_start_stop() {
   let mut system = system("PekkoCustomSpec");
   let first = system.actor_of_named(Props::new(|| StopsItselfInPreStart), "ephemeral").expect("first actor starts");
+  // The actor starts, and stops, in its own run (Pekko's `Create`, then
+  // the `Terminate` its `pre_start` asked for).
+  system.run_until_idle();
   assert!(system.is_actor_terminated(&first), "actor stopped during pre_start");
 
   let second = system.actor_of_named(Props::empty(), "ephemeral").expect("name must be reusable after pre_start stop");
@@ -2696,4 +2782,12 @@ fn named_top_level_creation_on_terminated_system_returns_error() {
 
   let error = system.actor_of_named(Props::empty(), "late").expect_err("terminated system must return Err");
   assert_eq!(error.to_string(), "cannot create children while terminating or terminated");
+}
+
+// What the tests of stage 3 read of a system (#252).
+impl ActorSystem {
+  /// Returns the executor, for a test that looks inside it.
+  pub(crate) fn executor_for_test(&self) -> &spin::Mutex<crate::kernel::executor::Executor> {
+    &self.executor
+  }
 }

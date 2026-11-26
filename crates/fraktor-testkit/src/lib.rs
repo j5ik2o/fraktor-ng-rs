@@ -27,6 +27,7 @@ pub mod event_filter;
 pub mod fraktorspec;
 pub mod implicit_sender;
 pub mod manual_scheduler;
+pub mod metrics_kit;
 pub mod test_actors;
 pub mod test_fsm_ref;
 pub mod test_kit;

@@ -43,6 +43,7 @@ struct FsmShared<S, D> {
   next_sequence: u64,
   generation: u64,
   actor_ref: Option<ActorRef>,
+  started: bool,
 }
 
 /// The handle a test and a state machine hold between them.
@@ -89,6 +90,7 @@ impl<S, D> FsmHandle<S, D> {
         next_sequence: 0,
         generation: 0,
         actor_ref: None,
+        started: false,
       })),
     }
   }
@@ -160,6 +162,21 @@ impl<S, D> FsmHandle<S, D> {
       actor.tell(FsmControl::<S, D>::Sentinel { sequence }, actor.clone());
     }
     sequence
+  }
+
+  /// Records that an instance of the machine has finished its
+  /// `pre_start`. The mark stays across restarts.
+  pub fn mark_started(&self) {
+    self.shared.lock().started = true;
+  }
+
+  /// Returns whether an instance of the machine has finished its
+  /// `pre_start`. A machine starts in its own run, after the request that
+  /// created it has returned (design of #234, section 11.12.10), so
+  /// `TestFsmRef` runs the dispatcher until this holds or the machine has
+  /// stopped.
+  pub fn has_started(&self) -> bool {
+    self.shared.lock().started
   }
 
   /// Records the reference of the machine this handle is attached to,

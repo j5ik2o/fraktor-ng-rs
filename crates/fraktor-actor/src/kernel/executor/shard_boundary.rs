@@ -18,16 +18,18 @@
 
 use core::time::Duration;
 
+use crate::kernel::dispatch::WakeSignal;
 use crate::kernel::message::Envelope;
+use crate::kernel::sync::Arc;
 
-/// The transport that carries a message from one shard to another.
+/// The transport that carries the messages that have no mailbox to go to.
 ///
-/// Inside a shard the executor hands messages over on a local queue. Only when
-/// a message crosses into another shard does it go through a boundary. Pekko
-/// has no direct equivalent: it always uses a mailbox and a dispatcher. The
-/// split is the temporary policy that the goal document set for G0b, and it is
-/// expressed here as a port so that the kernel stays free of threading and IO
-/// and the standard-library implementation lives in the adaptor.
+/// A message to an actor goes onto the actor's mailbox. A boundary carries
+/// the rest: messages to a function reference, a guardian, a path that
+/// resolved to no actor, and a selection that the system resolves when it
+/// delivers it. Pekko has no direct equivalent: it always uses a mailbox and
+/// a dispatcher. The port keeps the kernel free of threading and IO, and the
+/// standard-library implementation lives in the adaptor.
 pub trait ShardBoundary: Send + Sync {
   /// Reports elapsed monotonic time when the boundary supplies platform time.
   ///
@@ -47,11 +49,16 @@ pub trait ShardBoundary: Send + Sync {
   fn poll_within(&self, max: Duration) -> Option<Envelope>;
 
   /// Returns whether an envelope is already waiting on this boundary.
-  ///
-  /// A sender inside the shard uses this to keep the order it sent in: while
-  /// something it posted earlier still waits at the boundary, a later message
-  /// must not overtake it through the local queue.
   fn has_pending(&self) -> bool;
+
+  /// Returns the signal that wakes a caller waiting for work for the system
+  /// of this boundary, when the boundary has one. The boundary raises it when
+  /// an envelope is posted; the system raises it when a mailbox has work or
+  /// a function reference has handled a message (design of #234, section
+  /// 11.11.6). Without one, a wait polls the boundary.
+  fn wake_signal(&self) -> Option<Arc<dyn WakeSignal>> {
+    None
+  }
 
   /// Stops the boundary from taking new envelopes.
   ///

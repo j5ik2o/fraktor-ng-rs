@@ -29,6 +29,7 @@ use crate::kernel::actor_ref::next_actor_ref;
 use crate::kernel::address::Address;
 use crate::kernel::dispatch::MailboxCell;
 use crate::kernel::dispatch::MessageQueue;
+use crate::kernel::dispatch::Next;
 use crate::kernel::dispatch::RunLimits;
 use crate::kernel::dispatch::RunOutcome;
 use crate::kernel::dispatch::SystemMessage;
@@ -47,11 +48,14 @@ struct Keeper {
 }
 
 impl MailboxCell for Keeper {
-  fn invoke(&mut self, _mailbox: &Mailbox<Self>, envelope: Envelope) {
+  type Env = ();
+
+  fn invoke(&mut self, _env: &mut (), _mailbox: &Mailbox<Self>, envelope: Envelope) -> Next {
     self.handled.push(number(&envelope));
+    Next::Continue
   }
 
-  fn system_invoke(&mut self, _mailbox: &Mailbox<Self>, _message: SystemMessage) {}
+  fn system_invoke(&mut self, _env: &mut (), _mailbox: &Mailbox<Self>, _message: SystemMessage) {}
 }
 
 fn envelope(value: u32) -> Envelope {
@@ -243,7 +247,7 @@ fn closing_one_member_leaves_the_shared_queue_to_the_other() {
   assert!(Mailbox::try_schedule(&first).is_none(), "a closed member is never scheduled");
 
   let run = Mailbox::try_schedule(&second).expect("the other member has work");
-  assert!(matches!(run.run(), RunOutcome::Idle));
+  assert!(matches!(run.run(&mut (), None).outcome, RunOutcome::Idle));
   assert_eq!(second.take_cell().handled, [1, 2, 3, 4]);
   assert_eq!(queue.number_of_messages(), 0);
 }
@@ -253,13 +257,13 @@ fn closing_a_mailbox_with_its_own_queue_hands_back_what_it_held() {
   let mailbox = mailbox(unbounded(), false);
   assert!(mailbox.enqueue(envelope(1)).is_ok(), "open");
   assert!(mailbox.enqueue(envelope(2)).is_ok(), "open");
-  mailbox.system_enqueue(SystemMessage::Suspend).expect("open");
+  mailbox.system_enqueue(SystemMessage::Resume).expect("open");
   mailbox.system_enqueue(SystemMessage::Create).expect("open");
 
   let (messages, system) = mailbox.close();
 
   assert_eq!(messages.iter().map(number).collect::<Vec<_>>(), [1, 2]);
-  assert!(matches!(system.as_slice(), [SystemMessage::Suspend, SystemMessage::Create]));
+  assert!(matches!(system.as_slice(), [SystemMessage::Resume, SystemMessage::Create]));
   assert_eq!(number(&mailbox.enqueue(envelope(3)).expect_err("closed")), 3);
   assert!(matches!(mailbox.system_enqueue(SystemMessage::Create), Err(SystemMessage::Create)));
   assert!(!mailbox.has_messages() && !mailbox.has_system_messages());
@@ -347,4 +351,51 @@ fn an_envelope_is_dropped_outside_the_gate_when_the_priority_function_panics() {
   assert!(unwound.is_err());
   assert!(dropped.load(std::sync::atomic::Ordering::SeqCst), "the drop reached the gate");
   assert!(!mailbox.has_messages());
+}
+
+// The ways the tests make and read a mailbox. A mailbox of an actor is made
+// with `Mailbox::for_actor`, which names its dispatcher.
+impl<C: MailboxCell> Mailbox<C> {
+  /// Creates the mailbox of `cell` with a queue of its own and no way back to
+  /// a dispatcher. Closing the mailbox takes what the queue still holds.
+  pub(crate) fn new(
+    cell: C,
+    queue: Arc<dyn crate::kernel::dispatch::MessageQueue>,
+    limits: RunLimits,
+    locks: &dyn crate::kernel::sync::LockFactory,
+  ) -> Self {
+    Self::with_queue(Some(std::boxed::Box::new(cell)), queue, false, limits, locks, crate::kernel::sync::Weak::new())
+  }
+
+  /// Creates the mailbox of `cell` for a balancing team that shares `queue`.
+  /// Closing the mailbox leaves the queue to the rest of the team.
+  pub(crate) fn sharing(
+    cell: C,
+    queue: Arc<dyn crate::kernel::dispatch::MessageQueue>,
+    limits: RunLimits,
+    locks: &dyn crate::kernel::sync::LockFactory,
+  ) -> Self {
+    Self::with_queue(Some(std::boxed::Box::new(cell)), queue, true, limits, locks, crate::kernel::sync::Weak::new())
+  }
+
+  /// Returns whether the mailbox is suspended.
+  pub(crate) fn is_suspended(&self) -> bool {
+    self.status.is_suspended()
+  }
+
+  /// Returns whether the queue of normal messages holds a message. For a
+  /// shared queue, the messages may be for any member of the team.
+  pub(crate) fn has_messages(&self) -> bool {
+    self.queue.has_messages()
+  }
+
+  /// Returns whether a system message is waiting.
+  pub(crate) fn has_system_messages(&self) -> bool {
+    self.has_queued_system_messages()
+  }
+
+  /// Returns whether the "has system messages" flag is up.
+  pub(crate) fn status_has_system_flag(&self) -> bool {
+    self.status.has_system_messages()
+  }
 }

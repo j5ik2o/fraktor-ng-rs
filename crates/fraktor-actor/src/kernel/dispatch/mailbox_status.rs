@@ -59,13 +59,15 @@ impl MailboxStatus {
     self.load() & CLOSED != 0
   }
 
-  pub(crate) fn is_suspended(&self) -> bool {
-    self.load() >= SUSPEND_UNIT
-  }
-
   /// Returns whether the "has system messages" flag is up.
   pub(crate) fn has_system_messages(&self) -> bool {
     self.load() & HAS_SYSTEM_MESSAGES != 0
+  }
+
+  /// Returns whether the suspend count is above zero in an open mailbox.
+  pub(crate) fn is_open_and_suspended(&self) -> bool {
+    let status = self.load();
+    status & CLOSED == 0 && status >= SUSPEND_UNIT
   }
 
   /// Returns whether a run may take a normal message: open and not suspended
