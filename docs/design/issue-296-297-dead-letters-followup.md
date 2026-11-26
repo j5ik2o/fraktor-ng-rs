@@ -8,8 +8,8 @@
 
 状態：設計の案。実装はこの文書ではしない。テストは、テストの担当（Opus）がこの文書の
 「テストに要る面」に沿って先に red のテストを書き、実装がそのあとで通す。
-意味論に関わる選択は §6 に問いとしてまとめ、中将が元帥へ上げる。この文書が推す案は、
-元帥の決定があるまで確定ではない。
+意味論に関わる選択は §6 にまとめ、元帥が 2026-11-27 にすべて決めた。§6 は
+「元帥の決定（2026-11-27）」として書き直してあり、実装はその決定に従う。
 
 この文書に入れるものは 1 つである。
 
@@ -144,7 +144,7 @@ dead letter mailbox へ振り替える（§5.1）。振り替えの責任が 1 �
 - 落とさずに上限で待ち行列へ逃がす形は、候補 1 のトランポリンに上限の数を足した
   だけであり、候補 1 で足りる。
 - 採らない。選ぶ場合は、原典に無い振る舞いを足す理由と上限の数の根拠が要る
-  （issue #296 の本文の求め）。その判断は §6 の問い 2 に置く。
+  （issue #296 の本文の求め）。元帥は上限を置かないことを決めた（§6 の決定 2）。
 
 #### 候補 3：場所を絞った再帰断ち（断られた経路だけ、または関数参照の配送だけ）
 
@@ -289,7 +289,9 @@ dead letter mailbox へ振り替える（§5.1）。振り替えの責任が 1 �
    - 中身が `Watch`：監視者へ `DeathWatchNotification(watchee, existenceConfirmed = false,
      addressTerminated = false)` を system message で返し、公開はしない。
      ただし監視者と監視対象のどちらかが dead letters 自身の場合は返さない。
-   - 中身が `Unwatch`：何もせず、公開もしない。
+   - 中身が `Unwatch`：`DeadLetter` として公開せず、黙って捨てる（`ActorRef.scala` の
+     `specialHandle`、671 行目。`DeadLetterActorRef.!` は `specialHandle` を先に見る、
+     711 行目）。答えも返さない。
    - 中身が `DeadLetterSuppression` を実装するもの：`DeadLetter` としてではなく
      `SuppressedDeadLetter(message, sender, deadLetters)` を公開する。送り手は
      包みの送り手（= 閉じた持ち主）、宛先（処理した参照）は dead letters のハンドルである。
@@ -308,6 +310,12 @@ system message の種類のうち、`DeadLetterSuppression` を実装するの�
 抑制の対象ではない。`Watch` と `Unwatch` は、抑制ではなく §5.1 の 3 の特別扱いで
 公開そのものが起きない。
 
+移植独自の `ChildTerminated` は原典の system message に対応が無い。元帥は
+2026-11-27 に、抑制の対象とすることを決めた（§6 の決定 5）。根拠は、原典で子の終了を
+伝える `DeathWatchNotification` が抑制の対象であることに合わせるためである。
+したがって移植では、抑制の対象の system message は `Terminate`、
+`DeathWatchNotification`、`ChildTerminated` の 3 つになる。
+
 抑制された letter は、dead letter のログには数えられないが、`AllDeadLetters` の
 購読者は `SuppressedDeadLetter` として受け取る。移植の `DeadLetterListener` と
 `DeadLettersShared::is_suppressed` の分け方は、この原典の分け方と合っている。
@@ -325,11 +333,11 @@ system message の種類のうち、`DeadLetterSuppression` を実装するの�
 | `Resume` | 対象でない | `DeadLetter(Resume, receiver, receiver)` を公開 | `Resume` | 同じ。今は黙って捨てている対象 |
 | `Terminate` | 対象 | `SuppressedDeadLetter(Terminate, receiver, deadLetters)` を公開 | `Terminate` | 同じ |
 | `Supervise` | 対象でない | `DeadLetter(Supervise, receiver, receiver)` を公開 | `Supervise { child, is_async }` | 同じ |
-| `Watch` | 対象でない（特別扱い） | 公開しない。監視者へ `DeathWatchNotification(watchee, false, false)` を返す | `Watch { watchee, watcher }` | §5.4 の 2。移植の監視の通知は通常の `Terminated` なので、答え方は問い 4 |
-| `Unwatch` | 対象でない（特別扱い） | 公開しない。何もしない | `Unwatch { watchee, watcher }` | 公開しない。意図した無視として文書に書く |
+| `Watch` | 対象でない（特別扱い） | 公開しない。監視者へ `DeathWatchNotification(watchee, false, false)` を返す | `Watch { watchee, watcher }` | §5.4 の 2。移植の監視の通知は通常の `Terminated` で、今はその形で返す（§6 の決定 4） |
+| `Unwatch` | 対象でない（特別扱い） | 公開しない。黙って捨てる（`specialHandle`、671 行目） | `Unwatch { watchee, watcher }` | 公開しない。`DeadLetter` としても `SuppressedDeadLetter` としても出さず、黙って捨てる |
 | `Failed` | 対象でない | `DeadLetter(Failed, receiver, receiver)` を公開 | `Failed { child, cause }` | 同じ |
 | `DeathWatchNotification` | 対象 | `SuppressedDeadLetter(DeathWatchNotification, receiver, deadLetters)` を公開 | `DeathWatchNotification { actor, existence_confirmed, address_terminated }` | 同じ |
-| （原典に無い） | ― | ― | `ChildTerminated { child }` | 原典に対応が無い移植独自の種類。一般の規則に従い、抑制の対象でない `DeadLetter` として公開する形を推す。確定は問い 5 |
+| （原典に無い） | ― | ― | `ChildTerminated { child }` | 抑制の対象とする（元帥の決定、2026-11-27。§6 の決定 5）。`SuppressedDeadLetter(ChildTerminated, receiver, deadLetters)` として公開する |
 
 原典の `NoMessage` は閉じた印そのものであり、system message として送られることは
 ない。移植の列挙に対応は無いので、扱いは要らない。
@@ -352,7 +360,8 @@ system message の種類のうち、`DeadLetterSuppression` を実装するの�
 
    - `Watch` と `Unwatch` は、この関数は扱わず、そのまま `Some(message)` で返す。
      答え方に実行器が要るためである（2 を見る）。
-   - `Terminate` と `DeathWatchNotification` は、抑制として流す。
+   - `Terminate`、`DeathWatchNotification`、`ChildTerminated` は、抑制として流す。
+     `ChildTerminated` は原典に対応が無く、元帥の決定で抑制に加わった（§5.2）。
      `SuppressedDeadLetter::from_message(Message::new(message), recipient.clone(), dead_letters.clone())`
      を公開する。送り手は閉じた持ち主、処理した参照は dead letters のハンドルであり、
      原典の `publishSupressedDeadLetter` と移植の既存の抑制の約束
@@ -378,7 +387,9 @@ system message の種類のうち、`DeadLetterSuppression` を実装するの�
      （宛先が止まっていれば dead letters へ流す分岐を含む）で、監視者へ
      `existence_confirmed = false`、`address_terminated = false` の通知を送る。
      dead letters 自身への watch は答えない（原典の条件）。
-   - `Unwatch` は何もしない。
+   - `Unwatch` は、`DeadLetter` として公開せず、黙って捨てる。原典の
+     `specialHandle`（671 行目）どおりで、意図した無視である。§5.4 の 1 で
+     `Some(message)` として返ってきたものを、ここで捨てて終わる。
    - それ以外は 1 の `route_system_undeliverable` へ渡す。
 
    呼び出し側の直しは 2 か所である。
@@ -407,34 +418,36 @@ system message の種類のうち、`DeadLetterSuppression` を実装するの�
 捨てる」という振る舞い（回帰テストで固定済み）とぶつかる。アクターが 1 つずつ
 止まる通常の停止は `queued_to_dead_letters` の道を通るので、§5.4 で原典にそろう。
 `stop_all` の一括の後片付けまで原典の `cleanUp` と同じにすべきかどうかは、
-問い 3 として元帥へ上げる。
+元帥は捨てることを決めた（§6 の決定 3）。
 
-## 6. 元帥へ上げる問い（意味論に関わる選択）
+## 6. 元帥の決定（2026-11-27）
 
-文書中で言葉で書く。答えは中将経由で受け取り、実装の段の前にこの文書へ反映する。
+意味論に関わる選択は、元帥が 2026-11-27 にすべて決めた。決めた人は元帥である。
+実装はこの決定に従い、変える場合は元帥の新しい決定が要る。
 
-1. トランポリンの採用そのもの。候補 1 は、入れ子の letter の順序を深さ優先から
-   公開単位の先入れ先出しへ変え、購読者の集合が流す時点で決まる形に変える。
-   この 2 つを「作りのずれの解消」として認めるかどうか。
-2. 深さの上限（候補 2）を採らない理由は、原典に上限が無く、超えた letter が
-   失われるためである。上限を置くべきだという判断があれば、上限の数と、
-   超えた letter を落とすのか待ち行列へ逃がすのかを決める必要がある。
-3. `stop_all`（システム全体の終了）で閉じたメールボックスに残った system message と
-   通常の封筒を、今のとおり捨てるか、原典の後片付けどおり dead letters へ流すか。
-   この設計は「捨てる」を推す。終了したシステムが公開しても購読者は残っておらず、
-   #295 の回帰テストの振る舞いともぶつかるためである。
-4. `Watch` が閉じたメールボックスへ届いた場合の答え方。原典は監視者へ
-   `DeathWatchNotification` を system message で返す。移植の監視の通知は通常の
-   `Terminated` であり、system message の `DeathWatchNotification` を受けて
-   `Terminated` へ変える処理は段 4 の範囲である。この設計は、既存の
-   `enqueue_termination` の道で `Terminated`（存在の確認なし、住所の終了なし）を
-   送る形を推す。原典どおり system message で返す形にするなら、段 4 の
-   system message の配送そのものが前提になる。
-5. `ChildTerminated` の扱い。原典の system message に対応が無い移植独自の種類を、
-   抑制の対象でない `DeadLetter` として公開する形でよいかどうか。
-6. `queued_to_dead_letters` で system message を通常の封筒より先に流す順序の変更
-   （原典の後片付けの順序）。段 3 の今は残る system message が多くて `Resume` で
-   あり、影響は `DeadLetter(Resume)` が通常の letter より先に公開される点だけである。
+1. トランポリンを採る。候補 1（§3.1）のとおり、入れ子の letter は先入れ先出しで
+   流し、購読者の集合は流す時点で決まる。順序が深さ優先から公開単位の
+   先入れ先出しへ変わることと、購読者の集合の決まる時点が遅れることは、
+   作りのずれの解消として認められた。
+2. 深さの上限は置かない。原典に上限は無く、上限を超えた letter を失う形は採らない。
+3. `stop_all` のあとに残ったものは捨てる。システム全体の終了で閉じた
+   メールボックスに残った system message と通常の封筒は、dead letters へ
+   流さず、今のとおり捨てる（§5.5）。
+4. 閉じたメールボックスへの `Watch` は、今は `Terminated` で返す。答えは
+   既存の `enqueue_termination` の道で送る `Terminated`（存在の確認なし、
+   住所の終了なし）である。system message の `DeathWatchNotification` で返す形は
+   今回は採らない。その形は、issue #255（段 4c）の完了条件に足された。
+   段 4c で system message の配送が入ったあとに、そちらへ切り替える。
+5. `ChildTerminated` は抑制の対象にする。`DeadLetter` ではなく
+   `SuppressedDeadLetter` として公開する。設計の最初の案（抑制の対象でない
+   `DeadLetter`）から元帥が変更した。根拠は、原典で子の終了を伝える
+   `DeathWatchNotification` が抑制の対象であることに合わせるためである（§5.2）。
+6. system message を通常の封筒より先に流す。`queued_to_dead_letters` の順序は、
+   原典の後片付けの順序に合わせ、system message が先、通常の封筒があとになる。
+
+この節に無かった扱いとして、閉じたメールボックスへの `Unwatch` も元帥が
+確かめた。原典どおり、`DeadLetter` として公開せず黙って捨てる（§5.1 の 3、
+§5.3 の表）。この扱いは §7 のテストに要る面に入っている。
 
 ## 7. テストに要る面
 
@@ -474,7 +487,9 @@ red のテストの置き場所はカーネルの単体テストである。
   組み立てを使う）：閉じたメールボックスへの `Resume` が
   `DeadLetter(Resume, target, target)` として記録されること。停止時に残った
   system message が `queued_to_dead_letters` から流れること。`Watch` が監視者への
-  通知になり、公開されないこと。`Unwatch` が公開されないこと。
+  通知になり、公開されないこと。`Unwatch` が、`DeadLetter` としても
+  `SuppressedDeadLetter` としても公開されず、dead letters の記録が空のままであること
+  （黙って捨てる。原典の `specialHandle`、671 行目）。
 - 統合テストで書けるのは、`Resume` の競合の形ではなく、停止したアクターの
   後片付けで system message が残る形が公開面から作れる場合だけである。
   作れない場合は、単体テストで足りる理由をテストファイルの冒頭に書く
@@ -514,10 +529,10 @@ bounded のメールボックスを持つアクターを作れない。この経
 
 1. テストの担当が §7 の red のテストを書く（#296 のトランポリン、#297 の
    system message、§4.2 の弱い確かめの強化を含む）。
-2. §6 の問いに元帥の答えが返ったら、この文書へ反映してから実装に入る。
-   答えが設計を変える問い（問い 1、3、4）については、答えが返るまで
-   その部分の実装を始めない。関係しない部分（§4 の予備の道と二重持ちの解消）は
-   先に進めてよい。
+2. §6 の元帥の決定（2026-11-27）は、この文書へ反映済みである。実装は
+   その決定どおりに進める。決定 5（`ChildTerminated` の抑制）と決定 4
+   （`Watch` への答えは今は `Terminated`、system message の形は #255 の
+   段 4c の完了条件）は、テストと実装の両方に効くので、先に確かめる。
 3. 実装は、トランポリン、予備の道の削除と `deliver` の統一、system message の
    振り替え、rustdoc と経緯のコメントの直し、二重持ちの解消の順に行う。
    必須 CI が緑であることを完了の条件とする（issue #296 と #297 の完了の条件）。
