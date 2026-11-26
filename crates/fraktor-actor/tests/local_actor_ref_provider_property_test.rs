@@ -96,7 +96,7 @@ fn every_entry_point_accepts_exactly_the_valid_names() {
     checked += 1;
 
     // Entry point 1: the system, by name.
-    let system_result = spec.system_mut().actor_of_named(Props::empty(), name.as_str());
+    let system_result = spec.system_mut().actor_of_named(Props::empty(), &name);
     assert_eq!(
       system_result.is_ok(),
       valid,

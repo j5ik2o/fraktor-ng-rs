@@ -17,6 +17,7 @@
 //! Actor system value types.
 
 mod actor_name_arg;
+mod actor_name_arg_seal;
 mod actor_system_value;
 mod weak_actor_system;
 
