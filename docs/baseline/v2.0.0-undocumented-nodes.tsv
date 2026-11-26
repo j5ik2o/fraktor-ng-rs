@@ -20,6 +20,7 @@ actor-tests/src/test/scala/org/apache/pekko/actor/FSMTransitionSpec.scala	no-rep
 actor-tests/src/test/scala/org/apache/pekko/actor/ForwardActorSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/FunctionRefSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/HotSwapSpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/actor/PropsCreationSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/ProviderSelectionSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/RelativeActorPathSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/RestartStrategySpec.scala	no-report

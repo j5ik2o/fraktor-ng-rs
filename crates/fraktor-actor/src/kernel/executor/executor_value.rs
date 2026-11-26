@@ -686,6 +686,45 @@ impl Executor {
     Ok(reference)
   }
 
+  /// Starts a top-level actor below `/user` with a caller-chosen `name`.
+  ///
+  /// Mirrors `ActorSystem.actorOf(props, name)`, whose documentation
+  /// promises `InvalidActorNameException` when the name is invalid or
+  /// already in use. The name goes through the one validation every
+  /// creation entry point shares (`validate_actor_name`). The registry
+  /// of live top-level names is the one `try_spawn_user` keeps: an entry
+  /// is forgotten when its actor stops, and this call also prunes
+  /// entries whose actor has terminated, so the name of an actor that
+  /// has stopped is free again, as a child's name is once its parent
+  /// unreserves it. A terminated system refuses with
+  /// `InvalidActorNameException::terminating()`. The generated names of
+  /// [`Executor::spawn_user`] are recorded in the same registry: a
+  /// caller-chosen name can never collide with them, because the
+  /// validation refuses a leading `$`.
+  pub(crate) fn spawn_user_named(&mut self, props: Props, name: &str) -> Result<ActorRef, InvalidActorNameException> {
+    if self.terminated {
+      return Err(InvalidActorNameException::terminating());
+    }
+    validate_actor_name(name)?;
+    let mut index = 0;
+    while index < self.user_children.len() {
+      if self.is_actor_terminated(&self.user_children[index].1) {
+        self.user_children.remove(index);
+      } else {
+        index += 1;
+      }
+    }
+    if self.user_children.iter().any(|(used, _)| used == name) {
+      return Err(InvalidActorNameException::name_taken(name));
+    }
+    let path = self.root.with_child("user").with_child(name);
+    let child = self.spawn_at(props, path, None, SupervisorStrategy::default_strategy(), false);
+    if self.cells.iter().any(|cell| cell.accepts(&child)) {
+      self.record_user_child(name.to_string(), child.clone());
+    }
+    Ok(child)
+  }
+
   /// Starts an actor below `parent`, using `name` when one is given.
   ///
   /// Mirrors `ActorContext.actorOf`: the child's path is the parent's path

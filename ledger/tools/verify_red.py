@@ -13,9 +13,9 @@
   unclassifiable          機械分類できない（軽量モデルの判定ステップへ）
   source_rejected         原典が変更のない現行の基準 commit でない（cargo も台帳も触らず止める）
 
-already_green は「移植の正しさ（原典 Pekko のケース数と、人間が承認した除外の件数の和が、
-通過したケース数に一致し、1 件以上通っている）」と「前提の実装が契約を満たす（対象テストの
-全件成功）」の両方が確かめられる場合に限る。片方でも欠ける場合は unexpected_pass に倒す。
+already_green は「移植の正しさ（原典 Pekko のケース数と、人間が承認した除外と作らない
+区分の件数の和が、通過したケース数に一致し、1 件以上通っている）」と「前提の実装が契約を
+満たす（対象テストの全件成功）」の両方が確かめられる場合に限る。片方が欠ければ倒す。
 原典が用意されていない環境（pekko/ が無い）、または原典のケースをすべて数えたと確認できない
 ファイル（WordSpec の `"name" must {` など既知の書式で全件を説明できない構文を含む）では
 移植を確かめられないため already_green にはしない。
@@ -107,7 +107,7 @@ def mark_green(node_id: str, total: int, passed: int, reason: str, verified_agai
     green を残さないため）。
 
     total には原典のケース数、ported と passing には Rust の成功件数 passed を書く
-    （承認済みの除外がある場合、total = passed + len(excluded) になる）。
+    （承認済みの除外や作らない区分がある場合、total = passed + 除外 + 作らない になる）。
     status・cases の total/ported/passing・既存の triage.reason・最上位の verified_against だけを
     書き換える。verified_against 行が無ければノードの末尾に足し、それ以外の新キーは増やさない。
     triage.reason が null または空のときだけ `already_green: ` 理由を書き、人間が書いた既存の
@@ -280,8 +280,7 @@ def count_excluded(node_id: str) -> int | None:
 
     読み込み（厳格な SafeLoader）、承認記録の判定、件数計算は同ディレクトリの
     `excluded_approvals` が持つ。ここでは呼出し時点の `LEDGER`（cwd 相対）を渡すだけにし、
-    台帳パスをモジュール読込時に固定しない。未承認・不正な承認記録が 1 件でもあれば
-    None を返し、already_green を許可しない（詳細は `excluded_approvals.count_excluded`）。
+    台帳パスをモジュール読込時に固定しない。未承認・不正があれば None を返す。
     """
     return excluded_approvals.count_excluded(LEDGER, node_id)
 
@@ -324,6 +323,24 @@ def _remove_stale_result() -> None:
         os.remove(ALREADY_GREEN_RESULT)
     except FileNotFoundError:
         return
+
+
+def _classify(out: str, passed: int | None, original_cases: int | None,
+              excluded: int | None, not_built: int | None, overlap: bool) -> str:
+    """cargo の出力と件数から分類を決める。already_green は、件数式が一致し、
+    除外と作らない区分に同じケース名の重なりが無く、対象テストが全件成功の
+    ときだけである。"""
+    if (passed is not None and original_cases is not None and excluded is not None
+            and not_built is not None and not overlap
+            and passed + excluded + not_built == original_cases):
+        return "already_green"
+    if "test result: ok" in out:
+        return "unexpected_pass"
+    if "test result: FAILED" in out:
+        return "expected_assertion"
+    if re.search(r"^error(\[|:)", out, re.MULTILINE):
+        return "expected_compile_error"
+    return "unclassifiable"
 
 
 def main() -> int:
@@ -375,21 +392,10 @@ def main() -> int:
     original_cases = count_original_cases(node)
     passed = parse_passed(out)
     excluded = count_excluded(node)
+    not_built = excluded_approvals.count_not_built(LEDGER, node)
+    overlap = excluded_approvals.case_names_overlap(LEDGER, node)
 
-    already_green = (
-        passed is not None and original_cases is not None and excluded is not None
-        and passed + excluded == original_cases
-    )
-    if already_green:
-        classification = "already_green"
-    elif "test result: ok" in out:
-        classification = "unexpected_pass"
-    elif "test result: FAILED" in out:
-        classification = "expected_assertion"
-    elif re.search(r"^error(\[|:)", out, re.MULTILINE):
-        classification = "expected_compile_error"
-    else:
-        classification = "unclassifiable"
+    classification = _classify(out, passed, original_cases, excluded, not_built, overlap)
 
     red_recorded = False
     green_recorded = False
@@ -399,8 +405,8 @@ def main() -> int:
     elif classification == "already_green":
         reason = (
             f"already_green: 原典 Pekko のケース数 {original_cases} と通過ケース数 "
-            f"{passed}（承認済みの除外 {excluded} 件）が一致し、対象テストが全件成功している"
-            f"（前提の実装が契約を満たす）"
+            f"{passed}（承認済みの除外 {excluded} 件、作らない区分 {not_built} 件）が一致し、"
+            f"対象テストが全件成功している（前提の実装が契約を満たす）"
         )
 
     result = {
@@ -411,6 +417,7 @@ def main() -> int:
         "original_cases": original_cases,
         "passed": passed,
         "excluded": excluded,
+        "not_built": not_built,
         "reason": reason,
         **provenance,
         "detail": out[-1500:],

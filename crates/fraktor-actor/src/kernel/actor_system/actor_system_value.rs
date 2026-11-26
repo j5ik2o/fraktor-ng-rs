@@ -22,8 +22,10 @@
 
 //! An actor system and its lifecycle.
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::string::ToString;
+use core::any::{Any, TypeId};
 use core::fmt;
 use core::time::Duration;
 
@@ -36,6 +38,7 @@ use crate::kernel::actor::DeadLetterSettings;
 use crate::kernel::actor::DeadLetterSuppression;
 use crate::kernel::actor::Dropped;
 use crate::kernel::actor::FunctionRef;
+use crate::kernel::actor::InvalidActorNameException;
 use crate::kernel::actor::Props;
 use crate::kernel::actor::SuppressedDeadLetter;
 use crate::kernel::actor::UnhandledMessage;
@@ -48,6 +51,7 @@ use crate::kernel::event::EventClass;
 use crate::kernel::event::EventStream;
 use crate::kernel::executor::Executor;
 use crate::kernel::executor::ShardBoundary;
+use crate::kernel::extension::{ExtensionEntry, ExtensionError, ExtensionId, ExtensionStartup};
 use crate::kernel::setup::ActorSystemSetup;
 use crate::kernel::supervision::FailureCatcher;
 use crate::kernel::sync::lock;
@@ -65,8 +69,8 @@ const LOCAL_PROTOCOL: &str = "pekko";
 /// Mirrors `org.apache.pekko.actor.ActorSystem` for the lifecycle the ported
 /// tests need: creating a system by name on a given shard boundary, starting
 /// actors with `actor_of`, driving their messages to completion, stopping an
-/// actor, and terminating the system. Dispatchers, guardians, and extensions
-/// belong to later goals.
+/// actor, and terminating the system. Dispatchers and guardians belong to
+/// later goals.
 ///
 /// The executor sits behind an `Arc<spin::Mutex<..>>` so that a
 /// [`WeakActorSystem`] can reach it after the guardian is gone. A `Weak` is
@@ -87,6 +91,7 @@ pub struct ActorSystem {
   executor: Arc<spin::Mutex<Executor>>,
   event_stream: EventStream,
   setup: ActorSystemSetup,
+  extensions: BTreeMap<TypeId, ExtensionEntry>,
 }
 
 impl ActorSystem {
@@ -124,7 +129,7 @@ impl ActorSystem {
     event_stream.declare_subclass::<SuppressedDeadLetter, AllDeadLetters>();
     event_stream.declare_subclass::<Dropped, AllDeadLetters>();
     event_stream.declare_subclass::<UnhandledMessage, AllDeadLetters>();
-    Self { name: name.to_string(), executor, event_stream, setup }
+    Self { name: name.to_string(), executor, event_stream, setup, extensions: BTreeMap::new() }
   }
 
   /// Creates a running actor system with `setup`, as
@@ -265,6 +270,116 @@ impl ActorSystem {
   /// belongs to another system resolves to the dead letters.
   pub fn resolve_actor_ref(&self, path: &ActorPath) -> ActorRef {
     lock(&self.executor).resolve_actor_ref(path)
+  }
+
+  /// Starts a top-level actor below `/user` with the given `name` and
+  /// returns a handle to it.
+  ///
+  /// Mirrors `ActorSystem.actorOf(props, name)`, whose documentation
+  /// promises `InvalidActorNameException` when the name is invalid or
+  /// already in use by a live top-level actor; the port returns it as
+  /// `Err`, as [`ActorContext::actor_of`](crate::kernel::actor::ActorContext::actor_of)
+  /// already does. A name is invalid when
+  /// `ActorPath::validate_path_element` rejects it, and the error carries
+  /// that message unchanged. The name is free again once the actor that
+  /// holds it has stopped. On a terminated system the answer is
+  /// `InvalidActorNameException::terminating()`. [`actor_of`](Self::actor_of)
+  /// keeps handing out generated names; this is the named form.
+  pub fn actor_of_with_name(&mut self, props: Props, name: &str) -> Result<ActorRef, InvalidActorNameException> {
+    lock(&self.executor).spawn_user_named(props, name)
+  }
+
+  /// Creates a running actor system as [`new`](Self::new) does, and then
+  /// creates the extensions `startup` lists, the library column first.
+  ///
+  /// Mirrors a Pekko system whose configuration lists extensions in
+  /// `pekko.extensions` and `pekko.library-extensions`: a failure to
+  /// create any of them fails the system's creation, so the half-started
+  /// system is terminated and the failure is returned as `Err`.
+  pub fn with_extensions(
+    name: &str,
+    boundary: Arc<dyn ShardBoundary>,
+    startup: ExtensionStartup,
+  ) -> Result<Self, ExtensionError> {
+    let mut system = Self::new(name, boundary);
+    if let Err(error) = startup.run(&mut system) {
+      system.terminate();
+      return Err(error);
+    }
+    Ok(system)
+  }
+
+  /// Creates the extension of `id` in this system, or returns the instance
+  /// an earlier registration created.
+  ///
+  /// Mirrors `ExtensionId.apply` and `ActorSystem.registerExtension`: the
+  /// first request for an id type creates the extension, and every later
+  /// request returns that same instance. A creation failure is kept and
+  /// returned to later requests instead of being retried, as Pekko keeps
+  /// the `Throwable` a creation raised. A request that arrives while the
+  /// extension is being created — including one the creation itself makes
+  /// for its own id — fails with an in-progress error. If a creation
+  /// panics, the panic propagates and the id stays marked as being
+  /// created, so later requests return the in-progress error rather than
+  /// the panic's content; Pekko rethrows the kept exception there.
+  pub fn register_extension<E: ExtensionId>(&mut self, id: &E) -> Result<Arc<E::Ext>, ExtensionError> {
+    let key = TypeId::of::<E>();
+    match self.extensions.get(&key) {
+      | Some(ExtensionEntry::Created(erased)) => return Ok(Self::downcast_extension::<E>(erased)),
+      | Some(ExtensionEntry::Failed(error)) => return Err(error.clone()),
+      | Some(ExtensionEntry::Creating) => return Err(ExtensionError::in_progress()),
+      | None => {},
+    }
+    self.extensions.insert(key, ExtensionEntry::Creating);
+    // A panic in create_extension propagates with the `Creating` marker
+    // left in place, as documented: the kernel has no way to catch it.
+    match id.create_extension(self) {
+      | Ok(extension) => {
+        let erased: Arc<dyn Any + Send + Sync> = Arc::new(extension);
+        self.extensions.insert(key, ExtensionEntry::Created(erased.clone()));
+        Ok(Self::downcast_extension::<E>(&erased))
+      },
+      | Err(error) => {
+        self.extensions.insert(key, ExtensionEntry::Failed(error.clone()));
+        Err(error)
+      },
+    }
+  }
+
+  /// Returns the extension of `id` when it has been created in this
+  /// system, without creating it.
+  ///
+  /// Mirrors `ActorSystem.extension`, which only looks up: an id that was
+  /// never registered fails, a creation that failed returns its kept
+  /// failure, and a creation still in progress returns an in-progress
+  /// error.
+  pub fn extension<E: ExtensionId>(&self, id: &E) -> Result<Arc<E::Ext>, ExtensionError> {
+    let _ = id;
+    match self.extensions.get(&TypeId::of::<E>()) {
+      | Some(ExtensionEntry::Created(erased)) => Ok(Self::downcast_extension::<E>(erased)),
+      | Some(ExtensionEntry::Failed(error)) => Err(error.clone()),
+      | Some(ExtensionEntry::Creating) => Err(ExtensionError::in_progress()),
+      | None => Err(ExtensionError::not_registered()),
+    }
+  }
+
+  /// Returns whether the extension of `id` has been created successfully
+  /// in this system.
+  ///
+  /// Mirrors `ActorSystem.hasExtension` within the promise of its
+  /// documentation: an id whose creation failed answers `false` here,
+  /// where Pekko's `hasExtension` rethrows the kept failure. Use
+  /// [`extension`](Self::extension) to see the failure itself.
+  pub fn has_extension<E: ExtensionId>(&self, id: &E) -> bool {
+    let _ = id;
+    matches!(self.extensions.get(&TypeId::of::<E>()), Some(ExtensionEntry::Created(_)))
+  }
+
+  /// Narrows a stored extension back to the type its id created. The
+  /// registry only ever stores the value `create_extension` returned for
+  /// the id type it is keyed under, so the narrowing cannot fail.
+  fn downcast_extension<E: ExtensionId>(erased: &Arc<dyn Any + Send + Sync>) -> Arc<E::Ext> {
+    erased.clone().downcast::<E::Ext>().expect("the registry stores the type the id created")
   }
 
   /// Stops `target`, telling its watchers that it is gone.

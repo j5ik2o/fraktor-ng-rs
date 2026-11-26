@@ -17,6 +17,7 @@ pub mod dispatch;
 pub mod double_linked_list;
 pub mod event;
 pub mod executor;
+pub mod extension;
 pub mod frequency_list;
 pub mod frequency_sketch;
 pub mod glob;
