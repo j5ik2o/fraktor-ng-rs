@@ -65,6 +65,17 @@ fn verification_matches_the_table_for_every_combination() {
     Some(PoolKind::Random),
     Some(PoolKind::SmallestMailbox),
     Some(PoolKind::ScatterGatherFirstCompleted { within: core::time::Duration::from_secs(1) }),
+    // The three kinds below were added with #195, which widened
+    // PoolKind. The rule table is about dispatcher kinds, not pool
+    // kinds (the original spec has no pool-kind-specific
+    // expectation; its balancing cases are about the balancing
+    // dispatcher), so the same expectation row applies to them.
+    Some(PoolKind::Balancing),
+    Some(PoolKind::ConsistentHashing { virtual_nodes_factor: 10 }),
+    Some(PoolKind::TailChopping {
+      within: core::time::Duration::from_secs(1),
+      interval: core::time::Duration::from_millis(10),
+    }),
   ];
   let choices =
     [DispatcherChoice::Unspecified, DispatcherChoice::Balancing, DispatcherChoice::Pinned, DispatcherChoice::Missing];

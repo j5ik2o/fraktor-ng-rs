@@ -7,4 +7,9 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
-fraktor-actor = { path = "../fraktor-actor" }
+fraktor-actor = { path = "../fraktor-actor", features = ["test-support"] }
+spin = "0.9"
+hdrhistogram = { version = "=7.6.0", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

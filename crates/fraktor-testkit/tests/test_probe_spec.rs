@@ -343,9 +343,13 @@ fn watch_actors_when_queue_non_empty() {
   probe.watch(&target);
   probe.expect_msg_within(one_second(), "hello");
   let terminated = probe.expect_msg_terminated_within(one_second());
+  // The original checks `probe.expectMsg(1.seconds, Terminated(target)(false,
+  // false))` (TestProbeSpec.scala:210). `Terminated` is a case class whose
+  // equality compares its first parameter list, the actor, only; it keeps
+  // `existenceConfirmed` and `addressTerminated` in the second list, which
+  // equality does not read (Actor.scala:125). So the actor is what this
+  // checks too.
   assert_eq!(terminated.target(), &target);
-  assert!(!terminated.existence_confirmed());
-  assert!(!terminated.address_terminated());
 }
 
 // "A TestProbe" must { "allow user-defined name" in { ... } }

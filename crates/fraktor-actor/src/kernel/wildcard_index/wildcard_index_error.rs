@@ -25,8 +25,7 @@ use core::fmt;
 ///
 /// Mirrors the `IllegalArgumentException` the original's `insert` throws when
 /// an element uses a double wildcard as a suffix, such as `"a**"`. The port
-/// returns this error instead of throwing (see the design document for #187,
-/// section 2.2).
+/// returns this error instead of throwing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WildcardIndexError {
   /// An element other than `"**"` itself ends with `"**"`.

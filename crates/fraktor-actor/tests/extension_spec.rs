@@ -127,7 +127,7 @@ impl ExtensionId for FailingTestExtensionId {
     // The side effect comes first, as in the original: the named actor is
     // created before the failure.
     let _actor =
-      system.actor_of_with_name(Props::empty(), "uniqueName").expect("the name uniqueName is free on a fresh system");
+      system.actor_of_named(Props::empty(), "uniqueName").expect("the name uniqueName is free on a fresh system");
     Err(ExtensionError::new("TestException", "ERR"))
   }
 }

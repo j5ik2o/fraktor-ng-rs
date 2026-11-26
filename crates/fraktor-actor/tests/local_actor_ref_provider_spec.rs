@@ -34,10 +34,10 @@
 // - Case 7 reads the second creation's `Result` from the actor instead
 //   of intercepting a thrown exception, because the port's `actor_of`
 //   returns the refusal.
-// - The name `null` sub-case of case 8 is not built: Rust's `&str`
-//   cannot hold null, so the type refuses it. Whether to record this
-//   as not built is waiting for the owner's decision; nothing in this
-//   file or in the ledger claims it was approved.
+// - The name `null` sub-case of case 8 passes `None` as the name, as
+//   docs/decisions/scala-java-to-rust-correspondence.md maps `null`
+//   (the precedent of docs/goals/g0f-eventbus-and-eventstream.md:22).
+//   It is its own test so the other names keep their `&str` calls.
 // - The warning text differs from Pekko's: this port writes
 //   `unhandled message from {path}: {message:?}` where Pekko writes
 //   `unhandled message from Actor[{path}]: {message}`.
@@ -46,7 +46,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::sync::Weak;
 
-use fraktor_actor::kernel::actor::{Actor, ActorContext, Props};
+use fraktor_actor::kernel::actor::{Actor, ActorContext, ActorCreationError, Props};
 use fraktor_actor::kernel::actor_path::ActorPath;
 use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::message::Message;
@@ -251,5 +251,17 @@ fn rejects_malformed_actor_names_with_suitable_messages() {
   assert_eq!(created.path().name(), "valid-name");
   let taken = system.actor_of_named(Props::empty(), "valid-name").expect_err("a taken name is refused");
   assert!(taken.to_string().contains("Actor name [valid-name] is not unique!"), "unexpected message: {taken}");
+  spec.terminate();
+}
+
+// Original: "throw suitable exceptions for malformed actor names", the
+// `null` name: `system.actorOf(Props.empty, null)` throws
+// `InvalidActorNameException` whose message includes "null".
+#[test]
+fn rejects_a_null_actor_name_with_a_suitable_message() {
+  let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
+  let error = spec.system_mut().actor_of_named(Props::empty(), None).expect_err("a null name is refused");
+  assert!(matches!(error, ActorCreationError::InvalidName(_)), "not an invalid-name refusal: {error:?}");
+  assert!(error.to_string().contains("null"), "unexpected message: {error}");
   spec.terminate();
 }

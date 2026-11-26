@@ -29,8 +29,7 @@ use super::pretty_duration_format::format_g;
 ///
 /// The finite value is a `core::time::Duration`, which cannot be negative,
 /// so negative finite durations of the original are outside this type (the
-/// original prints those in nanoseconds only; see the design of #186,
-/// docs/design/issue-186-util-specs.md §2.1).
+/// original prints those in nanoseconds only).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PrettyDurationInput {
   /// A finite, non-negative duration.

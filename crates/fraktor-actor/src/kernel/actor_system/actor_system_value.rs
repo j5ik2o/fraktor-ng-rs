@@ -38,13 +38,14 @@ use crate::kernel::actor::DeadLetterSettings;
 use crate::kernel::actor::DeadLetterSuppression;
 use crate::kernel::actor::Dropped;
 use crate::kernel::actor::FunctionRef;
-use crate::kernel::actor::InvalidActorNameException;
+use crate::kernel::actor::NotInfluenceReceiveTimeout;
 use crate::kernel::actor::Props;
 use crate::kernel::actor::SuppressedDeadLetter;
 use crate::kernel::actor::UnhandledMessage;
 use crate::kernel::actor_path::ActorPath;
 use crate::kernel::actor_path::RootActorPath;
 use crate::kernel::actor_ref::ActorRef;
+use crate::kernel::actor_system::actor_name_arg::ActorNameArg;
 use crate::kernel::actor_system::weak_actor_system::WeakActorSystem;
 use crate::kernel::address::Address;
 use crate::kernel::event::EventClass;
@@ -54,7 +55,6 @@ use crate::kernel::executor::ShardBoundary;
 use crate::kernel::extension::{ExtensionEntry, ExtensionError, ExtensionId, ExtensionStartup};
 use crate::kernel::setup::ActorSystemSetup;
 use crate::kernel::supervision::FailureCatcher;
-use crate::kernel::sync::lock;
 use crate::kernel::sync::Arc;
 
 #[cfg(test)]
@@ -115,14 +115,14 @@ impl ActorSystem {
     let executor = Arc::new(spin::Mutex::new(Executor::new(Self::root_path(name), boundary)));
     let system = WeakActorSystem::new(name.to_string(), Arc::downgrade(&executor));
     let event_stream = EventStream::new(system, false);
-    lock(&executor).set_event_stream(event_stream.clone());
+    Executor::lend(&executor, |executor| executor.set_event_stream(event_stream.clone()));
     if let Some(settings) = setup.get::<DispatchSettings>() {
-      lock(&executor).set_dispatch_settings(settings.clone());
+      Executor::lend(&executor, |executor| executor.set_dispatch_settings(settings.clone()));
     }
     if let Some(dispatchers) = setup.get::<crate::kernel::dispatch::Dispatchers>() {
-      lock(&executor).set_dispatchers(dispatchers.clone());
+      Executor::lend(&executor, |executor| executor.set_dispatchers(dispatchers.clone()));
     }
-    lock(&executor).set_dead_letter_bus(event_stream.downgrade());
+    Executor::lend(&executor, |executor| executor.set_dead_letter_bus(event_stream.downgrade()));
     // The four dead letter classes are subclasses of the AllDeadLetters
     // channel, as the trait links declare in Pekko.
     event_stream.declare_subclass::<DeadLetter, AllDeadLetters>();
@@ -143,7 +143,7 @@ impl ActorSystem {
     catcher: Arc<dyn FailureCatcher>,
   ) -> Self {
     let system = Self::with_setup(name, boundary, setup);
-    lock(&system.executor).set_failure_catcher(catcher);
+    Executor::lend(&system.executor, |executor| executor.set_failure_catcher(catcher));
     system
   }
 
@@ -155,7 +155,7 @@ impl ActorSystem {
   /// earlier milestones.
   pub fn with_failure_catcher(name: &str, boundary: Arc<dyn ShardBoundary>, catcher: Arc<dyn FailureCatcher>) -> Self {
     let system = Self::new(name, boundary);
-    lock(&system.executor).set_failure_catcher(catcher);
+    Executor::lend(&system.executor, |executor| executor.set_failure_catcher(catcher));
     system
   }
 
@@ -169,7 +169,7 @@ impl ActorSystem {
   /// way. A sink outside tests therefore sees one warning per unhandled
   /// message. A system created without a sink drops the events.
   pub fn set_event_sink(&self, sink: Arc<dyn crate::kernel::actor::Logging::EventSink>) {
-    lock(&self.executor).set_event_sink(sink);
+    Executor::lend(&self.executor, |executor| executor.set_event_sink(sink));
   }
 
   /// Installs the monotonic clock a time-windowed supervisor strategy reads.
@@ -179,7 +179,7 @@ impl ActorSystem {
   /// its own time, or the caller can install this override before starting
   /// actors supervised with a finite window.
   pub fn set_clock(&self, clock: Arc<dyn crate::kernel::Clock>) {
-    lock(&self.executor).set_clock(clock);
+    Executor::lend(&self.executor, |executor| executor.set_clock(clock));
   }
 
   fn root_path(name: &str) -> ActorPath {
@@ -206,7 +206,9 @@ impl ActorSystem {
   /// Each call hands out a handle with a fresh identifier and generation zero,
   /// so handles of different actors compare unequal. The actor is started below
   /// `/user`, with the default supervisor strategy, as the guardian does for a
-  /// top-level actor.
+  /// top-level actor. The call returns before `pre_start` runs: the actor
+  /// starts in its own run, once the dispatcher has run it, as Pekko's
+  /// `actorOf` returns once it has enqueued `Create`.
   ///
   /// Panics once the system has been terminated, with the same cause as Pekko,
   /// which throws `IllegalStateException` from `attachChild` when a defunct
@@ -224,40 +226,59 @@ impl ActorSystem {
   ///
   /// Mirrors `ActorSystem.actorOf(props, name)`, which throws
   /// `InvalidActorNameException` for a name that is taken, empty, or
-  /// malformed, and `ConfigurationException` for a configuration that
-  /// fails verification. The port returns both as one
+  /// malformed, `IllegalStateException` on a terminated system, and
+  /// `ConfigurationException` for a configuration that fails
+  /// verification. The name is free again once the actor that holds it
+  /// has stopped. The port returns these refusals as one
   /// [`ActorCreationError`](crate::kernel::actor::ActorCreationError).
+  ///
+  /// The name is taken as an [`ActorNameArg`]: a reference to a
+  /// type that implements `AsRef<str>` is the name, and `None` (an
+  /// `Option` spelling) stands for Pekko's `null` name in
+  /// `actorOf(props, null)`, which is refused as an invalid name
+  /// whose message mentions `null`. That is the opposite of
+  /// [`try_actor_of`](Self::try_actor_of), whose `None` asks for an
+  /// automatically generated name, as Pekko's `actorOf(props)` does.
   ///
   /// # Errors
   ///
   /// Returns [`ActorCreationError`](crate::kernel::actor::ActorCreationError)
-  /// when the name or the configuration is refused.
-  pub fn actor_of_named(
+  /// when the name, system state, or configuration is refused.
+  pub fn actor_of_named<'name>(
     &mut self,
     props: Props,
-    name: &str,
+    name: impl ActorNameArg<'name>,
   ) -> Result<ActorRef, crate::kernel::actor::ActorCreationError> {
-    self.try_actor_of(props, Some(name))
+    match name.into_option() {
+      | Some(name) => self.try_actor_of(props, Some(name)),
+      | None => Err(crate::kernel::actor::InvalidActorNameException::null_name().into()),
+    }
   }
 
   /// Starts a top-level actor, named when `name` is given, after both
   /// the name checks and the configuration checks.
   ///
   /// This is the combined entry point the two Pekko `actorOf` forms
-  /// share (design of #194, M5): both checks always run, the name
-  /// checks first. [`actor_of`](Self::actor_of) is this call with no
-  /// name, panicking on a refusal as Pekko throws.
+  /// share: both checks always run, the name checks first.
+  /// [`actor_of`](Self::actor_of) is this call with no name, panicking
+  /// on a refusal as Pekko throws.
+  ///
+  /// Here `None` means no name was requested: the actor receives an
+  /// automatically generated name, as with Pekko's `actorOf(props)`.
+  /// That is the opposite of [`actor_of_named`](Self::actor_of_named),
+  /// whose `None` stands for Pekko's `null` name in
+  /// `actorOf(props, null)` and is refused.
   ///
   /// # Errors
   ///
   /// Returns [`ActorCreationError`](crate::kernel::actor::ActorCreationError)
-  /// when the name or the configuration is refused.
+  /// when the name, system state, or configuration is refused.
   pub fn try_actor_of(
     &mut self,
     props: Props,
     name: Option<&str>,
   ) -> Result<ActorRef, crate::kernel::actor::ActorCreationError> {
-    lock(&self.executor).try_spawn_user(props, name)
+    Executor::lend(&self.executor, |executor| executor.try_spawn_user(props, name))
   }
 
   /// Resolves `path` to a handle, as `ActorRefProvider.resolveActorRef`
@@ -269,24 +290,7 @@ impl ActorSystem {
   /// answers nothing (Pekko's `EmptyLocalActorRef`); a path whose root
   /// belongs to another system resolves to the dead letters.
   pub fn resolve_actor_ref(&self, path: &ActorPath) -> ActorRef {
-    lock(&self.executor).resolve_actor_ref(path)
-  }
-
-  /// Starts a top-level actor below `/user` with the given `name` and
-  /// returns a handle to it.
-  ///
-  /// Mirrors `ActorSystem.actorOf(props, name)`, whose documentation
-  /// promises `InvalidActorNameException` when the name is invalid or
-  /// already in use by a live top-level actor; the port returns it as
-  /// `Err`, as [`ActorContext::actor_of`](crate::kernel::actor::ActorContext::actor_of)
-  /// already does. A name is invalid when
-  /// `ActorPath::validate_path_element` rejects it, and the error carries
-  /// that message unchanged. The name is free again once the actor that
-  /// holds it has stopped. On a terminated system the answer is
-  /// `InvalidActorNameException::terminating()`. [`actor_of`](Self::actor_of)
-  /// keeps handing out generated names; this is the named form.
-  pub fn actor_of_with_name(&mut self, props: Props, name: &str) -> Result<ActorRef, InvalidActorNameException> {
-    lock(&self.executor).spawn_user_named(props, name)
+    Executor::lend(&self.executor, |executor| executor.resolve_actor_ref(path))
   }
 
   /// Creates a running actor system as [`new`](Self::new) does, and then
@@ -382,12 +386,13 @@ impl ActorSystem {
     erased.clone().downcast::<E::Ext>().expect("the registry stores the type the id created")
   }
 
-  /// Stops `target`, telling its watchers that it is gone.
+  /// Asks `target` to stop. Its watchers are told once it has stopped.
   ///
-  /// Mirrors `org.apache.pekko.actor.ActorSystem.stop`, which asks the
-  /// guardian to stop the actor.
+  /// Mirrors `org.apache.pekko.actor.ActorSystem.stop`, which is
+  /// asynchronous: the target gets a `Terminate` and stops in its own run,
+  /// so the stop takes effect once the dispatcher has run it.
   pub fn stop(&mut self, target: &ActorRef) {
-    lock(&self.executor).stop_at_boundary(target);
+    Executor::lend(&self.executor, |executor| executor.stop(target));
   }
 
   /// Registers `watcher` to receive the `Terminated` notice of `target`.
@@ -399,7 +404,7 @@ impl ActorSystem {
   /// reply address of an `ask`, is reported at once with `existence_confirmed =
   /// false`; no later notice arrives for it, even if it stops afterwards.
   pub fn watch(&mut self, watcher: &ActorRef, target: &ActorRef) {
-    lock(&self.executor).watch(watcher, target);
+    Executor::lend(&self.executor, |executor| executor.watch(watcher, target));
   }
 
   /// Returns whether `target` no longer has a running actor behind it.
@@ -412,7 +417,7 @@ impl ActorSystem {
   /// address of an `ask`, has no cell here and reports true, the same limit
   /// `watch` documents.
   pub fn is_actor_terminated(&self, target: &ActorRef) -> bool {
-    lock(&self.executor).is_actor_terminated(target)
+    Executor::lend(&self.executor, |executor| executor.is_actor_terminated(target))
   }
 
   /// Starts a handle whose shard runs `handler` for each delivered message.
@@ -429,23 +434,23 @@ impl ActorSystem {
   where
     H: Fn(&ActorRef, crate::kernel::message::Message) + Send + Sync + 'static,
   {
-    lock(&self.executor).function_ref(name, handler)
+    Executor::lend(&self.executor, |executor| executor.function_ref(name, handler))
   }
 
   /// Registers the function reference `watcher` to receive the
   /// `Terminated` of `target` as a message to its function.
   ///
   /// Mirrors `FunctionRef.watch`, lent through the system because the
-  /// handle itself holds no executor reference (design of #192, H1).
+  /// handle itself holds no executor reference.
   pub fn function_ref_watch(&mut self, watcher: &FunctionRef, target: &ActorRef) -> ActorRef {
-    lock(&self.executor).function_ref_watch(watcher, target)
+    Executor::lend(&self.executor, |executor| executor.function_ref_watch(watcher, target))
   }
 
   /// Stops the function reference `watcher` from watching `target`.
   ///
   /// Mirrors `FunctionRef.unwatch`, which is idempotent.
   pub fn function_ref_unwatch(&mut self, watcher: &FunctionRef, target: &ActorRef) -> ActorRef {
-    lock(&self.executor).function_ref_unwatch(watcher, target)
+    Executor::lend(&self.executor, |executor| executor.function_ref_unwatch(watcher, target))
   }
 
   /// Returns whether the function reference `watcher` watches `target`.
@@ -453,7 +458,7 @@ impl ActorSystem {
   /// Mirrors `FunctionRef.isWatching`: the registration survives the
   /// target's end until the reference unwatches or stops.
   pub fn function_ref_is_watching(&self, watcher: &FunctionRef, target: &ActorRef) -> bool {
-    lock(&self.executor).function_ref_is_watching(watcher, target)
+    Executor::lend(&self.executor, |executor| executor.function_ref_is_watching(watcher, target))
   }
 
   /// Returns a handle that can reach the executor without owning the system.
@@ -479,7 +484,27 @@ impl ActorSystem {
   /// as a `SuppressedDeadLetter` and never counted by the dead letter
   /// listener.
   pub fn register_dead_letter_suppression<T: core::any::Any + DeadLetterSuppression>(&self) {
-    lock(&self.executor).register_dead_letter_suppression(core::any::TypeId::of::<T>());
+    Executor::lend(&self.executor, |executor| executor.register_dead_letter_suppression(core::any::TypeId::of::<T>()));
+  }
+
+  /// Registers `T` as a message type that does not influence the receive
+  /// timeout.
+  ///
+  /// Mirrors the marker trait `NotInfluenceReceiveTimeout` in Pekko. Call
+  /// before the first message is delivered in this system.
+  pub fn register_not_influence_receive_timeout<T: core::any::Any + NotInfluenceReceiveTimeout>(&self) {
+    Executor::lend(&self.executor, |executor| {
+      executor.register_not_influence_receive_timeout(core::any::TypeId::of::<T>())
+    });
+  }
+
+  /// Returns whether `message` does not influence the receive timeout.
+  ///
+  /// Test-only view of the classification, mirroring the `private[pekko]`
+  /// `ReceiveTimeoutCompat`. Not a public API promise.
+  #[cfg(feature = "test-support")]
+  pub fn is_not_influence_receive_timeout(&self, message: &crate::kernel::message::Message) -> bool {
+    Executor::lend(&self.executor, |executor| executor.is_not_influence_receive_timeout(message))
   }
 
   /// Starts the dead letter listener with `settings` and returns its
@@ -495,11 +520,11 @@ impl ActorSystem {
     // released: subscribing registers the listener with the unsubscriber,
     // whose watch locks the executor again and would panic on the
     // lock the executor's own start still holds. With the limit `Off`
-    // the listener is not subscribed at all (design L7): Pekko's listener
+    // the listener is not subscribed at all: Pekko's listener
     // with dead letter logging off never receives an event, so the handle
     // is created and returned without a subscription.
     let limit = settings.limit();
-    let listener = lock(&self.executor).start_dead_letter_listener(settings);
+    let listener = Executor::lend(&self.executor, |executor| executor.start_dead_letter_listener(settings));
     if limit != DeadLetterLogLimit::Off {
       let _ = self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<DeadLetter>());
       let _ = self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<Dropped>());
@@ -513,7 +538,7 @@ impl ActorSystem {
   /// Mirrors `ActorSystem.actorSelection`. The selection captures the
   /// shard boundary, so it never borrows the executor when it sends.
   pub fn actor_selection(&self, path: &ActorPath) -> ActorSelection {
-    lock(&self.executor).actor_selection(path.clone())
+    Executor::lend(&self.executor, |executor| executor.actor_selection(path.clone()))
   }
 
   /// Returns the handle that absorbs messages which no actor takes.
@@ -522,38 +547,51 @@ impl ActorSystem {
   /// path; the port makes one when the system is created and answers that same
   /// handle afterwards.
   pub fn dead_letters(&self) -> ActorRef {
-    lock(&self.executor).dead_letters()
+    Executor::lend(&self.executor, |executor| executor.dead_letters())
   }
 
-  /// Delivers every message that is waiting until nothing is left.
+  /// Runs every mailbox that has work, and delivers every message waiting at
+  /// the boundary, until nothing is left. A mailbox runs up to the
+  /// throughput of its dispatcher at a time.
   pub fn run_until_idle(&mut self) {
-    lock(&self.executor).run_until_idle();
+    Executor::lend(&self.executor, |executor| executor.run_until_idle());
   }
 
-  /// Delivers at most one message and returns whether it delivered one, so a
-  /// caller can check a deadline between messages instead of waiting for the
-  /// whole queue to drain.
+  /// Delivers at most one message of the manually driven dispatcher and
+  /// returns whether it delivered one.
+  ///
+  /// This is a stepping aid for tests that check a deadline between
+  /// messages; it is not one run of a mailbox. A run of a mailbox handles up
+  /// to `throughput` messages; `run_one` hands a single message to a single
+  /// actor and then returns, whatever the throughput of its dispatcher is.
+  /// Use `run_until_idle` to drive the system the way a dispatcher does.
+  ///
+  /// It keeps running ready mailboxes that only have system messages to
+  /// handle until it delivers one message or nothing is ready, so `false`
+  /// means there was nothing left to drive.
   pub fn run_one(&mut self) -> bool {
-    lock(&self.executor).run_one()
+    Executor::lend(&self.executor, |executor| executor.run_one())
   }
 
-  /// Waits at most `max` for one message from the boundary and moves it onto
-  /// the local queue without delivering it; call `run_until_idle` to deliver
-  /// it. Returns whether a message arrived.
+  /// Waits at most `max` for work for the system: a mailbox with a message
+  /// to handle, a message at the boundary, or a message that one of the
+  /// system's function references handled. Returns whether work came,
+  /// without delivering anything; call `run_one` or `run_until_idle` to
+  /// deliver it.
   pub fn await_envelope(&mut self, max: Duration) -> bool {
-    lock(&self.executor).await_envelope(max)
+    Executor::lend(&self.executor, |executor| executor.await_envelope(max))
   }
 
   /// Stops the system. Calling it again is a no-op, as in Pekko.
   pub fn terminate(&mut self) {
     if !self.is_terminated() {
-      lock(&self.executor).stop_all();
+      Executor::lend(&self.executor, |executor| executor.stop_all());
     }
   }
 
   /// Returns whether the system has been terminated.
   pub fn is_terminated(&self) -> bool {
-    lock(&self.executor).is_terminated()
+    Executor::lend(&self.executor, |executor| executor.is_terminated())
   }
 
   /// Returns the identity of the shard boundary this system posts to.
@@ -561,7 +599,7 @@ impl ActorSystem {
   /// A waiting `ask` uses the same identity, taken from the recipient handle,
   /// to find the step that drives this system.
   pub fn shard_key(&self) -> usize {
-    lock(&self.executor).boundary_key()
+    Executor::lend(&self.executor, |executor| executor.boundary_key())
   }
 
   /// Returns the event sink the system publishes to, if one was installed.
@@ -569,7 +607,7 @@ impl ActorSystem {
   /// The test kit reads it back to arm an `EventFilter` for the duration of an
   /// `intercept`.
   pub fn event_sink(&self) -> Option<Arc<dyn crate::kernel::actor::Logging::EventSink>> {
-    lock(&self.executor).event_sink()
+    Executor::lend(&self.executor, |executor| executor.event_sink())
   }
 }
 
