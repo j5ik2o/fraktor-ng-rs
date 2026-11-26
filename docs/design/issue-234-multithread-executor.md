@@ -6,7 +6,8 @@ Pekko v2.0.0（commit `9fbd2283b1cf701c90a1223bf621942c191db61f`）。
 
 状態：設計の案。設計の独立レビューは実施済み（2026-11-26、固定 `e702bbe`、判定は要修正。高 2・中 8・低 8）。
 再レビュー（固定 `7ecb3f5`）の判定は承認（D2 を除く）で、低の指摘 7 件があった。指摘の処理と、それで変わった
-箇所は §11 にある。D1 は決定済み（元帥、2026-11-26）。D2 は承認済み（オーナー、2026-11-26、元帥の項目 420）で、
+箇所は §11 にある。再レビュー 2（固定 `29908ed`）は要修正（文書だけの小さな直し）だった。D1 は決定済み（元帥、2026-11-26）。
+D2 は承認済み（オーナー、2026-11-26、元帥の項目 420）で、
 所有権モデルの決定文書もこの PR で改めた。段 1 の実装は、この PR のマージのあとに別の issue と PR で行う。
 この issue では実装しない。実装は §6 の段ごとに別の issue に分ける。
 
@@ -111,7 +112,7 @@ Pekko では、この 3 つは次の形である。アクターごとにメー�
 |:---|:---|
 | `ActorSystem.executor`、`WeakActorSystem.executor` | `Arc<spin::Mutex<Executor>>` と `sync::Weak`。`spin` はすでに依存にある |
 | `EventStream.setup` | `Arc<spin::Mutex<StreamSetup>>` |
-| `ActorEventBus.subscriptions`（`kernel/event/actor_event_bus.rs` の `ActorEventBus`。終了の通知の中から触る） | `Arc<spin::Mutex<Subscriptions>>` |
+| `ActorEventBus.subscriptions`（`kernel/event/actor_event_bus.rs` の `ActorEventBus`。終了の通知の中から触る） | 購読の表と、watch している購読者の集合に分ける。購読の表はロックなしでバスが持ち、集合と外す予定の一覧と印だけを `Arc<spin::Mutex<…>>` で共有する（§2.4） |
 | 上の 4 か所の中身 | `Actor: Send`、枠と FSM の関数に `+ Send`、`Fsm<S, D>` に `S: Send, D: Send`、終了の通知に `+ Send` |
 | 単体テスト `actor_system_value_test.rs`（3 か所）と `actor_event_bus_test.rs`（2 か所） | `borrow` を `lock` に |
 
@@ -131,9 +132,19 @@ event stream の設定、バスの購読表）を共有するためのハンド�
 | 場所 | 今 | 段 1 | 数 | 参照の数が動くとき |
 |:---|:---|:---|:---|:---|
 | `ActorSystem.executor`（`actor_system_value.rs` のフィールドと `ActorSystem::with_setup`） | `Rc<RefCell<Executor>>` | `Arc<spin::Mutex<Executor>>` | システム 1 つに 1 つ | 作るときと捨てるときだけ。`ActorSystem` のメソッドは参照の数を変えない（ロックの `try_lock` で CAS が 1 回） |
-| `WeakActorSystem.executor`（`weak_actor_system.rs` のフィールド） | `rc::Weak` | `sync::Weak` | `downgrade` のたびに 1 つ。今の呼び出し元は `ActorSystem::with_setup`（event stream の分）、`ActorSystem::downgrade`、`adaptor/ask_driver.rs` の `attach_wait_driver`、testkit の `TestKit::with_settings`、`TestProbe::with_settings_and_name`、`TestLatch::ready` | メソッドを呼ぶたびの `upgrade`（原子操作の増減 1 組）。testkit は `WeakActorSystem::run_one` でシステムを回すので、testkit が回すときは 1 メッセージごとに 1 組になる（§7.2 で測った） |
+| `WeakActorSystem.executor`（`weak_actor_system.rs` のフィールド） | `rc::Weak` | `sync::Weak` | `downgrade` のたびに 1 つ。今の呼び出し元は `ActorSystem::with_setup`（event stream の分）、`ActorSystem::downgrade`、`adaptor/ask_driver.rs` の `attach_wait_driver`、testkit の `TestKit::with_settings`、`TestProbe::with_settings_and_name`、`TestLatch::ready` | メソッドを呼ぶたびの `upgrade`（原子操作の増減 1 組）。メッセージごとに走るのは 2 つの経路だけである。testkit が `WeakActorSystem::run_one` でシステムを回すときと、`attach_wait_driver` で登録した ask の待ち（`AskFuture::try_await_result` → `drive_until` → `step_system` → `WeakActorSystem::run_one`。adaptor の公開 API で、今の呼び出し元は testkit の `FraktorSpec::new` だけ）である。本番の実行の繰り返しは強い参照を持つので、走らない（再レビュー 2 の (b)）。§7.5 の S3 が同じ関数を通るので、速さはそこで測る |
 | `EventStream.setup`（`event_stream.rs` のフィールドと `EventStream::new`） | `Rc<RefCell<StreamSetup>>` | `Arc<spin::Mutex<StreamSetup>>` | システム 1 つに 1 つ。`EventStream` を複製するたびに参照が 1 増える | 複製と、設定を読み書きするとき（購読、ロガーと unsubscriber の開始）。`publish` の経路では触らない |
-| `ActorEventBus.subscriptions`（`actor_event_bus.rs` のフィールドと `ActorEventBus::new`） | `Rc<RefCell<Subscriptions>>` と `rc::Weak` | `Arc<spin::Mutex<Subscriptions>>` と `sync::Weak` | バス 1 つに 1 つ。終了の通知の中に `Weak` が 1 つ | 購読、解除、終了の通知のとき |
+| `ActorEventBus.subscriptions`（`actor_event_bus.rs` のフィールドと `ActorEventBus::new`） | `Rc<RefCell<Subscriptions>>` と `rc::Weak` | 購読の表はロックなしでバスが持つ。watch している購読者の集合、外す予定の一覧、`AtomicBool` の印を `Arc<spin::Mutex<…>>`（印は Mutex の外）と `sync::Weak` で終了の通知と共有する | バス 1 つに 1 つ。終了の通知の中に `Weak` が 1 つ | 購読、解除、終了の通知のとき。`publish` では、印を Acquire で 1 回読むだけで、ロックも参照の数も動かない（下の段落） |
+
+**`ActorEventBus` の作りを替える（再レビュー 2 の (a)）**：今の `ActorEventBus::publish` は、イベント 1 件ごとに
+`self.subscriptions.borrow().subscribers_of(&classifier)` で購読表を借りる。そのまま `Arc<spin::Mutex<_>>` にすると、
+イベントごとにロックを取ることになり、制御プレーンとは書けない。そこで段 1 では、次の形にする。`ActorEventBus` は、段 1 で作りを替え、`publish` の経路からロックを外す。publish が読む購読の表（分類と購読者の組）は、ロックなしでバスが直に持つ（`publish` は `&mut self` で、バスは 1 か所だけが持つ）。終了の通知と共有するのは、watch している購読者の集合と「外す予定の一覧」と `AtomicBool` の印だけで、`Arc<spin::Mutex<…>>` に入れる。終了の通知は、集合から外し、外したときは debug のイベントを今と同じ時点で出し、外す予定の一覧に積んで印を立てる。`publish`、`subscribe`、`unsubscribe` は、まず印を Acquire で読み、立っているときだけロックを取って一覧を片づける。ふだんの `publish` はロードが 1 回だけで、ロックを取らない。
+片づけの時点は変わるが、観測できる振る舞いは変えない。止まった購読者は、次の `publish` が宛先を決める前に表から外れるので、
+止まった購読者には今と同じく届かない。止まった直後の `unsubscribe` も、先に片づけるので、今と同じく `false` を返す
+（`tests/g0f_review_f_terminated_subscription.rs`）。debug のイベントは、終了の通知の中で今と同じ時点に出すので、
+バスを使う前に debug のイベントを待つ `tests/event_bus_spec.rs` の「unsubscribe subscriber when it terminates」も、今と同じく通る。
+最初はレビューの案どおり片づけと debug のイベントを両方とも次の操作まで遅らせる形を考えたが、それではこのテストが
+壊れるので、watch している集合だけを共有する形にした。
 
 この変更も、Arc をシステムの中に広く入れることになり、所有権モデルの決定に触れる。そのため、段 1 の実装は
 D2 とあわせて待っていた（元帥の訂正、2026-11-26）。D2 の承認を受けた決定文書の改訂では、この 4 か所を「制御
@@ -275,6 +286,9 @@ id と世代だけで決める。宛先を探す線形の検索（§2.2 の 1）
 - 移植の規約の要約（`.takt/facets/knowledge/fraktor-porting-rules.md` の「所有権モデル（accepted）」）も、
   「ActorRef は id＋世代番号の値」「親子・DeathWatch・購読は … 所有テーブル／登録表」としている。矛盾したら決定文書が優先する
 
+Arc を置いてよいのは、メールボックスの入れ物（`Arc<Mailbox>`）だけで、予算はアクター 1 つに Arc 1 つである。対象は、
+セルのアクターすべてのメールボックス（手で回す dispatcher を含む。複数スレッドで動かすために要る形）である。
+
 この形では、アクターごとに `Arc<Mailbox>` があり、その中に `ActorCell` を入れ、`ActorRef` がそれを指す。メールボックスと
 ref と配送の経路に Arc が入る。所有権モデルのスパイクで「実装 1 Arc 全面型」として測られ、単一スレッドで 7〜15 倍
 遅かった形に近い（同じ文書の「スパイク結果」の節）。そこで、改訂は Arc を置く場所をメールボックスの入れ物だけに絞り、
@@ -282,7 +296,7 @@ ref と配送の経路に Arc が入る。所有権モデルのスパイクで�
 
 | 条件 | 中身 | 確かめ方 |
 |:---|:---|:---|
-| 1 | Arc を置いてよいのは、メールボックスの入れ物（`Arc<Mailbox>`）だけ。予算はアクター 1 つに Arc 1 つ。1 件さばくごとに Arc を複製しない。1 回の実行の中で、取り出して `receive` に渡し、次を取る経路では `Arc<Mailbox>` を複製しない。複製するのは、予約（idle → scheduled）のたびにプールへ渡す 1 つだけである。Envelope には宛先の Arc を入れない | 段 3 の完了条件：`cfg(test)` の数え上げで、N 件の送受信での `Arc<Mailbox>` の複製の回数が「送り手のハンドルを Envelope に入れた回数＋予約の回数」を超えないことを確かめる。送り手のハンドルの複製は、今の `ActorRef` の複製（今も Arc を 2 つ複製する）と同じ数である |
+| 1 | 1. メールボックスの Arc は、1件さばくごとには複製しない。複製するのは、予約（idle から scheduled）のたびに1つだけ。送り手のハンドルを Envelope に入れるときの複製は、今の ActorRef の複製と同じ数にとどめる。 2. 1件あたりの原子操作の数は、今（宛先と送り手のハンドルで Arc を4つ複製）を超えない。段3 の複製の回数を数えるテストで、この数を確かめる。 | 段 3 の完了条件：`cfg(test)` の数え上げで、N 件の送受信での Arc の複製の回数を数える。今の `tell` は、宛先のハンドル（path と boundary）と送り手のハンドル（path と boundary）で Arc を 4 つ複製する。段 3 では、送り手のハンドル（path と mailbox）の 2 つと予約の 1 つで、計 3 つになる（再レビュー 2 の M2 の数え方。文言は元帥が決めた、2026-11-26） |
 | 2 | `Mailbox` から dispatcher、システム、dead letters へ戻る辺は、`Weak` か id にする。強い循環を作らない | 段 3 の設計の型で見る |
 | 3 | 閉じるとき（I6）に、自分専用のキューを必ず dead letters へ流す。Envelope の送り手（`ActorRef` → `Arc<Mailbox>`）による循環を断つため。今の `Executor::stop_all` の doc が、境界について同じ理由を書いている | 段 3 の完了条件 |
 | 4 | 終了したあとにメールボックスが解放されることを、テストで確かめる（`Arc::strong_count` か、`Weak::upgrade` の失敗） | 段 3 の完了条件 |
@@ -482,7 +496,7 @@ API 3 つと単体テスト、8 ファイル）を 2 とする。どの段も、
 
 | 段 | issue にする単位 | 中身 | 完了の条件 | 大きさ |
 |:---|:---|:---|:---|:---|
-| 1 | Send にする（挙動は変えない）。この PR のマージのあと | §2.3 の置き換え。Arc が増える場所は §2.4 の 4 か所だけ。`spin::Mutex` は `try_lock` で取り、取れなければ「再入または同時の利用」で panic する（今の `RefCell` の二重借用の panic と同じ振る舞いを保つ）。`ActorSystem`、`WeakActorSystem`、`EventStream` が `Send + Sync` であることのコンパイル時の検査を `tests/` に足す。`ActorSystem` と `WeakActorSystem` の rustdoc に「段 5 より前は、別のスレッドから同時に使うと panic する」と書く | 検査を先に足して E0277（9 件）で落ちることを確かめる（red）。置き換えのあと、検査と既存のテストのすべてが通る。`receive` の中から `WeakActorSystem` を呼ぶ再入のテストが、止まらずに panic で返る（設計レビュー M3。base でも段 1 でも通ることを、レビューが試作で確かめた）。§7.5 の S1〜S4 の基準を満たす。§7.5 の計測のテストを入れる | 2 |
+| 1 | Send にする（挙動は変えない）。この PR のマージのあと | §2.3 の置き換え。Arc が増える場所は §2.4 の 4 か所だけ。`ActorEventBus` は、§2.4 の形に作りを替え、`publish` の経路にロックを入れない。`spin::Mutex` は `try_lock` で取り、取れなければ「再入または同時の利用」で panic する（今の `RefCell` の二重借用の panic と同じ振る舞いを保つ）。`ActorSystem`、`WeakActorSystem`、`EventStream` が `Send + Sync` であることのコンパイル時の検査を `tests/` に足す。`ActorSystem` と `WeakActorSystem` の rustdoc に「段 5 より前は、別のスレッドから同時に使うと panic する」と書く | 検査を先に足して E0277（9 件）で落ちることを確かめる（red）。置き換えのあと、検査と既存のテストのすべてが通る。`receive` の中から `WeakActorSystem` を呼ぶ再入のテストが、止まらずに panic で返る（設計レビュー M3。base でも段 1 でも通ることを、レビューが試作で確かめた）。§7.5 の S1〜S4 の基準を満たす。§7.5 の計測のテストを入れる。`tests/event_bus_spec.rs` と `tests/g0f_review_f_terminated_subscription.rs` が書き換えなしで通る（購読者が止まったときの debug のイベントの時点と、止まった購読者の片づけ） | 2 |
 | 2 | kernel のメールボックス（配線しない） | `MailboxStatus`、`MessageQueue` と 4 種類のキュー、`SystemMessage` とそのキュー、閉じる門、ロックの型引数（§3.2）。どこからも使わない。D1 の条件 2 により、型の形は Balancing の共有のキューと std のロックを先に入れて決める | §7.3 の P1〜P3 の PBT。状態の操作が Quint の状態の部分と一致する。共有のキューを持つ 2 つのメールボックスで、片方を閉じても共有のキューが残ることの単体テスト | 3 |
 | 3 の前 | 順序の洗い出し（D1 の条件 1） | 段 3（全体の FIFO から、アクターごとの順へ）と段 4a（子の `pre_start` が非同期になる）で変わる順序に、頼っている既存のテストを洗い出す。試作の写しで段 3 と段 4a の振る舞いを入れて既存のテストを流し、落ちたものを一覧にする。一覧の各行に、原典ではどう振る舞うか（同期か非同期か、順序を保証するか）を書く | 一覧が issue に載っている。各行について「実装で原典どおりに直す」「テストが原典より強い前提に頼っているので直す」のどちらかが決まっている。テストを直すものは、移植の規約（実装ステップはテストファイルを編集しない、移植したテストを弱めない）に従い、triage への差し戻しとして扱う。原典より弱めることになるものは、人間の判断にかける | 2 |
 | 3 | アクターごとのメールボックスと Manual dispatcher | `ShardQueue` の 1 本のキューを、アクターごとの `Mailbox` と `ManualExecutor` の実行待ちの列に替える。`ActorRef` の送り先を §3.4 の形にする。testkit の待ち方を `WakeSignal` に替える（cell のアクター宛ての `tell` が境界を通らなくなり、`await_envelope` が何も受け取らなくなるため。設計レビュー L3）。実行器の大きなロックと `&mut Executor` の文脈は、まだ残す | 既存のテストのすべてが通る（洗い出しの一覧で決めた直しを含む）。§3.4 の条件 1（`Arc<Mailbox>` の複製の回数）と条件 4（終了後にメールボックスが解放されるテスト）。§7.5 の S1〜S7 の基準。testkit の待ちが `POLL_INTERVAL` の眠りに落ちていないこと（待ちの時間を測る） | 5 |
@@ -537,7 +551,8 @@ Spec の移植そのもの（#179 の 38〜46 と #235）は、上の段のあ�
   `RefCell` の借用が `spin::Mutex` の `try_lock` に替わり、`ActorSystem` の呼び出しごとに競合の無い CAS が 1 回増える。
   ロックを取るのは呼び出しごとで、メッセージごとではない。外からの `tell` は executor のロックを通らない。そのため、
   最初の計測（§10 の 5）の ±3% は「差が出ない構造」を確かめただけである（設計レビュー L1）。メッセージごとに
-  増えるのは、testkit が `WeakActorSystem::run_one` で回すときの `upgrade`（原子操作の増減 1 組）とロックの CAS で、
+  増えるのは、testkit が `WeakActorSystem::run_one` で回すとき（と、`attach_wait_driver` で登録した ask の待ち。§2.4）の
+  `upgrade`（原子操作の増減 1 組）とロックの CAS で、
   この経路を `try_lock` の形で測り足した（§10 の 11）。中央値は、元が 80.2〜81.0 ns、段 1 が 81.5〜82.2 ns で、
   1 メッセージあたり 1〜2 ns（1〜2%）増える。1 回目だけは段 1 が 92.6 ns だったが、同じ回はロックを通らない経路も
   含めて段 1 の側がすべて約 13% 遅く、機械の揺れと見て外した。段 3 と段 5 では、メッセージの経路（スレッドを
@@ -591,7 +606,7 @@ ConsistencySpec で確かめる。段 2 では、`MailboxStatus` に限って lo
 | S1 外からの `tell` | 外から 1 つのアクターへ 20 万件を `tell` し、`run_until_idle` で回す | 97.0〜101.7 ns |
 | S2 自分への `tell` | `receive` の中で自分に送り返して、20 万件を回す | 80.2〜82.0 ns |
 | S3 testkit の回し方 | S2 を `WeakActorSystem::run_one` の繰り返しで回す（testkit と同じ経路） | 81.1〜87.8 ns |
-| S4 2 つのアクターの往復 | 2 つのアクターが `sender` へ送り返して、20 万件を回す | 80.1〜95.5 ns |
+| S4 2 つのアクターの往復 | 2 つのアクターが `sender` へ送り返して、20 万件を回す | 80.1〜95.5 ns（再レビュー 2 の測りでは、同じ機械で 8 回が 80.1〜82.7 ns に収まった） |
 | S5 アクター 100 | 100 のアクターへ順に 20 万件 | 335.8〜358.5 ns |
 | S6 アクター 1000 | 1000 のアクターへ順に 20 万件 | 3960.6〜4119.5 ns |
 | S7 アクター 1 万 | 1 万のアクターへ順に 10 万件 | 38636.1〜39016.5 ns |
@@ -609,16 +624,17 @@ S5〜S7 が大きいのは、今の実行器が宛先を線形に探すためで
 1. 比べる 2 つの版（基準 A と変更 B）を、同じ `--release` で作る。基準 A は、段に入る直前の main の commit である。
    段をまたいで少しずつ遅くなるのを防ぐため、`7ecb3f5` も毎回一緒に測る（A0）
 2. 1 回の実行では、場面ごとに 7 回測り、中央値を取る
-3. A、B、B、A、A、B、B、A の順で 8 回実行する（交互に 4 組）。組ごとに比 B／A を出し、場面ごとに 4 つの比の中央値を取る
+3. A、B、B、A、A、B、B、A の順で 8 回実行する（交互に 4 組）。組ごとに比 B／A を出し、場面ごとに 4 つの比の中央値（真ん中の 2 つの平均）を取る
 4. 同じ組の中で、実行器を通らない対照（純粋な計算のループ）の値が 5% 以上ずれたら、その組は機械の揺れとして捨て、
-   測り直す（`7ecb3f5` の測り直しで、1 回だけ全場面が 13% ずれた回があった。§7.2）
+   測り直す（`7ecb3f5` の測り直しで、1 回だけ全場面が 13% ずれた回があった。§7.2）。測り直しは同じ段で 2 回まで
+   とする。それを超えたら、その時点では測れないこととして元帥へ上げる（通るまで測り直さない。再レビュー 2 の L2）
 
 **止める基準**：
 
 | 場面 | 通る | 止める |
 |:---|:---|:---|
 | S1〜S4 | 比の中央値が 1.05 以下（5% 以内）。今の揺れ（±3%）の外に出ないこと | 1.05 を超える。段の作業を止め、何が効いているかを調べてから（説明のつかない数字で進めない）元帥へ上げる |
-| S5〜S7 | 段 3 以降は 1.00 以下（速くなっていること） | 1.00 を超える |
+| S5〜S7 | 段 3：A（段 3 の A は A0 の `7ecb3f5` と同じ）との比が 1.00 以下（速くなっていること）。段 4 以降：A との比が 1.05 以下で、かつ A0 との比が 1.00 以下（再レビュー 2 の M4。変えていない段の比は 1.00 の前後で揺れるので、1.00 は A0 とだけ比べる） | 左を満たさない |
 | A0 との比 | S1〜S4 で 1.05 以下 | 1.05 を超える（段ごとには通っていても、積み重なって落ちている） |
 
 **段とのつながり**：
@@ -629,6 +645,10 @@ S5〜S7 が大きいのは、今の実行器が宛先を線形に探すためで
 | 3 | S1〜S7。改訂の条件 1（`Arc<Mailbox>` の複製の回数）と条件 4（解放のテスト） | 上の基準を満たす。結果を段 3 の PR に載せる |
 | 4a〜4c | S1〜S4 | 上の基準を満たす（system message にしたことで遅くならないこと） |
 | 5 | S1〜S7（手で回す dispatcher のまま）。加えて、スレッドプールで次を記録する：P1 1 本の送り手から 1 つのアクター、P2 8 本の送り手から 64 のアクター、P3 ConsistencySpec の所要時間 | S1〜S7 は上の基準を満たす。P1〜P3 は記録だけで、止める基準は段 5 の結果を見て、段 6 の前に決める |
+
+再レビュー 2 は、同じバイナリを A と B に置いた A/A の 8 回で、S2 と S4 の比の中央値がどちらも 0.994、組ごとには
+±2.5% の中だった。1.05 の基準には 5 倍ほどの余裕がある。段 1 で道具を入れるときに、A/A の比を 1 回記録して、基準の
+余裕を確かめる（再レビュー 2 の L3）。
 
 測る道具：`7ecb3f5` を測った計測は scratchpad の写しにある。段 1 の issue で、`crates/fraktor-actor/tests/` に
 `#[ignore]` を付けた計測のテストとして入れる（`cargo test --release -- --ignored` で流す）。交互に流す手順は、
@@ -691,7 +711,7 @@ S5〜S7 が大きいのは、今の実行器が宛先を線形に探すためで
 
 ### 9.2 D2：承認（オーナー、2026-11-26）
 
-**D2：所有権モデルの決定文書を改め、複数スレッドの dispatcher のメールボックスを、ホットパスに置く Arc の例外として
+**D2：所有権モデルの決定文書を改め、セルのアクターすべてのメールボックス（手で回す dispatcher を含む。複数スレッドで動かすために要る形）を、ホットパスに置く Arc の例外として
 認める。**オーナーが承認した（2026-11-26、元帥の項目 420）。オーナーの言葉は「つまり Pekko と似たようなスレッド
 モデルになるってことね。承認」だった。決定文書の改訂はこの PR に入れた（`docs/decisions/ownership-model-arc-overhead.md`
 の「改訂（2026-11-26）」の節）。範囲と条件は §3.4 にある。
@@ -803,3 +823,18 @@ D1 は、元帥が (A) に決めた（条件 2 つ。§9.1）。D2 は、オー�
 - 仕様に、system message が通常のメッセージより先にさばかれることの不変条件 `systemBeforeNormal`（I11）と、
   その負の対照 `MessagesBeforeSystem` を足した。前の版の I11 は「一部だけ」で、CI では確かめていなかった
 
+### 11.3 再レビュー 2 の指摘の処理
+
+再レビュー 2：固定 `29908ed`、Claude Opus（設計にも実装にも関わっていない）、2026-11-26。判定は要修正（小さい。文書の直しだけ）。
+レポートは bot の記録 `pr236-design-rereview2.md` にある。8 件とも「直す」にした。
+
+| 指摘 | 処理 | 変わった箇所 |
+|:---|:---|:---|
+| (a)／M1 `ActorEventBus::publish` がイベントごとに購読表のロックを取る | 直す | 段 1 で、publish の経路からロックを外す作りにした（§2.3、§2.4、決定文書の「範囲の外」）。レビューの案は、片づけと debug のイベントを次の操作まで遅らせる形だった。しかし、`event_bus_spec.rs` の「unsubscribe subscriber when it terminates」は、止まった直後に debug のイベントを待つ。そこで、watch している集合だけを終了の通知と共有し、debug のイベントは今と同じ時点で出す形にした |
+| (b)／M5 メッセージごとの `upgrade` の経路に ask の待ちが抜けている | 直す | `attach_wait_driver` で登録した ask の待ちを、決定文書の「範囲の外」、設計の §2.4 と §7.2 に書き足した。範囲の外のまま |
+| M2 条件 1 の文言が、送り手のハンドルの複製で破れる | 直す | 元帥が決めた 2 文（2026-11-26）を、決定文書の条件 1 と設計の §3.4 の条件 1 に、同じ文字列で入れた。§3.4 の確かめ方に、今の 4 つと段 3 の 3 つの数え方を書いた |
+| M3 例外の範囲の書き方が食い違っている | 直す | 「セルのアクターすべてのメールボックス（手で回す dispatcher を含む。複数スレッドで動かすために要る形）」にそろえた（決定文書の冒頭、残る場所の一覧、改訂の節の見出しと範囲、設計の §3.4 と §9.2） |
+| M4 S5〜S7 の「1.00 以下」が揺れだけで止まる | 直す | §7.5 を、段 3 は A（＝A0）との比が 1.00 以下、段 4 以降は A との比が 1.05 以下かつ A0 との比が 1.00 以下、にした |
+| L1 4 つの比の中央値 | 直す | §7.5 に「真ん中の 2 つの平均」と書いた |
+| L2 測り直しの上限 | 直す | §7.5 に「同じ段で 2 回まで。超えたら測れないこととして元帥へ上げる」と書いた |
+| L3 S4 の今の値の幅 | 直す | §7.5 の S4 に再レビュー 2 の値を添え、段 1 で A/A の比を 1 回記録すると書いた |
