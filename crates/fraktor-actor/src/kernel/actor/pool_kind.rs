@@ -42,4 +42,25 @@ pub enum PoolKind {
     /// The time the head waits for the first reply.
     within: Duration,
   },
+  /// Mirrors `BalancingPool`: routees share one mailbox. Its
+  /// `Config` constructor reads only `nr-of-instances`.
+  Balancing,
+  /// Mirrors `ConsistentHashingPool`: the routee is chosen by the
+  /// hash of the message. The factor is the value the kind is built
+  /// with; a deployment section never supplies it, because the
+  /// original's `Config` constructor does not read
+  /// `virtual-nodes-factor` and the factor stays at its default of
+  /// zero there (design of #195, section 2.4).
+  ConsistentHashing {
+    /// The virtual nodes factor.
+    virtual_nodes_factor: u32,
+  },
+  /// Mirrors `TailChoppingPool`: the message goes to one routee and,
+  /// until a reply arrives, again to another every `interval`.
+  TailChopping {
+    /// The time the head waits for a reply.
+    within: Duration,
+    /// The interval between sends.
+    interval: Duration,
+  },
 }
