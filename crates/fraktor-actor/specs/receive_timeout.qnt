@@ -35,6 +35,9 @@ module receive_timeout {
   // scheduling is the identity of one deadline.
   var fires: int
   var epoch: int
+  // Firings of the current deadline: back to 0 when a scheduling makes a
+  // new one.
+  var firesThisEpoch: int
   var alive: bool
   var restarts: int
   // The last action, and the task and epoch before it, so the I2
@@ -60,6 +63,7 @@ module receive_timeout {
     dropped' = 0,
     fires' = 0,
     epoch' = 0,
+    firesThisEpoch' = 0,
     alive' = true,
     restarts' = 0,
     lastAction' = "init",
@@ -82,6 +86,7 @@ module receive_timeout {
       setting' = s,
       task' = after._1,
       epoch' = epoch + after._2,
+      firesThisEpoch' = if (after._2 > 0) 0 else firesThisEpoch,
       queued' = queued, delivered' = delivered, dropped' = dropped,
       fires' = fires, alive' = alive, restarts' = restarts,
       remember("set"),
@@ -96,6 +101,7 @@ module receive_timeout {
       alive,
       task' = after._1,
       epoch' = epoch + after._2,
+      firesThisEpoch' = if (after._2 > 0) 0 else firesThisEpoch,
       setting' = setting,
       queued' = queued, delivered' = delivered, dropped' = dropped,
       fires' = fires, alive' = alive, restarts' = restarts,
@@ -111,6 +117,7 @@ module receive_timeout {
       alive,
       task' = after._1,
       epoch' = epoch + after._2,
+      firesThisEpoch' = if (after._2 > 0) 0 else firesThisEpoch,
       setting' = setting,
       queued' = queued, delivered' = delivered, dropped' = dropped,
       fires' = fires, alive' = alive, restarts' = restarts,
@@ -126,6 +133,7 @@ module receive_timeout {
     task' = Fired,
     queued' = queued + 1,
     fires' = fires + 1,
+    firesThisEpoch' = firesThisEpoch + 1,
     setting' = setting, epoch' = epoch,
     delivered' = delivered, dropped' = dropped, alive' = alive, restarts' = restarts,
     remember("fire"),
@@ -142,6 +150,7 @@ module receive_timeout {
       delivered' = delivered + 1,
       task' = after._1,
       epoch' = epoch + after._2,
+      firesThisEpoch' = if (after._2 > 0) 0 else firesThisEpoch,
       setting' = setting, dropped' = dropped, fires' = fires, alive' = alive, restarts' = restarts,
       remember("receiveTimeout"),
     }
@@ -156,7 +165,8 @@ module receive_timeout {
     task' = Empty,
     queued' = 0,
     dropped' = dropped + queued,
-    delivered' = delivered, fires' = fires, epoch' = epoch, restarts' = restarts,
+    delivered' = delivered, fires' = fires, epoch' = epoch, firesThisEpoch' = firesThisEpoch,
+    restarts' = restarts,
     remember("stop"),
   }
 
@@ -171,6 +181,7 @@ module receive_timeout {
       alive,
       task' = recreated._1,
       epoch' = epoch + failed._2 + recreated._2,
+      firesThisEpoch' = if (failed._2 + recreated._2 > 0) 0 else firesThisEpoch,
       restarts' = restarts + 1,
       setting' = setting,
       queued' = queued, delivered' = delivered, dropped' = dropped, fires' = fires, alive' = alive,
@@ -189,6 +200,7 @@ module receive_timeout {
       delivered' = if (setting == Finite) delivered + 1 else delivered,
       task' = after._1,
       epoch' = epoch + after._2,
+      firesThisEpoch' = if (after._2 > 0) 0 else firesThisEpoch,
       setting' = setting, dropped' = dropped, fires' = fires, alive' = alive, restarts' = restarts,
       remember("receiveTimeout"),
     }
@@ -201,6 +213,7 @@ module receive_timeout {
     task' = Scheduled,
     queued' = queued + 1,
     fires' = fires + 1,
+    firesThisEpoch' = firesThisEpoch + 1,
     setting' = setting, epoch' = epoch,
     delivered' = delivered, dropped' = dropped, alive' = alive, restarts' = restarts,
     remember("fire"),
@@ -214,6 +227,7 @@ module receive_timeout {
       alive,
       task' = after._1,
       epoch' = epoch + after._2,
+      firesThisEpoch' = if (after._2 > 0) 0 else firesThisEpoch,
       setting' = setting,
       queued' = queued, delivered' = delivered, dropped' = dropped,
       fires' = fires, alive' = alive, restarts' = restarts,
@@ -241,7 +255,9 @@ module receive_timeout {
   val droppedOnlyWhenStopped = alive or queued == 0
   val liveActorDropsNothing = alive implies dropped == 0
   // I4: one firing per scheduling, so one `ReceiveTimeout` per firing.
-  val oneMessagePerFiring = fires <= epoch
+  // Counted per deadline: a total `fires <= epoch` lets a deadline that
+  // fired twice hide behind one that never fired.
+  val oneMessagePerFiring = firesThisEpoch <= 1
   // I2: a message that does not influence the timeout and leaves the
   // setting alone does not move a deadline and does not rearm a fired
   // task.
@@ -327,6 +343,17 @@ module receive_timeout {
       .then(deadlineComesBugKeeps)
       .then(deadlineComesBugKeeps)
       .expect(not(oneMessagePerFiring))
+
+  // Negative control for I4: the deadline is rescheduled once without
+  // firing, then the current one fires twice. Firings and schedulings
+  // are both 2, so only the count per deadline catches it.
+  run bugFiresTheCurrentDeadlineTwiceTest =
+    init
+      .then(setTimeout(Finite))
+      .then(setTimeout(Finite))
+      .then(deadlineComesBugKeeps)
+      .then(deadlineComesBugKeeps)
+      .expect(fires == epoch and not(oneMessagePerFiring))
 
   // Negative control for I2.
   run bugNotInfluencingCancelsTest =

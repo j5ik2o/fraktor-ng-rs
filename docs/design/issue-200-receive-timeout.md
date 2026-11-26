@@ -304,6 +304,8 @@ pub fn is_not_influence_receive_timeout(&self, message: &Message) -> bool;
 
 テストの担当が変えた点：Quint は `crates/fraktor-actor/specs/receive_timeout.qnt` の1ファイルにし、`invariant` と、名前が Test で終わる run（負の対照を含む）を同じファイルに置いた。理由：`scripts/quint-check-specs.sh` はファイルごとに `invariant` を求め、前例の `fsm_transition.qnt` も1ファイルであるためである（中将の判断、2026-11-27）。
 
+テストの担当が変えた点：I4 の不変条件は、発火と張り直しの累計の比較（`fires <= epoch`）をやめ、今の期限の発火の数（`firesThisEpoch`、張り直しで0に戻る）が1以下である形にし、張り直してから今の期限が二度発火する負の対照 `bugFiresTheCurrentDeadlineTwiceTest` を足した。理由：累計の比較では、一度も発火しなかった期限の分だけ、別の期限の二重発火が隠れるためである（PR #283 の Devin の指摘）。
+
 ## 8. HOCON の設定について
 
 原典の `ReceiveTimeoutSpec` は設定ファイルを使わない（`PekkoSpec()` に設定の上書きは無い）。したがって写す HOCON は無い。受信タイムアウトの値の渡し方は、原典でもコードの中の `setReceiveTimeout(Duration)` であり、文字列でも設定キーでもない。本書の設定の enum は、この型付きの渡し方をそのまま写したものである。前例（#154 の D1、G0b の決定 E、#195 の E1／E2）どおり、HOCON のパーサーは作らず、設定が関係する入力は型付きの値にする、という忠実さの判断をここに記録する。型の上で表せない入力（負の期間、文字列の期間）は、移植では作れない入力として扱う。原典の `FiniteDuration` は負の値を持てるが、負の期間の `setReceiveTimeout` は原典の Spec のどのケースも使っておらず、本書では `core::time::Duration` に負が無いことをもって同じ範囲外とする。
