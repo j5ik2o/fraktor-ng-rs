@@ -59,10 +59,6 @@ impl MailboxStatus {
     self.load() & CLOSED != 0
   }
 
-  pub(crate) fn is_suspended(&self) -> bool {
-    self.load() >= SUSPEND_UNIT
-  }
-
   /// Returns whether the "has system messages" flag is up.
   pub(crate) fn has_system_messages(&self) -> bool {
     self.load() & HAS_SYSTEM_MESSAGES != 0

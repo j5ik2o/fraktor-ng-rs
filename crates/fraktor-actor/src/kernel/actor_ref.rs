@@ -17,7 +17,9 @@
 //! Actor reference handle types.
 
 mod actor_ref_value;
+mod endpoint;
 
 pub(crate) use actor_ref_value::next_actor_id;
 pub(crate) use actor_ref_value::next_actor_ref;
 pub use actor_ref_value::ActorRef;
+pub(crate) use endpoint::Endpoint;

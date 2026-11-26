@@ -609,7 +609,7 @@ fn stopping_a_parent_stops_its_child_first_and_tells_the_child_watcher() {
     &parent,
     Props::new({
       let order = Arc::clone(&order);
-      move || OrderedSink { order: Arc::clone(&order), label: "child delivered" }
+      move || OrderedSink { order: Arc::clone(&order), label: "child delivered", stopped: "child stopped" }
     }),
     Some("child"),
     crate::kernel::supervision::SupervisorStrategy::default_strategy(),
@@ -628,16 +628,34 @@ fn stopping_a_parent_stops_its_child_first_and_tells_the_child_watcher() {
 
   system.watch(&child_watcher, &child);
   system.watch(&parent_watcher, &parent);
+  let finished = Arc::clone(&order);
+  let stopping = parent.clone();
+  system.downgrade().on_termination(move |actor: &ActorRef| {
+    if actor == &stopping {
+      finished.lock().unwrap().push("parent stopped");
+    }
+  });
 
   system.stop(&parent);
   child.tell("late", parent.clone());
   system.run_until_idle();
 
-  assert_eq!(
-    *order.lock().unwrap(),
-    alloc::vec!["child terminated", "parent terminated"],
-    "the notices arrived in the wrong order"
-  );
+  // Pekko orders the two notices only through the parent's stop: the parent
+  // finishes stopping after its child has, and only then is its own
+  // Terminated sent. The two watchers are different recipients, so the order
+  // in which their notices arrive is not promised
+  // (message-delivery-reliability.md:109-130).
+  let order = order.lock().unwrap();
+  assert!(!order.contains(&"child delivered"), "the stopped child handled a message: {order:?}");
+  let child_stopped = order.iter().position(|label| *label == "child stopped").expect("the child ran post_stop");
+  let parent_stopped = order.iter().position(|label| *label == "parent stopped").expect("the parent stopped");
+  let parent_terminated =
+    order.iter().position(|label| *label == "parent terminated").expect("the parent watcher was told");
+  assert!(child_stopped < parent_stopped, "the parent finished stopping before its child stopped: {order:?}");
+  assert!(child_stopped < parent_terminated, "the parent was reported stopped before its child stopped: {order:?}");
+  assert_eq!(order.iter().filter(|label| **label == "child terminated").count(), 1, "{order:?}");
+  assert_eq!(order.len(), 4, "{order:?}");
+  drop(order);
   let child_notices = child_seen.lock().unwrap();
   assert_eq!(child_notices.len(), 1, "the child watcher was not told that the child stopped");
   assert!(child_notices[0].existence_confirmed());
@@ -649,6 +667,7 @@ fn stopping_a_parent_stops_its_child_first_and_tells_the_child_watcher() {
 struct OrderedSink {
   order: Arc<Mutex<Vec<&'static str>>>,
   label: &'static str,
+  stopped: &'static str,
 }
 
 #[test]
@@ -695,7 +714,10 @@ fn stopping_a_function_ref_stops_its_child_first_and_tells_both_watchers() {
   let target = system.function_ref("target", |_sender: &ActorRef, _message: Message| {});
   let child = system.downgrade().spawn_child(
     &target,
-    Props::new(|| NoOp),
+    Props::new({
+      let order = Arc::clone(&order);
+      move || OrderedSink { order: Arc::clone(&order), label: "child delivered", stopped: "child stopped" }
+    }),
     Some("child"),
     crate::kernel::supervision::SupervisorStrategy::default_strategy(),
   );
@@ -713,15 +735,30 @@ fn stopping_a_function_ref_stops_its_child_first_and_tells_both_watchers() {
 
   system.watch(&child_watcher, &child);
   system.watch(&target_watcher, &target);
+  let finished = Arc::clone(&order);
+  let stopping = target.clone();
+  system.downgrade().on_termination(move |actor: &ActorRef| {
+    if actor == &stopping {
+      finished.lock().unwrap().push("target stopped");
+    }
+  });
 
   system.stop(&target);
   system.run_until_idle();
 
-  assert_eq!(
-    *order.lock().unwrap(),
-    alloc::vec!["child terminated", "target terminated"],
-    "a function reference stopped before its child"
-  );
+  // As for a parent actor: the function reference is reported stopped only
+  // after its child has stopped, and the two watchers' notices are not
+  // ordered against each other.
+  let order = order.lock().unwrap();
+  let child_stopped = order.iter().position(|label| *label == "child stopped").expect("the child ran post_stop");
+  let target_stopped = order.iter().position(|label| *label == "target stopped").expect("the target stopped");
+  let target_terminated =
+    order.iter().position(|label| *label == "target terminated").expect("the target watcher was told");
+  assert!(child_stopped < target_stopped, "a function reference finished stopping before its child: {order:?}");
+  assert!(child_stopped < target_terminated, "a function reference stopped before its child: {order:?}");
+  assert_eq!(order.iter().filter(|label| **label == "child terminated").count(), 1, "{order:?}");
+  assert_eq!(order.len(), 4, "{order:?}");
+  drop(order);
   let child_notices = child_seen.lock().unwrap();
   assert_eq!(child_notices.len(), 1, "the child watcher was not told that the child stopped");
   assert!(child_notices[0].existence_confirmed());
@@ -733,6 +770,10 @@ fn stopping_a_function_ref_stops_its_child_first_and_tells_both_watchers() {
 impl Actor for OrderedSink {
   fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {
     self.order.lock().unwrap().push(self.label);
+  }
+
+  fn post_stop(&mut self) {
+    self.order.lock().unwrap().push(self.stopped);
   }
 }
 
@@ -2696,4 +2737,12 @@ fn named_top_level_creation_on_terminated_system_returns_error() {
 
   let error = system.actor_of_named(Props::empty(), "late").expect_err("terminated system must return Err");
   assert_eq!(error.to_string(), "cannot create children while terminating or terminated");
+}
+
+// What the tests of stage 3 read of a system (#252).
+impl ActorSystem {
+  /// Returns the executor, for a test that looks inside it.
+  pub(crate) fn executor_for_test(&self) -> &spin::Mutex<crate::kernel::executor::Executor> {
+    &self.executor
+  }
 }
