@@ -508,8 +508,16 @@ where
         }
       },
       | FsmControl::StateTimeoutMark { generation } => {
-        let current = self.handle.as_ref().map(|handle| handle.generation());
-        if self.state_timer == Some(*generation) && current == Some(*generation) {
+        // The armed slot alone judges the mark. Every path that
+        // invalidates the state timer clears the slot (an ordinary
+        // message, an accepted timer receipt, and `SetState` all cancel
+        // it first), and a re-armed timer holds a later generation, so
+        // a stale mark never matches. The shared counter is not part of
+        // the judgement: starting a named timer advances it for the
+        // timer's own generation, and Pekko keeps the state timeout's
+        // generation apart from the named timers' generations, so that
+        // advance must not invalidate the state timer.
+        if self.state_timer == Some(*generation) {
           // The receipt itself neither cancels the state timer nor
           // advances the generation, as in Pekko: the timer still reads
           // as active until the next ordinary message.

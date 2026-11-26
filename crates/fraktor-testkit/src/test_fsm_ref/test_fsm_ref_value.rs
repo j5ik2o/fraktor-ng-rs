@@ -36,6 +36,10 @@ use fraktor_actor::kernel::message::Message;
 use fraktor_actor::kernel::supervision::SupervisorStrategy;
 use spin::Mutex;
 
+#[cfg(test)]
+#[path = "test_fsm_ref_value_test.rs"]
+mod tests;
+
 /// A handle on a running state machine that reads its state name and data,
 /// sets its state, and drives its timers from outside the machine.
 ///
@@ -64,6 +68,12 @@ where
   /// generated name.
   ///
   /// Mirrors `TestFSMRef(factory)`.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the machine fails to start, as Pekko's creation
+  /// throws the initialization failure instead of handing out a
+  /// reference.
   pub fn new<F>(system: &mut ActorSystem, factory: F) -> Self
   where
     F: Fn() -> Fsm<S, D> + Send + Sync + 'static,
@@ -81,6 +91,12 @@ where
   /// # Errors
   ///
   /// Returns [`ActorCreationError`] when the name is invalid or in use.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the machine fails to start, as Pekko's creation
+  /// throws the initialization failure instead of handing out a
+  /// reference; the combined creation error has no case for it.
   pub fn with_name<F>(system: &mut ActorSystem, factory: F, name: &str) -> Result<Self, ActorCreationError>
   where
     F: Fn() -> Fsm<S, D> + Send + Sync + 'static,
@@ -89,9 +105,16 @@ where
   }
 
   /// Starts the machine `factory` builds as a child of `supervisor`, under a
-  /// generated name.
+  /// generated name. The user guardian is a supervisor like any other:
+  /// naming it creates the machine below it, as omitting it does.
   ///
   /// Mirrors `TestFSMRef(factory, supervisor)`.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the machine fails to start, as Pekko's creation
+  /// throws the initialization failure instead of handing out a
+  /// reference.
   pub fn with_supervisor<F>(system: &mut ActorSystem, factory: F, supervisor: &ActorRef) -> Self
   where
     F: Fn() -> Fsm<S, D> + Send + Sync + 'static,
@@ -110,6 +133,12 @@ where
   /// # Errors
   ///
   /// Returns [`ActorCreationError`] when the name is invalid or in use.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the machine fails to start, as Pekko's creation
+  /// throws the initialization failure instead of handing out a
+  /// reference; the combined creation error has no case for it.
   pub fn with_supervisor_and_name<F>(
     system: &mut ActorSystem,
     factory: F,
@@ -159,9 +188,32 @@ where
         (actor_ref, parent.clone())
       },
     };
+    // Pekko's `TestFSMRef` builds the actor on a calling-thread
+    // dispatcher, so a machine that fails to start throws at creation
+    // and no reference is handed out. Creation here is synchronous
+    // too, so the same contract is a check: a machine the supervisor
+    // stopped during its start is already terminated at this point,
+    // and the constructor fails instead of handing out a reference
+    // whose reads would keep answering with the starting state.
+    if system.is_actor_terminated(&actor_ref) {
+      panic!("the machine at {} failed to start", actor_ref.path());
+    }
     handle.set_actor_ref(actor_ref.clone());
     let name = actor_ref.path().name().to_string();
     let stop_driver = Arc::new(AtomicBool::new(false));
+    // The driver also ends when the machine stops for good, not only
+    // when this handle is dropped: the system runs the registered
+    // callback at the final termination. A restart does not run it,
+    // so a restarted machine keeps its driver, as the design of issue
+    // #181 requires. The callback runs while the executor is locked,
+    // so it only compares the reference and sets the flag.
+    let driver_flag = stop_driver.clone();
+    let watched = actor_ref.clone();
+    system.downgrade().on_termination(move |stopped| {
+      if *stopped == watched {
+        driver_flag.store(true, Ordering::Relaxed);
+      }
+    });
     drive_timers(handle.clone(), actor_ref.clone(), stop_driver.clone());
     Ok(Self { actor_ref, handle, name, supervisor, stop_driver, _machine: PhantomData })
   }

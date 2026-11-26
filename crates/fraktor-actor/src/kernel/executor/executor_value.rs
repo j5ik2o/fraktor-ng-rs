@@ -522,15 +522,20 @@ impl Executor {
   /// Returns whether `id` names a configured dispatcher: either the
   /// registry installed for this system, or a definition (or alias) in
   /// the system's `DispatchSettings`, whose definitions the ported
-  /// tests configure their dispatchers through.
+  /// tests configure their dispatchers through. A name whose alias
+  /// chain cannot be resolved is not configured, even when the
+  /// registry table holds the name: creation resolves the same chain
+  /// to find the actor's capacities, so passing verification here
+  /// would only move the failure into creation.
   fn has_dispatcher(&self, id: &str) -> bool {
-    if self.dispatchers.has_dispatcher(id) {
-      return true;
+    if let Some(settings) = &self.dispatch_settings {
+      match settings.resolve_dispatcher(id) {
+        | Ok(Some(_)) => return true,
+        | Ok(None) => {},
+        | Err(_) => return false,
+      }
     }
-    match &self.dispatch_settings {
-      | Some(settings) => matches!(settings.resolve_dispatcher(id), Ok(Some(_))),
-      | None => false,
-    }
+    self.dispatchers.has_dispatcher(id)
   }
 
   /// Verifies the configuration of a creation at `path`, in Pekko's
@@ -814,7 +819,7 @@ impl Executor {
     strategy: SupervisorStrategy,
   ) -> Result<ActorRef, InvalidActorNameException> {
     if self.parents.iter().all(|entry| &entry.parent != parent) {
-      if !self.is_live(parent) {
+      if !self.is_live(parent) && !self.is_guardian(parent) {
         return Err(InvalidActorNameException::terminating());
       }
       self.parents.push(ParentEntry {
@@ -900,8 +905,17 @@ impl Executor {
         }
       },
       | None => {
-        if !self.is_live(parent) {
+        if !self.is_live(parent) && !self.is_guardian(parent) {
           return Err(InvalidActorNameException::terminating().into());
+        }
+        // A child of the user guardian is a top-level actor, so its
+        // name must also be free in the top-level registry.
+        if parent == &self.user_guardian {
+          if let Some(name) = name {
+            if self.user_children.contains_key(name) {
+              return Err(InvalidActorNameException::name_taken(name).into());
+            }
+          }
         }
       },
     }
@@ -914,10 +928,20 @@ impl Executor {
       | None => parent.path().with_child("$generated"),
     };
     self.verify_configuration(&props, &path)?;
-    match name {
-      | Some(name) => Ok(self.spawn_named_child_with_strategy(parent, props, name, strategy)?),
-      | None => Ok(self.spawn_child(parent, props, None, strategy)),
+    let child = match name {
+      | Some(name) => self.spawn_named_child_with_strategy(parent, props, name, strategy)?,
+      | None => self.spawn_child(parent, props, None, strategy),
+    };
+    // A named child of the user guardian is recorded with the
+    // top-level actors, as `try_spawn_user` records its own: the name
+    // stays taken for both entries until the child stops, and
+    // `forget_child` frees it for both.
+    if let Some(name) = name {
+      if parent == &self.user_guardian && self.cells.iter().any(|cell| cell.accepts(&child)) {
+        self.user_children.insert(name.to_string(), child.clone());
+      }
     }
+    Ok(child)
   }
 
   /// Records a stop request to carry out after the actor that asked returns.
@@ -1919,6 +1943,14 @@ impl Executor {
     self.cells.iter().any(|cell| cell.accepts(target))
       || self.function_refs.contains(target)
       || self.running.iter().any(|running| running == target)
+  }
+
+  /// Returns whether `target` is one of the system's guardians. A
+  /// guardian is a handle without a cell, so `is_live` never holds for
+  /// it; as a parent it is live for as long as the system runs, which
+  /// the caller has already established when it asks.
+  fn is_guardian(&self, target: &ActorRef) -> bool {
+    target == &self.root_guardian || target == &self.user_guardian || target == &self.system_guardian
   }
 
   /// Sends `message` to `target`, naming `sender` as the sender of the
