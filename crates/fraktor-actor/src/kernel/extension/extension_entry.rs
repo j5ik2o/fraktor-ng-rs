@@ -27,8 +27,7 @@ use crate::kernel::sync::Arc;
 /// and its kept failure: not yet created (no entry), being created,
 /// created, and failed with the failure kept. A request that finds
 /// `Creating` fails with an in-progress error; it does not wait, because
-/// creation runs under `&mut` access to the system (see
-/// [`ExtensionError`](crate::kernel::extension::ExtensionError)).
+/// creation runs under `&mut` access to the system (see [`ExtensionError`]).
 pub(crate) enum ExtensionEntry {
   /// Creation has started and has not finished. Also the state a panicked
   /// creation leaves behind.

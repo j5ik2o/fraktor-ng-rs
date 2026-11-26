@@ -21,8 +21,7 @@ use core::time::Duration;
 /// The pool kinds of `org.apache.pekko.routing`, as typed values.
 ///
 /// The original selects a pool by the class name in a configuration
-/// string; the port names the kind with this enum instead (precedents:
-/// #154 D1, G0b decision E). The cases of
+/// string; the port names the kind with this enum instead. The cases of
 /// `ActorConfigurationVerificationSpec` guard the meaning — which pool
 /// combined with which dispatcher is refused — not the class loading.
 #[derive(Clone, PartialEq, Eq, Debug)]

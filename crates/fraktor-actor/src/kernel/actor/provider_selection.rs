@@ -23,9 +23,7 @@
 //! `fqcn` names the provider class; the port has no configuration file,
 //! so the typed entry [`ProviderSelection::from_setting`] takes the
 //! setting string directly and copies the original's
-//! `ProviderSelection.apply` (`ActorSystem.scala`). This is the
-//! faithfulness replacement recorded as E1 in the design of #192: the
-//! cases check the same correspondence through the typed input.
+//! `ProviderSelection.apply` (`ActorSystem.scala`).
 
 use alloc::string::String;
 

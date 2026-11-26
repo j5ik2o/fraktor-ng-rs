@@ -32,9 +32,8 @@ const MAX_ALIAS_DEPTH: usize = 20;
 /// Dispatcher and mailbox definitions and aliases, as typed values.
 ///
 /// Mirrors the dispatcher and mailbox sections of Pekko's configuration
-/// (the `Mailboxes` resolution), with the HOCON text replaced by values:
-/// this is the faithfulness replacement recorded as E2 in the design of
-/// #192. The settings travel as a [`Setup`] inside an
+/// (the `Mailboxes` resolution), with the HOCON text replaced by values.
+/// The settings travel as a [`Setup`] inside an
 /// [`ActorSystemSetup`](crate::kernel::setup::ActorSystemSetup), and the
 /// executor resolves the definition of each actor when it is spawned;
 /// later changes do not reach actors that already run.
@@ -68,8 +67,7 @@ impl DispatchSettings {
   /// Defining a name replaces the definition it held before: the
   /// later registration wins. Mailboxes have no aliases: the
   /// original reads a mailbox's configuration with `getConfig(id)`
-  /// directly, so a string alias never resolves (re-review 2, low 1
-  /// of #192).
+  /// directly, so a string alias never resolves.
   pub fn define_mailbox(&mut self, name: &str, definition: MailboxDefinition) -> &mut Self {
     self.mailboxes.insert(String::from(name), definition);
     self
@@ -104,8 +102,7 @@ impl DispatchSettings {
   /// dispatchers (`Dispatchers.getConfig`), and a mailbox name that
   /// is not defined resolves to `Ok(None)`.
   pub fn resolve_mailbox(&self, name: &str) -> Result<Option<MailboxDefinition>, DispatchResolutionError> {
-    let no_aliases: BTreeMap<String, String> = BTreeMap::new();
-    Self::resolve(&self.mailboxes, &no_aliases, name)
+    Ok(self.mailboxes.get(name).copied())
   }
 
   fn resolve(
@@ -146,8 +143,7 @@ impl DispatchSettings {
   /// mailbox is named: it comes from the mailbox definition alone
   /// (unlimited when that definition does not set one), and the
   /// dispatcher's mailbox definition is used only when no mailbox is
-  /// named, as the original's `getMailboxType` does (re-review N1 of
-  /// #192).
+  /// named, as the original's `getMailboxType` does.
   ///
   /// # Errors
   ///

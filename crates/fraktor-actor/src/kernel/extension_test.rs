@@ -17,7 +17,7 @@
 //! Unit tests for the extension registry and for named top-level actors.
 //!
 //! The registry's re-entrancy and panic behaviour, and the name rules of
-//! `ActorSystem::actor_of_with_name`, are not cases of a ported Pekko spec;
+//! `ActorSystem::actor_of_named`, are not cases of a ported Pekko spec;
 //! they are recorded here, outside the ledger, as the design of issue #193
 //! requires.
 
@@ -107,10 +107,10 @@ fn panicked_creation_propagates_and_later_requests_get_in_progress() {
 #[test]
 fn duplicate_top_level_name_is_refused() {
   let mut system = new_system();
-  let first = system.actor_of_with_name(Props::empty(), "uniqueName").expect("the first actor starts");
+  let first = system.actor_of_named(Props::empty(), "uniqueName").expect("the first actor starts");
   assert_eq!(first.path().elements(), alloc::vec!["user".to_string(), "uniqueName".to_string()]);
 
-  let error = system.actor_of_with_name(Props::empty(), "uniqueName").expect_err("the name is taken");
+  let error = system.actor_of_named(Props::empty(), "uniqueName").expect_err("the name is taken");
   assert_eq!(error.to_string(), "Actor name [uniqueName] is not unique!");
 
   system.terminate();
@@ -119,12 +119,12 @@ fn duplicate_top_level_name_is_refused() {
 #[test]
 fn top_level_name_is_reusable_after_the_actor_stops() {
   let mut system = new_system();
-  let first = system.actor_of_with_name(Props::empty(), "recycled").expect("the first actor starts");
+  let first = system.actor_of_named(Props::empty(), "recycled").expect("the first actor starts");
   system.stop(&first);
   system.run_until_idle();
   assert!(system.is_actor_terminated(&first));
 
-  let second = system.actor_of_with_name(Props::empty(), "recycled").expect("the name is free again");
+  let second = system.actor_of_named(Props::empty(), "recycled").expect("the name is free again");
   assert_ne!(first, second);
   assert_eq!(second.path().name(), "recycled");
 
@@ -140,7 +140,7 @@ fn invalid_top_level_names_are_refused_with_the_validation_message() {
     ("üß", "Invalid actor path element [üß]"),
     ("a/b", "Invalid actor path element [a/b]"),
   ] {
-    let error = system.actor_of_with_name(Props::empty(), name).expect_err("the name is refused");
+    let error = system.actor_of_named(Props::empty(), name).expect_err("the name is refused");
     assert!(error.to_string().starts_with(expected), "name {name:?}: got {error}");
   }
 
@@ -152,6 +152,6 @@ fn named_actor_on_a_terminated_system_returns_terminating() {
   let mut system = new_system();
   system.terminate();
 
-  let error = system.actor_of_with_name(Props::empty(), "late").expect_err("the system is terminated");
+  let error = system.actor_of_named(Props::empty(), "late").expect_err("the system is terminated");
   assert_eq!(error.to_string(), "cannot create children while terminating or terminated");
 }

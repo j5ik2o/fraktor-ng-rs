@@ -147,7 +147,7 @@ impl Props {
   /// minimal: at creation the configuration is verified and the head
   /// is started, but no routees are created and no routing happens, so
   /// a message to the head is reported as unhandled. Routing itself is
-  /// issue #269 (https://github.com/j5ik2o/fraktor-ng-rs/issues/269).
+  /// issue #269 (<https://github.com/j5ik2o/fraktor-ng-rs/issues/269>).
   pub fn with_router(mut self, router: crate::kernel::actor::RouterConfig) -> Self {
     self.router = Some(router);
     self

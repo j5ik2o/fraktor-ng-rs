@@ -16,11 +16,10 @@
 
 //! The kind of a dispatcher.
 
-/// The kind of a dispatcher, as the design of #234 (section 3.5)
-/// defines it.
+/// The kind of a dispatcher.
 ///
-/// The verification rules of this issue only ask whether a kind is
-/// `Balancing`; the execution of a dispatcher belongs to #234.
+/// Configuration verification currently only checks whether a kind is
+/// `Balancing`; dispatcher execution belongs to #234.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DispatcherKind {
   /// The default dispatcher.
