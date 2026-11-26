@@ -49,8 +49,9 @@ IR には import 先のモジュールも入るので、ファイル名と違う
 Quint の名前解決（import、main モジュールの決め方）を手で真似ると同じ種類の見落としが残るので、
 判定をやめて、無ければ落ちる側に倒した。不変条件の無い仕様を置く必要が出たら、そのときにジョブを直す。
 `init` や `step` を持たない補助のモジュールを `specs/` に置いた場合も、そのファイルは落ちる。
-`run` が 0 本なら `defines no run; every spec needs at least one` で落ちる。`run` を 1 本持つ補助の
-モジュールなら、`init` が無いので `quint run` の段で `Name 'init' not found` で落ちる。
+`run` が 0 本なら `defines no run; every spec needs at least one` で落ちる。名前が `Test` で終わる
+`run` を 1 本持ち、名前と件数の検査を通った補助のモジュールなら、`init` が無いので `quint run` の
+段で `Name 'init' not found` で落ちる。
 置く必要が出たら、そのときにジョブを直す。
 
 ### 1 手も進まない仕様
