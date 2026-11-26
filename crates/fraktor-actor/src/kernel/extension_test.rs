@@ -135,7 +135,7 @@ fn top_level_name_is_reusable_after_the_actor_stops() {
 fn invalid_top_level_names_are_refused_with_the_validation_message() {
   let mut system = new_system();
   for (name, expected) in [
-    ("", "Actor path element must not be empty"),
+    ("", "actor name must not be empty"),
     ("$hallo", "Invalid actor path element [$hallo]"),
     ("üß", "Invalid actor path element [üß]"),
     ("a/b", "Invalid actor path element [a/b]"),
