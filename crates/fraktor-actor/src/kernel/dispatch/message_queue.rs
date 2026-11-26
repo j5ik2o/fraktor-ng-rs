@@ -18,6 +18,8 @@
 
 use alloc::vec::Vec;
 
+use crate::kernel::dispatch::ClassifiedEnvelope;
+use crate::kernel::dispatch::MessagePriority;
 use crate::kernel::message::Envelope;
 
 #[cfg(test)]
@@ -33,18 +35,35 @@ mod tests;
 /// section 3.2, "the gate"). The adaptor may pass its own queue through a
 /// [`MessageQueueFactory`](super::MessageQueueFactory).
 ///
-/// An implementation must not run user code inside its lock: it moves
-/// envelopes in and out and never drops one there (invariant I16). A mailbox
-/// with a queue of its own calls `enqueue` inside its gate, so `enqueue` must
-/// not call back into any mailbox.
+/// Putting an envelope on the queue takes two steps, so that no user code runs
+/// inside a lock (invariant I16): [`classify`](Self::classify) runs outside
+/// every lock and may call a function the user gave the queue;
+/// [`enqueue_classified`](Self::enqueue_classified) runs inside the queue's
+/// lock, and also inside the gate of a mailbox with a queue of its own, so it
+/// only moves the envelope in and never drops one there.
 pub trait MessageQueue: Send + Sync {
-  /// Puts `envelope` at the end of the queue, or hands it back when the queue
-  /// has no room. A rejected envelope goes to dead letters.
+  /// Gives `envelope` its place before it is queued. The default gives every
+  /// envelope the same priority, for a queue that keeps arrival order.
+  fn classify(&self, envelope: Envelope) -> ClassifiedEnvelope {
+    ClassifiedEnvelope::new(envelope, MessagePriority::new(0))
+  }
+
+  /// Puts a classified envelope on the queue, or hands the envelope back when
+  /// the queue has no room. A rejected envelope goes to dead letters.
   ///
   /// # Errors
   ///
   /// Returns the envelope when a bounded queue is full.
-  fn enqueue(&self, envelope: Envelope) -> Result<(), Envelope>;
+  fn enqueue_classified(&self, envelope: ClassifiedEnvelope) -> Result<(), Envelope>;
+
+  /// Classifies `envelope` and puts it on the queue.
+  ///
+  /// # Errors
+  ///
+  /// Returns the envelope when a bounded queue is full.
+  fn enqueue(&self, envelope: Envelope) -> Result<(), Envelope> {
+    self.enqueue_classified(self.classify(envelope))
+  }
 
   /// Takes the next envelope, if there is one.
   fn dequeue(&self) -> Option<Envelope>;

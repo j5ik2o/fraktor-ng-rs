@@ -42,15 +42,11 @@ mod tests;
 /// The behaviour of the status and of scheduling is the fixed mailbox of
 /// `specs/mailbox_scheduling.qnt`.
 ///
-/// **The gate.** The mailbox, not its queue, knows whether it is closed. A
-/// sender looks at the closed bit and enqueues inside the gate's lock, and
-/// [`close`](Self::close) closes inside the same lock, so nothing reaches the
-/// queues of a closed mailbox (invariant I6). The gate's lock also guards the
-/// queue of system messages. A mailbox with a queue of its own takes the gate
-/// and then the queue's lock; nothing takes them the other way round. A
-/// mailbox of a balancing team shares its queue with the team: a sender puts
-/// the message on the shared queue without looking at the gate, and closing
-/// leaves the shared queue to the rest of the team (Pekko's
+/// **The gate.** The mailbox, not its queue, knows whether it is closed, and
+/// its gate also guards the queue of system messages. A mailbox of a
+/// balancing team shares its queue with the team: a sender puts the message
+/// on the shared queue without looking at the gate, and closing leaves the
+/// shared queue to the rest of the team (Pekko's
 /// `BalancingDispatcher.scala:75-89` and `:106-109`).
 ///
 /// **Scheduling.** [`try_schedule`](Self::try_schedule) reads whether a run
@@ -58,6 +54,14 @@ mod tests;
 /// caller that turned the bit on gets the [`MailboxRun`] to hand to the pool.
 /// Every path reserves this way: a sender, a sender of a system message, and
 /// the end of a run.
+// The gate gives invariant I6 of the design (design of #234, section 3.2).
+// It is a choice inside what Pekko allows, not a promise to users, so it is
+// written here and not in the rustdoc (docs/decisions/pekko-semantics-first.md):
+// a sender looks at the closed bit and enqueues inside the gate's lock, and
+// `close` closes and drains inside the same lock. A mailbox with a queue of
+// its own takes the gate and then the queue's lock; nothing takes them the
+// other way round. Nothing that runs inside the gate is user code: queues
+// classify an envelope before the gate is taken (invariant I16).
 pub struct Mailbox<C> {
   status: MailboxStatus,
   gate: LockCell<VecDeque<SystemMessage>>,
@@ -108,9 +112,15 @@ impl<C: MailboxCell> Mailbox<C> {
     if self.shares_queue {
       return self.queue.enqueue(envelope);
     }
+    // The queue may run a function the user gave it; it runs here, before
+    // the gate is taken, and a panic in it drops the envelope outside every
+    // lock (invariant I16).
+    let envelope = self.queue.classify(envelope);
     let status = &self.status;
     let queue = &self.queue;
-    self.gate.with(|_| if status.is_closed() { Err(envelope) } else { queue.enqueue(envelope) })
+    self
+      .gate
+      .with(|_| if status.is_closed() { Err(envelope.into_envelope()) } else { queue.enqueue_classified(envelope) })
   }
 
   /// Puts a system message on the system queue and raises the "has system
@@ -158,9 +168,11 @@ impl<C: MailboxCell> Mailbox<C> {
   // Reads what the queues hold, not the flag: the flag may stay up after its
   // message has been handled, and reading it would reserve runs with nothing
   // to do. The system queue is read only when the normal queue gives no work.
+  // The status is read once, and a queue is read only when the status leaves
+  // it a say: never for a closed mailbox, and only the system queue for a
+  // suspended one.
   fn can_be_scheduled(&self) -> bool {
-    self.status.can_be_scheduled(self.queue.has_messages(), false)
-      || self.status.can_be_scheduled(false, self.has_queued_system_messages())
+    self.status.can_be_scheduled(|| self.queue.has_messages(), || self.has_queued_system_messages())
   }
 
   fn has_queued_system_messages(&self) -> bool {
@@ -186,14 +198,24 @@ impl<C: MailboxCell> Mailbox<C> {
   /// sends both to dead letters, after this returns and outside every lock.
   /// Closing a closed mailbox returns nothing.
   pub fn close(&self) -> (Vec<Envelope>, Vec<SystemMessage>) {
+    // Draining inside the gate means that nobody sees the mailbox closed
+    // with messages still in its own queue, and that a second `close` cannot
+    // return before the first has taken everything. Nothing is dropped
+    // inside: what was held is moved out and returned.
     let status = &self.status;
-    let system = self.gate.with(|system| if status.become_closed() { Some(mem::take(system)) } else { None });
-    match system {
+    let queue = &self.queue;
+    let shares_queue = self.shares_queue;
+    let held = self.gate.with(|system| {
+      if status.become_closed() {
+        let messages = if shares_queue { Vec::new() } else { queue.drain() };
+        Some((messages, mem::take(system)))
+      } else {
+        None
+      }
+    });
+    match held {
       | None => (Vec::new(), Vec::new()),
-      | Some(system) => {
-        let messages = if self.shares_queue { Vec::new() } else { self.queue.drain() };
-        (messages, Vec::from(system))
-      },
+      | Some((messages, system)) => (messages, Vec::from(system)),
     }
   }
 

@@ -20,6 +20,8 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
+use crate::kernel::dispatch::ClassifiedEnvelope;
+use crate::kernel::dispatch::MessagePriority;
 use crate::kernel::dispatch::MessageQueue;
 use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
@@ -33,16 +35,16 @@ use crate::kernel::sync::LockFactory;
 /// a control message with the `ControlMessage` trait; a message here is type
 /// erased, so the queue asks a function instead.
 ///
-/// The function must be a pure function of the message. A mailbox with a
-/// queue of its own ([`Mailbox::new`](super::Mailbox::new)) calls `enqueue`
-/// inside its gate, so the function runs while the gate is held: it must not
-/// send a message, and must not call any method of a mailbox. Reaching the
-/// same gate again would never return (a spin lock spins, a thread lock
-/// blocks).
+/// The function must be a pure function of the message, as a Pekko
+/// `ControlMessage` test is. The queue calls it in
+/// [`classify`](super::MessageQueue::classify), outside every lock.
 pub struct ControlAwareQueue {
   is_control: Box<dyn Fn(&Message) -> bool + Send + Sync>,
   queues: LockCell<Queues>,
 }
+
+const CONTROL: MessagePriority = MessagePriority::new(0);
+const NORMAL: MessagePriority = MessagePriority::new(1);
 
 #[derive(Default)]
 struct Queues {
@@ -59,9 +61,16 @@ impl ControlAwareQueue {
 }
 
 impl MessageQueue for ControlAwareQueue {
-  fn enqueue(&self, envelope: Envelope) -> Result<(), Envelope> {
-    // The predicate is user code, so it runs before the lock is taken.
-    let control = (self.is_control)(envelope.message());
+  // The predicate is user code, so it runs here, outside every lock
+  // (invariant I16). A control message gets the higher priority.
+  fn classify(&self, envelope: Envelope) -> ClassifiedEnvelope {
+    let priority = if (self.is_control)(envelope.message()) { CONTROL } else { NORMAL };
+    ClassifiedEnvelope::new(envelope, priority)
+  }
+
+  fn enqueue_classified(&self, envelope: ClassifiedEnvelope) -> Result<(), Envelope> {
+    let control = envelope.priority() == CONTROL;
+    let envelope = envelope.into_envelope();
     self
       .queues
       .with(|queues| if control { queues.control.push_back(envelope) } else { queues.normal.push_back(envelope) });

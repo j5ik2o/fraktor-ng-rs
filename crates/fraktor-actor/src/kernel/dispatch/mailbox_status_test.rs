@@ -141,9 +141,14 @@ fn observed(status: &MailboxStatus, model: &Model) -> Model {
 fn check_queries(status: &MailboxStatus, model: &Model, context: &dyn Fn() -> String) {
   assert_eq!(status.is_closed(), model.closed, "is_closed after {}", context());
   if model.closed {
-    for (m, s) in [(false, false), (false, true), (true, false), (true, true)] {
-      assert!(!status.can_be_scheduled(m, s), "a closed mailbox is never scheduled, after {}", context());
-    }
+    // A closed mailbox asks no queue.
+    let asked = core::cell::Cell::new(false);
+    assert!(
+      !status.can_be_scheduled(|| asked.replace(true), || asked.replace(true)),
+      "a closed mailbox is never scheduled, after {}",
+      context()
+    );
+    assert!(!asked.get(), "a closed mailbox read a queue, after {}", context());
     assert!(!status.should_process_message(), "should_process_message after {}", context());
     return;
   }
@@ -153,11 +158,15 @@ fn check_queries(status: &MailboxStatus, model: &Model, context: &dyn Fn() -> St
   assert_eq!(status.should_process_message(), model.suspend_count == 0, "should_process_message after {}", context());
   for (m, s) in [(false, false), (false, true), (true, false), (true, true)] {
     assert_eq!(
-      status.can_be_scheduled(m, s),
+      status.can_be_scheduled(|| m, || s),
       model.can_be_scheduled(m, s),
       "can_be_scheduled({m}, {s}) after {}",
       context()
     );
+  }
+  if model.suspend_count > 0 {
+    // A suspended mailbox asks only the system queue.
+    assert!(!status.can_be_scheduled(|| panic!("asked the normal queue"), || false), "after {}", context());
   }
 }
 

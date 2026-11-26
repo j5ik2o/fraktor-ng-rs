@@ -45,7 +45,8 @@ impl LockFactory for StdLockFactory {
 struct StdRawLock(Mutex<()>);
 
 // SAFETY: `Mutex` lets one guard live at a time and runs `section` once under
-// it, and it orders the sections as any mutex does. The guard is dropped when `section` unwinds, which unlocks, and the
+// it, and it orders the sections as any mutex does. Locking it again on the
+// same thread never returns (std documents a panic or a deadlock). The guard is dropped when `section` unwinds, which unlocks, and the
 // poison that the unwind leaves is ignored.
 unsafe impl RawLock for StdRawLock {
   fn lock(&self, section: &mut dyn FnMut()) {

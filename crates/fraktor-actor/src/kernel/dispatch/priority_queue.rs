@@ -22,6 +22,7 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::cmp::Reverse;
 
+use crate::kernel::dispatch::ClassifiedEnvelope;
 use crate::kernel::dispatch::MessagePriority;
 use crate::kernel::dispatch::MessageQueue;
 use crate::kernel::message::Envelope;
@@ -37,12 +38,9 @@ use crate::kernel::sync::LockFactory;
 /// priority in the order they came; a queue that is not stable makes no
 /// promise about them, as Pekko's `PriorityBlockingQueue` makes none.
 ///
-/// The function must be a pure function of the message. A mailbox with a
-/// queue of its own ([`Mailbox::new`](super::Mailbox::new)) calls `enqueue`
-/// inside its gate, so the function runs while the gate is held: it must not
-/// send a message, and must not call any method of a mailbox. Reaching the
-/// same gate again would never return (a spin lock spins, a thread lock
-/// blocks).
+/// The function must be a pure function of the message, as a Pekko
+/// `PriorityGenerator` is. The queue calls it in
+/// [`classify`](super::MessageQueue::classify), outside every lock.
 pub struct PriorityQueue {
   priority: Box<dyn Fn(&Message) -> MessagePriority + Send + Sync>,
   stable: bool,
@@ -98,9 +96,16 @@ impl PriorityQueue {
 }
 
 impl MessageQueue for PriorityQueue {
-  fn enqueue(&self, envelope: Envelope) -> Result<(), Envelope> {
-    // The priority function is user code, so it runs before the lock is taken.
+  // The priority function is user code, so it runs here, outside every lock
+  // (invariant I16).
+  fn classify(&self, envelope: Envelope) -> ClassifiedEnvelope {
     let priority = (self.priority)(envelope.message());
+    ClassifiedEnvelope::new(envelope, priority)
+  }
+
+  fn enqueue_classified(&self, envelope: ClassifiedEnvelope) -> Result<(), Envelope> {
+    let priority = envelope.priority();
+    let envelope = envelope.into_envelope();
     let stable = self.stable;
     self.state.with(|heap| {
       let seq = if stable { heap.next_seq } else { 0 };

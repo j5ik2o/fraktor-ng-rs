@@ -19,6 +19,7 @@
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
+use crate::kernel::dispatch::ClassifiedEnvelope;
 use crate::kernel::dispatch::MessageQueue;
 use crate::kernel::message::Envelope;
 use crate::kernel::sync::LockCell;
@@ -39,7 +40,8 @@ impl UnboundedQueue {
 }
 
 impl MessageQueue for UnboundedQueue {
-  fn enqueue(&self, envelope: Envelope) -> Result<(), Envelope> {
+  fn enqueue_classified(&self, envelope: ClassifiedEnvelope) -> Result<(), Envelope> {
+    let envelope = envelope.into_envelope();
     self.envelopes.with(|queue| queue.push_back(envelope));
     Ok(())
   }

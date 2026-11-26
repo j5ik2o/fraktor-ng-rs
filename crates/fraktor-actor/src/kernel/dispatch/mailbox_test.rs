@@ -264,3 +264,87 @@ fn closing_a_mailbox_with_its_own_queue_hands_back_what_it_held() {
   assert!(matches!(mailbox.system_enqueue(SystemMessage::Create), Err(SystemMessage::Create)));
   assert!(!mailbox.has_messages() && !mailbox.has_system_messages());
 }
+
+// A lock that panics when it is taken again while held, so that reaching the
+// gate from inside the gate fails the test instead of hanging it.
+struct CheckedLocks;
+
+struct CheckedLock(std::sync::Mutex<()>, std::sync::atomic::AtomicBool);
+
+// SAFETY: the mutex excludes and orders the sections; the flag only turns a
+// re-entry, which would block forever, into a panic.
+unsafe impl crate::kernel::sync::RawLock for CheckedLock {
+  fn lock(&self, section: &mut dyn FnMut()) {
+    use std::sync::atomic::Ordering;
+    let _guard = self.0.try_lock().unwrap_or_else(|_| panic!("a lock was taken again while held"));
+    self.1.store(true, Ordering::SeqCst);
+    section();
+    self.1.store(false, Ordering::SeqCst);
+  }
+}
+
+impl crate::kernel::sync::LockFactory for CheckedLocks {
+  fn new_lock(&self) -> std::boxed::Box<dyn crate::kernel::sync::RawLock> {
+    std::boxed::Box::new(CheckedLock(std::sync::Mutex::new(()), std::sync::atomic::AtomicBool::new(false)))
+  }
+}
+
+type Slot = Arc<std::sync::OnceLock<std::sync::Weak<Mailbox<Keeper>>>>;
+
+fn priority_mailbox(
+  priority: impl Fn(&Slot, &Message) -> crate::kernel::dispatch::MessagePriority + Send + Sync + 'static,
+) -> (Arc<Mailbox<Keeper>>, Slot) {
+  let slot: Slot = Arc::new(std::sync::OnceLock::new());
+  let seen = Arc::clone(&slot);
+  let queue =
+    Arc::new(crate::kernel::dispatch::PriorityQueue::new(move |message| priority(&seen, message), true, &CheckedLocks));
+  let mailbox = Arc::new(Mailbox::new(Keeper::default(), queue, RunLimits::new(Throughput::new(5)), &CheckedLocks));
+  slot.set(Arc::downgrade(&mailbox)).expect("set once");
+  (mailbox, slot)
+}
+
+// Invariant I16: the priority function is user code and runs outside the
+// gate. Here it reaches the same mailbox's gate, which would panic inside it.
+#[test]
+fn the_priority_function_runs_outside_the_gate() {
+  let (mailbox, _slot) = priority_mailbox(|slot, message| {
+    let mailbox = slot.get().and_then(std::sync::Weak::upgrade).expect("the mailbox");
+    assert!(!mailbox.has_system_messages());
+    crate::kernel::dispatch::MessagePriority::new(*message.downcast_ref::<u32>().expect("a u32") as i32)
+  });
+
+  assert!(mailbox.enqueue(envelope(2)).is_ok());
+  assert!(mailbox.enqueue(envelope(1)).is_ok());
+
+  assert_eq!(mailbox.queue.drain().iter().map(number).collect::<Vec<_>>(), [1, 2]);
+}
+
+// A payload whose drop reaches the mailbox it was sent to.
+struct ReachesTheGate(Slot, Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for ReachesTheGate {
+  fn drop(&mut self) {
+    if let Some(mailbox) = self.0.get().and_then(std::sync::Weak::upgrade) {
+      let _ = mailbox.has_system_messages();
+      self.1.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+  }
+}
+
+// Invariant I16, the drop clause: when the priority function panics, the
+// envelope is dropped outside the gate, so a drop that reaches the gate runs.
+#[test]
+fn an_envelope_is_dropped_outside_the_gate_when_the_priority_function_panics() {
+  let (mailbox, slot) = priority_mailbox(|_, _| panic!("the priority function fails"));
+  let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+  let root = RootActorPath::new(Address::new("fraktor", "mailbox-test"));
+  let actor = next_actor_ref(ActorPath::from_root(root), Arc::new(NoOpBoundary));
+  let payload = ReachesTheGate(Arc::clone(&slot), Arc::clone(&dropped));
+  let sent = Envelope::new(actor.clone(), Message::new(payload), actor);
+
+  let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| mailbox.enqueue(sent).is_ok()));
+
+  assert!(unwound.is_err());
+  assert!(dropped.load(std::sync::atomic::Ordering::SeqCst), "the drop reached the gate");
+  assert!(!mailbox.has_messages());
+}

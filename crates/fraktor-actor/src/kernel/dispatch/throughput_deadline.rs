@@ -39,7 +39,9 @@ impl ThroughputDeadline {
 
   /// Returns the moment the run must stop taking messages, when it starts at
   /// `start`.
+  /// A deadline too far to add saturates at `Duration::MAX`, which no clock
+  /// reaches.
   pub(crate) fn from(self, start: Duration) -> Duration {
-    start + self.0
+    start.saturating_add(self.0)
   }
 }

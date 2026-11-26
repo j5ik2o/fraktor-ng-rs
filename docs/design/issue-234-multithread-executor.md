@@ -194,7 +194,7 @@ kernel が使う原子操作、Arc、ロックは、次の 3 つの決まりで�
 | 番号 | 決まり | 中身 |
 |:---|:---|:---|
 | C1 | 原子操作は `portable-atomic` 越しにする | API は core と同じで、その型の幅に対応する原子操作がある target では core の命令になる（thumbv7em では 64 ビットは該当せず、portable-atomic の中でスピンロックになる。§3.7、[Issue #263](https://github.com/j5ik2o/fraktor-ng-rs/issues/263)）。CAS の無い target では critical-section で代わりに行い、その実装は adaptor（embassy や HAL）が渡す。`MailboxStatus` と id の数え上げ（今の `NEXT_ID` などの `AtomicU64`）はこれを使う。各ファイルが `portable_atomic` を直接 import し、`kernel::sync` からは再公開しない（段 0 のあとの直し。§11.9）。switch の `AtomicBool` は段 0 では core のままにし、CAS の無い target 向けの置き換えは段 0b（[Issue #243](https://github.com/j5ik2o/fraktor-ng-rs/issues/243)）で行う |
-| C2 | ロックは kernel が持つ port 越しにする | 閉じた区間を渡す形にする（下の「ロックの port」）。embassy-sync のロック（`CriticalSectionRawMutex`、`ThreadModeRawMutex`）と同じ形で、std の `Mutex`、`parking_lot`、`spin` でも作れる。システム全体の表も、この port を使う（再レビュー L6 の「spin のまま」は取りやめた） |
+| C2 | ロックは kernel が持つ port 越しにする | 閉じた区間を渡す形にする（下の「ロックの port」）。embassy-sync のロック（`CriticalSectionRawMutex`、`ThreadModeRawMutex`）と同じ形で、std の `Mutex`、`parking_lot`、`spin` でも作れる。ただし embassy-sync のロックは同じスレッドからの再入を許すので、それで作るときは再入を断る印を足す（§11.10 の `RawLock`）。システム全体の表も、この port を使う（再レビュー L6 の「spin のまま」は取りやめた） |
 | C3 | Arc は kernel の中の別名 `kernel::sync::Arc` を使う | `cfg(target_has_atomic = "ptr")` なら `alloc::sync::Arc`、無ければ `portable_atomic_util::Arc`。target の cfg で選ぶので、kernel に `feature = "std"` を置かない決まり（syn-check の `cfg-std-forbid`）には触れない。所有権モデルの決定文書の「Arc」は、この別名を含む。CAS の無い target（thumbv6m、RP2040）も対象に入れる。ただし、その target で build できるようにするのは段 0b（#243）で、`Arc<dyn …>` の作り方と、`self: Arc<Self>` を使う公開 API の変更を含む |
 
 | 置き場所 | 型（名前は案） | 中身 |
@@ -255,7 +255,7 @@ bounded のキューが満杯で、push の待ち時間だけ待つとき（`Blo
 |:---|:---|
 | std のスレッドプール | std の `Mutex`、または `parking_lot`（待つときに休む） |
 | tokio | std と同じ。`.await` をまたいでロックを持たないことは、下の I16 が保証する |
-| embassy | 割り込みからも触るものは `CriticalSectionRawMutex`、スレッドのモードだけで触るものは `ThreadModeRawMutex` |
+| embassy | 割り込みからも触るものは `CriticalSectionRawMutex`、スレッドのモードだけで触るものは `ThreadModeRawMutex`。どちらも同じスレッドからの再入を許すので、再入を断る印を足して `RawLock` にする（§11.10） |
 | kernel の既定（`ActorSystem::new` の手で回す dispatcher） | `spin`（`portable_atomic` の機能つき）。単一スレッドなので取り合わない |
 
 `RawLock` の実装は、closure が panic で巻き戻っても、ロックを外す（再レビュー 3 の L4）。std の `Mutex` を使う実装は、毒
@@ -429,7 +429,7 @@ kernel と adaptor の境目は、次の 2 つだけである（§3.8 の工夫 
 | `RunOutcome::Again` の扱い | 列の後ろへ積み直す | 同じ（`spawn` し直す） | 同じ（`try_send` し直す） |
 | Pinned | 専用のスレッド 1 本 | 専用の常駐のタスク 1 本（止まって待つアクターなら `spawn_blocking` の上のスレッド） | 専用の静的なタスク 1 本 |
 | 止まって待つアクター | Pinned か、別の dispatcher に置く | `spawn_blocking` で回す dispatcher に置く（Pekko の blocking 用の dispatcher と同じ考え） | 置かない（待つときは `.await` を使うアクターにする話で、この設計の範囲の外） |
-| `LockFactory` | std の `Mutex` か `parking_lot` | std と同じ | `CriticalSectionRawMutex`、`ThreadModeRawMutex` |
+| `LockFactory` | std の `Mutex` か `parking_lot` | std と同じ | `CriticalSectionRawMutex`、`ThreadModeRawMutex` に、再入を断る印を足したもの（§11.10 の `RawLock`） |
 | 原子操作、Arc | core（`portable-atomic` はそのまま core の命令になる） | 同じ | thumbv7em の 64 ビットは、portable-atomic の中でスピンロックになり、割り込みから再入すると止まる（[Issue #263](https://github.com/j5ik2o/fraktor-ng-rs/issues/263)）。CAS の無い target（thumbv6m、RP2040）は段 0b（#243）のあとで、`portable-atomic` の critical-section と `portable_atomic_util::Arc` |
 | `MessageQueueFactory` | kernel の既定の列。段 5 でロックを使わない列に替えられる（§3.8 の工夫 3） | 同じ | 固定長の列（`heapless` の類。満杯は push の待ち時間 0 の bounded と同じく dead letters） |
 | `Clock` | `SystemClock`（今のもの） | `tokio::time::Instant` | `embassy_time::Instant` |
@@ -1178,17 +1178,18 @@ bot の記録 `pr236-design-rereview3.md` にある。M1 と M2 は元帥が決�
 ### 11.10 段 2 の実装で決めたこと
 
 段 2（[Issue #250](https://github.com/j5ik2o/fraktor-ng-rs/issues/250)）で、この設計に書いていなかった形を、次のとおり決めた。
-どれも承認済みの不変条件の意味は変えていない（I13 は §3.10 の形にした）。
+どれも承認済みの不変条件の意味は変えていない（I13 は §3.10 の形にした）。I16 も例外なしで保つ（下の「priority と control-aware の関数」）。独立レビュー（固定 `b5e68e9`、判定は要修正、高 0・中 3・低 3）の指摘は、この表の各行に入れた。低 1（`ThroughputDeadline` の加算のあふれ）は、足すときに `Duration::MAX` で止める形に直した。
 
 | 項目 | 決めた形 | 理由 |
 |:---|:---|:---|
-| 予約の 1 手目が読むもの | 印ではなく、通常のキューと system message のキューを読む（Pekko の `canBeScheduledForExecution` の hint は使わない） | 印や hint を読むと、仕事の無い予約が、古い読み（§3.10）より広く起きる。仕様の `register` はキューを読み、弱めた I13 はそれを前提にする |
+| 予約の 1 手目が読むもの | 印ではなく、通常のキューと system message のキューを読む（Pekko の `canBeScheduledForExecution` の hint は使わない） | 印や hint を読むと、仕事の無い予約が、古い読み（§3.10）より広く起きる。仕様の `register` はキューを読み、弱めた I13 はそれを前提にする。状態の語は 1 回だけ読み、閉じていればキューを読まず、suspend 中なら system message のキューだけを読む（独立レビューの低 3。scheduled の bit で読みを省くことはしない。省くと LostWakeup になる） |
 | system message の印を立てる時点 | 門のロックの中で、積んだ直後に立てる | キューを見る者は、印より先にメッセージを見ない。仕様の `control` の 1 手に当たる |
-| `RawLock` | `unsafe trait` にした | `LockCell` は区間の中で `&mut T` を渡すので、排他を守らない実装があると安全なコードから未定義の振る舞いになる。embassy の `RawMutex` と `lock_api` の `RawMutex` も unsafe trait である |
+| `RawLock` | `unsafe trait` にした。安全の条件は、1 回の呼び出しで区間を 1 度だけ走らせること、同じロックの区間を同時に走らせないこと（別のスレッドや割り込みだけでなく、同じスレッドの再入も入れない。再入した `lock` は panic してもよいし止まってもよいが、区間に入ってはいけない）、前の区間の書き込みを次の区間に見せること（ロックを取るのが acquire、外すのが release）、巻き戻りでロックを外すこと。毒を無視して次の区間を走らせるのは、安全の条件ではなく kernel が求める振る舞い | `LockCell` は区間の中で `&mut T` を渡すので、排他を守らない実装があると安全なコードから未定義の振る舞いになる。`lock_api` の `RawMutex` も unsafe trait である。embassy-sync の `CriticalSectionRawMutex` と `ThreadModeRawMutex`、`critical_section::with` は、同じスレッドからの再入を許す（embassy-sync の `Mutex` が健全なのは、`&T` しか渡さず、借用の検査を中の `RefCell` に任せるため）。そのため embassy の adaptor は、これらにそのまま任せず、ロックごとの「区間の中」の印などで再入を断ってから区間を走らせる（独立レビューの中 2、PR #273） |
 | `kernel::sync` の可視性 | `pub mod sync;` にした（§3.2 の「可視性なしの `mod sync;`」から変えた） | adaptor が実装する port（`RawLock`、`LockFactory`）を公開するため。原子操作の型は今までどおり再公開しない |
 | `Mailbox` が持つアクター | `Mailbox<C: MailboxCell>` の型引数にした。`MailboxCell` は `invoke` と `system_invoke`（Pekko の `ActorCell` の 2 つの入口） | 段 2 は配線しないので、`ActorCell` をまだ入れられない。段 3 で `C` を `ActorCell` にする |
-| 門とキューのロック | 自分専用のキューでは、門のロックの中でキューのロックを取る（逆の順では取らない）。共有のキューでは門を取らない | キューは `Arc<dyn MessageQueue>` で差し替えられるので、門と同じロックにはできない。§3.2 のロックの順序の 3 の中の順として決めた |
-| priority と control-aware の関数 | キューのロックの外で呼ぶが、自分専用のキューでは門のロックの中になる。メッセージを送らないことを求める | Pekko も比較の関数を `PriorityBlockingQueue` のロックの中で呼ぶ。門の外で呼ぶ形は、段 5 で門の作りを替えるときに考える |
+| 門とキューのロック | 自分専用のキューでは、門のロックの中でキューのロックを取る（逆の順では取らない）。`enqueue` と、閉じるときの `drain` がこの形である。共有のキューでは門を取らない | キューは `Arc<dyn MessageQueue>` で差し替えられるので、門と同じロックにはできない。§3.2 のロックの順序の 3 の中の順として決めた。閉じるときの `drain` を門の中で行うのは、閉じたのに自分専用のキューにメッセージが残っている状態を誰にも見せず、2 度目の `close` が 1 度目より先に空で返らないようにするため（独立レビューの低 2） |
+| priority と control-aware の関数 | どのロックの外でも呼ぶ。`MessageQueue` の積む手を 2 つに分けた。`classify`（ロックの外。利用者の関数を呼んでよい）が `ClassifiedEnvelope`（Envelope と優先度）を作り、`enqueue_classified`（キューのロックの中で、自分専用のキューでは門のロックの中でもある）は値を移すだけにする。関数が panic したときの Envelope の `Drop` も、どのロックの外で走る。公開の文書には、Pekko の `PriorityGenerator` と同じく「メッセージだけで決まる純粋な関数」とだけ書き、その中から送ってよいとは書かない | I16 を例外なしで保つため（独立レビューの中 1。前の版は門のロックの中で呼んでいた）。原典の `PriorityBlockingQueue` は比較の関数をキューのロックの中で呼ぶが、Pekko はこの関数の中で何をしてよいかを約束していない。ロックの外で呼ぶのは原典が許す範囲の中の選び方で、約束は足さない（`docs/decisions/pekko-semantics-first.md`） |
 | std のロック | `std::sync::Mutex`（`StdLockFactory`） | 依存を足さないため（`parking_lot` は足さない。§7.4） |
 | throughput、期限、優先度 | 専用の型 `Throughput`（0 は 1）、`ThroughputDeadline`（1ms 未満は無し）、`MessagePriority`（小さい数が先。型の順序は先に出るものが大きい） | 移植の規約の domain-primitive（特別な扱いを持つ値を基本型のまま渡さない）。Devin の指摘、PR #273 |
 | bounded の priority と control-aware | 段 2 では入れない | 満杯の待ちと一緒に段 5 で入れる（dispatcher ごとのメールボックスの種類） |
+| dispatch の型の公開 | `Mailbox`、`MailboxCell`、`MailboxRun`、`RunOutcome`、`SystemMessage` などを、段 2 では `pub` にした。公開の rustdoc には、原典が約束しない保証（I6 など）を書かず、門の作りは内部のコメントに書いた | 段 2 は配線しないので、`pub(crate)` だと使う所が無く `dead_code` の警告になる（抑制は人間が決める）。段 3 で `ActorCell` を入れるときに、`Mailbox`、`MailboxCell`、`SystemMessage` は `pub(crate)` に戻し、adaptor へ渡す `MailboxRun` は型引数の無い形にする（[#252 のコメント](https://github.com/j5ik2o/fraktor-ng-rs/issues/252#issuecomment-7193760572)の 4）。`Mailbox::suspend`、`resume`、`close` は、それまで実行中のスレッドだけが呼ぶ前提である（独立レビューの中 3） |

@@ -21,6 +21,7 @@
 //! executor: the actor system does not use them yet.
 
 mod bounded_queue;
+mod classified_envelope;
 mod control_aware_queue;
 mod dispatcher_config;
 mod dispatcher_kind;
@@ -41,6 +42,7 @@ mod throughput_deadline;
 mod unbounded_queue;
 
 pub use bounded_queue::BoundedQueue;
+pub use classified_envelope::ClassifiedEnvelope;
 pub use control_aware_queue::ControlAwareQueue;
 pub use dispatcher_config::DispatcherConfig;
 pub use dispatcher_kind::DispatcherKind;

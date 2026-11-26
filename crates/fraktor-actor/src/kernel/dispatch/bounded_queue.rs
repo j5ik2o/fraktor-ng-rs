@@ -19,6 +19,7 @@
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
+use crate::kernel::dispatch::ClassifiedEnvelope;
 use crate::kernel::dispatch::MessageQueue;
 use crate::kernel::message::Envelope;
 use crate::kernel::sync::LockCell;
@@ -45,7 +46,8 @@ impl BoundedQueue {
 }
 
 impl MessageQueue for BoundedQueue {
-  fn enqueue(&self, envelope: Envelope) -> Result<(), Envelope> {
+  fn enqueue_classified(&self, envelope: ClassifiedEnvelope) -> Result<(), Envelope> {
+    let envelope = envelope.into_envelope();
     let capacity = self.capacity;
     self.envelopes.with(|queue| {
       if queue.len() < capacity {

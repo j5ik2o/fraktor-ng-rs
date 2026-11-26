@@ -321,6 +321,21 @@ fn a_run_stops_taking_messages_after_the_deadline() {
   assert_eq!(fixture.log(), ["m3", "m4"]);
 }
 
+// A deadline too far to add to the clock means no deadline, not a panic.
+#[test]
+fn a_deadline_of_duration_max_does_not_overflow() {
+  let clock = Arc::new(HandClock::default());
+  clock.0.store(1_000_000_000, Ordering::SeqCst);
+  let deadline = ThroughputDeadline::new(Duration::MAX).expect("a deadline");
+  let fixture = Fixture::new(RunLimits::new(Throughput::new(3)).with_deadline(deadline, clock));
+  for value in 1..=3 {
+    fixture.send(value);
+  }
+
+  assert_eq!(fixture.drive(), 1);
+  assert_eq!(fixture.log(), ["m1", "m2", "m3"]);
+}
+
 #[test]
 fn a_deadline_under_one_millisecond_counts_as_none() {
   assert_eq!(ThroughputDeadline::new(Duration::from_micros(999)), None);

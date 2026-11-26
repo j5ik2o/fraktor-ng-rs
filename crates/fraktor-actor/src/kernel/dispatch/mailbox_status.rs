@@ -77,15 +77,20 @@ impl MailboxStatus {
   /// Returns whether a run would have work, given what the queues hold
   /// (Pekko's `canBeScheduledForExecution` without the hints): an open
   /// mailbox runs for any message, a suspended one for a system message only,
-  /// a closed one never.
-  pub(crate) fn can_be_scheduled(&self, has_messages: bool, has_system_messages: bool) -> bool {
+  /// a closed one never. The status is read once, and each queue is asked
+  /// only when the answer depends on it.
+  pub(crate) fn can_be_scheduled(
+    &self,
+    has_messages: impl FnOnce() -> bool,
+    has_system_messages: impl FnOnce() -> bool,
+  ) -> bool {
     let status = self.load();
     if status & CLOSED != 0 {
       false
     } else if status >= SUSPEND_UNIT {
-      has_system_messages
+      has_system_messages()
     } else {
-      has_messages || has_system_messages
+      has_messages() || has_system_messages()
     }
   }
 
