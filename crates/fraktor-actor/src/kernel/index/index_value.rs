@@ -24,7 +24,10 @@ mod tests;
 /// and [`find_value`](Self::find_value)) first copy a snapshot under the lock
 /// and then work on the snapshot after releasing it, so a closure may call
 /// back into the same `Index` without deadlocking, and it observes the
-/// snapshot, not later writes. The comparator is the one exception: it runs
+/// snapshot, not later writes. Values and keys taken out by `put`,
+/// `remove`, `remove_key`, `remove_value` and `clear` are likewise dropped
+/// only after the lock is released, so a value's `Drop` may also call back
+/// into the index. The comparator is the one exception: it runs
 /// under the lock, inside `put`, `remove` and `remove_value`, so **a
 /// comparator must not call back into the `Index` it belongs to**.
 ///
@@ -68,15 +71,25 @@ impl<K: Ord, V> Index<K, V> {
   /// The comparator runs under the lock; it must not call back into this
   /// index.
   pub fn put(&self, key: K, value: V) -> bool {
-    let mut guard = self.values.lock();
-    let values = guard.entry(key).or_default();
-    match values.binary_search_by(|candidate| (self.comparator)(candidate, &value)) {
-      | Ok(_) => false,
-      | Err(position) => {
-        values.insert(position, value);
-        true
-      },
-    }
+    let mut duplicate = None;
+    let added = {
+      let mut guard = self.values.lock();
+      let values = guard.entry(key).or_default();
+      match values.binary_search_by(|candidate| (self.comparator)(candidate, &value)) {
+        | Ok(_) => {
+          duplicate = Some(value);
+          false
+        },
+        | Err(position) => {
+          values.insert(position, value);
+          true
+        },
+      }
+    };
+    // A rejected duplicate is dropped after the lock is released, like the
+    // values the remove methods take out.
+    drop(duplicate);
+    added
   }
 
   /// Removes `value` from the set of `key` and returns whether it was there.
@@ -84,19 +97,30 @@ impl<K: Ord, V> Index<K, V> {
   /// A key whose set becomes empty is dropped, as in the original. The
   /// comparator runs under the lock; it must not call back into this index.
   pub fn remove(&self, key: &K, value: &V) -> bool {
-    let mut guard = self.values.lock();
-    let Some(values) = guard.get_mut(key) else {
-      return false;
+    let taken = {
+      let mut guard = self.values.lock();
+      let Some(values) = guard.get_mut(key) else {
+        return false;
+      };
+      match values.binary_search_by(|candidate| (self.comparator)(candidate, value)) {
+        | Ok(position) => {
+          let removed = values.remove(position);
+          let entry = if values.is_empty() { guard.extract_if(.., |k, _| k == key).next() } else { None };
+          Some((removed, entry))
+        },
+        | Err(_) => None,
+      }
     };
-    match values.binary_search_by(|candidate| (self.comparator)(candidate, value)) {
-      | Ok(position) => {
-        values.remove(position);
-        if values.is_empty() {
-          guard.remove(key);
-        }
+    match taken {
+      | Some((removed, entry)) => {
+        // The removed value, and the key and values of an emptied entry,
+        // are dropped after the lock is released: a value's `Drop` may call
+        // back into this index.
+        drop(removed);
+        drop(entry);
         true
       },
-      | Err(_) => false,
+      | None => false,
     }
   }
 
@@ -106,7 +130,13 @@ impl<K: Ord, V> Index<K, V> {
   /// The original's `remove(key)` returns the removed values as an
   /// `Option[Set[V]]`; the port returns them as a sorted `Vec`.
   pub fn remove_key(&self, key: &K) -> Option<Vec<V>> {
-    self.values.lock().remove(key)
+    // The entry is taken out under the lock and the stored key is dropped
+    // with it after the lock is released.
+    let entry = {
+      let mut guard = self.values.lock();
+      guard.extract_if(.., |k, _| k == key).next()
+    };
+    entry.map(|(_, values)| values)
   }
 
   /// Removes `value` from the set of every key.
@@ -114,18 +144,32 @@ impl<K: Ord, V> Index<K, V> {
   /// Keys whose sets become empty are dropped, as in the original. The
   /// comparator runs under the lock; it must not call back into this index.
   pub fn remove_value(&self, value: &V) {
-    let mut guard = self.values.lock();
-    guard.retain(|_, values| {
-      if let Ok(position) = values.binary_search_by(|candidate| (self.comparator)(candidate, value)) {
-        values.remove(position);
+    let (removed, emptied) = {
+      let mut guard = self.values.lock();
+      let mut removed = Vec::new();
+      for values in guard.values_mut() {
+        if let Ok(position) = values.binary_search_by(|candidate| (self.comparator)(candidate, value)) {
+          removed.push(values.remove(position));
+        }
       }
-      !values.is_empty()
-    });
+      let emptied: Vec<(K, Vec<V>)> = guard.extract_if(.., |_, values| values.is_empty()).collect();
+      (removed, emptied)
+    };
+    // Removed values and emptied entries are dropped after the lock is
+    // released, as in `remove`.
+    drop(removed);
+    drop(emptied);
   }
 
   /// Removes every key and value.
+  ///
+  /// The taken map is dropped after the lock is released, as in `remove`.
   pub fn clear(&self) {
-    self.values.lock().clear();
+    let taken = {
+      let mut guard = self.values.lock();
+      core::mem::take(&mut *guard)
+    };
+    drop(taken);
   }
 
   /// Returns whether the index holds no key.
@@ -135,7 +179,7 @@ impl<K: Ord, V> Index<K, V> {
   }
 }
 
-impl<K: Ord + Clone, V: Clone> Index<K, V> {
+impl<K: Ord, V: Clone> Index<K, V> {
   /// Returns a snapshot of the values of `key`, in comparator order.
   ///
   /// The original returns a live iterator over the weakly consistent
@@ -168,6 +212,22 @@ impl<K: Ord + Clone, V: Clone> Index<K, V> {
     out
   }
 
+  /// Returns the first value of `key`, in comparator order, for which `f`
+  /// returns `true`, or `None`.
+  ///
+  /// The values are snapshotted under the lock and `f` runs after the lock is
+  /// released, so `f` may call back into this index; it observes the
+  /// snapshot, not later writes.
+  pub fn find_value<F>(&self, key: &K, mut f: F) -> Option<V>
+  where
+    F: FnMut(&V) -> bool,
+  {
+    let snapshot = self.value_iterator(key);
+    snapshot.into_iter().find(|value| f(value))
+  }
+}
+
+impl<K: Ord + Clone, V> Index<K, V> {
   /// Returns a snapshot of the keys, in key order.
   ///
   /// The original returns the keys as a `Set`; the port returns them as a
@@ -176,7 +236,9 @@ impl<K: Ord + Clone, V: Clone> Index<K, V> {
   pub fn keys(&self) -> Vec<K> {
     self.values.lock().keys().cloned().collect()
   }
+}
 
+impl<K: Ord + Clone, V: Clone> Index<K, V> {
   /// Calls `f` once for every key-value pair of a snapshot of the index.
   ///
   /// The snapshot is taken under the lock and `f` runs after the lock is
@@ -194,19 +256,5 @@ impl<K: Ord + Clone, V: Clone> Index<K, V> {
     for (key, value) in &snapshot {
       f(key, value);
     }
-  }
-
-  /// Returns the first value of `key`, in comparator order, for which `f`
-  /// returns `true`, or `None`.
-  ///
-  /// The values are snapshotted under the lock and `f` runs after the lock is
-  /// released, so `f` may call back into this index; it observes the
-  /// snapshot, not later writes.
-  pub fn find_value<F>(&self, key: &K, mut f: F) -> Option<V>
-  where
-    F: FnMut(&V) -> bool,
-  {
-    let snapshot = self.value_iterator(key);
-    snapshot.into_iter().find(|value| f(value))
   }
 }

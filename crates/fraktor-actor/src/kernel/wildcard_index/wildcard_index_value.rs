@@ -176,23 +176,18 @@ impl<T> WildcardTree<T> {
   /// answers and the alternative is discarded, as in the original. Suffix
   /// children are never consulted here, also as in the original.
   fn find_with_terminal_double_wildcard(&self, elems: &[&str]) -> Option<&Self> {
-    fn go<'a, T>(
-      node: &'a WildcardTree<T>,
-      elems: &[&str],
-      alternative: Option<&'a WildcardTree<T>>,
-    ) -> Option<&'a WildcardTree<T>> {
-      let Some((elem, rest)) = elems.split_first() else {
-        return Some(node);
-      };
-      let alternative = node.children.get("**").or(alternative);
+    let mut node = self;
+    let mut alternative: Option<&Self> = None;
+    for elem in elems {
+      alternative = node.children.get("**").or(alternative);
       if let Some(child) = node.children.get(*elem) {
-        go(child, rest, alternative)
+        node = child;
       } else if let Some(child) = node.children.get("*") {
-        go(child, rest, alternative)
+        node = child;
       } else {
-        alternative
+        return alternative;
       }
     }
-    go(self, elems, None)
+    Some(node)
   }
 }
