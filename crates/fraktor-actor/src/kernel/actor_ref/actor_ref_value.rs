@@ -88,14 +88,19 @@ impl ActorRef {
   /// A message for a mailbox goes onto its queue without the handle: the
   /// mailbox is the recipient, as Pekko's `Envelope` holds only the message
   /// and the sender. Only when the mailbox turns it away (closed, or a full
-  /// bounded queue) does the handle go with it, to the dispatcher, which
-  /// hands it to dead letters when it gets to it (design of #234, section
-  /// 11.11.1).
+  /// bounded queue) does the handle go with it: the mailbox's refused route
+  /// hands it to dead letters on this (the sender's) thread, as Pekko's
+  /// dead letter mailbox does (issue #286). A mailbox with no route
+  /// installed hands it to the dispatcher instead, which routes it when it
+  /// gets to it (design of #234, section 11.11.1).
   pub(crate) fn send_message(&self, message: Message, sender: ActorRef) {
     match &self.endpoint {
       | Endpoint::Mailbox(mailbox) => {
         if let Err(refused) = Mailbox::send(mailbox, Envelope::without_recipient(message, sender)) {
-          mailbox.hand_over(ManualTask::Envelope(refused.with_recipient(self.clone())));
+          let refused = refused.with_recipient(self.clone());
+          if let Some(refused) = mailbox.route_refused(refused) {
+            mailbox.hand_over(ManualTask::Envelope(refused));
+          }
         }
       },
       | Endpoint::Boundary(boundary) => boundary.post(Envelope::new(self.clone(), message, sender)),

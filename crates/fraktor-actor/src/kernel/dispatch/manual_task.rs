@@ -24,8 +24,11 @@ pub(crate) enum ManualTask<C> {
   /// A run of a mailbox that won its scheduled bit.
   Run(MailboxRun<C>),
   /// An envelope the executor delivers itself: one that came across the
-  /// shard boundary, or one a closed or full mailbox turned away, which goes
-  /// to dead letters when the executor reaches it (design of #234, section
-  /// 11.11.1, "undelivered envelopes").
+  /// shard boundary, or one a closed or full mailbox with no refused route
+  /// installed turned away, which goes to dead letters when the executor
+  /// reaches it (design of #234, section 11.11.1, "undelivered envelopes").
+  /// A mailbox of a spawned actor has a refused route, so its refused
+  /// envelopes go to dead letters on the sender's thread instead (issue
+  /// #286).
   Envelope(Envelope),
 }

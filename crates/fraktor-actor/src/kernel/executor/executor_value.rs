@@ -519,6 +519,25 @@ impl Executor {
     reference
   }
 
+  /// Builds the route a refused envelope takes (issue #286): the dead
+  /// letter rules, run on the sender's thread, as Pekko's dead letter
+  /// mailbox sends `DeadLetter(message, sender, receiver)` to `deadLetters`
+  /// from its `enqueue`. The route captures the routing state and the dead
+  /// letters handle once, when the actor is spawned, and a routing passes
+  /// the handle by reference, so routing one envelope clones no handle of
+  /// the executor's and walks no way back (design of #234, section
+  /// 11.11.7, the refused path of condition 1).
+  fn dead_letter_route(&self) -> Arc<dyn Fn(Envelope) + Send + Sync> {
+    let shared = self.dead_letters_shared.clone();
+    let dead_letters = self.dead_letters.clone();
+    Arc::new(move |envelope: Envelope| {
+      let (recipient, message, sender) = envelope.into_parts();
+      if let Some(recipient) = recipient {
+        shared.route_undeliverable(message, sender, recipient, &dead_letters);
+      }
+    })
+  }
+
   /// Records the subscription table the dead letter routing rules publish
   /// to, once the system has built its event stream.
   pub(crate) fn set_dead_letter_bus(&self, bus: crate::kernel::event::EventStreamBusWeak) {
@@ -906,7 +925,9 @@ impl Executor {
     };
     let queue = Arc::new(UnboundedQueue::new(&SpinLockFactory));
     let limits = RunLimits::new(Throughput::new(MANUAL_THROUGHPUT));
-    let mailbox = Arc::new(Mailbox::for_actor(queue, limits, &SpinLockFactory, Arc::downgrade(&self.manual)));
+    let mut mailbox = Mailbox::for_actor(queue, limits, &SpinLockFactory, Arc::downgrade(&self.manual));
+    mailbox.set_refused_route(self.dead_letter_route());
+    let mailbox = Arc::new(mailbox);
     let self_ref = ActorRef::for_mailbox(next_actor_id(), Arc::new(path), Arc::clone(&mailbox));
     let cell = ActorCell::pending(self_ref.clone(), parent, props, strategy, strategy_inherited);
     mailbox.put_back_cell(Box::new(cell));
