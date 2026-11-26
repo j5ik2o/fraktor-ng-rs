@@ -62,14 +62,25 @@ impl Clock for ControlledClock {
 // hand-driven clock.
 #[test]
 fn await_envelope_returns_when_hand_driven_clock_never_advances() {
-  let mut spec = FraktorSpec::new(SYSTEM_NAME);
-  let clock = ControlledClock::new(Duration::from_secs(10));
-  spec.system().set_clock(Arc::new(clock));
-  let started = Instant::now();
-  let arrived = spec.system_mut().await_envelope(Duration::from_millis(200));
+  // The wait runs on its own thread: if it never returns, the test must
+  // still fail instead of hanging, so the result is taken with a
+  // bounded receive and the waiting thread is left unjoined.
+  let (sender, receiver) = std::sync::mpsc::channel();
+  std::thread::spawn(move || {
+    let mut spec = FraktorSpec::new(SYSTEM_NAME);
+    let clock = ControlledClock::new(Duration::from_secs(10));
+    spec.system().set_clock(Arc::new(clock));
+    let started = Instant::now();
+    let arrived = spec.system_mut().await_envelope(Duration::from_millis(200));
+    let elapsed = started.elapsed();
+    spec.terminate();
+    let _ = sender.send((arrived, elapsed));
+  });
+  let (arrived, elapsed) = receiver
+    .recv_timeout(Duration::from_secs(10))
+    .expect("the wait must end shortly after its bound, even on a hand-driven clock");
   assert!(!arrived, "no work came");
-  assert!(started.elapsed() < Duration::from_secs(5), "the wait must end shortly after its bound");
-  spec.terminate();
+  assert!(elapsed < Duration::from_secs(5), "the wait must end shortly after its bound");
 }
 
 type Deliveries = Arc<Mutex<Vec<Duration>>>;

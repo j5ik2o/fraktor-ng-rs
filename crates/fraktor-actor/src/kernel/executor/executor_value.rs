@@ -682,7 +682,36 @@ impl Executor {
   /// override is useful with a custom boundary or a clock a test drives by
   /// hand. The standard channel boundary already supplies monotonic time.
   pub(crate) fn set_clock(&mut self, clock: Arc<dyn Clock>) {
+    let previous_now = self.now_opt();
+    let installed_now = clock.monotonic();
     self.clock = Some(clock);
+    let Some(previous_now) = previous_now else {
+      return;
+    };
+    // A deadline is a point on the clock that measured it. Reading the
+    // same point on the installed clock would fire the timeout early or
+    // late by the distance between the two clocks, so every scheduled
+    // deadline keeps the remaining time it had on the previous clock.
+    let keys: alloc::vec::Vec<ActorKey> = self.receive_timeout_indexed.keys().copied().collect();
+    for key in keys {
+      let moved = match self.receive_timeouts.get_mut(&key) {
+        | Some(state) => match state.scheduled() {
+          | Some((deadline, _)) => {
+            let remaining = deadline.saturating_sub(previous_now);
+            match installed_now.checked_add(remaining) {
+              | Some(new_deadline) => state.move_deadline(new_deadline),
+              | None => state.cancel_task(),
+            }
+            true
+          },
+          | None => false,
+        },
+        | None => false,
+      };
+      if moved {
+        self.sync_receive_timeout_index(key);
+      }
+    }
   }
 
   /// Returns the monotonic time that a finite restart window uses.
@@ -748,6 +777,17 @@ impl Executor {
         self.receive_timeouts.insert(key, ReceiveTimeoutState::new(timeout));
       },
     }
+    // A setting that is not finite leaves nothing to fire: the scheduled
+    // task is cancelled here, not only at the check after the handling,
+    // so a firing step that runs inside the handling (a child-terminated
+    // hook, for one) cannot send the firing the old setting scheduled.
+    // A `ReceiveTimeout` that already reached the mailbox is untouched
+    // and is always delivered, as in the original.
+    if !matches!(timeout, ReceiveTimeoutSetting::Finite(_)) {
+      if let Some(state) = self.receive_timeouts.get_mut(&key) {
+        state.cancel_task();
+      }
+    }
     self.sync_receive_timeout_index(key);
   }
 
@@ -803,7 +843,15 @@ impl Executor {
     let finite =
       matches!(self.receive_timeouts.get(&key).map(|state| state.setting()), Some(ReceiveTimeoutSetting::Finite(_)));
     let now = if finite {
-      self.now_opt().expect("a finite receive timeout needs a monotonic clock, but this system has none")
+      match self.now_opt() {
+        | Some(now) => now,
+        // The call that set the timeout already required a clock. A
+        // boundary that stops reporting time afterwards leaves the
+        // timeout unchecked here instead of panicking: some callers run
+        // this check with the actor's cell out of its mailbox, where a
+        // panic would lose the cell.
+        | None => return,
+      }
     } else {
       Duration::ZERO
     };
@@ -1605,6 +1653,12 @@ impl Executor {
       return;
     }
     self.mark_stopping(target);
+    // The stop is decided: the timeout the actor armed is cancelled at
+    // once, so a firing step that runs while the children stop (their
+    // child-terminated hooks) cannot send a `ReceiveTimeout` into this
+    // closing mailbox. The clear at the end of the stop stays, because
+    // `post_stop` can set a timeout that must not survive either.
+    self.clear_receive_timeout(target.key());
     let parent_of_target = self.with_cell(target, ActorCell::parent).flatten();
     self.stop_children_of(target);
     self.stop_function_refs_of(target);
@@ -1715,8 +1769,15 @@ impl Executor {
       }
     };
     self.exit_frame();
-    self.receive_timeout_after(parent.key(), true, timeout_before);
-    self.fire_due_receive_timeouts();
+    // A stop the hook asked for its own actor wins over the timeout it
+    // set, as in `invoke`: the check and the firing are skipped, and the
+    // stop clears the timeout, so no `ReceiveTimeout` is fired into the
+    // closing mailbox on the way out.
+    let stopping = self.pending_stops.iter().any(|target| target.key() == parent.key());
+    if !stopping {
+      self.receive_timeout_after(parent.key(), true, timeout_before);
+      self.fire_due_receive_timeouts();
+    }
     cell.restore_stack(stack);
     self.put_cell(cell);
     let refused = core::mem::replace(&mut self.hook_child_creation_refused, false);
@@ -2436,6 +2497,18 @@ impl Executor {
         }
       }
       return has_work(self);
+    };
+    // The cap was measured before `start` was read; time that passed
+    // between the two readings would otherwise delay the firing by the
+    // same amount. Measure the cap again from `start`: a deadline that
+    // has already come fires at once, without waiting.
+    let wait_cap = match self.earliest_receive_timeout_deadline() {
+      | Some(deadline) if deadline <= start => {
+        self.fire_due_receive_timeouts();
+        return has_work(self);
+      },
+      | Some(deadline) => max.min(deadline - start),
+      | None => max,
     };
     let deadline = start.saturating_add(wait_cap);
     loop {

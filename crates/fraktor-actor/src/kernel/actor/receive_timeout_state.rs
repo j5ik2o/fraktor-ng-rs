@@ -114,6 +114,15 @@ impl ReceiveTimeoutState {
     }
   }
 
+  /// Moves the scheduled firing to a new deadline, keeping its
+  /// timeout. Used when the clock the deadline was measured on is
+  /// replaced, so the firing keeps the remaining time it had.
+  pub(crate) fn move_deadline(&mut self, deadline: Duration) {
+    if let ReceiveTimeoutTask::Scheduled { deadline: at, .. } = &mut self.task {
+      *at = deadline;
+    }
+  }
+
   /// Marks the scheduled firing as fired: the deadline is gone and its
   /// message is in the mailbox, so one firing puts exactly one message.
   pub(crate) fn mark_fired(&mut self) {
