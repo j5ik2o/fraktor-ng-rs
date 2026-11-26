@@ -4088,10 +4088,10 @@ nodes:
     module: actor-tests
     class: ReceiveTimeoutSpec
     test_cases_approx: 2
-  status: unported
+  status: red
   triage:
     kind: pending
-    reason: null
+    reason: 移植14件は成功している。ケース9（Timers で予定した影響しないメッセージ）は #257（#234 の段6）に依存するため後続の issue #293 へ分け、数からは外さない。中将が 2026-11-27 に、台帳のノードを red（15/14/14）のまま #200 を完了とすることを決めた（docs/design/issue-200-receive-timeout.md §13-1）
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'default-timeout', 'expect-msg', 'expect-no-message', 'test-probe', 'event-filter', 'test-latch']
     premise_flags: []
@@ -4099,14 +4099,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 15
+    ported: 14
+    passing: 14
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/receive_timeout_spec.rs
+  goal: G0issue200
 - id: actor-tests/src/test/scala/org/apache/pekko/util/RecencyListSpec.scala
   name: actor-tests:RecencyListSpec
   kind: test

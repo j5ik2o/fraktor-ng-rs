@@ -460,15 +460,18 @@ impl<'a> ActorContext<'a> {
   /// Mirrors `ActorContext.setReceiveTimeout`. Callable from `pre_start`,
   /// `post_restart`, and `receive`, as in Pekko.
   pub fn set_receive_timeout(&mut self, timeout: ReceiveTimeoutSetting) {
-    let _ = timeout;
-    todo!("#200: set_receive_timeout is not implemented yet")
+    if matches!(timeout, ReceiveTimeoutSetting::Finite(_)) {
+      self.executor.require_receive_timeout_clock();
+    }
+    let key = self.self_ref.key();
+    self.executor.set_receive_timeout(key, timeout);
   }
 
   /// Returns the receive timeout this actor set last.
   ///
   /// Mirrors `ActorContext.receiveTimeout`.
   pub fn receive_timeout(&self) -> ReceiveTimeoutSetting {
-    todo!("#200: receive_timeout is not implemented yet")
+    self.executor.receive_timeout_setting(self.self_ref.key())
   }
 
   /// Completes child stops before the default restart hook runs `post_stop`.

@@ -490,7 +490,9 @@ impl ActorSystem {
   /// Mirrors the marker trait `NotInfluenceReceiveTimeout` in Pekko. Call
   /// before the first message is delivered in this system.
   pub fn register_not_influence_receive_timeout<T: core::any::Any + NotInfluenceReceiveTimeout>(&self) {
-    todo!("#200: register_not_influence_receive_timeout is not implemented yet")
+    Executor::lend(&self.executor, |executor| {
+      executor.register_not_influence_receive_timeout(core::any::TypeId::of::<T>())
+    });
   }
 
   /// Returns whether `message` does not influence the receive timeout.
@@ -499,8 +501,7 @@ impl ActorSystem {
   /// `ReceiveTimeoutCompat`. Not a public API promise.
   #[cfg(feature = "test-support")]
   pub fn is_not_influence_receive_timeout(&self, message: &crate::kernel::message::Message) -> bool {
-    let _ = message;
-    todo!("#200: is_not_influence_receive_timeout is not implemented yet")
+    Executor::lend(&self.executor, |executor| executor.is_not_influence_receive_timeout(message))
   }
 
   /// Starts the dead letter listener with `settings` and returns its
