@@ -193,7 +193,7 @@ kernel が使う原子操作、Arc、ロックは、次の 3 つの決まりで�
 
 | 番号 | 決まり | 中身 |
 |:---|:---|:---|
-| C1 | 原子操作は `portable-atomic` 越しにする | API は core と同じで、CAS のある target では core の命令になる。CAS の無い target では critical-section で代わりに行い、その実装は adaptor（embassy や HAL）が渡す。`MailboxStatus` と id の数え上げ（今の `NEXT_ID` などの `AtomicU64`）はこれを使う。各ファイルが `portable_atomic` を直接 import し、`kernel::sync` からは再公開しない（段 0 のあとの直し。§11.9）。switch の `AtomicBool` は段 0 では core のままにし、CAS の無い target 向けの置き換えは段 0b（[Issue #243](https://github.com/j5ik2o/fraktor-ng-rs/issues/243)）で行う |
+| C1 | 原子操作は `portable-atomic` 越しにする | API は core と同じで、その型の幅に対応する原子操作がある target では core の命令になる（thumbv7em では 64 ビットは該当せず、portable-atomic の中でスピンロックになる。§3.7、[Issue #263](https://github.com/j5ik2o/fraktor-ng-rs/issues/263)）。CAS の無い target では critical-section で代わりに行い、その実装は adaptor（embassy や HAL）が渡す。`MailboxStatus` と id の数え上げ（今の `NEXT_ID` などの `AtomicU64`）はこれを使う。各ファイルが `portable_atomic` を直接 import し、`kernel::sync` からは再公開しない（段 0 のあとの直し。§11.9）。switch の `AtomicBool` は段 0 では core のままにし、CAS の無い target 向けの置き換えは段 0b（[Issue #243](https://github.com/j5ik2o/fraktor-ng-rs/issues/243)）で行う |
 | C2 | ロックは kernel が持つ port 越しにする | 閉じた区間を渡す形にする（下の「ロックの port」）。embassy-sync のロック（`CriticalSectionRawMutex`、`ThreadModeRawMutex`）と同じ形で、std の `Mutex`、`parking_lot`、`spin` でも作れる。システム全体の表も、この port を使う（再レビュー L6 の「spin のまま」は取りやめた） |
 | C3 | Arc は kernel の中の別名 `kernel::sync::Arc` を使う | `cfg(target_has_atomic = "ptr")` なら `alloc::sync::Arc`、無ければ `portable_atomic_util::Arc`。target の cfg で選ぶので、kernel に `feature = "std"` を置かない決まり（syn-check の `cfg-std-forbid`）には触れない。所有権モデルの決定文書の「Arc」は、この別名を含む。CAS の無い target（thumbv6m、RP2040）も対象に入れる。ただし、その target で build できるようにするのは段 0b（#243）で、`Arc<dyn …>` の作り方と、`self: Arc<Self>` を使う公開 API の変更を含む |
 
