@@ -862,33 +862,61 @@ impl Executor {
     Ok(child)
   }
 
-  /// Starts a child for a caller that only holds a non-owning handle.
+  /// Starts a child for a caller that only holds a non-owning handle and
+  /// wants a refusal as a value. The checks are the ones
+  /// [`try_spawn_user`](Self::try_spawn_user) runs for a top-level
+  /// creation, in the same order: the name first, then that the system
+  /// and the parent still take children, then that the name is free,
+  /// then the configuration. A child creation therefore refuses for the
+  /// same reasons whichever entry a caller reaches it through, instead
+  /// of one entry checking the configuration and another skipping it.
   ///
-  /// Mirrors `TestProbe.childActorOf`: the caller has no way to receive a
-  /// refusal, so a named request the registry rejects ends the call with the
-  /// message Pekko throws from `attachChild`, and a request after the system
-  /// has terminated still panics as [`Executor::spawn_child`] documents.
-  /// An unnamed request reaches `attachChild` too, so a parent that is no
-  /// longer live or whose registry is stopping refuses it with the same
-  /// message instead of starting a child below a stopped actor.
-  pub(crate) fn spawn_child_from_weak(
+  /// # Errors
+  ///
+  /// Returns [`ActorCreationError`] when the name, the parent's state,
+  /// or the configuration is refused.
+  pub(crate) fn try_spawn_child_from_weak(
     &mut self,
     parent: &ActorRef,
     props: Props,
     name: Option<&str>,
     strategy: SupervisorStrategy,
-  ) -> ActorRef {
-    self.assert_running();
-    match name {
-      | Some(name) => match self.spawn_named_child_with_strategy(parent, props, name, strategy) {
-        | Ok(child) => child,
-        | Err(error) => panic!("{error}"),
+  ) -> Result<ActorRef, ActorCreationError> {
+    if let Some(name) = name {
+      validate_actor_name(name)?;
+    }
+    if self.terminated {
+      return Err(InvalidActorNameException::terminating().into());
+    }
+    match self.parents.iter().find(|entry| &entry.parent == parent) {
+      | Some(entry) => {
+        if entry.stopping {
+          return Err(InvalidActorNameException::terminating().into());
+        }
+        if let Some(name) = name {
+          if entry.children.iter().any(|(used, _)| used == name) {
+            return Err(InvalidActorNameException::name_taken(name).into());
+          }
+        }
       },
       | None => {
-        let stopping = self.parents.iter().any(|entry| &entry.parent == parent && entry.stopping);
-        assert!(self.is_live(parent) && !stopping, "{TERMINATED_MESSAGE}");
-        self.spawn_child(parent, props, None, strategy)
+        if !self.is_live(parent) {
+          return Err(InvalidActorNameException::terminating().into());
+        }
       },
+    }
+    // The configuration check reads only the recipe and the path. For
+    // an unnamed child the last path segment is the generated name,
+    // which the creation itself draws, so the check runs against a
+    // placeholder segment that only an error message would show.
+    let path = match name {
+      | Some(name) => parent.path().with_child(name),
+      | None => parent.path().with_child("$generated"),
+    };
+    self.verify_configuration(&props, &path)?;
+    match name {
+      | Some(name) => Ok(self.spawn_named_child_with_strategy(parent, props, name, strategy)?),
+      | None => Ok(self.spawn_child(parent, props, None, strategy)),
     }
   }
 

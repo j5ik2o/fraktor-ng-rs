@@ -7,4 +7,5 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
-fraktor-actor = { path = "../fraktor-actor" }
+fraktor-actor = { path = "../fraktor-actor", features = ["test-support"] }
+spin = "0.9"

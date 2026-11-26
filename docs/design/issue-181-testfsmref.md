@@ -196,7 +196,7 @@ supervisor を指定する生成には、名前の拒否を `Result` で返す�
 
 子の生成の経路は、今は名前の検査だけであり、トップレベルの生成が通る設定の検証（dispatcher とルーターの検証）を通らない。戻り値を `ActorCreationError` にすると、設定の検証もされると読める形になるので、子の経路にも同じ検証を通す。入口によって検査が違う形は、[Issue #278](https://github.com/j5ik2o/fraktor-ng-rs/issues/278) がトップレベルで直している欠陥の型であり、子の側で同じ形を作らない。実装の段では、既存の検証の関数を探して子の経路からも使う。`try_spawn_child` の名前の引数は、既存の `spawn_child` と `try_actor_of` に揃えて `Option<&str>` とする。名前なしの生成（ケース5の、supervisor を指定して名前は自動採番の形）が要るためである。`spawn_child` は、名前ありと名前なしの両方を `try_spawn_child` へ委譲し、誤りでは panic する形に載せ替える。親がもう生きていない場合と、システムが終了している場合は、`try_spawn_child` では `Err` を返し（トップレベルの `try_spawn_user` が終了を `Err` で返す形に揃える）、`spawn_child` の panic はその上に残る。
 
-既存の公開 API である `ActorContext::actor_of`（名前ありの子の生成で、`InvalidActorNameException` を返す）は、戻り値の型を変えない。内部の生成の経路は共有するが、設定の検証が誤りを返した場合に、その誤りを運ぶ型が `actor_of` には無いので、`actor_of` では panic する形にし、そのことを API 文書に書く。
+既存の公開 API である `ActorContext::actor_of`（名前ありの子の生成で、`InvalidActorNameException` を返す）は、戻り値の型を変えない。設定の検証は、issue #247（ https://github.com/j5ik2o/fraktor-ng-rs/issues/247 ）が直すまでは名前の検査だけとする（既知のずれであり、理由は §9 の末尾に書く）。#247 で、`actor_of` も設定の検証を通す形に `try_spawn_child` とそろえる。
 
 ケース3〜6が原典で確かめる `underlyingActor.supervisor` と `underlyingActor.name` は、原典ではアクターが構築時に `context.parent` と `context.self.path.name` を自分のフィールドへ記録したものである。移植では、本体を返さないので、`TestFsmRef` が生成時に決まった supervisor と名前を保持して返す。ただし、それだけをテストで引数と比べるのは、自分の入力を返すだけの同語反復になり、実際にその親の子としてその名前で作られたことを確かめていない。そこで、パスでの確認を必須にする。`actor_ref().path().parent()` が supervisor のパス（ケース3では `resolve_actor_ref` で解決した `/user` の guardian のパス）と等しいことと、`actor_ref().path()` の名前が指定の名前であることを、ケース3〜6のすべてで見る。加えて、テストの機械の状態関数がメッセージを受けたときに `context.self_ref()`（アクター自身から見た参照）を記録し、その path の親と名前も同じであることを確かめる。原典のアクターが `context.parent` と `context.self.path.name` を自分のフィールドへ記録する形と同じで、面は増やさない。
 
@@ -379,3 +379,5 @@ supervisor を指定する生成には、名前の拒否を `Result` で返す�
 採らないとした指摘は無い。
 
 テストの担当が足した面：`TestFsmRef::send_sentinel` と `TestFsmRef::processed_sequence`（kernel 側の番兵の組み立てと処理済みの番号の読み取りは feature `test-support` の下）。理由：§3.1・P1・I5 の番兵の待ちを書くため。
+
+実装で設計から変えた点：`ActorContext::actor_of` へ設定の検証を足すと、移植済みの SupervisorMiscSpec（設定に無いディスパッチャ名で子を作るケース）が壊れるため、検証の追加を取り下げた。定義に無いディスパッチャ名を受け入れるのは既知のずれとして issue #247（ https://github.com/j5ik2o/fraktor-ng-rs/issues/247 ）で直す（中将の判断、2026-11-27）。

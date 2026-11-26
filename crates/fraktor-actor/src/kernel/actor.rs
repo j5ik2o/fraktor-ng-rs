@@ -51,6 +51,8 @@ mod state_timeout;
 mod subscribe_transition_call_back;
 mod suppressed_dead_letter;
 mod terminated;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 mod transition;
 mod unhandled_message;
 mod unsubscribe_transition_call_back;
