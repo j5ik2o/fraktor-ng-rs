@@ -342,9 +342,14 @@ fn stopping_an_actor_does_not_fire_its_due_timeout_into_dead_letters() {
     let child_deliveries = Arc::clone(&child_deliveries);
     move || ChildHolder { child_slot: Arc::clone(&child_slot), child_deliveries: Arc::clone(&child_deliveries) }
   }));
+  // Creation is asynchronous since stage 4a (#234, section 11.12): the
+  // parent's `pre_start`, which starts and reports the child, runs when
+  // the dispatcher turns, not inside `actor_of`.
+  spec.system_mut().run_until_idle();
   let child = child_slot.lock().unwrap().clone().expect("the child was reported");
   clock.advance(Duration::from_millis(200));
   spec.system_mut().stop(&child);
+  spec.system_mut().run_until_idle();
   assert!(spec.system().is_actor_terminated(&child), "the child stopped");
   assert!(child_deliveries.lock().unwrap().is_empty(), "the due timeout was not delivered to the child");
   dead_listener.expect_no_message(Duration::from_millis(300));

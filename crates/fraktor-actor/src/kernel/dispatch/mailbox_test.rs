@@ -257,13 +257,13 @@ fn closing_a_mailbox_with_its_own_queue_hands_back_what_it_held() {
   let mailbox = mailbox(unbounded(), false);
   assert!(mailbox.enqueue(envelope(1)).is_ok(), "open");
   assert!(mailbox.enqueue(envelope(2)).is_ok(), "open");
-  mailbox.system_enqueue(SystemMessage::Suspend).expect("open");
+  mailbox.system_enqueue(SystemMessage::Resume).expect("open");
   mailbox.system_enqueue(SystemMessage::Create).expect("open");
 
   let (messages, system) = mailbox.close();
 
   assert_eq!(messages.iter().map(number).collect::<Vec<_>>(), [1, 2]);
-  assert!(matches!(system.as_slice(), [SystemMessage::Suspend, SystemMessage::Create]));
+  assert!(matches!(system.as_slice(), [SystemMessage::Resume, SystemMessage::Create]));
   assert_eq!(number(&mailbox.enqueue(envelope(3)).expect_err("closed")), 3);
   assert!(matches!(mailbox.system_enqueue(SystemMessage::Create), Err(SystemMessage::Create)));
   assert!(!mailbox.has_messages() && !mailbox.has_system_messages());

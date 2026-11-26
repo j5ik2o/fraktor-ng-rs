@@ -9,6 +9,7 @@ mod noop_boundary;
 mod shard_boundary;
 
 pub(crate) use actor_cell::ActorCell;
+pub(crate) use actor_cell::StartFailure;
 pub(crate) use arrival_notice::ArrivalNotice;
 pub(crate) use executor_value::Executor;
 pub(crate) use function_boundary::FunctionBoundary;

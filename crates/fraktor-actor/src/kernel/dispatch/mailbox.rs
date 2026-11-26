@@ -330,6 +330,11 @@ impl<C: MailboxCell> Mailbox<C> {
     }
   }
 
+  /// Returns whether the mailbox is open and suspended.
+  pub(crate) fn is_open_and_suspended(&self) -> bool {
+    self.status.is_open_and_suspended()
+  }
+
   /// Returns whether the mailbox is closed.
   pub(crate) fn is_closed(&self) -> bool {
     self.status.is_closed()

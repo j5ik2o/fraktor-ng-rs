@@ -79,17 +79,18 @@
 //                     suspends the actor nor tells the parent (design review
 //                     High 1).
 //
-// Stage 3 of #234 (design section 11.11) adds transitions that hold until
-// stage 4a turns a stop into a Terminate system message:
-//   closeOutside : the executor stops an actor synchronously and closes its
-//                  mailbox outside every run. Under the executor's lock it
-//                  never stops an actor whose run is in progress (it defers
-//                  that stop until the run has returned), and it takes the
+// Stage 3 of #234 (design section 11.11) added the transitions below. From
+// stage 4a (design section 11.12) the stop of an actor is the Terminate system
+// message, which the actor's own run handles (OSystem(Terminate)), and
+// closeOutside stands for the termination of the system only:
+//   closeOutside : the system terminates (Executor::stop_all) and closes the
+//                  mailbox outside every run. The system terminates between
+//                  runs, never while a run holds the actor, and it takes the
 //                  run that is still waiting in the pool out with it.
 //   yieldRun     : a run gives the thread back right after a message whose
 //                  handling left work that needs the actor in its slot (a
-//                  failure, a stop, Kill, PoisonPill); the executor does that
-//                  work after the run returns.
+//                  failure, Kill); the executor does that work after the run
+//                  returns (stages 3 to 4a; stage 4b makes it Failed).
 //   panicInvoke, panicSystem : `receive` or a system message panics with no
 //                  catcher. This is Pekko's fatal error, which escapes
 //                  ActorCell.invoke: the guard does what the `finally` of
@@ -135,8 +136,8 @@ module mailbox_scheduling {
     | MessagesBeforeSystem | PartialDrain | ClearFlagAfterDrain | CloseDuringRun | KeepQueuedRun
     | PanicKeepsScheduled | PanicDropsSysFlag | PanicAsRecoverable | SilentSystemFailure
   type SysMsg = Suspend | Resume | Terminate
-  // What an outside caller asks for: a system message, or (stage 3 to 4a) the
-  // executor's synchronous stop, closeOutside.
+  // What an outside caller asks for: a system message, or the termination of
+  // the system, closeOutside (in stage 3 also the executor's synchronous stop).
   type Outside = OSystem(SysMsg) | OStop
   // mark: how many normal messages had been taken when the system message arrived.
   type SysEntry = { kind: SysMsg, mark: int }
@@ -601,13 +602,13 @@ module mailbox_scheduling {
 
   // ---- stage 3 (design section 11.11) ------------------------------------
 
-  // The executor's synchronous stop (Executor::stop, until stage 4a), and the
-  // termination of the system (Executor::stop_all), which is also what a fatal
-  // panic owes: it closes the mailbox outside every run, moves what the
-  // mailbox held to dead letters, and takes the run still waiting in the pool
-  // out of the pool. It never closes a mailbox a worker holds (a stop asked for
-  // during a run waits until the run has returned, design 11.11.5);
-  // CloseDuringRun does, and KeepQueuedRun leaves the waiting run in the pool.
+  // The termination of the system (Executor::stop_all), which is also what a
+  // fatal panic owes, and in stage 3 the executor's synchronous stop: it
+  // closes the mailbox outside every run, moves what the mailbox held to dead
+  // letters, and takes the run still waiting in the pool out of the pool. It
+  // never closes a mailbox a worker holds (the system terminates between runs;
+  // design 11.11.5 and 11.12); CloseDuringRun does, and KeepQueuedRun leaves
+  // the waiting run in the pool.
   action closeOutside: bool = all {
     not(st.closed),
     mode == CloseDuringRun or countIn(Set(Free)) == WORKERS.size(),
@@ -699,7 +700,7 @@ module mailbox_scheduling {
     setWorker(w, Running, workers.get(w).batch, after),
   }
 
-  // The synchronous stop is one of the outside operations, not a branch of its
+  // The termination is one of the outside operations, not a branch of its
   // own: as its own branch it was enabled at every step of an open mailbox with
   // no run, closed the mailbox early in most traces, and halved the average
   // length of a trace (design 11.11.10).
