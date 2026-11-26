@@ -47,7 +47,9 @@ fn classify(elem: &str) -> (Branch, String) {
   if elem == "*" {
     (Branch::Star, String::new())
   } else if elem == "**" {
-    (Branch::Double, String::new())
+    // A "**" segment is stored under its own name: as the terminal child of
+    // the double tree, or as an ordinary child anywhere else.
+    (Branch::Double, "**".to_string())
   } else if let Some(prefix) = elem.strip_suffix('*') {
     (Branch::Suffix, prefix.to_string())
   } else {
@@ -55,7 +57,15 @@ fn classify(elem: &str) -> (Branch, String) {
   }
 }
 
+fn exact_branch(elem: &str) -> (Branch, String) {
+  if elem == "**" { (Branch::Double, "**".to_string()) } else { (Branch::Exact, elem.to_string()) }
+}
+
 fn model_insert(routes: &mut Vec<Route>, elems: &[&str], value: i32) {
+  if elems.is_empty() {
+    // An empty pattern attaches nowhere, as in the original.
+    return;
+  }
   // Double routes keep their terminal "**" as a final Double branch: in the
   // tree the value sits on the "**" child node itself.
   let double = elems.last() == Some(&"**");
@@ -98,7 +108,7 @@ fn value_at(routes: &[Route], prefix: &[(Branch, String)], double: bool) -> Opti
 fn walk_single(routes: &[Route], elems: &[&str]) -> Option<Vec<(Branch, String)>> {
   let mut prefix: Vec<(Branch, String)> = Vec::new();
   for elem in elems {
-    let exact = (Branch::Exact, (*elem).to_string());
+    let exact = exact_branch(elem);
     let star = (Branch::Star, String::new());
     if node_exists(routes, &with(&prefix, &exact), false) {
       prefix.push(exact);
@@ -134,10 +144,10 @@ fn walk_double(routes: &[Route], elems: &[&str]) -> Option<Vec<(Branch, String)>
     let Some((elem, rest)) = elems.split_first() else {
       return Some(prefix.to_vec());
     };
-    let double_child = (Branch::Double, String::new());
+    let double_child = (Branch::Double, "**".to_string());
     let new_alternative =
       if node_exists(routes, &with(prefix, &double_child), true) { Some(with(prefix, &double_child)) } else { alternative };
-    let exact = (Branch::Exact, (*elem).to_string());
+    let exact = exact_branch(elem);
     let star = (Branch::Star, String::new());
     if node_exists(routes, &with(prefix, &exact), true) {
       go(routes, rest, &with(prefix, &exact), new_alternative)
