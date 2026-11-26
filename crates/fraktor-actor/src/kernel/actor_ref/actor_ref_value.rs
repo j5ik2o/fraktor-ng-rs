@@ -25,6 +25,10 @@ use portable_atomic::Ordering;
 
 use crate::kernel::actor::ActorContext;
 use crate::kernel::actor_path::ActorPath;
+use crate::kernel::actor_ref::Endpoint;
+use crate::kernel::dispatch::Mailbox;
+use crate::kernel::dispatch::ManualTask;
+use crate::kernel::executor::ActorCell;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
@@ -37,23 +41,28 @@ mod tests;
 /// A handle that lets a caller address one actor.
 ///
 /// Mirrors `org.apache.pekko.actor.ActorRef`. It carries an identifier, a
-/// generation number, the path of the actor, and the boundary of its shard,
-/// which is where a message from outside the shard is posted. A handle to a
-/// re-created actor carries a new identifier, so it does not compare equal to
-/// the handle of the actor it replaced. Equality and hashing use only the
-/// identifier and the generation; the path and the boundary are carried along
-/// and never take part in comparing two handles.
+/// generation number, the path of the actor, and where its messages go: the
+/// actor's mailbox, or a shard boundary for a handle without a cell behind
+/// it. A handle to a re-created actor carries a new identifier, so it does
+/// not compare equal to the handle of the actor it replaced. Equality and
+/// hashing use only the identifier and the generation; the path and the
+/// endpoint are carried along and never take part in comparing two handles.
 pub struct ActorRef {
   id: u64,
   generation: u32,
   path: Arc<ActorPath>,
-  boundary: Arc<dyn ShardBoundary>,
+  endpoint: Endpoint,
   detached: bool,
 }
 
 impl ActorRef {
   pub(crate) fn new(id: u64, generation: u32, path: Arc<ActorPath>, boundary: Arc<dyn ShardBoundary>) -> Self {
-    Self { id, generation, path, boundary, detached: false }
+    Self { id, generation, path, endpoint: Endpoint::Boundary(boundary), detached: false }
+  }
+
+  /// Creates the handle of an actor whose messages go to `mailbox`.
+  pub(crate) fn for_mailbox(id: u64, path: Arc<ActorPath>, mailbox: Arc<Mailbox<ActorCell>>) -> Self {
+    Self { id, generation: 0, path, endpoint: Endpoint::Mailbox(mailbox), detached: false }
   }
 
   /// Returns the path of the actor.
@@ -63,7 +72,7 @@ impl ActorRef {
 
   /// Sends a message to the actor, naming `sender` as the sender.
   pub fn tell<M: Any + Send + Sync>(&self, message: M, sender: ActorRef) {
-    Envelope::new(self.clone(), Message::new(message), sender).post_to_boundary();
+    self.send_message(Message::new(message), sender);
   }
 
   /// Sends a message to the actor while keeping the sender being handled.
@@ -74,8 +83,43 @@ impl ActorRef {
     context.forward(self, message);
   }
 
-  pub(crate) fn boundary(&self) -> &Arc<dyn ShardBoundary> {
-    &self.boundary
+  /// Sends `message` from `sender` to where this handle's messages go.
+  ///
+  /// A message for a mailbox goes onto its queue without the handle: the
+  /// mailbox is the recipient, as Pekko's `Envelope` holds only the message
+  /// and the sender. Only when the mailbox turns it away (closed, or a full
+  /// bounded queue) does the handle go with it, to the dispatcher, which
+  /// hands it to dead letters when it gets to it (design of #234, section
+  /// 11.11.1).
+  pub(crate) fn send_message(&self, message: Message, sender: ActorRef) {
+    match &self.endpoint {
+      | Endpoint::Mailbox(mailbox) => {
+        if let Err(refused) = Mailbox::send(mailbox, Envelope::without_recipient(message, sender)) {
+          mailbox.hand_over(ManualTask::Envelope(refused.with_recipient(self.clone())));
+        }
+      },
+      | Endpoint::Boundary(boundary) => boundary.post(Envelope::new(self.clone(), message, sender)),
+    }
+  }
+
+  /// Returns the shard boundary this handle posts to, when it has no
+  /// mailbox.
+  pub(crate) fn boundary(&self) -> Option<&Arc<dyn ShardBoundary>> {
+    match &self.endpoint {
+      | Endpoint::Mailbox(_) => None,
+      | Endpoint::Boundary(boundary) => Some(boundary),
+    }
+  }
+
+  /// Returns whether the actor's path is `path`, without copying it.
+  pub(crate) fn has_path(&self, path: &ActorPath) -> bool {
+    *self.path == *path
+  }
+
+  /// Returns the key of the identity of the actor: its identifier and
+  /// generation.
+  pub(crate) fn key(&self) -> (u64, u32) {
+    (self.id, self.generation)
   }
 
   pub(crate) fn is_detached(&self) -> bool {
@@ -87,25 +131,36 @@ impl ActorRef {
   ///
   /// The port cannot build Pekko's `EvilCollidingActorRef` on its own from a
   /// test, because the fields are private and equality already ignores the
-  /// path and the boundary. This is the limited operation that produces one: it
-  /// keeps the identifier, generation, and path of the actor it is called on and
-  /// swaps in a no-op shard, so the handle collides with that actor while being
-  /// a distinct reference. It is only meaningful on an actor that has stopped,
-  /// which [`crate::kernel::actor::ActorContext::stopped_noop_ref`] checks for.
+  /// path and the endpoint. This is the limited operation that produces one:
+  /// it keeps the identifier, generation, and path of the actor it is called
+  /// on and swaps in a no-op shard, so the handle collides with that actor
+  /// while being a distinct reference. It is only meaningful on an actor that
+  /// has stopped, which [`crate::kernel::actor::ActorContext::stopped_noop_ref`]
+  /// checks for.
   pub(crate) fn detached_noop(&self) -> Self {
     Self {
       id: self.id,
       generation: self.generation,
       path: Arc::clone(&self.path),
-      boundary: Arc::new(crate::kernel::executor::NoOpBoundary),
+      endpoint: Endpoint::Boundary(Arc::new(crate::kernel::executor::NoOpBoundary)),
       detached: true,
     }
   }
 
-  /// Returns the identity of the shard this handle posts to, for a wait that
-  /// drives that shard.
-  pub(crate) fn shares_boundary_with(&self, boundary: &Arc<dyn ShardBoundary>) -> bool {
-    Arc::ptr_eq(&self.boundary, boundary)
+  /// Returns whether this handle and `other` send to the same place.
+  pub(crate) fn shares_endpoint_with(&self, other: &ActorRef) -> bool {
+    self.endpoint.same_as(&other.endpoint)
+  }
+
+  /// Returns the shard key of the system this handle sends into: the
+  /// address of its shard boundary, which a waiting `ask` drives that system
+  /// by. A handle to a mailbox whose system is gone has no key, and no system
+  /// answers to zero.
+  pub(crate) fn system_key(&self) -> usize {
+    match &self.endpoint {
+      | Endpoint::Mailbox(mailbox) => mailbox.executor().map_or(0, |executor| executor.key()),
+      | Endpoint::Boundary(boundary) => Arc::as_ptr(boundary) as *const () as usize,
+    }
   }
 }
 
@@ -130,11 +185,14 @@ pub(crate) fn next_actor_ref(path: ActorPath, boundary: Arc<dyn ShardBoundary>) 
 
 impl Clone for ActorRef {
   fn clone(&self) -> Self {
+    // syn-check: allow(tests-location) -- 所有権モデルの条件1の数え上げ（設計 §11.11.7、オーナーの許可 2026-11-27、元帥の項目472）
+    #[cfg(test)]
+    crate::kernel::sync::counts::count_path();
     Self {
       id: self.id,
       generation: self.generation,
       path: Arc::clone(&self.path),
-      boundary: Arc::clone(&self.boundary),
+      endpoint: self.endpoint.clone(),
       detached: self.detached,
     }
   }
