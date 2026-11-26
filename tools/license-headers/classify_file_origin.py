@@ -21,6 +21,9 @@
 ファイルは、自作も含めて、まず `Apache-2.0` とする（元帥の規則、2026-11-26）。
 そのため、前の一覧に無い crates のファイルには「要確認」の印を付け、決定 2 の
 一括の決定で `Apache-2.0` と出す。印は次回以降の作り直しでも引き継ぐ。
+履歴（前の一覧）は、出力先（`--out-tsv`）ではなく、決まった場所の一覧
+（`docs/design/issue-206-file-origin.tsv`）から読む。出力先を変えただけで
+既存の行の扱いが変わらないようにするためである。
 
 crates の Pekko 由来の行には、ヘッダーへ表示を写す元の `原典ファイル` と、原典のファイル先頭
 にある第三者の表示（`第三者の表示`）も出す。
@@ -54,6 +57,7 @@ from origin_evidence import H1_KINDS, classify, evidence_path
 from origin_pekko import open_pekko, source_files, third_party_evidence
 
 RELOCATE_TABLE = Path("docs") / "baseline" / "v2.0.0-port-targets.tsv"
+MANIFEST_DEFAULT = Path("docs") / "design" / "issue-206-file-origin.tsv"
 MOVED_ID_MASK = "<移動前の id>"
 TSV_HEADER = [
     "path",
@@ -145,7 +149,8 @@ NEW_FILE_REASON = "新規ファイル：前の一覧に無いファイルは、�
 
 
 def previous_rows(path):
-    """既存の出力 TSV を path → (要確認, 要確認の理由) で読む。ファイルが無ければ空。"""
+    """既存の一覧 TSV を path → (要確認, 要確認の理由, 付けるSPDX, 決定の出典) で
+    読む。ファイルが無ければ空。"""
     if not path.is_file():
         return {}
     lines = path.read_text(encoding="utf-8").splitlines()
@@ -155,12 +160,14 @@ def previous_rows(path):
     path_i = header.index("path")
     flag_i = header.index("要確認")
     reason_i = header.index("要確認の理由")
+    spdx_i = header.index("付けるSPDX")
+    source_i = header.index("決定の出典")
     out = {}
     for line in lines[1:]:
         if not line:
             continue
         cells = line.split("\t")
-        out[cells[path_i]] = (cells[flag_i], cells[reason_i])
+        out[cells[path_i]] = (cells[flag_i], cells[reason_i], cells[spdx_i], cells[source_i])
     return out
 
 
@@ -175,7 +182,16 @@ def mark_new_files(rows, previous):
     for rel, scope, verdict, kind, snippet, flag, reason in rows:
         if scope == "crates" and not flag:
             before = previous.get(rel)
-            if before is None or before[1] == NEW_FILE_REASON:
+            # 一括の決定で `Apache-2.0` になっていた「自分で書いた」行は、
+            # 途中で別の理由の印が付いて消えても、新規ファイルとして
+            # 扱い続ける（印の理由だけでは引き継ぎを判断しない）。
+            batch_decided = (
+                before is not None
+                and verdict == "自分で書いた"
+                and before[2] == SPDX_APACHE
+                and before[3] != ""
+            )
+            if before is None or before[1] == NEW_FILE_REASON or batch_decided:
                 flag, reason = "要確認", NEW_FILE_REASON
         marked.append((rel, scope, verdict, kind, snippet, flag, reason))
     return marked
@@ -329,7 +345,7 @@ def main(argv=None):
     with open_pekko(args.pekko.resolve(), args.pekko_tree) as pekko:
         ledger = ledger_index(repo)
         rows, texts = build_rows(repo, ledger, pekko)
-        rows = mark_new_files(rows, previous_rows(args.out_tsv))
+        rows = mark_new_files(rows, previous_rows(repo / MANIFEST_DEFAULT))
         decided = apply_decisions(rows, load_decisions(decisions_path), decisions_path.name)
         origins = build_origins(rows, texts, ledger, pekko)
         hashes = build_notice_hashes(rows, decided, origins, pekko)

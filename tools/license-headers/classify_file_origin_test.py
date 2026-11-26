@@ -140,17 +140,27 @@ class NewFiles(unittest.TestCase):
 
     def test_an_existing_held_file_stays_held(self):
         rows = [row("crates/a/src/old_own.rs")]
-        previous = {"crates/a/src/old_own.rs": ("", "")}
+        previous = {"crates/a/src/old_own.rs": ("", "", d.HELD, "")}
         marked = c.mark_new_files(rows, previous)
         self.assertEqual(marked[0][5], "")
         self.assertEqual(self.decide(marked)["crates/a/src/old_own.rs"][0], d.HELD)
 
     def test_the_mark_is_sticky_across_regenerations(self):
         rows = [row("crates/a/src/new_own.rs")]
-        previous = {"crates/a/src/new_own.rs": ("要確認", c.NEW_FILE_REASON)}
+        previous = {"crates/a/src/new_own.rs": ("要確認", c.NEW_FILE_REASON, d.SPDX_APACHE, "d.tsv:2")}
         marked = c.mark_new_files(rows, previous)
         self.assertEqual(marked[0][5], "要確認")
         self.assertEqual(marked[0][6], c.NEW_FILE_REASON)
+
+    def test_a_batch_decided_own_row_keeps_the_mark_after_another_flag_reason(self):
+        rows = [row("crates/a/src/new_own.rs")]
+        previous = {
+            "crates/a/src/new_own.rs": ("要確認", "Pekko への言及がある", d.SPDX_APACHE, "d.tsv:2"),
+        }
+        marked = c.mark_new_files(rows, previous)
+        self.assertEqual(marked[0][5], "要確認")
+        self.assertEqual(marked[0][6], c.NEW_FILE_REASON)
+        self.assertEqual(self.decide(marked)["crates/a/src/new_own.rs"][0], d.SPDX_APACHE)
 
     def test_other_scope_and_already_flagged_rows_are_untouched(self):
         rows = [

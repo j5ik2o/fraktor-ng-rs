@@ -86,8 +86,8 @@ ConsistencySpec は、このゴールには含めていない。fraktor の `Act
 |:---|:---|
 | `cargo test -p fraktor-actor --test dead_letter_supression_spec` | 2 passed |
 | `cargo test -p fraktor-actor --test dead_letter_suspension_spec` | 1 passed |
-| `cargo test -p fraktor-actor --test dead_letter_routing_property_test` | 5 passed（モデル 2 件と、レビュー対応の回帰 3 件） |
-| `cargo test -p fraktor-actor --lib` | 541 passed / 0 failed（レビュー対応の回帰 2 件を含む） |
+| `cargo test -p fraktor-actor --test dead_letter_routing_property_test` | 6 passed（モデル 2 件と、レビュー対応の回帰 4 件） |
+| `cargo test -p fraktor-actor --lib` | 542 passed / 0 failed（レビュー対応の回帰 3 件を含む） |
 | `cargo test --workspace` | 全スイートで失敗なし |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 成功 |
 | `cargo fmt --check` | 成功（stable。nightly の rustfmt は既存ファイルの書式と違うので使っていない） |
@@ -102,7 +102,7 @@ ConsistencySpec は、このゴールには含めていない。fraktor の `Act
 PR #215（ライセンスヘッダー、ab8a616）を含む main を取り込んだ。競合は自動で解け、両方の変更が残っている。CI に入ったヘッダー検査に合わせ、新規ファイル 13 件に `Apache-2.0` のヘッダーを原典を指定して付けた（`tools/license-headers/license_headers.py --apply --kind pekko --source <原典>`）。`DeadLetterListener` は、main 側で入った #186 の `PrettyDurationInput` を使うように変え、自前の書式関数を消した。
 
 - `crates/fraktor-actor/tests/dead_letter_routing_property_test.rs` は自作である。当初は線引き一覧で「自分で書いた／保留」になり、ヘッダーを付けていなかったが、元帥の規則（2026-11-26）で、新しく足すファイルは自作も含めてまず `Apache-2.0` と決まった。`保留` は既存のファイルで出どころが決まらないものの区分であり、新しいファイルをヘッダー無しにしてよいという意味ではない。このファイルに `Apache-2.0` のヘッダーを付け、一覧では「要確認／Apache-2.0」（決定 2 の一括）になった。自作であることは、PR 本文にパスと理由を書いて宣言している。
-- 線引き一覧を作る `tools/license-headers/classify_file_origin.py` が、新しいファイルを `保留` と出していたので、あわせて直した。前の一覧に無い crates のファイルには「要確認」の印を付け、決定 2 の一括で `Apache-2.0` と出す。印は次回以降の作り直しでも引き継ぐ。テスト 4 件を足した。
+- 線引き一覧を作る `tools/license-headers/classify_file_origin.py` が、新しいファイルを `保留` と出していたので、あわせて直した。前の一覧に無い crates のファイルには「要確認」の印を付け、決定 2 の一括で `Apache-2.0` と出す。印は次回以降の作り直しでも引き継ぐ。テスト 4 件を足した。CodeRabbit の指摘で、引き継ぎの条件（一括の決定で `Apache-2.0` になっていた行は、途中で別の理由の印が付いて消えても扱いを続ける）と、履歴の読み元（出力先ではなく決まった場所の一覧）も直し、テストを 1 件足した。
 - PR #229 がマージされて main が進んだため、main を取り込み直した（`a1761c6`）。線引き一覧は競合したので、両方の親の一覧の和集合を前の状態として作り直し、差分が上の PBT の 1 行だけであることを確かめた。
 - main 側で #188 の新規ファイル 10 件（`ImmutableIntMap` と `TokenBucket` の実装とテスト）にヘッダーが無く、取り込んだ時点で検査が落ちる状態だった。この PR で原典を指定してヘッダーを付けた（判断が要る変更ではなく、検査を通すための機械的な付与）。
 - `actor_system_value.rs` は、取り込みで `Mirrors` の言及が増えて帰属する原典が広がったため、ヘッダーの表示を作り直した。

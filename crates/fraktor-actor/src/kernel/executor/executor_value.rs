@@ -169,7 +169,7 @@ pub(crate) struct Executor {
   pending_terminations: Vec<Arc<PendingTermination>>,
   function_refs: Vec<ActorRef>,
   catcher: Option<Arc<dyn FailureCatcher>>,
-  event_sink: Option<Arc<dyn EventSink>>,
+  event_sink: Arc<spin::Mutex<Option<Arc<dyn EventSink>>>>,
   event_stream: Option<EventStream>,
   deferred_replies: Vec<(ActorRef, DeferredReply)>,
   parents: Vec<ParentEntry>,
@@ -201,7 +201,7 @@ impl Executor {
       pending_terminations: Vec::new(),
       function_refs: Vec::new(),
       catcher: None,
-      event_sink: None,
+      event_sink: Arc::new(spin::Mutex::new(None)),
       event_stream: None,
       deferred_replies: Vec::new(),
       parents: Vec::new(),
@@ -345,8 +345,8 @@ impl Executor {
         if let Some(bus) = bus.as_ref() {
           bus.publish(info.clone());
         }
-        if let Some(sink) = sink.as_ref() {
-          sink.publish(&info);
+        if let Some(current) = sink.lock().clone() {
+          current.publish(&info);
         }
       }
     });
@@ -372,7 +372,7 @@ impl Executor {
   }
 
   pub(crate) fn set_event_sink(&mut self, sink: Arc<dyn EventSink>) {
-    self.event_sink = Some(sink);
+    *self.event_sink.lock() = Some(sink);
   }
 
   /// Installs the monotonic clock that a time-windowed strategy reads.
@@ -414,7 +414,7 @@ impl Executor {
   }
 
   pub(crate) fn event_sink(&self) -> Option<Arc<dyn EventSink>> {
-    self.event_sink.clone()
+    self.event_sink.lock().clone()
   }
 
   /// Starts an actor that the system owns directly, below `/user`.
@@ -1387,6 +1387,7 @@ impl Executor {
     if let Some(selection) = message.downcast_ref::<ActorSelectionMessage>() {
       let selection = selection.clone();
       self.deliver_selection(selection.path(), selection.message().clone(), selection.sender().clone());
+      self.finish_boundary();
       return;
     }
     let message = if let Some(pending) = message.downcast_ref::<Arc<PendingTermination>>() {
@@ -1890,7 +1891,7 @@ impl Executor {
     if let Some(stream) = self.event_stream.as_ref() {
       stream.publish(event.clone());
     }
-    if let Some(sink) = self.event_sink.as_ref() {
+    if let Some(sink) = self.event_sink.lock().clone() {
       sink.publish(&event);
     }
   }
@@ -1908,7 +1909,7 @@ impl Executor {
     if let Some(stream) = self.event_stream.as_ref() {
       stream.publish(unhandled);
     }
-    if let Some(sink) = self.event_sink.as_ref() {
+    if let Some(sink) = self.event_sink.lock().clone() {
       let source = recipient.path().to_string();
       let text = alloc::format!("unhandled message from {}: {:?}", sender.path(), message);
       sink.publish(&Warning::new(source, ACTOR_LOG_CLASS, &text));

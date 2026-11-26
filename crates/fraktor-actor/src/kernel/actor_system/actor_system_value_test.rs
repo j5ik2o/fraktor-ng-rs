@@ -1255,6 +1255,26 @@ impl crate::kernel::actor::Logging::EventSink for RecordingSink {
   }
 }
 
+#[test]
+fn the_dead_letter_listener_publishes_to_the_event_sink_installed_after_it_started() {
+  let mut system = system("DeadLetterListenerLateSink");
+  let settings =
+    crate::kernel::actor::DeadLetterSettings::new(crate::kernel::actor::DeadLetterLogLimit::Unlimited, None);
+  let _listener = system.start_dead_letter_listener(settings);
+  let events = Arc::new(Mutex::new(Vec::new()));
+  system.set_event_sink(Arc::new(RecordingSink { events: Arc::clone(&events) }));
+
+  let dead_letters = system.dead_letters();
+  dead_letters.tell("hello", dead_letters.clone());
+  system.run_until_idle();
+
+  let recorded = events.lock().unwrap();
+  assert!(
+    recorded.iter().any(|(_, message)| message.contains("was not delivered")),
+    "the listener kept the sink captured at its start: {recorded:?}"
+  );
+}
+
 fn with_catcher(name: &str) -> ActorSystem {
   let boundary: Arc<dyn ShardBoundary> = Arc::new(QueueBoundary::new());
   ActorSystem::with_failure_catcher(name, boundary, Arc::new(crate::adaptor::UnwindCatcher))

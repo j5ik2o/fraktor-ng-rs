@@ -43,6 +43,7 @@ use fraktor_actor::kernel::actor::DeadLetterSettings;
 use fraktor_actor::kernel::actor::DeadLetterSuppression;
 use fraktor_actor::kernel::actor::SuppressedDeadLetter;
 use fraktor_actor::kernel::actor::Terminated;
+use fraktor_actor::kernel::actor_path::ActorPath;
 use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::event::DeadLetterListener;
 use fraktor_actor::kernel::event::EventClass;
@@ -411,6 +412,30 @@ fn listener_with_no_suspend_duration_stops_itself_at_the_limit() {
   for index in 0..3 {
     stopped.tell(NormalMsg(index), sender.clone());
   }
+  spec.system_mut().run_until_idle();
+
+  let terminated: Terminated = spec.expect_msg_type();
+  assert_eq!(terminated.target(), &listener);
+  spec.terminate();
+}
+
+/// The selection branch of a delivery runs the same boundary work as the
+/// other branches: an unresolved selection publishes a dead letter, and
+/// when that publication stops the listener, the stop must be drained
+/// even though no later message arrives.
+#[test]
+fn listener_with_no_suspend_duration_stops_itself_after_an_unresolved_selection() {
+  let mut spec = FraktorSpec::new("DeadLetterSelectionSelfStop");
+  let sender = spec.test_actor();
+  let limit = DeadLetterLogLimit::Count(core::num::NonZeroU32::new(1).expect("the limit is not zero"));
+  let listener = spec.system_mut().start_dead_letter_listener(DeadLetterSettings::new(limit, None));
+  spec.test_kit_mut().watch(&listener);
+
+  let probe = spec.system_mut().actor_of(echo_actor_props());
+  let probe_path = probe.path().to_string();
+  let parent = probe_path.rsplit_once('/').map(|(head, _)| head).expect("the probe path has a parent");
+  let nobody = ActorPath::from_string(&format!("{parent}/nobody")).expect("the sibling path parses");
+  spec.system().actor_selection(&nobody).tell("lost", sender.clone());
   spec.system_mut().run_until_idle();
 
   let terminated: Terminated = spec.expect_msg_type();

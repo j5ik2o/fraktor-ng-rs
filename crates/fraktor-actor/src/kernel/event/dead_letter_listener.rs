@@ -93,7 +93,11 @@ impl DeadLetterListener {
     if self.settings.limit() == DeadLetterLogLimit::Off {
       return None;
     }
-    self.count = if self.count == u32::MAX { 1 } else { self.count + 1 };
+    // The count saturates instead of wrapping: wrapping to 1 inside a
+    // suspension would make the resume line's `count - limit - 1`
+    // underflow, and a saturated count stays at or above the limit the
+    // suspension began at, so the subtraction cannot underflow.
+    self.count = self.count.saturating_add(1);
     if let Some(until) = self.suspended_until {
       if now > until {
         let limit = limit_value(self.settings.limit());
