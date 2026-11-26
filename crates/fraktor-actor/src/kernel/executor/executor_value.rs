@@ -1857,9 +1857,15 @@ impl Executor {
     // A stop the hook asked for its own actor wins over the timeout it
     // set, as in `invoke`: `stop` has already cleared the timeout when
     // it queued the `Terminate`, so the check below finds no state for
-    // a closing actor and fires nothing into its mailbox.
-    self.receive_timeout_after(parent.key(), true, timeout_before);
-    self.fire_due_receive_timeouts();
+    // a closing actor and fires nothing into its mailbox. A parent that
+    // is already stopping (it handled its `Terminate` and waits for its
+    // children) is in the same position: the timeout its hook set is
+    // neither rescheduled nor fired, because the firing would land in
+    // the closing mailbox and go to dead letters when the stop finishes.
+    if !self.is_terminating(&parent) {
+      self.receive_timeout_after(parent.key(), true, timeout_before);
+      self.fire_due_receive_timeouts();
+    }
     cell.restore_stack(stack);
     let refused = core::mem::replace(&mut self.hook_child_creation_refused, false);
     if matches!(outcome, RunOutcome::Failed { .. }) || refused {
