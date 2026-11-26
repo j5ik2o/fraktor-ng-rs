@@ -229,10 +229,13 @@ impl ActorSystem {
   /// has stopped. The port returns these refusals as one
   /// [`ActorCreationError`](crate::kernel::actor::ActorCreationError).
   ///
-  /// The name is taken as an [`ActorNameArg`]: a `&str` or a
-  /// `&String` is the name, and `None` (an `Option` spelling) stands
-  /// for Pekko's `null` name, which is refused as an invalid name
-  /// whose message mentions `null`.
+  /// The name is taken as an [`ActorNameArg`]: a reference to a
+  /// type that implements `AsRef<str>` is the name, and `None` (an
+  /// `Option` spelling) stands for Pekko's `null` name in
+  /// `actorOf(props, null)`, which is refused as an invalid name
+  /// whose message mentions `null`. That is the opposite of
+  /// [`try_actor_of`](Self::try_actor_of), whose `None` asks for an
+  /// automatically generated name, as Pekko's `actorOf(props)` does.
   ///
   /// # Errors
   ///
@@ -256,6 +259,12 @@ impl ActorSystem {
   /// share: both checks always run, the name checks first.
   /// [`actor_of`](Self::actor_of) is this call with no name, panicking
   /// on a refusal as Pekko throws.
+  ///
+  /// Here `None` means no name was requested: the actor receives an
+  /// automatically generated name, as with Pekko's `actorOf(props)`.
+  /// That is the opposite of [`actor_of_named`](Self::actor_of_named),
+  /// whose `None` stands for Pekko's `null` name in
+  /// `actorOf(props, null)` and is refused.
   ///
   /// # Errors
   ///
