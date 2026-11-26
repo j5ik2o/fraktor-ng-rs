@@ -278,11 +278,19 @@ fn creator_captured_arguments_agree_with_the_actors_records() {
   let _one = system.actor_of(one_param_props_recording_captured(Some(A), &creator_log, &actor_log));
   let _none = system.actor_of(one_param_props_recording_captured(None, &creator_log, &actor_log));
   let _two = system.actor_of(two_param_props_recording_captured(Some(A), Some(B), &creator_log, &actor_log));
+  let _two_first_only = system.actor_of(two_param_props_recording_captured(Some(A), None, &creator_log, &actor_log));
+  let _two_second_only = system.actor_of(two_param_props_recording_captured(None, Some(B), &creator_log, &actor_log));
   let _two_none = system.actor_of(two_param_props_recording_captured(None, None, &creator_log, &actor_log));
   system.run_until_idle();
 
-  let expected =
-    vec![Observed::One(true), Observed::One(false), Observed::Two(true, true), Observed::Two(false, false)];
+  let expected = vec![
+    Observed::One(true),
+    Observed::One(false),
+    Observed::Two(true, true),
+    Observed::Two(true, false),
+    Observed::Two(false, true),
+    Observed::Two(false, false),
+  ];
   assert_eq!(observed(&creator_log), expected);
   assert_eq!(observed(&actor_log), expected);
   system.terminate();
