@@ -27,8 +27,8 @@ use std::time::Instant;
 
 use crate::adaptor::AskError;
 use crate::kernel::actor_path::ActorPath;
+use crate::kernel::actor_ref::next_actor_ref;
 use crate::kernel::actor_ref::ActorRef;
-use crate::kernel::executor::next_actor_ref;
 use crate::kernel::executor::FunctionBoundary;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Message;
@@ -269,7 +269,7 @@ impl ActorRef {
       }
     };
     let replier = self.replier("ask", handler);
-    let driver_key = self.boundary_key();
+    let driver_key = Arc::as_ptr(self.boundary()) as *const () as usize;
     self.tell(Message::new(message), replier);
     AskFuture::new(slot, driver_key)
   }

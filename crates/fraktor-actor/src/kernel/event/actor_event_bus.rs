@@ -18,17 +18,20 @@
 
 use alloc::boxed::Box;
 use alloc::format;
-use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
-use core::cell::RefCell;
+
+use portable_atomic::AtomicBool;
+use portable_atomic::Ordering;
 
 use crate::kernel::actor::Logging::Debug;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::actor_system::WeakActorSystem;
 use crate::kernel::event::EventStream;
 use crate::kernel::message::Message;
+use crate::kernel::sync::lock;
+use crate::kernel::sync::Arc;
 
 #[cfg(test)]
 #[path = "actor_event_bus_test.rs"]
@@ -53,17 +56,31 @@ const DEBUG_LOG_CLASS: i32 = 0;
 /// reports with `existence_confirmed = false`. A subscriber that stops later is
 /// removed through the termination callback.
 ///
-/// The executor's termination callback holds only weak handles to the table and
-/// event stream, so it cannot extend their lifetimes after the bus is dropped.
-/// Both handles must upgrade before subscriptions or debug events change.
-/// The callback never touches the executor, which is borrowed while it runs.
+/// The subscription table itself is not shared: the bus owns it without a
+/// lock, and `publish` reads it directly (stage 1 of #234, design section
+/// 2.4). Only the watched-subscriber set is shared with the executor's
+/// termination callback, together with the list of subscribers whose removal
+/// is pending and the flag that marks it. The callback holds only weak
+/// handles to that shared state and to the event stream, so it cannot extend
+/// their lifetimes after the bus is dropped. Both handles must upgrade before
+/// subscriptions or debug events change. The callback never touches the
+/// executor, which is locked while it runs.
+///
+/// `publish`, `subscribe`, and `unsubscribe` first read the flag with
+/// `Acquire`; only when it stands do they take the lock and remove the
+/// pending subscribers from the table, before they decide anything else. A
+/// plain `publish` therefore costs one atomic load and no lock, and a
+/// subscriber that has stopped is out of the table before the next
+/// `publish` chooses its recipients, so it receives nothing, as before.
 pub struct ActorEventBus<E: Clone + Send + Sync + 'static> {
   system: WeakActorSystem,
   event_stream: EventStream,
   name: String,
   debug: bool,
   classify: Box<dyn Fn(&E) -> ActorRef>,
-  subscriptions: Rc<RefCell<Subscriptions>>,
+  subscriptions: Subscriptions,
+  shared: Arc<spin::Mutex<SharedSubscriptions>>,
+  removal_pending: Arc<AtomicBool>,
 }
 
 impl<E: Clone + Send + Sync + 'static> ActorEventBus<E> {
@@ -77,23 +94,41 @@ impl<E: Clone + Send + Sync + 'static> ActorEventBus<E> {
   where
     F: Fn(&E) -> ActorRef + 'static,
   {
-    let subscriptions = Rc::new(RefCell::new(Subscriptions::new()));
+    let shared = Arc::new(spin::Mutex::new(SharedSubscriptions::new()));
+    let removal_pending = Arc::new(AtomicBool::new(false));
     let callback = {
-      let subscriptions = Rc::downgrade(&subscriptions);
+      let shared = Arc::downgrade(&shared);
+      let removal_pending = Arc::clone(&removal_pending);
       let event_stream = event_stream.downgrade();
       let name = name.to_string();
       move |target: &ActorRef| {
-        let Some(subscriptions) = subscriptions.upgrade() else {
+        let Some(shared) = shared.upgrade() else {
           return;
         };
         let Some(event_stream) = event_stream.upgrade() else {
           return;
         };
-        detach_subscriber(&subscriptions, |event| event_stream.publish(event), &name, debug, target);
+        if !lock(&shared).unwatch(target) {
+          return;
+        }
+        if debug {
+          publish_detach_debug(|event| event_stream.publish(event), &name, target);
+        }
+        lock(&shared).pending_removals.push(target.clone());
+        removal_pending.store(true, Ordering::Release);
       }
     };
     system.on_termination(callback);
-    Self { system, event_stream, name: name.to_string(), debug, classify: Box::new(classify), subscriptions }
+    Self {
+      system,
+      event_stream,
+      name: name.to_string(),
+      debug,
+      classify: Box::new(classify),
+      subscriptions: Subscriptions::new(),
+      shared,
+      removal_pending,
+    }
   }
 
   /// Subscribes `subscriber` to the events of `to`.
@@ -103,27 +138,23 @@ impl<E: Clone + Send + Sync + 'static> ActorEventBus<E> {
   /// already stopped is unsubscribed at once, the way
   /// `ActorClassificationUnsubscriber` answers `watch` for a stopped actor.
   pub fn subscribe(&mut self, subscriber: ActorRef, to: ActorRef) -> bool {
-    let added = self.subscriptions.borrow_mut().add(&to, &subscriber);
-    match added {
-      | None => false,
-      | Some(newly_watched) => {
-        if newly_watched {
-          if self.system.is_actor_terminated(&subscriber) {
-            detach_subscriber(
-              &self.subscriptions,
-              |event| self.event_stream.publish(event),
-              &self.name,
-              self.debug,
-              &subscriber,
-            );
-          } else if self.debug {
-            let registered = format!("registered watch for {} in {}", subscriber.path(), self.name);
-            self.event_stream.publish(Debug::new(self.name.clone(), DEBUG_LOG_CLASS, &registered));
-          }
-        }
-        true
-      },
+    self.apply_pending_removals();
+    if !self.subscriptions.add(&to, &subscriber) {
+      return false;
     }
+    if lock(&self.shared).watch(&subscriber) {
+      if self.system.is_actor_terminated(&subscriber) {
+        self.subscriptions.remove_all(&subscriber);
+        lock(&self.shared).unwatch(&subscriber);
+        if self.debug {
+          publish_detach_debug(|event| self.event_stream.publish(event), &self.name, &subscriber);
+        }
+      } else if self.debug {
+        let registered = format!("registered watch for {} in {}", subscriber.path(), self.name);
+        self.event_stream.publish(Debug::new(self.name.clone(), DEBUG_LOG_CLASS, &registered));
+      }
+    }
+    true
   }
 
   /// Removes the subscription of `subscriber` from `from`.
@@ -133,18 +164,11 @@ impl<E: Clone + Send + Sync + 'static> ActorEventBus<E> {
   /// subscriber ends only with its last subscription, and only that last
   /// removal reports the end of the watch.
   pub fn unsubscribe(&mut self, subscriber: &ActorRef, from: &ActorRef) -> bool {
-    let (removed, unwatched) = {
-      let mut subscriptions = self.subscriptions.borrow_mut();
-      let removed = subscriptions.remove(from, subscriber);
-      let unwatched = removed && !subscriptions.holds_subscription_of(subscriber);
-      if unwatched {
-        subscriptions.unwatch(subscriber);
-      }
-      (removed, unwatched)
-    };
-    if !removed {
+    self.apply_pending_removals();
+    if !self.subscriptions.remove(from, subscriber) {
       return false;
     }
+    let unwatched = !self.subscriptions.holds_subscription_of(subscriber) && lock(&self.shared).unwatch(subscriber);
     if unwatched && self.debug {
       let unregistered = format!("unregistered watch of {} in {}", subscriber.path(), self.name);
       self.event_stream.publish(Debug::new(self.name.clone(), DEBUG_LOG_CLASS, &unregistered));
@@ -154,8 +178,9 @@ impl<E: Clone + Send + Sync + 'static> ActorEventBus<E> {
 
   /// Publishes `event` to every subscriber of its classifier actor.
   pub fn publish(&mut self, event: &E) {
+    self.apply_pending_removals();
     let classifier = (self.classify)(event);
-    let recipients = self.subscriptions.borrow().subscribers_of(&classifier);
+    let recipients = self.subscriptions.subscribers_of(&classifier);
     let message = Message::new(event.clone());
     for recipient in recipients {
       recipient.tell(message.clone(), recipient.clone());
@@ -166,25 +191,37 @@ impl<E: Clone + Send + Sync + 'static> ActorEventBus<E> {
   pub fn name(&self) -> &str {
     &self.name
   }
+
+  /// Removes the subscribers the termination callback marked as stopped
+  /// from the table the bus owns.
+  ///
+  /// The flag is read first, so the plain path takes no lock. The flag is
+  /// cleared while the lock is held and the list is taken, so a removal the
+  /// callback records afterwards sets it again; a removal recorded before
+  /// the take but reported after the clear only leaves the flag standing
+  /// over an empty list, which the next call clears the same way.
+  fn apply_pending_removals(&mut self) {
+    if !self.removal_pending.load(Ordering::Acquire) {
+      return;
+    }
+    let pending = {
+      let mut shared = lock(&self.shared);
+      let pending = core::mem::take(&mut shared.pending_removals);
+      self.removal_pending.store(false, Ordering::Release);
+      pending
+    };
+    for target in &pending {
+      self.subscriptions.remove_all(target);
+    }
+  }
 }
 
-/// Removes every subscription of `target` and reports the end of its watch.
+/// Reports the end of the watch of a subscriber that has terminated.
 ///
 /// Shared by the termination callback and `subscribe` so a subscriber that stops
-/// later and one that had already stopped both leave the table through the same
-/// rule, as `ActorClassificationUnsubscriber` reports them through
-/// `Terminated`.
-fn detach_subscriber(
-  subscriptions: &Rc<RefCell<Subscriptions>>,
-  publish_debug: impl Fn(Debug),
-  name: &str,
-  debug: bool,
-  target: &ActorRef,
-) {
-  let watched = subscriptions.borrow_mut().detach(target);
-  if !watched || !debug {
-    return;
-  }
+/// later and one that had already stopped both report through the same rule,
+/// as `ActorClassificationUnsubscriber` reports them through `Terminated`.
+fn publish_detach_debug(publish_debug: impl Fn(Debug), name: &str, target: &ActorRef) {
   let path = target.path();
   let terminated = format!("actor {path} has terminated, unsubscribing it from {name}");
   publish_debug(Debug::new(String::from(name), DEBUG_LOG_CLASS, &terminated));
@@ -192,33 +229,25 @@ fn detach_subscriber(
   publish_debug(Debug::new(String::from(name), DEBUG_LOG_CLASS, &unregistered));
 }
 
-/// The classifier-to-subscriber table and the subscribers the bus watches.
+/// The classifier-to-subscriber table the bus owns without a lock.
 struct Subscriptions {
   entries: Vec<(ActorRef, ActorRef)>,
-  watched: Vec<ActorRef>,
 }
 
 impl Subscriptions {
   fn new() -> Self {
-    Self { entries: Vec::new(), watched: Vec::new() }
+    Self { entries: Vec::new() }
   }
 
   /// Records the subscription of `subscriber` to `classifier`.
   ///
-  /// Returns `None` when the pair is already present. Returns `Some(true)` when
-  /// the pair is new and the subscriber became watched, and `Some(false)` when
-  /// the pair is new but the subscriber was already watched.
-  fn add(&mut self, classifier: &ActorRef, subscriber: &ActorRef) -> Option<bool> {
+  /// Returns whether the pair is new.
+  fn add(&mut self, classifier: &ActorRef, subscriber: &ActorRef) -> bool {
     if self.entries.iter().any(|(to, existing)| to == classifier && existing == subscriber) {
-      return None;
+      return false;
     }
     self.entries.push((classifier.clone(), subscriber.clone()));
-    if self.watched.iter().any(|watched| watched == subscriber) {
-      Some(false)
-    } else {
-      self.watched.push(subscriber.clone());
-      Some(true)
-    }
+    true
   }
 
   /// Removes the subscription of `subscriber` to `classifier`.
@@ -237,12 +266,37 @@ impl Subscriptions {
     self.entries.iter().any(|(_, existing)| existing == subscriber)
   }
 
-  /// Removes every subscription of `subscriber` and stops watching it.
-  ///
-  /// Returns whether the subscriber was watched.
-  fn detach(&mut self, subscriber: &ActorRef) -> bool {
+  /// Removes every subscription of `subscriber`.
+  fn remove_all(&mut self, subscriber: &ActorRef) {
     self.entries.retain(|(_, existing)| existing != subscriber);
-    self.unwatch(subscriber)
+  }
+
+  /// Returns the subscribers that `classifier` holds.
+  fn subscribers_of(&self, classifier: &ActorRef) -> Vec<ActorRef> {
+    self.entries.iter().filter(|(to, _)| to == classifier).map(|(_, subscriber)| subscriber.clone()).collect()
+  }
+}
+
+/// The subscription state the termination callback shares with the bus:
+/// the subscribers the bus watches, and the ones whose removal from the
+/// table is still pending.
+struct SharedSubscriptions {
+  watched: Vec<ActorRef>,
+  pending_removals: Vec<ActorRef>,
+}
+
+impl SharedSubscriptions {
+  fn new() -> Self {
+    Self { watched: Vec::new(), pending_removals: Vec::new() }
+  }
+
+  /// Starts watching `subscriber` and returns whether it is newly watched.
+  fn watch(&mut self, subscriber: &ActorRef) -> bool {
+    if self.watched.iter().any(|watched| watched == subscriber) {
+      return false;
+    }
+    self.watched.push(subscriber.clone());
+    true
   }
 
   /// Stops watching `subscriber` and returns whether it was watched.
@@ -254,10 +308,5 @@ impl Subscriptions {
       },
       | None => false,
     }
-  }
-
-  /// Returns the subscribers that `classifier` holds.
-  fn subscribers_of(&self, classifier: &ActorRef) -> Vec<ActorRef> {
-    self.entries.iter().filter(|(to, _)| to == classifier).map(|(_, subscriber)| subscriber.clone()).collect()
   }
 }

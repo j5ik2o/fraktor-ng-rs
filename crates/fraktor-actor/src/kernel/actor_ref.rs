@@ -18,4 +18,6 @@
 
 mod actor_ref_value;
 
+pub(crate) use actor_ref_value::next_actor_id;
+pub(crate) use actor_ref_value::next_actor_ref;
 pub use actor_ref_value::ActorRef;

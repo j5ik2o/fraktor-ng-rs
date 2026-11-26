@@ -8,7 +8,6 @@ mod shard_boundary;
 mod shard_queue;
 
 pub(crate) use actor_cell::ActorCell;
-pub(crate) use executor_value::next_actor_ref;
 pub(crate) use executor_value::Executor;
 pub(crate) use function_boundary::FunctionBoundary;
 pub(crate) use noop_boundary::NoOpBoundary;

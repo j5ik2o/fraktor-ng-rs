@@ -26,10 +26,10 @@ use crate::kernel::message::Message;
 
 /// A state function: answers an event in one state, or returns `None` when it
 /// does not handle the event.
-type StateFunction<S, D> = Box<dyn FnMut(&mut ActorContext<'_>, &Message, &D) -> Option<FsmState<S, D>>>;
+type StateFunction<S, D> = Box<dyn FnMut(&mut ActorContext<'_>, &Message, &D) -> Option<FsmState<S, D>> + Send>;
 
 /// A transition handler: hears every reported move from one state to another.
-type TransitionHandler<S> = Box<dyn FnMut(&mut ActorContext<'_>, &S, &S)>;
+type TransitionHandler<S> = Box<dyn FnMut(&mut ActorContext<'_>, &S, &S) + Send>;
 
 /// An actor whose behaviour is a state name `S`, the data `D` it carries, and a
 /// state function per state.
@@ -56,8 +56,8 @@ pub struct Fsm<S, D> {
 
 impl<S, D> Fsm<S, D>
 where
-  S: Clone + PartialEq + 'static,
-  D: 'static,
+  S: Clone + PartialEq + Send + 'static,
+  D: Send + 'static,
 {
   /// Creates a machine with no state, no state functions, and no handlers.
   pub fn new() -> Self {
@@ -80,7 +80,7 @@ where
   /// what Pekko's default `whenUnhandled` does after it logs a warning.
   pub fn when<F>(&mut self, state: S, function: F)
   where
-    F: FnMut(&mut ActorContext<'_>, &Message, &D) -> Option<FsmState<S, D>> + 'static,
+    F: FnMut(&mut ActorContext<'_>, &Message, &D) -> Option<FsmState<S, D>> + Send + 'static,
   {
     self.state_functions.push((state, Box::new(function)));
   }
@@ -92,7 +92,7 @@ where
   /// enters.
   pub fn on_transition<F>(&mut self, handler: F)
   where
-    F: FnMut(&mut ActorContext<'_>, &S, &S) + 'static,
+    F: FnMut(&mut ActorContext<'_>, &S, &S) + Send + 'static,
   {
     self.transition_handlers.push(Box::new(handler));
   }
@@ -156,8 +156,8 @@ where
 
 impl<S, D> Default for Fsm<S, D>
 where
-  S: Clone + PartialEq + 'static,
-  D: 'static,
+  S: Clone + PartialEq + Send + 'static,
+  D: Send + 'static,
 {
   fn default() -> Self {
     Self::new()
@@ -166,8 +166,8 @@ where
 
 impl<S, D> Actor for Fsm<S, D>
 where
-  S: Clone + PartialEq + 'static,
-  D: 'static,
+  S: Clone + PartialEq + Send + 'static,
+  D: Send + 'static,
 {
   fn pre_start(&mut self, context: &mut ActorContext<'_>) {
     if self.initialized {
