@@ -112,6 +112,36 @@ fn a_dns_server_that_does_not_fit_the_native_buffer_is_skipped() {
   assert_eq!(WindowsAdapter::name_servers(Some(&adapters)), Some(expected));
 }
 
+// The boundary of the 1024-byte buffer, its terminating NUL included: a
+// joined length of exactly 1023 bytes of text and commas fits with its NUL
+// (1024 in total), and a joined length of exactly 1024 bytes of text and
+// commas does not fit once the NUL is counted (1025 in total). The second
+// case is the one that kills the mutation that drops the NUL's `+1` from
+// the limit check: without it, the 1024-byte entry would be kept.
+#[test]
+fn a_dns_server_at_exactly_the_native_buffer_boundary() {
+  // 25 addresses of 39 characters with their commas take 999 bytes.
+  let long: Vec<String> =
+    (0..25).map(|index| format!("[fd12:3456:789a:bcde:f012:3456:789a:{:x}]:0", 0x1000 + index)).collect();
+  let base: Vec<&str> = long.iter().map(String::as_str).collect();
+  let base_expected: Vec<SocketAddr> =
+    (0..25).map(|index| addr(&format!("[fd12:3456:789a:bcde:f012:3456:789a:{:x}]:53", 0x1000 + index))).collect();
+
+  // 999 + 1 comma + 23 characters = 1023, kept.
+  let mut servers = base.clone();
+  servers.push("[ffff:ffff:fff:f:f:f:f:f]:0");
+  let adapters = [up(&servers)];
+  let mut expected = base_expected.clone();
+  expected.push(addr("[ffff:ffff:fff:f:f:f:f:f]:53"));
+  assert_eq!(WindowsAdapter::name_servers(Some(&adapters)), Some(expected));
+
+  // 999 + 1 comma + 24 characters = 1024, skipped for its NUL.
+  let mut servers = base;
+  servers.push("[ffff:ffff:fff:ff:f:f:f:f]:0");
+  let adapters = [up(&servers)];
+  assert_eq!(WindowsAdapter::name_servers(Some(&adapters)), Some(base_expected));
+}
+
 // No DNS server is no name server, the original's `IllegalStateException` for
 // an empty list. The IP Helper's `ERROR_NO_DATA` is no adapter.
 #[test]
