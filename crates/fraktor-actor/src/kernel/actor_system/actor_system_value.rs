@@ -109,6 +109,9 @@ impl ActorSystem {
     if let Some(settings) = setup.get::<DispatchSettings>() {
       executor.borrow_mut().set_dispatch_settings(settings.clone());
     }
+    if let Some(dispatchers) = setup.get::<crate::kernel::dispatch::Dispatchers>() {
+      executor.borrow_mut().set_dispatchers(dispatchers.clone());
+    }
     executor.borrow().set_dead_letter_bus(event_stream.downgrade());
     // The four dead letter classes are subclasses of the AllDeadLetters
     // channel, as the trait links declare in Pekko.
@@ -199,7 +202,64 @@ impl ActorSystem {
   /// which throws `IllegalStateException` from `attachChild` when a defunct
   /// guardian cannot create children.
   pub fn actor_of(&mut self, props: Props) -> ActorRef {
-    self.executor.borrow_mut().spawn_user(props)
+    match self.try_actor_of(props, None) {
+      | Ok(reference) => reference,
+      | Err(error) => panic!("{error}"),
+    }
+  }
+
+  /// Starts a top-level actor after both the name checks and the
+  /// configuration checks, answering with the refusal instead of
+  /// throwing it.
+  ///
+  /// Mirrors `ActorSystem.actorOf(props, name)`, which throws
+  /// `InvalidActorNameException` for a name that is taken, empty, or
+  /// malformed, and `ConfigurationException` for a configuration that
+  /// fails verification. The port returns both as one
+  /// [`ActorCreationError`](crate::kernel::actor::ActorCreationError).
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ActorCreationError`](crate::kernel::actor::ActorCreationError)
+  /// when the name or the configuration is refused.
+  pub fn actor_of_named(
+    &mut self,
+    props: Props,
+    name: &str,
+  ) -> Result<ActorRef, crate::kernel::actor::ActorCreationError> {
+    self.try_actor_of(props, Some(name))
+  }
+
+  /// Starts a top-level actor, named when `name` is given, after both
+  /// the name checks and the configuration checks.
+  ///
+  /// This is the combined entry point the two Pekko `actorOf` forms
+  /// share (design of #194, M5): both checks always run, the name
+  /// checks first. [`actor_of`](Self::actor_of) is this call with no
+  /// name, panicking on a refusal as Pekko throws.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ActorCreationError`](crate::kernel::actor::ActorCreationError)
+  /// when the name or the configuration is refused.
+  pub fn try_actor_of(
+    &mut self,
+    props: Props,
+    name: Option<&str>,
+  ) -> Result<ActorRef, crate::kernel::actor::ActorCreationError> {
+    self.executor.borrow_mut().try_spawn_user(props, name)
+  }
+
+  /// Resolves `path` to a handle, as `ActorRefProvider.resolveActorRef`
+  /// does.
+  ///
+  /// A live actor resolves to its own handle; a guardian path (`/`,
+  /// `/user`, `/system`) resolves to the guardian's handle; any other
+  /// path of this system resolves to a handle that keeps the path and
+  /// answers nothing (Pekko's `EmptyLocalActorRef`); a path whose root
+  /// belongs to another system resolves to the dead letters.
+  pub fn resolve_actor_ref(&self, path: &ActorPath) -> ActorRef {
+    self.executor.borrow().resolve_actor_ref(path)
   }
 
   /// Stops `target`, telling its watchers that it is gone.

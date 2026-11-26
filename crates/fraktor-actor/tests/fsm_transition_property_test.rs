@@ -9,8 +9,10 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use fraktor_actor::kernel::actor::{Actor, ActorContext, CurrentState, Fsm, FsmState, FsmView, Props, SubscribeTransitionCallBack, Transition, UnsubscribeTransitionCallBack};
-use fraktor_actor::kernel::actor_ref::ActorRef;
+use fraktor_actor::kernel::actor::{
+  Actor, ActorContext, CurrentState, Fsm, FsmState, FsmView, Props, SubscribeTransitionCallBack, Transition,
+  UnsubscribeTransitionCallBack,
+};
 use fraktor_actor::kernel::message::Message;
 use fraktor_testkit::fraktorspec::FraktorSpec;
 use fraktor_testkit::test_kit::TestProbe;
@@ -41,13 +43,13 @@ fn machine() -> Fsm<i32, i32> {
   let mut fsm = Fsm::new();
   fsm.start_with(0, 0);
   fsm.when(0, |_context: &mut ActorContext<'_>, _view: &FsmView<i32>, event: &Message, _data: &i32| {
-    match event.downcast_ref::<&'static str>()? {
+    match *event.downcast_ref::<&'static str>()? {
       | "tick" => Some(FsmState::goto(1)),
       | _ => Some(FsmState::stay()),
     }
   });
   fsm.when(1, |_context: &mut ActorContext<'_>, _view: &FsmView<i32>, event: &Message, _data: &i32| {
-    match event.downcast_ref::<&'static str>()? {
+    match *event.downcast_ref::<&'static str>()? {
       | "tick" => Some(FsmState::goto(0)),
       | _ => Some(FsmState::stay()),
     }
@@ -91,7 +93,7 @@ fn fsm_listeners_match_the_reference_model() {
         | 0 => Step::Subscribe((rng.next() % 3) as usize),
         | 1 => Step::Unsubscribe((rng.next() % 3) as usize),
         | 2 => Step::StopListener((rng.next() % 3) as usize),
-        | 3 | 4 | 5 => Step::Tick,
+        | 3..=5 => Step::Tick,
         | _ => Step::Stay,
       };
       steps.push(step);
@@ -151,13 +153,11 @@ fn fsm_listeners_match_the_reference_model() {
     let drained = probe.receive_while(
       fraktor_testkit::test_kit::ReceiveWhile::new().idle(core::time::Duration::from_millis(50)),
       |message| {
-        if let Some(current) = message.downcast_ref::<CurrentState<i32>>() {
-          Some(format!("current:{}", current.state))
-        } else if let Some(transition) = message.downcast_ref::<Transition<i32>>() {
-          Some(format!("transition:{}->{}", transition.from, transition.to))
-        } else {
-          None
-        }
+        message.downcast_ref::<CurrentState<i32>>().map(|current| format!("current:{}", current.state)).or_else(|| {
+          message
+            .downcast_ref::<Transition<i32>>()
+            .map(|transition| format!("transition:{}->{}", transition.from, transition.to))
+        })
       },
     );
     probe_seen.extend(drained);

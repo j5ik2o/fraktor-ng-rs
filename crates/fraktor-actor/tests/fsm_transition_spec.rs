@@ -1,3 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// license agreements; and to You under the Apache License, version 2.0:
+//
+//   https://www.apache.org/licenses/LICENSE-2.0
+//
+// This file is part of the Apache Pekko project, which was derived from Akka.
+//
+// Copyright (C) 2009-2022 Lightbend Inc. <https://www.lightbend.com>
+//
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE and NOTICE
+// at the repository root.
+//
+// This file has been modified from the Apache Pekko original.
+
 // Ported from Pekko v2.0.0:
 //   actor-tests/src/test/scala/org/apache/pekko/actor/FSMTransitionSpec.scala
 //
@@ -16,12 +32,14 @@
 //   (`unhandled message from {path}: {message:?}` in this port); no case
 //   here reads it.
 
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::Mutex;
 
-use fraktor_actor::kernel::actor::{Actor, ActorContext, CurrentState, Fsm, FsmState, FsmView, Props, SubscribeTransitionCallBack, Transition};
+use fraktor_actor::kernel::actor::{
+  Actor, ActorContext, CurrentState, Fsm, FsmState, FsmView, Props, SubscribeTransitionCallBack, Transition,
+};
 use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::message::Message;
 use fraktor_testkit::fraktorspec::FraktorSpec;
@@ -43,7 +61,7 @@ fn send_any_transition_fsm(probe: ActorRef) -> Fsm<i32, i32> {
   });
   fsm.start_with(0, 0);
   fsm.when(0, |_context: &mut ActorContext<'_>, _view: &FsmView<i32>, event: &Message, _data: &i32| {
-    match event.downcast_ref::<&'static str>()? {
+    match *event.downcast_ref::<&'static str>()? {
       | "stay" => Some(FsmState::stay()),
       | "goto-self" => Some(FsmState::goto(0)),
       | _ => None,
@@ -62,13 +80,13 @@ fn my_fsm(listener_count: Arc<AtomicI32>) -> Fsm<i32, i32> {
   let mut fsm = Fsm::new();
   fsm.start_with(0, 0);
   fsm.when(0, |_context: &mut ActorContext<'_>, _view: &FsmView<i32>, event: &Message, _data: &i32| {
-    match event.downcast_ref::<&'static str>()? {
+    match *event.downcast_ref::<&'static str>()? {
       | "tick" => Some(FsmState::goto(1)),
       | _ => None,
     }
   });
   fsm.when(1, |_context: &mut ActorContext<'_>, _view: &FsmView<i32>, event: &Message, _data: &i32| {
-    match event.downcast_ref::<&'static str>()? {
+    match *event.downcast_ref::<&'static str>()? {
       | "tick" => Some(FsmState::goto(0)),
       | "goto-self" => Some(FsmState::goto(1)),
       | _ => None,
@@ -88,12 +106,14 @@ fn my_fsm(listener_count: Arc<AtomicI32>) -> Fsm<i32, i32> {
 fn other_fsm(probe: ActorRef) -> Fsm<i32, i32> {
   let mut fsm = Fsm::new();
   let notices = probe.clone();
-  fsm.on_transition_with_data(move |context: &mut ActorContext<'_>, _from: &i32, _to: &i32, previous: &i32, next: &i32| {
-    notices.tell((*previous, *next), context.self_ref());
-  });
+  fsm.on_transition_with_data(
+    move |context: &mut ActorContext<'_>, _from: &i32, _to: &i32, previous: &i32, next: &i32| {
+      notices.tell((*previous, *next), context.self_ref());
+    },
+  );
   fsm.start_with(0, 0);
   fsm.when(0, |_context: &mut ActorContext<'_>, _view: &FsmView<i32>, event: &Message, _data: &i32| {
-    match event.downcast_ref::<&'static str>()? {
+    match *event.downcast_ref::<&'static str>()? {
       | "tick" => Some(FsmState::goto(1).using(1)),
       | _ => None,
     }
@@ -101,7 +121,6 @@ fn other_fsm(probe: ActorRef) -> Fsm<i32, i32> {
   fsm.when(1, |_context: &mut ActorContext<'_>, _view: &FsmView<i32>, _event: &Message, _data: &i32| {
     Some(FsmState::stay())
   });
-  fsm.initialize();
   fsm
 }
 
@@ -205,11 +224,18 @@ fn removes_stopped_listeners() {
 
   spec.system_mut().stop(&listener);
   let from = sender(&spec);
-  spec.await_assert(core::time::Duration::from_secs(3), core::time::Duration::from_millis(10), || {
+  // The port of `awaitAssert`: ask again until the machine answers 0.
+  let mut answered_zero = false;
+  for _ in 0..300 {
     fsm.tell("listener-count", from.clone());
     spec.system_mut().run_until_idle();
-    assert_eq!(counter.load(Ordering::SeqCst), 0, "the stopped listener is still in the set");
-  });
+    if counter.load(Ordering::SeqCst) == 0 {
+      answered_zero = true;
+      break;
+    }
+    std::thread::sleep(core::time::Duration::from_millis(10));
+  }
+  assert!(answered_zero, "the stopped listener is still in the set");
   spec.terminate();
 }
 
@@ -278,13 +304,15 @@ fn does_not_leak_next_state_data_outside_on_transition() {
   let fsm = spec.system_mut().actor_of(Props::new(move || {
     let mut fsm: Fsm<i32, Arc<i32>> = Fsm::new();
     let notices = probe_ref.clone();
-    fsm.on_transition_with_data(move |context: &mut ActorContext<'_>, _from: &i32, _to: &i32, previous: &Arc<i32>, next: &Arc<i32>| {
-      notices.tell((**previous, **next), context.self_ref());
-    });
+    fsm.on_transition_with_data(
+      move |context: &mut ActorContext<'_>, _from: &i32, _to: &i32, previous: &Arc<i32>, next: &Arc<i32>| {
+        notices.tell((**previous, **next), context.self_ref());
+      },
+    );
     fsm.start_with(0, Arc::new(0));
     let slot_in_state = slot_in_fsm.clone();
     fsm.when(0, move |_context: &mut ActorContext<'_>, _view: &FsmView<i32>, event: &Message, _data: &Arc<i32>| {
-      match event.downcast_ref::<&'static str>()? {
+      match *event.downcast_ref::<&'static str>()? {
         | "go" => {
           let next = Arc::new(1);
           *slot_in_state.lock().unwrap() = Some(next.clone());
@@ -296,7 +324,6 @@ fn does_not_leak_next_state_data_outside_on_transition() {
     fsm.when(1, |_context: &mut ActorContext<'_>, _view: &FsmView<i32>, _event: &Message, _data: &Arc<i32>| {
       Some(FsmState::stay())
     });
-    fsm.initialize();
     fsm
   }));
 
@@ -306,8 +333,9 @@ fn does_not_leak_next_state_data_outside_on_transition() {
 
   spec.system_mut().run_until_idle();
   let next = slot.lock().unwrap().clone().expect("the state function recorded the next data");
-  // Only the test's slot and the machine's current data hold the value:
-  // the transition did not leave another reference behind.
-  assert_eq!(Arc::strong_count(&next), 2);
+  // Only the slot, this test's own inspection clone, and the machine's
+  // current data hold the value: the transition did not leave another
+  // reference behind.
+  assert_eq!(Arc::strong_count(&next), 3);
   spec.terminate();
 }

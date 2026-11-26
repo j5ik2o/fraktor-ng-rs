@@ -25,6 +25,8 @@ module fsm_transition {
   var liveNotified: Set[int]
   var sentToStopped: Set[int]
   var currentSent: Set[int]
+  var tickLast: bool
+  var stayLast: bool
 
   pure val allListeners = Set(1, 2)
 
@@ -38,6 +40,8 @@ module fsm_transition {
     liveNotified' = Set(),
     sentToStopped' = Set(),
     currentSent' = Set(),
+    tickLast' = false,
+    stayLast' = false,
   }
 
   action subscribe(l: int): bool = all {
@@ -58,6 +62,8 @@ module fsm_transition {
     lastTo' = lastTo,
     liveNotified' = liveNotified,
     sentToStopped' = sentToStopped,
+    tickLast' = false,
+    stayLast' = false,
   }
 
   action unsubscribe(l: int): bool = all {
@@ -70,6 +76,8 @@ module fsm_transition {
     liveNotified' = liveNotified,
     sentToStopped' = sentToStopped,
     currentSent' = currentSent,
+    tickLast' = false,
+    stayLast' = false,
   }
 
   action stopListener(l: int): bool = all {
@@ -83,6 +91,8 @@ module fsm_transition {
     liveNotified' = liveNotified,
     sentToStopped' = sentToStopped,
     currentSent' = currentSent,
+    tickLast' = false,
+    stayLast' = false,
   }
 
   action processNotice = all {
@@ -96,6 +106,8 @@ module fsm_transition {
     liveNotified' = liveNotified,
     sentToStopped' = sentToStopped,
     currentSent' = currentSent,
+    tickLast' = false,
+    stayLast' = false,
   }
 
   // A reported transition (goto, including to the same state): every
@@ -111,6 +123,8 @@ module fsm_transition {
     pending' = pending,
     gone' = gone,
     currentSent' = currentSent,
+    tickLast' = true,
+    stayLast' = false,
   }
 
   // A stay: no notice is sent at all (F1).
@@ -124,6 +138,8 @@ module fsm_transition {
     lastFrom' = lastFrom,
     lastTo' = lastTo,
     currentSent' = currentSent,
+    tickLast' = false,
+    stayLast' = true,
   }
 
   // The defect that notifies on stay as well.
@@ -137,6 +153,8 @@ module fsm_transition {
     pending' = pending,
     gone' = gone,
     currentSent' = currentSent,
+    tickLast' = false,
+    stayLast' = true,
   }
 
   // The defect that never removes a stopped listener.
@@ -151,6 +169,8 @@ module fsm_transition {
     liveNotified' = liveNotified,
     sentToStopped' = sentToStopped,
     currentSent' = currentSent,
+    tickLast' = false,
+    stayLast' = false,
   }
 
   action step = any {
@@ -162,15 +182,21 @@ module fsm_transition {
   }
 
   // F2/F4: a reported transition reaches exactly the live listeners.
-  val notifiedAreLiveListeners = liveNotified == listeners.exclude(pending)
+  // `liveNotified` records the recipients of the most recent action, so
+  // the delivery properties are stated for the state right after a
+  // transition (`tickLast`) or a stay (`stayLast`); every other action
+  // clears both marks.
+  val notifiedAreLiveListeners = tickLast implies liveNotified == listeners.exclude(pending)
+  val stayNotifiesNobody = stayLast implies liveNotified == Set()
   // F5 (restated): once the notice is processed the stopped listener
   // is out of the set, and a stopped listener never counts as live.
   val stoppedAreOutAfterNotice = gone.intersect(listeners) == Set() or pending != Set()
-  val noLiveDeliveryToStopped = liveNotified.intersect(gone) == Set()
+  val noLiveDeliveryToStopped = tickLast implies liveNotified.intersect(gone) == Set()
   // F4: a subscribe is answered with the current state.
-  val subscribeAnswersCurrent = listeners.subsetOf(currentSent)
+  val subscribeAnswersCurrent = listeners.intersect(currentSent) == listeners
 
   val invariant = notifiedAreLiveListeners
+    and stayNotifiesNobody
     and stoppedAreOutAfterNotice
     and noLiveDeliveryToStopped
     and subscribeAnswersCurrent

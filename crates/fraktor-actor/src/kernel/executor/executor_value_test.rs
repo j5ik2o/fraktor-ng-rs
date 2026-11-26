@@ -247,8 +247,8 @@ fn death_watch_executor() -> Executor {
 #[test]
 fn a_detached_watch_survives_an_old_reference_termination_with_the_same_uid() {
   let mut executor = death_watch_executor();
-  let old = executor.spawn_user(Props::new(|| Guardian));
-  let watcher = executor.spawn_user(Props::new(|| Guardian));
+  let old = executor.try_spawn_user(Props::new(|| Guardian), None).unwrap();
+  let watcher = executor.try_spawn_user(Props::new(|| Guardian), None).unwrap();
   executor.stop(&old);
   let detached = executor.stopped_noop_ref(&old);
   assert_eq!(detached, old);
@@ -277,10 +277,10 @@ impl Actor for TerminationRecorder {
 #[test]
 fn unwatch_cancels_the_queued_notice_without_cancelling_a_new_watch() {
   let mut executor = death_watch_executor();
-  let target = executor.spawn_user(Props::new(|| Guardian));
+  let target = executor.try_spawn_user(Props::new(|| Guardian), None).unwrap();
   let received = Arc::new(Mutex::new(Vec::new()));
   let inbox = received.clone();
-  let watcher = executor.spawn_user(Props::new(move || TerminationRecorder(inbox.clone())));
+  let watcher = executor.try_spawn_user(Props::new(move || TerminationRecorder(inbox.clone())), None).unwrap();
   executor.stop(&target);
   // Force notices through the boundary queue as well as the local executor.
   watcher.tell("queued first", watcher.clone());
@@ -315,12 +315,16 @@ impl Actor for UnwatchBeforeDelivery {
 #[test]
 fn an_actor_can_unwatch_after_the_target_stops_and_before_its_notice_is_delivered() {
   let mut executor = death_watch_executor();
-  let target = executor.spawn_user(Props::new(|| Guardian));
+  let target = executor.try_spawn_user(Props::new(|| Guardian), None).unwrap();
   let observed = Arc::new(Mutex::new(Vec::new()));
   let trace = observed.clone();
   let target_ref = target.clone();
   let watcher = executor
-    .spawn_user(Props::new(move || UnwatchBeforeDelivery { target: target_ref.clone(), observed: trace.clone() }));
+    .try_spawn_user(
+      Props::new(move || UnwatchBeforeDelivery { target: target_ref.clone(), observed: trace.clone() }),
+      None,
+    )
+    .unwrap();
 
   watcher.tell("stop target", watcher.clone());
   executor.run_until_idle();
@@ -867,9 +871,9 @@ fn record_dead_letters(executor: &mut Executor) -> DeadLetterLog {
 fn a_stopped_actor_sends_its_stash_to_dead_letters_with_the_original_senders_in_order() {
   let mut executor = death_watch_executor();
   let delivered = record_dead_letters(&mut executor);
-  let stasher = executor.spawn_user(Props::new(|| StashEverything));
-  let first_sender = executor.spawn_user(Props::new(|| Guardian));
-  let second_sender = executor.spawn_user(Props::new(|| Guardian));
+  let stasher = executor.try_spawn_user(Props::new(|| StashEverything), None).unwrap();
+  let first_sender = executor.try_spawn_user(Props::new(|| Guardian), None).unwrap();
+  let second_sender = executor.try_spawn_user(Props::new(|| Guardian), None).unwrap();
   stasher.tell("a", first_sender.clone());
   stasher.tell("b", second_sender.clone());
   executor.run_until_idle();
@@ -908,13 +912,18 @@ impl Actor for TextRecorder {
 fn a_stash_returned_by_the_stop_hook_reaches_dead_letters_and_other_actors_keep_their_queue() {
   let mut executor = death_watch_executor();
   let delivered = record_dead_letters(&mut executor);
-  let stasher = executor.spawn_user(Props::new(|| UnstashOnStop));
+  let stasher = executor.try_spawn_user(Props::new(|| UnstashOnStop), None).unwrap();
   let received = Arc::new(Mutex::new(Vec::new()));
-  let other = executor.spawn_user(Props::new({
-    let received = received.clone();
-    move || TextRecorder(received.clone())
-  }));
-  let sender = executor.spawn_user(Props::new(|| Guardian));
+  let other = executor
+    .try_spawn_user(
+      Props::new({
+        let received = received.clone();
+        move || TextRecorder(received.clone())
+      }),
+      None,
+    )
+    .unwrap();
+  let sender = executor.try_spawn_user(Props::new(|| Guardian), None).unwrap();
   stasher.tell("a", sender.clone());
   stasher.tell("b", sender.clone());
   executor.run_until_idle();
@@ -952,8 +961,8 @@ fn a_stash_returned_by_a_restart_whose_replacement_fails_reaches_dead_letters() 
   let mut executor = death_watch_executor();
   executor.set_failure_catcher(Arc::new(UnwindCatcher));
   let delivered = record_dead_letters(&mut executor);
-  let stasher = executor.spawn_user(Props::new(|| FailingRestartStasher));
-  let sender = executor.spawn_user(Props::new(|| Guardian));
+  let stasher = executor.try_spawn_user(Props::new(|| FailingRestartStasher), None).unwrap();
+  let sender = executor.try_spawn_user(Props::new(|| Guardian), None).unwrap();
   stasher.tell("a", sender.clone());
   stasher.tell("b", sender.clone());
   stasher.tell("crash", sender.clone());
@@ -967,8 +976,8 @@ fn a_stash_returned_by_a_restart_whose_replacement_fails_reaches_dead_letters() 
 #[test]
 fn stashing_the_newest_stashed_delivery_again_is_refused_and_another_delivery_is_not() {
   let mut executor = death_watch_executor();
-  let owner = executor.spawn_user(Props::new(|| Guardian));
-  let sender = executor.spawn_user(Props::new(|| Guardian));
+  let owner = executor.try_spawn_user(Props::new(|| Guardian), None).unwrap();
+  let sender = executor.try_spawn_user(Props::new(|| Guardian), None).unwrap();
   executor.stash(owner.clone(), 1, Message::new("a"), sender.clone());
 
   let again = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

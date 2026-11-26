@@ -44,19 +44,31 @@ fn counting_fsm(probe: ActorRef) -> Fsm<&'static str, u32> {
     notices.tell(format!("{from}->{to}"), context.self_ref());
   });
   fsm.start_with("start", 0);
-  fsm.when("start", move |context: &mut ActorContext<'_>, _view: &fraktor_actor::kernel::actor::FsmView<&'static str>, event: &Message, data: &u32| {
-    match *event.downcast_ref::<&'static str>()? {
-      | "stay" => Some(FsmState::stay().using(data + 1)),
-      | "same" => {
-        probe.tell(format!("data={data}"), context.self_ref());
-        Some(FsmState::goto("start"))
-      },
-      | "nowhere" => Some(FsmState::goto("nowhere")),
-      | "next" => Some(FsmState::goto("next")),
-      | _ => None,
-    }
-  });
-  fsm.when("next", |_context: &mut ActorContext<'_>, _view: &fraktor_actor::kernel::actor::FsmView<&'static str>, _event: &Message, _data: &u32| None);
+  fsm.when(
+    "start",
+    move |context: &mut ActorContext<'_>,
+          _view: &fraktor_actor::kernel::actor::FsmView<&'static str>,
+          event: &Message,
+          data: &u32| {
+      match *event.downcast_ref::<&'static str>()? {
+        | "stay" => Some(FsmState::stay().using(data + 1)),
+        | "same" => {
+          probe.tell(format!("data={data}"), context.self_ref());
+          Some(FsmState::goto("start"))
+        },
+        | "nowhere" => Some(FsmState::goto("nowhere")),
+        | "next" => Some(FsmState::goto("next")),
+        | _ => None,
+      }
+    },
+  );
+  fsm.when(
+    "next",
+    |_context: &mut ActorContext<'_>,
+     _view: &fraktor_actor::kernel::actor::FsmView<&'static str>,
+     _event: &Message,
+     _data: &u32| None,
+  );
   fsm.initialize();
   fsm
 }

@@ -1,3 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// license agreements; and to You under the Apache License, version 2.0:
+//
+//   https://www.apache.org/licenses/LICENSE-2.0
+//
+// This file is part of the Apache Pekko project, which was derived from Akka.
+//
+// Copyright (C) 2009-2022 Lightbend Inc. <https://www.lightbend.com>
+//
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE and NOTICE
+// at the repository root.
+//
+// This file has been modified from the Apache Pekko original.
+
 // Ported from Pekko v2.0.0:
 //   actor-tests/src/test/scala/org/apache/pekko/actor/ActorConfigurationVerificationSpec.scala
 //
@@ -24,9 +40,9 @@ use std::sync::Arc;
 
 use fraktor_actor::adaptor::ChannelBoundary;
 use fraktor_actor::kernel::actor::{ActorCreationError, ConfigurationException, Props};
+use fraktor_actor::kernel::actor::{PoolKind, RouterConfig};
 use fraktor_actor::kernel::actor_system::ActorSystem;
 use fraktor_actor::kernel::dispatch::{DispatcherConfig, DispatcherKind, Dispatchers};
-use fraktor_actor::kernel::actor::{PoolKind, RouterConfig};
 use fraktor_actor::kernel::setup::ActorSystemSetup;
 
 const SPEC_SYSTEM_NAME: &str = "ActorConfigurationVerificationSpec";
@@ -44,7 +60,9 @@ fn router(pool: PoolKind, router_dispatcher: Option<&str>) -> RouterConfig {
   RouterConfig { pool, nr_of_instances: 5, router_dispatcher: router_dispatcher.map(str::to_string) }
 }
 
-fn expect_configuration_error(result: Result<fraktor_actor::kernel::actor_ref::ActorRef, ActorCreationError>) -> ConfigurationException {
+fn expect_configuration_error(
+  result: Result<fraktor_actor::kernel::actor_ref::ActorRef, ActorCreationError>,
+) -> ConfigurationException {
   match result {
     | Err(ActorCreationError::Configuration(error)) => error,
     | Err(other) => panic!("expected a configuration error, got {other}"),
@@ -143,7 +161,10 @@ fn fails_verification_if_the_dispatcher_cannot_be_found_for_the_head_of_a_router
   let mut system = system_with_dispatchers();
   let props = Props::empty().with_router(router(PoolKind::RoundRobin, Some("does not exist")));
   let error = expect_configuration_error(system.try_actor_of(props, None));
-  assert!(error.to_string().contains("Dispatcher [does not exist] not configured for router of"), "unexpected message: {error}");
+  assert!(
+    error.to_string().contains("Dispatcher [does not exist] not configured for router of"),
+    "unexpected message: {error}"
+  );
   system.terminate();
 }
 
@@ -154,6 +175,9 @@ fn fails_verification_if_the_dispatcher_cannot_be_found_for_the_routees_of_a_rou
   let mut system = system_with_dispatchers();
   let props = Props::empty().with_dispatcher("does not exist").with_router(router(PoolKind::RoundRobin, None));
   let error = expect_configuration_error(system.try_actor_of(props, None));
-  assert!(error.to_string().contains("Dispatcher [does not exist] not configured for routees of"), "unexpected message: {error}");
+  assert!(
+    error.to_string().contains("Dispatcher [does not exist] not configured for routees of"),
+    "unexpected message: {error}"
+  );
   system.terminate();
 }

@@ -357,6 +357,43 @@ impl<'a> ActorContext<'a> {
     target.clone()
   }
 
+  // The `watch` above panics when the pair already carries a custom
+  // message from `watch_with`, as Pekko's `checkWatchingSame` throws.
+
+  /// Registers this actor as a watcher of `target`, with `message` as
+  /// the notice instead of the plain [`Terminated`](crate::kernel::actor::Terminated).
+  ///
+  /// Mirrors `ActorContext.watchWith(ref, message)`, which returns `ref`.
+  /// One (watcher, target) pair carries one notice: calling `watch_with`
+  /// with a different message for a target this actor already watches,
+  /// or calling [`watch`](Self::watch) for a target watched with a
+  /// custom message, is a contract violation and panics, as Pekko's
+  /// `checkWatchingSame` throws `IllegalStateException`. Repeating the
+  /// same registration is idempotent. Message equality is by payload
+  /// type, the strongest comparison the port's erased `Message` offers.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the pair already carries a different notice.
+  pub fn watch_with<M: core::any::Any + Send + Sync>(&mut self, target: &ActorRef, message: M) -> ActorRef {
+    let watcher = self.self_ref();
+    self.executor.watch_with(&watcher, target, Message::new(message));
+    target.clone()
+  }
+
+  /// Returns whether this actor watches `target`.
+  ///
+  /// Mirrors `ActorContext.isWatching(ref)`.
+  pub fn is_watching(&self, target: &ActorRef) -> bool {
+    let watcher = self.self_ref();
+    self.executor.is_watching(&watcher, target)
+  }
+
+  /// Sends an already-built `message` to `target`, naming `sender`.
+  pub(crate) fn tell_message(&mut self, target: &ActorRef, message: Message, sender: ActorRef) {
+    self.executor.send(sender, target, message);
+  }
+
   /// Stops this actor from watching `target`.
   ///
   /// Mirrors `ActorContext.unwatch(ref)`, which returns `ref`. Removing a watch

@@ -26,10 +26,9 @@
 //   `unhandled message from {path}: {message:?}` where Pekko writes
 //   `unhandled message from Actor[{path}]: {message}`.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::sync::Weak;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 
 use fraktor_actor::kernel::actor::{Actor, ActorContext, Props};
 use fraktor_actor::kernel::actor_path::ActorPath;
@@ -67,10 +66,9 @@ fn finds_a_child_actor_with_a_url_encoded_name() {
   let mut probe = TestProbe::new(spec.system_mut());
   let probe_ref = probe.ref_handle();
   let name = "pekko%3A%2F%2FClusterSystem%40127.0.0.1%3A7355";
-  let maker = spec.system_mut().actor_of(Props::new(move || ChildMaker {
-    child_name: name.to_string(),
-    reply_to: probe_ref.clone(),
-  }));
+  let maker = spec
+    .system_mut()
+    .actor_of(Props::new(move || ChildMaker { child_name: name.to_string(), reply_to: probe_ref.clone() }));
 
   maker.tell("make", sender(&spec));
   let child: ActorRef = probe.expect_msg_type();
@@ -135,17 +133,25 @@ fn does_not_retain_the_original_props_when_terminated() {
     impl Actor for HoldingActor {
       fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
     }
-    HoldingActor { _held: _held }
+    HoldingActor { _held }
   }));
   // The factory has run and the actor holds the value.
   assert!(weak.upgrade().is_some());
   drop(captured);
 
   spec.system_mut().stop(&child);
-  spec.await_assert(core::time::Duration::from_secs(3), core::time::Duration::from_millis(10), || {
+  // The port of `awaitAssert`: drive the system until the value is
+  // released, within the same three seconds the original allows.
+  let mut released = false;
+  for _ in 0..300 {
     spec.system_mut().run_until_idle();
-    assert!(weak.upgrade().is_none(), "the stopped actor still holds its original Props' value");
-  });
+    if weak.upgrade().is_none() {
+      released = true;
+      break;
+    }
+    std::thread::sleep(core::time::Duration::from_millis(10));
+  }
+  assert!(released, "the stopped actor still holds its original Props' value");
   spec.terminate();
 }
 

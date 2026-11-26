@@ -1,3 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// license agreements; and to You under the Apache License, version 2.0:
+//
+//   https://www.apache.org/licenses/LICENSE-2.0
+//
+// This file is part of the Apache Pekko project, which was derived from Akka.
+//
+// Copyright (C) 2009-2022 Lightbend Inc. <https://www.lightbend.com>
+//
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE and NOTICE
+// at the repository root.
+//
+// This file has been modified from the Apache Pekko original.
+
 // The exhaustive table for the configuration verification of issue
 // #194 (docs/design/issue-194-specs.md section 6): every combination
 // of pool presence and kind, and of head and routee dispatcher kind,
@@ -50,12 +66,8 @@ fn verification_matches_the_table_for_every_combination() {
     Some(PoolKind::SmallestMailbox),
     Some(PoolKind::ScatterGatherFirstCompleted { within: core::time::Duration::from_secs(1) }),
   ];
-  let choices = [
-    DispatcherChoice::Unspecified,
-    DispatcherChoice::Balancing,
-    DispatcherChoice::Pinned,
-    DispatcherChoice::Missing,
-  ];
+  let choices =
+    [DispatcherChoice::Unspecified, DispatcherChoice::Balancing, DispatcherChoice::Pinned, DispatcherChoice::Missing];
   let mut system = system();
   let mut created = 0usize;
   for pool in &pools {
@@ -80,7 +92,9 @@ fn verification_matches_the_table_for_every_combination() {
         let expect_ok = match pool {
           | None => routee != DispatcherChoice::Missing,
           | Some(_) => {
-            routee != DispatcherChoice::Missing && head != DispatcherChoice::Missing && head != DispatcherChoice::Balancing
+            routee != DispatcherChoice::Missing
+              && head != DispatcherChoice::Missing
+              && head != DispatcherChoice::Balancing
           },
         };
         let before = created;
@@ -108,7 +122,11 @@ fn verification_matches_the_table_for_every_combination() {
 #[test]
 fn router_head_reports_messages_as_unhandled() {
   let mut spec = fraktor_testkit::fraktorspec::FraktorSpec::new("ActorConfigurationVerificationTable");
-  let props = Props::empty().with_router(router(PoolKind::Broadcast, None));
+  let props = Props::empty().with_router(fraktor_actor::kernel::actor::RouterConfig {
+    pool: PoolKind::Broadcast,
+    nr_of_instances: 5,
+    router_dispatcher: None,
+  });
   let head = spec.system_mut().try_actor_of(props, None).expect("the router head is created");
   let dead_letters = spec.system().dead_letters();
   let filter = fraktor_testkit::event_filter::EventFilter::warning()

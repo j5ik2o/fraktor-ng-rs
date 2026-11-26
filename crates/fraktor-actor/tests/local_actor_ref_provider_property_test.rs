@@ -1,3 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// license agreements; and to You under the Apache License, version 2.0:
+//
+//   https://www.apache.org/licenses/LICENSE-2.0
+//
+// This file is part of the Apache Pekko project, which was derived from Akka.
+//
+// Copyright (C) 2009-2022 Lightbend Inc. <https://www.lightbend.com>
+//
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE and NOTICE
+// at the repository root.
+//
+// This file has been modified from the Apache Pekko original.
+
 // The wiring property for name validation of issue #194
 // (docs/design/issue-194-specs.md section 6, property 2): for random
 // names, every creation entry point succeeds exactly when the name is
@@ -26,8 +42,8 @@ impl SplitMix64 {
 
 fn random_name(rng: &mut SplitMix64) -> String {
   const PIECES: &[&str] = &[
-    "a", "B", "3", "-", "_", ".", "*", "$", "+", ":", "@", "&", "=", ",", "!", "~", "'", ";", "]",
-    "%", "%3A", "%2f", "%zz", "?", "ü", "ß", " ", "#", "/", "\"", "<", ">", "(", ")",
+    "a", "B", "3", "-", "_", ".", "*", "$", "+", ":", "@", "&", "=", ",", "!", "~", "'", ";", "]", "%", "%3A", "%2f",
+    "%zz", "?", "ü", "ß", " ", "#", "/", "\"", "<", ">", "(", ")",
   ];
   let count = (rng.next() % 5) as usize;
   let mut name = String::new();
@@ -81,7 +97,11 @@ fn every_entry_point_accepts_exactly_the_valid_names() {
 
     // Entry point 1: the system, by name.
     let system_result = spec.system_mut().actor_of_named(Props::empty(), &name);
-    assert_eq!(system_result.is_ok(), valid, "system entry point disagrees for name {name:?} (seed 0x194, index {index})");
+    assert_eq!(
+      system_result.is_ok(),
+      valid,
+      "system entry point disagrees for name {name:?} (seed 0x194, index {index})"
+    );
     if valid {
       let created = system_result.expect("checked above");
       assert_eq!(created.path().name(), name);
