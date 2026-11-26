@@ -172,18 +172,34 @@ impl WeakActorSystem {
     Executor::lend(&self.upgrade(), |executor| executor.is_actor_terminated(target))
   }
 
-  /// Delivers every message that is waiting until nothing is left.
+  /// Runs every mailbox that has work, and delivers every message waiting at
+  /// the boundary, until nothing is left. A mailbox runs up to the
+  /// throughput of its dispatcher at a time.
   pub fn run_until_idle(&self) {
     Executor::lend(&self.upgrade(), |executor| executor.run_until_idle());
   }
 
-  /// Delivers at most one message and returns whether it delivered one.
+  /// Delivers at most one message of the manually driven dispatcher and
+  /// returns whether it delivered one.
+  ///
+  /// This is a stepping aid for tests that check a deadline between
+  /// messages; it is not one run of a mailbox. A run of a mailbox handles up
+  /// to `throughput` messages; `run_one` hands a single message to a single
+  /// actor and then returns, whatever the throughput of its dispatcher is.
+  /// Use `run_until_idle` to drive the system the way a dispatcher does.
+  ///
+  /// It keeps running ready mailboxes that only have system messages to
+  /// handle until it delivers one message or nothing is ready, so `false`
+  /// means there was nothing left to drive.
   pub fn run_one(&self) -> bool {
     Executor::lend(&self.upgrade(), |executor| executor.run_one())
   }
 
-  /// Waits at most `max` for one message from the boundary and moves it onto
-  /// the local queue. Returns whether a message arrived.
+  /// Waits at most `max` for work for the system: a mailbox with a message
+  /// to handle, a message at the boundary, or a message that one of the
+  /// system's function references handled. Returns whether work came,
+  /// without delivering anything; call `run_one` or `run_until_idle` to
+  /// deliver it.
   pub fn await_envelope(&self, max: Duration) -> bool {
     Executor::lend(&self.upgrade(), |executor| executor.await_envelope(max))
   }

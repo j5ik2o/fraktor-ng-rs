@@ -184,9 +184,12 @@ enum AfterRun {
   Failed { message: String, sender: ActorRef },
   /// `Kill`: the parent decides for a killed child (`handle_kill`).
   Kill,
-  /// A stop: by `stop_and_reply`, or by `PoisonPill`. `sender` is the sender
-  /// of the failed message when the message also failed.
+  /// A stop by `stop_and_reply`. `sender` is the sender of the failed
+  /// message when the message also failed.
   Stop { sender: Option<ActorRef> },
+  /// `PoisonPill`: a stop at the boundary (`stop_at_boundary`), which holds
+  /// the stops that the stop's own hooks ask for until it has finished.
+  PoisonPill,
 }
 
 /// One parent and the facts the executor keeps on its behalf.
@@ -1999,25 +2002,28 @@ impl Executor {
   /// Runs one piece of work and returns whether it handed a normal message to
   /// an actor or delivered an envelope.
   fn run_task(&mut self, task: ManualTask<ActorCell>, budget: Option<Throughput>) -> bool {
-    match task {
+    // A panic out of an envelope's delivery (a function reference's
+    // handler, a hook it reaches) is fatal as one out of a run is.
+    self.in_run = true;
+    let delivered = match task {
       | ManualTask::Envelope(envelope) => {
         self.deliver(envelope, budget);
         true
       },
       | ManualTask::Run(run) => self.run_mailbox(run, budget),
-    }
+    };
+    self.in_run = false;
+    delivered
   }
 
   /// Runs one mailbox, then does what the run left. Returns whether the run
   /// handed a normal message to the actor.
   fn run_mailbox(&mut self, run: MailboxRun<ActorCell>, budget: Option<Throughput>) -> bool {
-    self.in_run = true;
     let report = run.run(self, budget);
     if let MailboxOutcome::Again(again) = report.outcome {
       self.manual.submit(ManualTask::Run(again));
     }
     self.finish_run();
-    self.in_run = false;
     report.delivered > 0
   }
 
@@ -2040,6 +2046,10 @@ impl Executor {
         },
         | AfterRun::Stop { sender } => {
           self.stop_with_sender(&target, sender);
+          false
+        },
+        | AfterRun::PoisonPill => {
+          self.stop_at_boundary(&target);
           false
         },
       };
@@ -2084,7 +2094,7 @@ impl Executor {
       return Next::Yield;
     }
     if message == POISON_PILL {
-      self.after_run = Some((key, AfterRun::Stop { sender: None }));
+      self.after_run = Some((key, AfterRun::PoisonPill));
       return Next::Yield;
     }
     let catcher = self.catcher.clone();
@@ -2216,6 +2226,7 @@ impl Executor {
     self.after_run = None;
     self.in_run = false;
     self.watchers.clear();
+    self.watch_messages.clear();
     self.pending_terminations.clear();
     self.user_children.clear();
     self.pending_stops.clear();
@@ -2305,10 +2316,6 @@ impl Executor {
   /// for that path as the recipient, and a suppressed payload names that
   /// empty reference as the reference that processed it.
   fn deliver_selection(&mut self, path: &ActorPath, message: Message, sender: ActorRef) {
-    if let Some(target) = self.live_actor_at(path) {
-      target.send_message(message, sender);
-      return;
-    }
     if let Some(reference) = self.function_refs.iter().find(|reference| reference.has_path(path)) {
       let target = reference.clone();
       self.send(sender, &target, message);

@@ -1689,4 +1689,98 @@ mod stage3 {
     let waiting = Executor::lend(system.executor_for_test(), |executor| !executor.manual.is_empty());
     assert!(!waiting, "the run of the stopped actor still waits");
   }
+
+  // ----- review of PR #284
+
+  // Pekko resolves a selection when it is sent: a path that names no actor
+  // then gives a dead letter, and an actor created at that path afterwards
+  // does not receive it.
+  #[test]
+  fn a_selection_sent_before_the_actor_exists_does_not_reach_it_later() {
+    let mut system = system("SelectionBeforeCreation");
+    let dead = dead_letters_of(&mut system);
+    let log = new_log();
+    let path = system.dead_letters().path().parent().with_child("user").with_child("worker");
+    let sender = system.dead_letters();
+
+    system.actor_selection(&path).tell("init", sender.clone());
+    let worker = system.actor_of_named(recorder(&log, "worker"), "worker").expect("the name is free");
+    system.actor_selection(&path).tell("start", sender);
+    system.run_until_idle();
+
+    assert_eq!(entries(&log), ["worker:start"]);
+    assert_eq!(entries(&dead), ["init"]);
+    drop(worker);
+  }
+
+  // Starts a child, and stops itself once a child has stopped.
+  struct StopsOnChildTerminated;
+
+  impl Actor for StopsOnChildTerminated {
+    fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+
+    fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+      context.actor_of(Props::new(|| Sink), "child").expect("the child starts");
+    }
+
+    fn supervisor_strategy(&self) -> crate::kernel::supervision::SupervisorStrategy {
+      crate::kernel::supervision::SupervisorStrategy::default_strategy().with_child_terminated(
+        |context: &mut ActorContext<'_>, _child: &ActorRef, _siblings: &[ActorRef]| {
+          let me = context.self_ref();
+          context.stop(&me);
+        },
+      )
+    }
+  }
+
+  // A PoisonPill stops at the boundary, as before stage 3: a stop that the
+  // stop's own child-terminated hook asks for waits until the first stop has
+  // finished, and the actor stops once.
+  #[test]
+  fn a_poison_pill_stops_an_actor_once_when_its_hook_asks_to_stop_it_again() {
+    let mut system = system("PoisonPillOnce");
+    let parent = system.actor_of(Props::new(|| StopsOnChildTerminated));
+    let stopped = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&stopped);
+    let watched = parent.clone();
+    system.downgrade().on_termination(move |actor: &ActorRef| {
+      if actor == &watched {
+        seen.lock().unwrap().push(actor.clone());
+      }
+    });
+
+    parent.tell("PoisonPill", parent.clone());
+    system.run_until_idle();
+
+    assert_eq!(stopped.lock().unwrap().len(), 1, "the parent stopped twice");
+    assert!(system.is_actor_terminated(&parent));
+  }
+
+  // Watches `target` with a custom notice.
+  struct WatchesWith {
+    target: ActorRef,
+  }
+
+  impl Actor for WatchesWith {
+    fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+
+    fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+      context.watch_with(&self.target, "gone");
+    }
+  }
+
+  #[test]
+  fn terminating_releases_mailboxes_that_a_custom_watch_holds() {
+    let mut system = system("ReleaseCustomWatch");
+    let target = system.actor_of(Props::new(|| Sink));
+    let to = target.clone();
+    let watcher = system.actor_of(Props::new(move || WatchesWith { target: to.clone() }));
+    let mailboxes = [target.mailbox_weak(), watcher.mailbox_weak()];
+
+    system.terminate();
+    drop(target);
+    drop(watcher);
+
+    assert!(mailboxes.iter().all(|mailbox| mailbox.upgrade().is_none()), "a custom watch kept a mailbox");
+  }
 }

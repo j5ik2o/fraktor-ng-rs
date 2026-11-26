@@ -9,10 +9,11 @@
 #
 # A is the main commit just before the stage, B the stage's commit, and
 # the optional A0 the pre-stage-0 commit (7ecb3f5) the design also tracks.
-# The bench test itself arrives with the stage, so A and A0 do not have
-# it: when a comparison checkout lacks the file, this script copies it
-# from the B checkout first. The copy is the only change made to those
-# checkouts, and it is test-only code the measured library never sees.
+# The bench test grows with the stages (S5 to S7 from stage 3), so A and
+# A0 may lack it or hold an older copy: unless a comparison checkout holds
+# the same file as B, this script copies B's over it first. The copy is the
+# only change made to those checkouts, and it is test-only code the
+# measured library never sees.
 #
 # A pair whose control loop values drift by more than 5 percent is
 # discarded as machine noise. When fewer than four pairs survive, the
@@ -32,9 +33,9 @@ A0_DIR=${3:-}
 
 BENCH_REL=crates/fraktor-actor/tests/actor_system_send_stage1_bench.rs
 for dir in "$A_DIR" "$A0_DIR"; do
-  if [ -n "$dir" ] && [ ! -f "$dir/$BENCH_REL" ]; then
+  if [ -n "$dir" ] && ! cmp -s "$B_DIR/$BENCH_REL" "$dir/$BENCH_REL"; then
     cp "$B_DIR/$BENCH_REL" "$dir/$BENCH_REL"
-    echo "copied the bench test into $dir (the comparison commits predate it)"
+    echo "copied the bench test of B into $dir (the comparison commit lacks it or holds an older copy)"
   fi
 done
 

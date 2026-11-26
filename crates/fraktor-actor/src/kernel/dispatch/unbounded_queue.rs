@@ -59,7 +59,9 @@ impl MessageQueue for UnboundedQueue {
   }
 
   fn drain(&self) -> Vec<Envelope> {
-    self.envelopes.with(|queue| queue.drain(..).collect())
+    // The queue is swapped out whole, so a closed mailbox keeps no buffer
+    // and no envelope is dropped inside the lock.
+    Vec::from(self.envelopes.with(core::mem::take))
   }
 
   fn enqueue_first(&self, envelopes: Vec<Envelope>) -> Result<(), Vec<Envelope>> {
