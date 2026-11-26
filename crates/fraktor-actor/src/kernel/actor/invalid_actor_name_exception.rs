@@ -40,10 +40,26 @@ impl InvalidActorNameException {
     Self { cause: format!("Actor name [{}] is not unique!", name) }
   }
 
-  /// Creates the error for a name the path validation rejected, carrying
-  /// the message of `ActorPath::validate_path_element` unchanged.
+  /// Creates the error for a name that fails validation, carrying the
+  /// message of `ActorPath::validate_path_element` unchanged.
+  ///
+  /// Mirrors the `InvalidActorNameException` that `Children.checkName`
+  /// and `ActorPath.validatePathElement` raise together in Pekko: the
+  /// entry point checks only for null and empty, and every other
+  /// refusal (a leading `$`, a bad `%` escape, a non-ASCII character, a
+  /// forbidden character and its position) is the one message of
+  /// `validatePathElement`.
   pub fn invalid_name(message: String) -> Self {
     Self { cause: message }
+  }
+
+  /// Creates the error for an empty name.
+  ///
+  /// Mirrors the empty half of `Children.checkName`'s
+  /// "actor name must not be empty" refusal. The null half has no
+  /// counterpart: a Rust `&str` cannot be null.
+  pub fn empty_name() -> Self {
+    Self { cause: String::from("actor name must not be empty") }
   }
 
   /// Creates the error for a parent that is terminating or terminated.

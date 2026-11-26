@@ -7,6 +7,7 @@ actor-tests/src/test/java/org/apache/pekko/event/LoggingAdapterTest.java	no-repo
 actor-tests/src/test/java/org/apache/pekko/pattern/StatusReplyTest.java	no-report
 actor-tests/src/test/java/org/apache/pekko/util/ByteStringTest.java	no-report
 actor-tests/src/test/scala/org/apache/pekko/PekkoVersionSpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/actor/ActorConfigurationVerificationSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/ActorLifeCycleSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/ActorPathSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/ActorTimeoutSpec.scala	no-report
@@ -14,6 +15,7 @@ actor-tests/src/test/scala/org/apache/pekko/actor/ActorWithBoundedStashSpec.scal
 actor-tests/src/test/scala/org/apache/pekko/actor/AddressSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/DeadLetterSupressionSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/DeadLetterSuspensionSpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/actor/FSMTransitionSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/ForwardActorSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/FunctionRefSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/HotSwapSpec.scala	no-report

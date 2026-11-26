@@ -665,7 +665,7 @@ nodes:
     module: actor-tests
     class: ActorConfigurationVerificationSpec
     test_cases_approx: 10
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -676,14 +676,15 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 10
+    ported: 10
+    passing: 10
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/actor_configuration_verification_spec.rs
+  goal: G0issue194
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorCreationPerfSpec.scala
   name: actor-tests:ActorCreationPerfSpec
   kind: test
@@ -2791,25 +2792,26 @@ nodes:
     module: actor-tests
     class: FSMTransitionSpec
     test_cases_approx: 7
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
   needs:
-    testkit: ['extends-pekko-spec', 'pekko-spec', 'test-actor', 'implicit-sender', 'expect-msg', 'expect-no-message', 'within']
+    testkit: ['extends-pekko-spec', 'pekko-spec', 'test-actor', 'implicit-sender', 'expect-msg', 'expect-no-message', 'within', 'watch', 'expect-terminated', 'await-assert']
     premise_flags: []
   depends_on_impl:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 8
+    ported: 8
+    passing: 8
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/fsm_transition_spec.rs
+  goal: G0issue194
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/dispatch/ForkJoinExecutorConfiguratorSpec.scala
   name: actor-tests:ForkJoinExecutorConfiguratorSpec
   kind: test
@@ -3349,13 +3351,13 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 8
+    ported: 7
+    passing: 7
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/local_actor_ref_provider_spec.rs
   goal: null
 - id: actor-tests/src/test/scala/org/apache/pekko/event/LoggerSpec.scala
   name: actor-tests:LoggerSpec
