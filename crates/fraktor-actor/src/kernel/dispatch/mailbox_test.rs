@@ -29,6 +29,7 @@ use crate::kernel::actor_ref::next_actor_ref;
 use crate::kernel::address::Address;
 use crate::kernel::dispatch::MailboxCell;
 use crate::kernel::dispatch::MessageQueue;
+use crate::kernel::dispatch::Next;
 use crate::kernel::dispatch::RunLimits;
 use crate::kernel::dispatch::RunOutcome;
 use crate::kernel::dispatch::SystemMessage;
@@ -47,11 +48,14 @@ struct Keeper {
 }
 
 impl MailboxCell for Keeper {
-  fn invoke(&mut self, _mailbox: &Mailbox<Self>, envelope: Envelope) {
+  type Env = ();
+
+  fn invoke(&mut self, _env: &mut (), _mailbox: &Mailbox<Self>, envelope: Envelope) -> Next {
     self.handled.push(number(&envelope));
+    Next::Continue
   }
 
-  fn system_invoke(&mut self, _mailbox: &Mailbox<Self>, _message: SystemMessage) {}
+  fn system_invoke(&mut self, _env: &mut (), _mailbox: &Mailbox<Self>, _message: SystemMessage) {}
 }
 
 fn envelope(value: u32) -> Envelope {
@@ -243,7 +247,7 @@ fn closing_one_member_leaves_the_shared_queue_to_the_other() {
   assert!(Mailbox::try_schedule(&first).is_none(), "a closed member is never scheduled");
 
   let run = Mailbox::try_schedule(&second).expect("the other member has work");
-  assert!(matches!(run.run(), RunOutcome::Idle));
+  assert!(matches!(run.run(&mut (), None).outcome, RunOutcome::Idle));
   assert_eq!(second.take_cell().handled, [1, 2, 3, 4]);
   assert_eq!(queue.number_of_messages(), 0);
 }

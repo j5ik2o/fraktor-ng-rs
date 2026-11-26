@@ -35,6 +35,7 @@ use crate::kernel::actor_ref::next_actor_ref;
 use crate::kernel::address::Address;
 use crate::kernel::dispatch::Mailbox;
 use crate::kernel::dispatch::MailboxCell;
+use crate::kernel::dispatch::Next;
 use crate::kernel::dispatch::RunLimits;
 use crate::kernel::dispatch::RunOutcome;
 use crate::kernel::dispatch::SystemMessage;
@@ -59,13 +60,16 @@ struct Recorder {
 }
 
 impl MailboxCell for Recorder {
-  fn invoke(&mut self, mailbox: &Mailbox<Self>, envelope: Envelope) {
+  type Env = ();
+
+  fn invoke(&mut self, _env: &mut (), mailbox: &Mailbox<Self>, envelope: Envelope) -> Next {
     let value = *envelope.message().downcast_ref::<u32>().expect("a u32 message");
     self.log.lock().unwrap().push(format!("m{value}"));
     (self.on_message)(mailbox, value);
+    Next::Continue
   }
 
-  fn system_invoke(&mut self, mailbox: &Mailbox<Self>, message: SystemMessage) {
+  fn system_invoke(&mut self, _env: &mut (), mailbox: &Mailbox<Self>, message: SystemMessage) {
     let entry = match message {
       | SystemMessage::Suspend => {
         mailbox.suspend();
@@ -126,7 +130,7 @@ impl Fixture {
       // A mailbox that keeps asking to run without work spins a pool thread
       // (mutation R4 of the design, section 3.10).
       assert!(runs <= 100, "the mailbox keeps running: {:?}", self.log.lock().unwrap());
-      next = match run.run() {
+      next = match run.run(&mut (), None).outcome {
         | RunOutcome::Again(again) => Some(again),
         | RunOutcome::Idle => None,
       };
@@ -147,14 +151,14 @@ fn a_run_handles_at_most_the_throughput_and_asks_to_run_again() {
   }
 
   let run = Mailbox::try_schedule(&fixture.mailbox).expect("there is work");
-  let RunOutcome::Again(run) = run.run() else { panic!("three messages are left") };
+  let RunOutcome::Again(run) = run.run(&mut (), None).outcome else { panic!("three messages are left") };
   assert_eq!(fixture.log(), ["m1", "m2"]);
   // The run that comes back still holds the scheduled bit, so nobody else
   // can schedule the mailbox meanwhile.
   assert!(Mailbox::try_schedule(&fixture.mailbox).is_none());
-  let RunOutcome::Again(run) = run.run() else { panic!("one message is left") };
+  let RunOutcome::Again(run) = run.run(&mut (), None).outcome else { panic!("one message is left") };
   assert_eq!(fixture.log(), ["m3", "m4"]);
-  assert!(matches!(run.run(), RunOutcome::Idle));
+  assert!(matches!(run.run(&mut (), None).outcome, RunOutcome::Idle));
   assert_eq!(fixture.log(), ["m5"]);
   assert!(Mailbox::try_schedule(&fixture.mailbox).is_none(), "nothing is left");
 }
@@ -248,8 +252,8 @@ fn a_message_that_comes_during_the_last_receive_runs_again() {
   fixture.send(1);
 
   let run = Mailbox::try_schedule(&fixture.mailbox).expect("there is work");
-  let RunOutcome::Again(run) = run.run() else { panic!("message 2 came during the run") };
-  assert!(matches!(run.run(), RunOutcome::Idle));
+  let RunOutcome::Again(run) = run.run(&mut (), None).outcome else { panic!("message 2 came during the run") };
+  assert!(matches!(run.run(&mut (), None).outcome, RunOutcome::Idle));
   assert_eq!(fixture.log(), ["m1", "m2"]);
 }
 
@@ -263,7 +267,7 @@ fn a_run_without_the_actor_in_its_slot_panics() {
   let run = Mailbox::try_schedule(&fixture.mailbox).expect("there is work");
   let _actor = fixture.mailbox.take_cell();
 
-  let _ = run.run();
+  let _ = run.run(&mut (), None).outcome;
 }
 
 // The actor is put back when `receive` panics, so the next run does not take
@@ -279,7 +283,7 @@ fn the_actor_is_put_back_when_receive_panics() {
   fixture.send(13);
   let run = Mailbox::try_schedule(&fixture.mailbox).expect("there is work");
 
-  let unwound = panic::catch_unwind(panic::AssertUnwindSafe(|| run.run()));
+  let unwound = panic::catch_unwind(panic::AssertUnwindSafe(|| run.run(&mut (), None).outcome));
 
   assert!(unwound.is_err());
   let actor = fixture.mailbox.take_cell();
@@ -314,10 +318,10 @@ fn a_run_stops_taking_messages_after_the_deadline() {
   }
 
   let run = Mailbox::try_schedule(&fixture.mailbox).expect("there is work");
-  let RunOutcome::Again(run) = run.run() else { panic!("messages are left") };
+  let RunOutcome::Again(run) = run.run(&mut (), None).outcome else { panic!("messages are left") };
   // 1.5 ms after the first message, 3 ms after the second: past 2 ms.
   assert_eq!(fixture.log(), ["m1", "m2"]);
-  assert!(matches!(run.run(), RunOutcome::Idle));
+  assert!(matches!(run.run(&mut (), None).outcome, RunOutcome::Idle));
   assert_eq!(fixture.log(), ["m3", "m4"]);
 }
 

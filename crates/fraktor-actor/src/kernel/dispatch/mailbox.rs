@@ -24,8 +24,10 @@ use crate::kernel::dispatch::mailbox_status::MailboxStatus;
 use crate::kernel::dispatch::MailboxCell;
 use crate::kernel::dispatch::MailboxRun;
 use crate::kernel::dispatch::MessageQueue;
+use crate::kernel::dispatch::Next;
 use crate::kernel::dispatch::RunLimits;
 use crate::kernel::dispatch::SystemMessage;
+use crate::kernel::dispatch::Throughput;
 use crate::kernel::message::Envelope;
 use crate::kernel::sync::Arc;
 use crate::kernel::sync::LockCell;
@@ -267,27 +269,33 @@ impl<C: MailboxCell> Mailbox<C> {
   /// emptied after it, so a message that arrives meanwhile raises the flag
   /// again and is handled before the next normal message. When the flag is
   /// down, it costs one load and no lock.
-  pub(crate) fn process_all_system_messages(&self, cell: &mut C) {
+  pub(crate) fn process_all_system_messages(&self, cell: &mut C, env: &mut C::Env) {
     while !self.status.is_closed() && self.status.has_system_messages() {
       self.status.clear_system_flag();
       while !self.status.is_closed() {
         let Some(message) = self.gate.with(VecDeque::pop_front) else { break };
-        cell.system_invoke(self, message);
+        cell.system_invoke(env, self, message);
       }
     }
   }
 
-  /// Hands normal messages to the actor, up to the throughput and the
-  /// deadline, and handles the system messages that arrive after each one
-  /// (Pekko's `processMailbox`). It looks at the flag, not at the system
-  /// queue, after each message.
-  pub(crate) fn process_mailbox(&self, cell: &mut C) {
-    let mut left = self.limits.throughput().messages();
+  /// Hands normal messages to the actor, up to the throughput (or `budget`
+  /// when one is given) and the deadline, and handles the system messages
+  /// that arrive after each one (Pekko's `processMailbox`). It looks at the
+  /// flag, not at the system queue, after each message. A message after which
+  /// the actor yields ends the run there. Returns how many messages it took.
+  pub(crate) fn process_mailbox(&self, cell: &mut C, env: &mut C::Env, budget: Option<Throughput>) -> usize {
+    let mut left = budget.unwrap_or(self.limits.throughput()).messages();
     let deadline = self.limits.deadline_from_now();
+    let mut delivered = 0;
     while self.status.should_process_message() {
       let Some(envelope) = self.queue.dequeue() else { break };
-      cell.invoke(self, envelope);
-      self.process_all_system_messages(cell);
+      let next = cell.invoke(env, self, envelope);
+      delivered += 1;
+      self.process_all_system_messages(cell, env);
+      if next == Next::Yield {
+        break;
+      }
       let before_deadline = match deadline {
         | None => true,
         | Some((at, clock)) => clock.monotonic() < at,
@@ -298,5 +306,6 @@ impl<C: MailboxCell> Mailbox<C> {
         break;
       }
     }
+    delivered
   }
 }

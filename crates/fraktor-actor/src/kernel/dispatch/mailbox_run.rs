@@ -19,6 +19,8 @@
 use crate::kernel::dispatch::Mailbox;
 use crate::kernel::dispatch::MailboxCell;
 use crate::kernel::dispatch::RunOutcome;
+use crate::kernel::dispatch::RunReport;
+use crate::kernel::dispatch::Throughput;
 use crate::kernel::sync::Arc;
 
 #[cfg(test)]
@@ -53,25 +55,26 @@ impl<C: MailboxCell> MailboxRun<C> {
   /// 5. reserves the mailbox again, in case a message came while the bit was
   ///    set.
   ///
-  /// Returns [`RunOutcome::Again`] when step 5 won the bit, with the bit still
-  /// set, and [`RunOutcome::Idle`] when it lost: nothing is left to do, or
-  /// another caller won it and submits the mailbox itself.
-  pub fn run(self) -> RunOutcome<C> {
+  /// `env` is what the run lends the actor, and `budget`, when given, takes
+  /// the place of the mailbox's throughput (`run_one` passes one).
+  ///
+  /// The outcome is [`RunOutcome::Again`] when step 5 won the bit, with the
+  /// bit still set, and [`RunOutcome::Idle`] when it lost: nothing is left to
+  /// do, or another caller won it and submits the mailbox itself.
+  pub fn run(self, env: &mut C::Env, budget: Option<Throughput>) -> RunReport<C> {
     let mailbox = &*self.mailbox;
+    let mut delivered = 0;
     {
       let mut guard = CellGuard { mailbox, cell: Some(mailbox.take_cell()) };
       let cell = guard.cell.as_mut().expect("the guard holds the cell until it is dropped");
       if !mailbox.is_closed() {
-        mailbox.process_all_system_messages(cell);
-        mailbox.process_mailbox(cell);
+        mailbox.process_all_system_messages(cell, env);
+        delivered = mailbox.process_mailbox(cell, env, budget);
       }
     }
     mailbox.set_as_idle();
-    if mailbox.reserve() {
-      RunOutcome::Again(self)
-    } else {
-      RunOutcome::Idle
-    }
+    let outcome = if mailbox.reserve() { RunOutcome::Again(self) } else { RunOutcome::Idle };
+    RunReport { outcome, delivered }
   }
 }
 
