@@ -16,33 +16,25 @@
 
 //! The spellings an actor name can be passed in.
 
-use alloc::string::String;
+use super::actor_name_arg_seal::ActorNameArgSeal;
 
 /// A name argument for [`ActorSystem::actor_of_named`](super::ActorSystem::actor_of_named).
 ///
 /// Pekko's `actorOf(props, name)` takes a `String`, and `null` refuses
-/// the creation. A Rust caller can hold the name as a `&str`, as a
-/// `&String`, or as an `Option<&str>`, where `None` stands for Pekko's
-/// `null`. The earlier `impl Into<Option<&str>>` form refused
-/// `&String`, because trait matching does not apply the `&String` to
-/// `&str` deref coercion, so this conversion is its own trait. There is
-/// no `Option<&String>` spelling: a bare `None` must keep resolving to
-/// `Option<&str>`, and a second `Option` implementation would make
-/// that call ambiguous.
-pub trait ActorNameArg<'name> {
+/// the creation. A Rust caller can hold the name as any reference to a
+/// string (`&str`, `&String`, `&Box<str>`, `&Cow<str>`, `&&str`, and so
+/// on), or as an `Option<&str>`, where `None` stands for Pekko's `null`.
+///
+/// The trait is sealed: only the spellings this crate provides
+/// implement it.
+pub trait ActorNameArg<'name>: ActorNameArgSeal {
   /// Returns the name, or `None` for Pekko's `null` name.
   fn into_option(self) -> Option<&'name str>;
 }
 
-impl<'name> ActorNameArg<'name> for &'name str {
+impl<'name, S: AsRef<str> + ?Sized> ActorNameArg<'name> for &'name S {
   fn into_option(self) -> Option<&'name str> {
-    Some(self)
-  }
-}
-
-impl<'name> ActorNameArg<'name> for &'name String {
-  fn into_option(self) -> Option<&'name str> {
-    Some(self.as_str())
+    Some(self.as_ref())
   }
 }
 
@@ -51,3 +43,7 @@ impl<'name> ActorNameArg<'name> for Option<&'name str> {
     self
   }
 }
+
+impl<S: AsRef<str> + ?Sized> ActorNameArgSeal for &S {}
+
+impl ActorNameArgSeal for Option<&str> {}
