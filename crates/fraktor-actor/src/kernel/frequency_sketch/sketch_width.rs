@@ -1,6 +1,6 @@
 //! The validated number of counters per sketch row.
 
-use super::{Bits, FrequencySketchError};
+use super::{bits::Bits, FrequencySketchError};
 
 // The number of counters per row: a positive power of two that fits in an
 // `i32`, so a hash masked with `width - 1` picks a counter.

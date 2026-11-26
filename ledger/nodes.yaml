@@ -2928,6 +2928,11 @@ nodes:
   rust:
     crate: fraktor-actor
     test_file: crates/fraktor-actor/tests/frequency_sketch_spec.rs
+    cases_outside_test_file:
+    - case: 'FrequencySketch must: detect width overflow that would have been missed by Int arithmetic'
+      file: crates/fraktor-actor/src/kernel/frequency_sketch/frequency_sketch_value_test.rs
+    - case: 'FastFrequencySketch must: detect width overflow that would have been missed by Int arithmetic'
+      file: crates/fraktor-actor/src/kernel/frequency_sketch/fast_frequency_sketch_test.rs
   goal: G0issue177
   verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/FunctionRefSpec.scala

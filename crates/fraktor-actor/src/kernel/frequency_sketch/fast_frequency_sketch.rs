@@ -47,6 +47,13 @@ impl<A: ?Sized, H: FrequencySketchHasher<A> + Default> FastFrequencySketch<A, H>
   /// power of two, and the reset size is `settings.reset_multiplier` times
   /// `capacity`, capped at `i32::MAX`.
   ///
+  /// A capacity of zero or below is accepted, as the original accepts it: it
+  /// rounds up to one, so the width is `settings.width_multiplier`, and the
+  /// reset size is zero or below, which disables the reset, unless the reset
+  /// multiplier is negative too and the product is positive. `i32::MIN` alone
+  /// rounds up to `i32::MIN`, so with a positive width multiplier it gives
+  /// [`FrequencySketchError::WidthNotPositive`].
+  ///
   /// # Errors
   ///
   /// Returns [`FrequencySketchError`] when the width overflows `i32` or is not

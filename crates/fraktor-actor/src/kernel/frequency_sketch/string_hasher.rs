@@ -1,6 +1,6 @@
 //! The seeded MurmurHash3 string hash of the configurable sketch.
 
-use super::{murmur3::Murmur3, FrequencySketchHasher};
+use super::{hasher_seal::HasherSeal, murmur3::Murmur3, FrequencySketchHasher};
 
 #[cfg(test)]
 #[path = "string_hasher_test.rs"]
@@ -34,6 +34,8 @@ impl Default for StringHasher {
     Self::new(Self::DEFAULT_SEED)
   }
 }
+
+impl HasherSeal for StringHasher {}
 
 impl FrequencySketchHasher<str> for StringHasher {
   fn hash(&self, value: &str) -> i32 {
