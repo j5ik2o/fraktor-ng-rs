@@ -16,7 +16,11 @@
 方針：判定は 2 値。「迷うもの」は Pekko 由来へ倒し、要確認の印と理由を付ける。
 人の決定（docs/design/issue-206-origin-decisions.tsv）は機械の判定の後に重ね、列
 `付けるSPDX` と `決定の出典` に出す。`MIT OR Apache-2.0` はファイルごとの決定でしか付かない。
-決定の無い「自分で書いた」は `保留` である（元帥の決定 1、2026-11-26）。
+決定の無い「自分で書いた」は `保留` である（元帥の決定 1、2026-11-26）。ただし
+`保留` は、既存のファイルで出どころが決まらないものの区分である。新しく足す
+ファイルは、自作も含めて、まず `Apache-2.0` とする（元帥の規則、2026-11-26）。
+そのため、前の一覧に無い crates のファイルには「要確認」の印を付け、決定 2 の
+一括の決定で `Apache-2.0` と出す。印は次回以降の作り直しでも引き継ぐ。
 
 crates の Pekko 由来の行には、ヘッダーへ表示を写す元の `原典ファイル` と、原典のファイル先頭
 にある第三者の表示（`第三者の表示`）も出す。
@@ -133,6 +137,48 @@ def target_files(repo):
             continue
         others.append(posix)
     return crates, others
+
+
+# 新規ファイルの印の理由。この文面が前の一覧に残っている行は、次回以降も
+# 新規ファイルとして扱い、印を引き継ぐ（作り直しで `保留` へ戻らないように）。
+NEW_FILE_REASON = "新規ファイル：前の一覧に無いファイルは、自作も含めて Apache-2.0 とする（元帥の規則、2026-11-26）"
+
+
+def previous_rows(path):
+    """既存の出力 TSV を path → (要確認, 要確認の理由) で読む。ファイルが無ければ空。"""
+    if not path.is_file():
+        return {}
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not lines:
+        return {}
+    header = lines[0].split("\t")
+    path_i = header.index("path")
+    flag_i = header.index("要確認")
+    reason_i = header.index("要確認の理由")
+    out = {}
+    for line in lines[1:]:
+        if not line:
+            continue
+        cells = line.split("\t")
+        out[cells[path_i]] = (cells[flag_i], cells[reason_i])
+    return out
+
+
+def mark_new_files(rows, previous):
+    """新規ファイルに「要確認」の印を付け、決定 2 の一括で `Apache-2.0` と出す。
+
+    対象は crates の行だけである。前の一覧に無い行が新規ファイルであり、
+    前の行に新規ファイルの印の理由が残っている行は印を引き継ぐ。既に別の
+    理由で印が付いている行は、そのままにする（一括の決定は同じく当たる）。
+    """
+    marked = []
+    for rel, scope, verdict, kind, snippet, flag, reason in rows:
+        if scope == "crates" and not flag:
+            before = previous.get(rel)
+            if before is None or before[1] == NEW_FILE_REASON:
+                flag, reason = "要確認", NEW_FILE_REASON
+        marked.append((rel, scope, verdict, kind, snippet, flag, reason))
+    return marked
 
 
 def build_rows(repo, ledger, pekko):
@@ -283,6 +329,7 @@ def main(argv=None):
     with open_pekko(args.pekko.resolve(), args.pekko_tree) as pekko:
         ledger = ledger_index(repo)
         rows, texts = build_rows(repo, ledger, pekko)
+        rows = mark_new_files(rows, previous_rows(args.out_tsv))
         decided = apply_decisions(rows, load_decisions(decisions_path), decisions_path.name)
         origins = build_origins(rows, texts, ledger, pekko)
         hashes = build_notice_hashes(rows, decided, origins, pekko)
