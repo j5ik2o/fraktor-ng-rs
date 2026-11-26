@@ -2997,7 +2997,7 @@ nodes:
     module: actor-tests
     class: GlobSpec
     test_cases_approx: 6
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -3008,14 +3008,15 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 6
+    ported: 6
+    passing: 6
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/glob_spec.rs
+  goal: G0issue186
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/HotSwapSpec.scala
   name: actor-tests:HotSwapSpec
   kind: test
@@ -3078,7 +3079,7 @@ nodes:
     module: actor-tests
     class: ImmutableIntMapSpec
     test_cases_approx: 10
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -3089,14 +3090,16 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 10
+    ported: 10
+    passing: 10
     excluded: []
+    not_built: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/immutable_int_map_spec.rs
+  goal: G0issue188
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/util/IndexSpec.scala
   name: actor-tests:IndexSpec
   kind: test
@@ -3843,7 +3846,7 @@ nodes:
     module: actor-tests
     class: PrettyDurationSpec
     test_cases_approx: 3
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -3854,14 +3857,15 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 13
+    ported: 13
+    passing: 13
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/pretty_duration_spec.rs
+  goal: G0issue186
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/serialization/PrimitivesSerializationSpec.scala
   name: actor-tests:PrimitivesSerializationSpec
   kind: test
@@ -4765,25 +4769,26 @@ nodes:
     module: actor-tests
     class: SwitchSpec
     test_cases_approx: 6
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
   needs:
     testkit: []
-    premise_flags: ['thread-sleep']
+    premise_flags: []
   depends_on_impl:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 6
+    ported: 6
+    passing: 6
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/switch_spec.rs
+  goal: G0issue186
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/dispatch/sysmsg/SystemMessageListSpec.scala
   name: actor-tests:SystemMessageListSpec
   kind: test
@@ -5026,7 +5031,7 @@ nodes:
     module: actor-tests
     class: TokenBucketSpec
     test_cases_approx: 12
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -5037,14 +5042,16 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 12
+    ported: 12
+    passing: 12
     excluded: []
+    not_built: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/token_bucket_spec.rs
+  goal: G0issue188
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/TypedActorSpec.scala
   name: actor-tests:TypedActorSpec
   kind: test
