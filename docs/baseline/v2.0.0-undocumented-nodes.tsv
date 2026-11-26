@@ -11,8 +11,8 @@ actor-tests/src/test/scala/org/apache/pekko/actor/ActorLifeCycleSpec.scala	no-re
 actor-tests/src/test/scala/org/apache/pekko/actor/ActorPathSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/ActorTimeoutSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/AddressSpec.scala	no-report
-actor-tests/src/test/scala/org/apache/pekko/actor/DeadLetterSupressionSpec.scala	unclassified
-actor-tests/src/test/scala/org/apache/pekko/actor/DeadLetterSuspensionSpec.scala	unclassified
+actor-tests/src/test/scala/org/apache/pekko/actor/DeadLetterSupressionSpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/actor/DeadLetterSuspensionSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/ForwardActorSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/HotSwapSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/RelativeActorPathSpec.scala	no-report
