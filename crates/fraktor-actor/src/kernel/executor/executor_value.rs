@@ -24,6 +24,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
@@ -46,12 +47,16 @@ use crate::kernel::actor::DeadLetter;
 use crate::kernel::actor::DeadLetterSettings;
 use crate::kernel::actor::DeadLettersShared;
 use crate::kernel::actor::FunctionRef;
+use crate::kernel::actor::Identify;
 use crate::kernel::actor::InvalidActorNameException;
 use crate::kernel::actor::Logging::Error;
 use crate::kernel::actor::Logging::EventSink;
 use crate::kernel::actor::Logging::Info;
 use crate::kernel::actor::Logging::Warning;
 use crate::kernel::actor::Props;
+use crate::kernel::actor::ReceiveTimeout;
+use crate::kernel::actor::ReceiveTimeoutSetting;
+use crate::kernel::actor::ReceiveTimeoutState;
 use crate::kernel::actor::StashOverflowException;
 use crate::kernel::actor::Terminated;
 use crate::kernel::actor::UnhandledMessage;
@@ -425,6 +430,10 @@ pub(crate) struct Executor {
   dispatchers: Dispatchers,
   watch_messages: Vec<(ActorRef, ActorRef, Message)>,
   user_children: BTreeMap<String, ActorRef>,
+  not_influence_receive_timeout: BTreeSet<core::any::TypeId>,
+  receive_timeouts: BTreeMap<ActorKey, ReceiveTimeoutState>,
+  receive_timeout_index: BTreeMap<(Duration, ActorKey), u32>,
+  receive_timeout_indexed: BTreeMap<ActorKey, Duration>,
 }
 
 impl Executor {
@@ -484,6 +493,10 @@ impl Executor {
       dispatchers: Dispatchers::with_defaults(),
       watch_messages: Vec::new(),
       user_children: BTreeMap::new(),
+      not_influence_receive_timeout: BTreeSet::new(),
+      receive_timeouts: BTreeMap::new(),
+      receive_timeout_index: BTreeMap::new(),
+      receive_timeout_indexed: BTreeMap::new(),
     };
     executor.function_refs.push(executor.dead_letters.clone());
     executor
@@ -816,7 +829,36 @@ impl Executor {
   /// override is useful with a custom boundary or a clock a test drives by
   /// hand. The standard channel boundary already supplies monotonic time.
   pub(crate) fn set_clock(&mut self, clock: Arc<dyn Clock>) {
+    let previous_now = self.now_opt();
+    let installed_now = clock.monotonic();
     self.clock = Some(clock);
+    let Some(previous_now) = previous_now else {
+      return;
+    };
+    // A deadline is a point on the clock that measured it. Reading the
+    // same point on the installed clock would fire the timeout early or
+    // late by the distance between the two clocks, so every scheduled
+    // deadline keeps the remaining time it had on the previous clock.
+    let keys: alloc::vec::Vec<ActorKey> = self.receive_timeout_indexed.keys().copied().collect();
+    for key in keys {
+      let moved = match self.receive_timeouts.get_mut(&key) {
+        | Some(state) => match state.scheduled() {
+          | Some((deadline, _)) => {
+            let remaining = deadline.saturating_sub(previous_now);
+            match installed_now.checked_add(remaining) {
+              | Some(new_deadline) => state.move_deadline(new_deadline),
+              | None => state.cancel_task(),
+            }
+            true
+          },
+          | None => false,
+        },
+        | None => false,
+      };
+      if moved {
+        self.sync_receive_timeout_index(key);
+      }
+    }
   }
 
   /// Returns the monotonic time that a finite restart window uses.
@@ -834,6 +876,190 @@ impl Executor {
       if !limit.forbids_restart() {
         self.now();
       }
+    }
+  }
+
+  /// Returns the monotonic time of the installed clock, or of the
+  /// boundary when no clock is installed, or `None` when neither exists.
+  fn now_opt(&self) -> Option<Duration> {
+    self.clock.as_ref().map(|clock| clock.monotonic()).or_else(|| self.boundary.monotonic_time())
+  }
+
+  /// Panics when a finite receive timeout cannot be timed.
+  ///
+  /// A finite receive timeout is never silently left unfired: without a
+  /// monotonic clock there is no way to tell when it comes due, so the
+  /// call that sets it fails with this reason instead.
+  pub(crate) fn require_receive_timeout_clock(&self) {
+    if self.now_opt().is_none() {
+      panic!("a finite receive timeout needs a monotonic clock, but this system has none");
+    }
+  }
+
+  /// Registers a payload type whose messages do not influence the receive
+  /// timeout, as `register_dead_letter_suppression` does for its table.
+  pub(crate) fn register_not_influence_receive_timeout(&mut self, id: core::any::TypeId) {
+    self.not_influence_receive_timeout.insert(id);
+  }
+
+  /// Returns whether `message` does not influence the receive timeout:
+  /// the built-in `Identify`, or a type registered with
+  /// [`ActorSystem::register_not_influence_receive_timeout`](crate::kernel::actor_system::ActorSystem::register_not_influence_receive_timeout).
+  ///
+  /// Mirrors `ReceiveTimeoutCompat.isNotInfluenceReceiveTimeout`, which
+  /// looks at the concrete `Identify` class first and then at the marker.
+  pub(crate) fn is_not_influence_receive_timeout(&self, message: &Message) -> bool {
+    message.is::<Identify>() || self.not_influence_receive_timeout.contains(&message.payload_type_id())
+  }
+
+  /// Records the receive timeout `key`'s actor set last.
+  ///
+  /// Mirrors `ActorContext.setReceiveTimeout` reaching the cell's
+  /// `dungeon.ReceiveTimeout`: the executor keeps the state because the
+  /// context only borrows it while a call runs.
+  pub(crate) fn set_receive_timeout(&mut self, key: ActorKey, timeout: ReceiveTimeoutSetting) {
+    match self.receive_timeouts.get_mut(&key) {
+      | Some(state) => state.set_receive_timeout(timeout),
+      | None => {
+        self.receive_timeouts.insert(key, ReceiveTimeoutState::new(timeout));
+      },
+    }
+    // A setting that is not finite leaves nothing to fire: the scheduled
+    // task is cancelled here, not only at the check after the handling,
+    // so a firing step that runs inside the handling (a child-terminated
+    // hook, for one) cannot send the firing the old setting scheduled.
+    // A `ReceiveTimeout` that already reached the mailbox is untouched
+    // and is always delivered, as in the original.
+    if !matches!(timeout, ReceiveTimeoutSetting::Finite(_)) {
+      if let Some(state) = self.receive_timeouts.get_mut(&key) {
+        state.cancel_task();
+      }
+    }
+    self.sync_receive_timeout_index(key);
+  }
+
+  /// Returns the receive timeout `key`'s actor set last, or
+  /// [`ReceiveTimeoutSetting::Undefined`] when it never set one.
+  pub(crate) fn receive_timeout_setting(&self, key: ActorKey) -> ReceiveTimeoutSetting {
+    self.receive_timeouts.get(&key).map_or(ReceiveTimeoutSetting::Undefined, |state| state.setting())
+  }
+
+  /// Keeps the deadline index in step with the state of `key`: the old
+  /// row is removed at once, and the new one is inserted when a firing is
+  /// scheduled, so the index never holds a stale row.
+  fn sync_receive_timeout_index(&mut self, key: ActorKey) {
+    if let Some(old) = self.receive_timeout_indexed.remove(&key) {
+      self.receive_timeout_index.remove(&(old, key));
+    }
+    if let Some(state) = self.receive_timeouts.get(&key) {
+      if let Some((deadline, _)) = state.scheduled() {
+        self.receive_timeout_index.insert((deadline, key), state.version());
+        self.receive_timeout_indexed.insert(key, deadline);
+      }
+    }
+  }
+
+  /// Runs `cancelReceiveTimeoutIfNeeded` for the handling of one message
+  /// of `key`'s actor and returns the version from before the handling.
+  fn receive_timeout_before(&mut self, key: ActorKey, influences: bool) -> u32 {
+    let version = match self.receive_timeouts.get_mut(&key) {
+      | Some(state) => {
+        if influences {
+          state.cancel_task();
+        }
+        state.version()
+      },
+      | None => 0,
+    };
+    self.sync_receive_timeout_index(key);
+    version
+  }
+
+  /// Runs `checkReceiveTimeoutIfNeeded` after one handling of `key`'s
+  /// actor: the check runs when the actor has timeout state, or when the
+  /// handling changed it.
+  fn receive_timeout_after(&mut self, key: ActorKey, influences: bool, before: u32) {
+    let changed = self.receive_timeouts.get(&key).map_or(0, |state| state.version()) != before;
+    if self.receive_timeouts.contains_key(&key) || changed {
+      self.check_receive_timeout(key, influences || changed);
+    }
+  }
+
+  /// Runs `checkReceiveTimeout` for `key`'s actor.
+  fn check_receive_timeout(&mut self, key: ActorKey, reschedule: bool) {
+    let finite =
+      matches!(self.receive_timeouts.get(&key).map(|state| state.setting()), Some(ReceiveTimeoutSetting::Finite(_)));
+    let now = if finite {
+      match self.now_opt() {
+        | Some(now) => now,
+        // The call that set the timeout already required a clock. A
+        // boundary that stops reporting time afterwards leaves the
+        // timeout unchecked here instead of panicking: some callers run
+        // this check with the actor's cell out of its mailbox, where a
+        // panic would lose the cell.
+        | None => return,
+      }
+    } else {
+      Duration::ZERO
+    };
+    if let Some(state) = self.receive_timeouts.get_mut(&key) {
+      state.check(reschedule, now);
+    }
+    self.sync_receive_timeout_index(key);
+  }
+
+  /// Drops the receive timeout state of `key`'s actor, as `terminate` and
+  /// `faultCreate` cancel the timeout in the original.
+  fn clear_receive_timeout(&mut self, key: ActorKey) {
+    self.receive_timeouts.remove(&key);
+    self.sync_receive_timeout_index(key);
+  }
+
+  /// Returns the earliest scheduled receive timeout deadline.
+  fn earliest_receive_timeout_deadline(&self) -> Option<Duration> {
+    self.receive_timeout_index.keys().next().map(|(deadline, _)| *deadline)
+  }
+
+  /// Fires every receive timeout whose deadline has come, earliest
+  /// first: the deadline is consumed and one `ReceiveTimeout` goes to
+  /// the actor's mailbox, where it is an ordinary message that is always
+  /// delivered, however the setting changes afterwards.
+  fn fire_due_receive_timeouts(&mut self) {
+    loop {
+      // With nothing scheduled the clock is not read at all.
+      if self.receive_timeout_index.is_empty() {
+        return;
+      }
+      let Some(now) = self.now_opt() else {
+        return;
+      };
+      let Some((&(deadline, key), &version)) = self.receive_timeout_index.iter().next() else {
+        return;
+      };
+      if deadline > now {
+        return;
+      }
+      self.receive_timeout_index.remove(&(deadline, key));
+      self.receive_timeout_indexed.remove(&key);
+      let fired = match self.receive_timeouts.get_mut(&key) {
+        | Some(state) => match state.scheduled() {
+          | Some((scheduled_deadline, timeout)) if scheduled_deadline == deadline && state.version() == version => {
+            state.mark_fired();
+            Some(timeout)
+          },
+          | _ => None,
+        },
+        | None => None,
+      };
+      let Some(timeout) = fired else {
+        continue;
+      };
+      let Some(entry) = self.actors.get(&key) else {
+        continue;
+      };
+      let target = entry.self_ref.clone();
+      let sender = target.clone();
+      self.send(sender, &target, Message::new(ReceiveTimeout::new(timeout)));
     }
   }
 
@@ -1394,8 +1620,12 @@ impl Executor {
     };
     self.exit_frame();
     match outcome {
-      | RunOutcome::Completed => cell.restore_stack(stack),
+      | RunOutcome::Completed => {
+        self.check_receive_timeout(self_ref.key(), true);
+        cell.restore_stack(stack);
+      },
       | RunOutcome::Failed { message } => {
+        self.clear_receive_timeout(self_ref.key());
         mailbox.suspend();
         cell.record_start_failure();
         if self.after_run.is_none() {
@@ -1466,6 +1696,12 @@ impl Executor {
   /// boundary, which keeps its handler from running again, stops its
   /// children, and tells its watchers once the last child has gone.
   pub(crate) fn stop(&mut self, target: &ActorRef) {
+    // The stop is decided: the timeout the actor armed is cancelled at
+    // once, so no firing step can send a `ReceiveTimeout` into the
+    // closing mailbox while the stop waits for the children to go.
+    // `finish_terminate` clears it again at the end, because a
+    // `post_stop` can set a timeout that must not survive either.
+    self.clear_receive_timeout(target.key());
     if self.function_refs.contains(target) {
       self.stop_function_ref(target);
       return;
@@ -1539,6 +1775,7 @@ impl Executor {
     self.notify_watchers(&target, true, false);
     self.run_termination_callbacks(&target);
     self.flush_deferred_replies(&target);
+    self.clear_receive_timeout(target.key());
     if let Some(entry) = self.actors.remove(&target.key()) {
       self.held_failures -= entry.supervision.as_ref().map_or(0, |record| record.held.len());
       drop(entry);
@@ -1599,6 +1836,10 @@ impl Executor {
     let strategy = entry.strategy.clone();
     let siblings = self.open_children_of(&parent);
     let mut stack = cell.take_stack();
+    // The hook stands in for the `Terminated` the original's cell handles
+    // as an auto-received message, so the receive timeout is cancelled
+    // before it and checked after it, as `invoke` does for a message.
+    let timeout_before = self.receive_timeout_before(parent.key(), true);
     self.hook_child_creation_refused = false;
     self.enter_frame(&parent);
     let catcher = self.catcher.clone();
@@ -1613,6 +1854,18 @@ impl Executor {
       }
     };
     self.exit_frame();
+    // A stop the hook asked for its own actor wins over the timeout it
+    // set, as in `invoke`: `stop` has already cleared the timeout when
+    // it queued the `Terminate`, so the check below finds no state for
+    // a closing actor and fires nothing into its mailbox. A parent that
+    // is already stopping (it handled its `Terminate` and waits for its
+    // children) is in the same position: the timeout its hook set is
+    // neither rescheduled nor fired, because the firing would land in
+    // the closing mailbox and go to dead letters when the stop finishes.
+    if !self.is_terminating(&parent) {
+      self.receive_timeout_after(parent.key(), true, timeout_before);
+      self.fire_due_receive_timeouts();
+    }
     cell.restore_stack(stack);
     let refused = core::mem::replace(&mut self.hook_child_creation_refused, false);
     if matches!(outcome, RunOutcome::Failed { .. }) || refused {
@@ -2100,6 +2353,7 @@ impl Executor {
   /// throughput at a time (design of #234, section 3.9).
   pub(crate) fn run_until_idle(&mut self) {
     loop {
+      self.fire_due_receive_timeouts();
       self.take_one_from_boundary();
       let Some(task) = self.manual.pop() else {
         return;
@@ -2117,6 +2371,7 @@ impl Executor {
   /// throughput of one, and a run that handles only system messages, or finds
   /// nothing to do, does not count, so the next piece of work runs.
   pub(crate) fn run_one(&mut self) -> bool {
+    self.fire_due_receive_timeouts();
     self.take_one_from_boundary();
     while let Some(task) = self.manual.pop() {
       if self.run_task(task, Some(Throughput::new(1))) {
@@ -2171,6 +2426,7 @@ impl Executor {
     }
     self.release_held_failures();
     self.finish_boundary();
+    self.fire_due_receive_timeouts();
   }
 
   /// Hands one normal message to the actor of `cell` (Pekko's
@@ -2200,14 +2456,23 @@ impl Executor {
       return Next::Yield;
     }
     if message == POISON_PILL {
+      self.clear_receive_timeout(cell.key());
       let _ = mailbox.system_enqueue(SystemMessage::Terminate);
       return Next::Continue;
     }
     let key = cell.key();
+    let influences = !self.is_not_influence_receive_timeout(&message);
+    let timeout_before = self.receive_timeout_before(key, influences);
     let catcher = self.catcher.clone();
     self.running.push(key);
     let (outcome, sender) = cell.receive(self, message, sender, catcher.as_deref());
     self.exit_frame();
+    // A stop the handling asked for has already cancelled the
+    // timeout: `stop` clears it when it queues the `Terminate`, so
+    // the check below finds no state for a closing actor and fires
+    // nothing into its mailbox.
+    self.receive_timeout_after(key, influences, timeout_before);
+    self.fire_due_receive_timeouts();
     match outcome {
       | RunOutcome::Completed => {
         if self.pending_decider_failures.is_empty() {
@@ -2252,6 +2517,7 @@ impl Executor {
   /// #234, section 11.11.6). A boundary without a signal is polled for `max`,
   /// and what it gives waits for the next run.
   pub(crate) fn await_envelope(&mut self, max: Duration) -> bool {
+    self.fire_due_receive_timeouts();
     let arrived = self.arrivals.as_ref().map_or(0, |arrivals| arrivals.count());
     let has_work = |executor: &Self| {
       !executor.manual.is_empty()
@@ -2261,43 +2527,77 @@ impl Executor {
     if has_work(self) {
       return true;
     }
+    // The wait is cut at the earliest receive timeout deadline: a wait
+    // that the deadline cuts short fires the timeout, puts its message
+    // in the mailbox, and returns `true`, as a wait that work ends does.
+    let wait_cap = match self.earliest_receive_timeout_deadline() {
+      | Some(deadline) => match self.now_opt() {
+        | Some(now) => max.min(deadline.saturating_sub(now)),
+        | None => max,
+      },
+      | None => max,
+    };
     let Some(arrivals) = self.arrivals.clone() else {
       // Without a signal, a send to a mailbox from another thread wakes
       // nothing: the boundary is polled in short slices, and the mailboxes
       // are looked at between them.
       let mut waited = Duration::ZERO;
-      while waited < max {
-        let slice = (max - waited).min(POLL_SLICE);
+      while waited < wait_cap {
+        let slice = (wait_cap - waited).min(POLL_SLICE);
         if let Some(envelope) = self.boundary.poll_within(slice) {
           self.manual.submit(ManualTask::Envelope(envelope));
           return true;
         }
         waited += slice;
+        self.fire_due_receive_timeouts();
         if has_work(self) {
           return true;
         }
       }
-      return false;
+      self.fire_due_receive_timeouts();
+      return has_work(self);
     };
-    let Some(start) = self.boundary.monotonic_time() else {
+    let Some(start) = self.now_opt() else {
       // Without a clock, a wait that a stale signal ends is started again
-      // for `max`; only a wait that sees no signal at all ends with `false`.
-      while arrivals.wait(max) {
+      // for the capped wait; only a wait that sees no signal at all ends
+      // with `false`.
+      while arrivals.wait(wait_cap) {
         if has_work(self) {
           return true;
         }
       }
       return has_work(self);
     };
-    let deadline = start.saturating_add(max);
+    // The cap was measured before `start` was read; time that passed
+    // between the two readings would otherwise delay the firing by the
+    // same amount. Measure the cap again from `start`: a deadline that
+    // has already come fires at once, without waiting.
+    let wait_cap = match self.earliest_receive_timeout_deadline() {
+      | Some(deadline) if deadline <= start => {
+        self.fire_due_receive_timeouts();
+        return has_work(self);
+      },
+      | Some(deadline) => max.min(deadline - start),
+      | None => max,
+    };
+    let deadline = start.saturating_add(wait_cap);
     loop {
-      let now = self.boundary.monotonic_time().unwrap_or(deadline);
+      let now = self.now_opt().unwrap_or(deadline);
       if now >= deadline {
+        self.fire_due_receive_timeouts();
         return has_work(self);
       }
-      arrivals.wait(deadline - now);
+      let signaled = arrivals.wait(deadline - now);
+      self.fire_due_receive_timeouts();
       if has_work(self) {
         return true;
+      }
+      if !signaled {
+        // The real wait ran out without a signal. A clock the caller
+        // drives by hand does not advance while this thread waits, so
+        // waiting again on the same reading would never end: the wait
+        // is over, as it is when the clock itself reaches the deadline.
+        return has_work(self);
       }
     }
   }
@@ -2350,6 +2650,9 @@ impl Executor {
     self.watch_messages.clear();
     self.pending_terminations.clear();
     self.user_children.clear();
+    self.receive_timeouts.clear();
+    self.receive_timeout_index.clear();
+    self.receive_timeout_indexed.clear();
     self.pending_decider_failures.clear();
     self.running.clear();
     self.termination_callbacks.clear();
@@ -3010,6 +3313,7 @@ impl Executor {
     match restarted {
       | RunOutcome::Completed => {
         self.resume_mailbox(&target);
+        self.check_receive_timeout(target.key(), true);
         for child in survivors {
           if let Some(child_cell) = self.take_cell(&child) {
             self.restart_cell(&child, child_cell, cause.clone(), None, true);

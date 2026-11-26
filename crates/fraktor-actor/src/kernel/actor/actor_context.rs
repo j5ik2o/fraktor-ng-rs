@@ -27,6 +27,7 @@ use crate::kernel::actor::BehaviorStack;
 use crate::kernel::actor::FunctionRef;
 use crate::kernel::actor::InvalidActorNameException;
 use crate::kernel::actor::Props;
+use crate::kernel::actor::ReceiveTimeoutSetting;
 use crate::kernel::actor::Running;
 use crate::kernel::actor::StashOverflowException;
 use crate::kernel::actor_ref::ActorRef;
@@ -454,6 +455,25 @@ impl<'a> ActorContext<'a> {
   /// the target's own run handles it.
   pub fn stop(&mut self, target: &ActorRef) {
     self.executor.stop(target);
+  }
+
+  /// Sets the receive timeout of this actor.
+  ///
+  /// Mirrors `ActorContext.setReceiveTimeout`. Callable from `pre_start`,
+  /// `post_restart`, and `receive`, as in Pekko.
+  pub fn set_receive_timeout(&mut self, timeout: ReceiveTimeoutSetting) {
+    if matches!(timeout, ReceiveTimeoutSetting::Finite(_)) {
+      self.executor.require_receive_timeout_clock();
+    }
+    let key = self.self_ref.key();
+    self.executor.set_receive_timeout(key, timeout);
+  }
+
+  /// Returns the receive timeout this actor set last.
+  ///
+  /// Mirrors `ActorContext.receiveTimeout`.
+  pub fn receive_timeout(&self) -> ReceiveTimeoutSetting {
+    self.executor.receive_timeout_setting(self.self_ref.key())
   }
 
   /// Asks every child to stop, as the default restart hook does before it

@@ -38,6 +38,7 @@ use crate::kernel::actor::DeadLetterSettings;
 use crate::kernel::actor::DeadLetterSuppression;
 use crate::kernel::actor::Dropped;
 use crate::kernel::actor::FunctionRef;
+use crate::kernel::actor::NotInfluenceReceiveTimeout;
 use crate::kernel::actor::Props;
 use crate::kernel::actor::SuppressedDeadLetter;
 use crate::kernel::actor::UnhandledMessage;
@@ -484,6 +485,26 @@ impl ActorSystem {
   /// listener.
   pub fn register_dead_letter_suppression<T: core::any::Any + DeadLetterSuppression>(&self) {
     Executor::lend(&self.executor, |executor| executor.register_dead_letter_suppression(core::any::TypeId::of::<T>()));
+  }
+
+  /// Registers `T` as a message type that does not influence the receive
+  /// timeout.
+  ///
+  /// Mirrors the marker trait `NotInfluenceReceiveTimeout` in Pekko. Call
+  /// before the first message is delivered in this system.
+  pub fn register_not_influence_receive_timeout<T: core::any::Any + NotInfluenceReceiveTimeout>(&self) {
+    Executor::lend(&self.executor, |executor| {
+      executor.register_not_influence_receive_timeout(core::any::TypeId::of::<T>())
+    });
+  }
+
+  /// Returns whether `message` does not influence the receive timeout.
+  ///
+  /// Test-only view of the classification, mirroring the `private[pekko]`
+  /// `ReceiveTimeoutCompat`. Not a public API promise.
+  #[cfg(feature = "test-support")]
+  pub fn is_not_influence_receive_timeout(&self, message: &crate::kernel::message::Message) -> bool {
+    Executor::lend(&self.executor, |executor| executor.is_not_influence_receive_timeout(message))
   }
 
   /// Starts the dead letter listener with `settings` and returns its
