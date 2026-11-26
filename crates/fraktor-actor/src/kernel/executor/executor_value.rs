@@ -60,12 +60,25 @@ use crate::kernel::actor_ref::next_actor_ref;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::dispatch::DispatcherKind;
 use crate::kernel::dispatch::Dispatchers;
+use crate::kernel::dispatch::Mailbox;
+use crate::kernel::dispatch::MailboxCell;
+use crate::kernel::dispatch::MailboxRun;
+use crate::kernel::dispatch::ManualExecutor;
+use crate::kernel::dispatch::ManualTask;
+use crate::kernel::dispatch::Next;
+use crate::kernel::dispatch::RunLimits;
+use crate::kernel::dispatch::RunOutcome as MailboxOutcome;
+use crate::kernel::dispatch::SystemMessage;
+use crate::kernel::dispatch::Throughput;
+use crate::kernel::dispatch::UnboundedQueue;
 use crate::kernel::dispatch::DEFAULT_DISPATCHER_ID;
 use crate::kernel::event::DeadLetterListener;
 use crate::kernel::event::EventStream;
 use crate::kernel::executor::ActorCell;
+use crate::kernel::executor::ArrivalNotice;
 use crate::kernel::executor::FunctionBoundary;
-use crate::kernel::executor::ShardQueue;
+use crate::kernel::executor::LiveActors;
+use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
 use crate::kernel::supervision::Directive;
@@ -75,7 +88,9 @@ use crate::kernel::supervision::RestartHistory;
 use crate::kernel::supervision::RestartLimit;
 use crate::kernel::supervision::RunOutcome;
 use crate::kernel::supervision::SupervisorStrategy;
+use crate::kernel::sync::lock;
 use crate::kernel::sync::Arc;
+use crate::kernel::sync::SpinLockFactory;
 use crate::kernel::sync::Weak;
 use crate::kernel::Clock;
 
@@ -129,10 +144,49 @@ const HANDLE_CHILD_TERMINATED_FAILED_CAUSE: &str = "IllegalStateException";
 /// hook.
 const HANDLE_CHILD_TERMINATED_FAILED_MESSAGE: &str = "handleChildTerminated failed";
 
+/// The throughput of the dispatcher a test drives by hand, as Pekko's default
+/// (`reference.conf:622`).
+const MANUAL_THROUGHPUT: u32 = 5;
+
 /// A reply to send to `reply_to` after the actor it was registered on stops.
 struct DeferredReply {
   reply_to: ActorRef,
   message: Message,
+}
+
+/// The key the executor finds an actor's entry by: the identifier and the
+/// generation of its handle.
+type ActorKey = (u64, u32);
+
+/// What one actor of the system is, in one place (design of #234, section
+/// 11.11.3).
+///
+/// The cell itself lives in the mailbox, which a run takes it out of. What
+/// the executor reads and writes while the actor handles a message (the
+/// stash, the replies it deferred, what it holds as a parent) stays here,
+/// with the executor, until a context can borrow the cell it runs in
+/// (stage 4).
+struct ActorEntry {
+  self_ref: ActorRef,
+  mailbox: Arc<Mailbox<ActorCell>>,
+  stash: Vec<(u64, Envelope)>,
+  capacities: (CapacityLimit, CapacityLimit),
+  supervision: Option<ParentEntry>,
+  deferred_replies: Vec<DeferredReply>,
+}
+
+/// What a run left for the executor, to do once the run has returned
+/// (design of #234, section 11.11.2).
+enum AfterRun {
+  /// `receive` failed under the catcher. `message` is the cause, `sender` the
+  /// sender of the failed message, which `apply_failure` hands to the hooks as
+  /// `sender()`.
+  Failed { message: String, sender: ActorRef },
+  /// `Kill`: the parent decides for a killed child (`handle_kill`).
+  Kill,
+  /// A stop: by `stop_and_reply`, or by `PoisonPill`. `sender` is the sender
+  /// of the failed message when the message also failed.
+  Stop { sender: Option<ActorRef> },
 }
 
 /// One parent and the facts the executor keeps on its behalf.
@@ -199,18 +253,26 @@ pub(crate) fn validate_actor_name(name: &str) -> Result<(), InvalidActorNameExce
 /// Creates actors of one shard, runs their messages, and owns their state.
 ///
 /// Mirrors the role of `org.apache.pekko.actor.ActorCell` together with a
-/// dispatcher, reduced to the temporary policy of this port: one shard per
-/// executor, a local queue inside the shard, and a `ShardBoundary` only at the
-/// edge. The executor alone owns the cells; a caller only holds `ActorRef`
-/// handles.
+/// dispatcher a caller drives by hand: every actor has its own mailbox, a
+/// mailbox that has work waits in the [`ManualExecutor`], and a
+/// `ShardBoundary` carries what has no mailbox (design of #234, section
+/// 11.11). The executor alone owns the actors' entries; a caller only holds
+/// `ActorRef` handles.
 ///
 /// The executor also owns whether the system has been terminated. Keeping that
 /// one fact here lets every entry that starts a new actor, including the ones
 /// that reach the executor through a weak handle, refuse the request with the
 /// same cause as Pekko.
 pub(crate) struct Executor {
-  cells: Vec<ActorCell>,
-  queue: ShardQueue,
+  actors: BTreeMap<ActorKey, ActorEntry>,
+  ref_parents: Vec<ParentEntry>,
+  boundary: Arc<dyn ShardBoundary>,
+  manual: Arc<ManualExecutor<ActorCell>>,
+  live: Arc<LiveActors>,
+  arrivals: Option<Arc<ArrivalNotice>>,
+  after_run: Option<(ActorKey, AfterRun)>,
+  in_run: bool,
+  fatal: bool,
   root: ActorPath,
   watchers: Vec<(ActorRef, ActorRef)>,
   pending_terminations: Vec<Arc<PendingTermination>>,
@@ -218,12 +280,10 @@ pub(crate) struct Executor {
   catcher: Option<Arc<dyn FailureCatcher>>,
   event_sink: Arc<spin::Mutex<Option<Arc<dyn EventSink>>>>,
   event_stream: Option<EventStream>,
-  deferred_replies: Vec<(ActorRef, DeferredReply)>,
-  parents: Vec<ParentEntry>,
   pending_stops: Vec<ActorRef>,
   pending_decider_failures: Vec<(ActorRef, String)>,
   pending_child_terminated: Vec<(ActorRef, ActorRef)>,
-  running: Vec<ActorRef>,
+  running: Vec<ActorKey>,
   termination_callbacks: Vec<TerminationCallback>,
   dead_letters: ActorRef,
   dead_letters_shared: Arc<DeadLettersShared>,
@@ -232,10 +292,8 @@ pub(crate) struct Executor {
   hook_child_creation_refused: bool,
   terminated: bool,
   clock: Option<Arc<dyn Clock>>,
-  stashes: Vec<(ActorRef, Vec<(u64, Envelope)>)>,
   next_delivery: u64,
   dispatch_settings: Option<DispatchSettings>,
-  actor_capacities: Vec<(ActorRef, CapacityLimit, CapacityLimit)>,
   function_parents: Vec<(ActorRef, ActorRef)>,
   function_watching: Vec<(ActorRef, ActorRef)>,
   root_guardian: ActorRef,
@@ -247,7 +305,7 @@ pub(crate) struct Executor {
 }
 
 impl Executor {
-  pub(crate) fn new(root: ActorPath, boundary: Arc<dyn crate::kernel::executor::ShardBoundary>) -> Self {
+  pub(crate) fn new(root: ActorPath, boundary: Arc<dyn ShardBoundary>) -> Self {
     let dead_letters_shared = Arc::new(DeadLettersShared::new());
     let dead_letters = Self::create_dead_letters(&root, dead_letters_shared.clone());
     // The guardians are handles without cells: Pekko's guardians are
@@ -259,9 +317,20 @@ impl Executor {
     let root_guardian = next_actor_ref(root.clone(), boundary.clone());
     let user_guardian = next_actor_ref(root.with_child("user"), boundary.clone());
     let system_guardian = next_actor_ref(root.with_child("system"), boundary.clone());
+    let signal = boundary.wake_signal();
+    let key = Arc::as_ptr(&boundary) as *const () as usize;
+    let manual = Arc::new(ManualExecutor::new(key, signal.clone(), &SpinLockFactory));
+    let arrivals = signal.map(|signal| Arc::new(ArrivalNotice::new(signal)));
     let mut executor = Self {
-      cells: Vec::new(),
-      queue: ShardQueue::new(boundary),
+      actors: BTreeMap::new(),
+      ref_parents: Vec::new(),
+      boundary,
+      manual,
+      live: Arc::new(LiveActors::new(&SpinLockFactory)),
+      arrivals,
+      after_run: None,
+      in_run: false,
+      fatal: false,
       root,
       watchers: Vec::new(),
       pending_terminations: Vec::new(),
@@ -269,8 +338,6 @@ impl Executor {
       catcher: None,
       event_sink: Arc::new(spin::Mutex::new(None)),
       event_stream: None,
-      deferred_replies: Vec::new(),
-      parents: Vec::new(),
       pending_stops: Vec::new(),
       pending_decider_failures: Vec::new(),
       pending_child_terminated: Vec::new(),
@@ -283,10 +350,8 @@ impl Executor {
       hook_child_creation_refused: false,
       terminated: false,
       clock: None,
-      stashes: Vec::new(),
       next_delivery: 0,
       dispatch_settings: None,
-      actor_capacities: Vec::new(),
       function_parents: Vec::new(),
       function_watching: Vec::new(),
       root_guardian,
@@ -298,6 +363,96 @@ impl Executor {
     };
     executor.function_refs.push(executor.dead_letters.clone());
     executor
+  }
+
+  /// Returns the entry of `target`, while the actor has not stopped.
+  fn entry(&self, target: &ActorRef) -> Option<&ActorEntry> {
+    self.actors.get(&target.key())
+  }
+
+  fn entry_mut(&mut self, target: &ActorRef) -> Option<&mut ActorEntry> {
+    self.actors.get_mut(&target.key())
+  }
+
+  /// Returns whether the cell of `target` is in its mailbox: the actor has
+  /// not stopped, and neither a run nor the executor has the cell out.
+  fn has_cell(&self, target: &ActorRef) -> bool {
+    self.entry(target).is_some_and(|entry| entry.mailbox.has_cell())
+  }
+
+  /// Takes the cell of `target` out of its mailbox, when it is there.
+  fn take_cell(&self, target: &ActorRef) -> Option<ActorCell> {
+    self.entry(target)?.mailbox.try_take_cell()
+  }
+
+  /// Puts a cell the executor took out back into its mailbox.
+  fn put_cell(&self, cell: ActorCell) {
+    let entry = self.actors.get(&cell.key()).expect("an actor keeps its entry until it stops");
+    entry.mailbox.put_back_cell(cell);
+  }
+
+  /// Reads the cell of `target` while it is in its mailbox.
+  fn with_cell<R>(&self, target: &ActorRef, read: impl FnOnce(&ActorCell) -> R) -> Option<R> {
+    self.entry(target)?.mailbox.with_cell(read)
+  }
+
+  /// Changes the cell of `target` while it is in its mailbox.
+  fn with_cell_mut<R>(&self, target: &ActorRef, change: impl FnOnce(&mut ActorCell) -> R) -> Option<R> {
+    self.entry(target)?.mailbox.with_cell_mut(change)
+  }
+
+  /// Returns the handles of the actors whose cell is in its mailbox and
+  /// passes `filter`, in the order the actors were created.
+  fn cells_where(&self, filter: impl Fn(&ActorCell) -> bool) -> Vec<ActorRef> {
+    self
+      .actors
+      .values()
+      .filter(|entry| entry.mailbox.with_cell(&filter) == Some(true))
+      .map(|entry| entry.self_ref.clone())
+      .collect()
+  }
+
+  /// Returns the children of `parent` whose cell is in its mailbox.
+  fn children_of(&self, parent: &ActorRef) -> Vec<ActorRef> {
+    self.cells_where(|cell| cell.is_child_of(parent))
+  }
+
+  /// Returns what the executor keeps for `parent` as a parent. A function
+  /// reference has no entry, so its record is kept apart.
+  fn parent_entry(&self, parent: &ActorRef) -> Option<&ParentEntry> {
+    match self.actors.get(&parent.key()) {
+      | Some(entry) => entry.supervision.as_ref(),
+      | None => self.ref_parents.iter().find(|entry| &entry.parent == parent),
+    }
+  }
+
+  fn parent_entry_mut(&mut self, parent: &ActorRef) -> Option<&mut ParentEntry> {
+    match self.actors.get_mut(&parent.key()) {
+      | Some(entry) => entry.supervision.as_mut(),
+      | None => self.ref_parents.iter_mut().find(|entry| &entry.parent == parent),
+    }
+  }
+
+  fn insert_parent_entry(&mut self, record: ParentEntry) {
+    match self.actors.get_mut(&record.parent.key()) {
+      | Some(entry) => entry.supervision = Some(record),
+      | None => self.ref_parents.push(record),
+    }
+  }
+
+  /// Returns whether `target` belongs to this system: its mailbox is run by
+  /// this executor, or it posts to this system's boundary.
+  fn is_local(&self, target: &ActorRef) -> bool {
+    target.belongs_to(&self.manual, &self.boundary)
+  }
+
+  /// Creates the boundary of a function reference, which tells a waiting
+  /// caller when its handler has run.
+  fn function_boundary(&self, boundary: FunctionBoundary) -> Arc<dyn ShardBoundary> {
+    match &self.arrivals {
+      | Some(arrivals) => Arc::new(boundary.with_arrivals(Arc::clone(arrivals))),
+      | None => Arc::new(boundary),
+    }
   }
 
   /// Registers `callback` to run with the handle of every actor that stops.
@@ -385,7 +540,7 @@ impl Executor {
   /// (which carries envelopes addressed to it), so it never borrows the
   /// executor when it sends.
   pub(crate) fn actor_selection(&self, path: ActorPath) -> ActorSelection {
-    ActorSelection::new(self.queue.boundary().clone(), self.dead_letters.clone(), path)
+    ActorSelection::new(self.boundary.clone(), self.dead_letters.clone(), path, Arc::downgrade(&self.live))
   }
 
   /// Starts the dead letter listener with `settings` and returns its
@@ -402,7 +557,7 @@ impl Executor {
     let shared = self.dead_letters_shared.clone();
     let dead_letters = self.dead_letters.clone();
     let clock = self.clock.clone();
-    let boundary = self.queue.boundary().clone();
+    let boundary = self.boundary.clone();
     let now_of = Arc::new(move || -> Duration {
       match clock.as_ref() {
         | Some(clock) => clock.monotonic(),
@@ -412,7 +567,7 @@ impl Executor {
     let bus = self.event_stream.as_ref().map(|stream| stream.downgrade());
     let sink = self.event_sink.clone();
     let state = Arc::new(spin::Mutex::new(DeadLetterListener::new(settings, dead_letters.clone())));
-    let post_boundary = self.queue.boundary().clone();
+    let post_boundary = self.boundary.clone();
     let listener = self.function_ref("DeadLetterListener", move |_: &ActorRef, message: Message| {
       let Some(event) = AnyDeadLetter::from_message(&message) else {
         return;
@@ -457,8 +612,7 @@ impl Executor {
   {
     self.assert_running();
     let path = self.root.with_child("system").with_child(name);
-    let boundary: Arc<dyn crate::kernel::executor::ShardBoundary> =
-      Arc::new(crate::kernel::executor::FunctionBoundary::new(Arc::new(handler)));
+    let boundary = self.function_boundary(FunctionBoundary::new(Arc::new(handler)));
     let reference = next_actor_ref(path, boundary);
     self.function_refs.push(reference.clone());
     reference
@@ -487,7 +641,7 @@ impl Executor {
       .clock
       .as_ref()
       .map(|clock| clock.monotonic())
-      .or_else(|| self.queue.boundary().monotonic_time())
+      .or_else(|| self.boundary.monotonic_time())
       .expect("a finite restart window needs a monotonic clock")
   }
 
@@ -587,16 +741,13 @@ impl Executor {
     if let Some(guardian) = self.guardian_for_path(path) {
       return guardian;
     }
-    if let Some(cell) = self.cells.iter().find(|cell| &cell.self_ref().path() == path) {
-      return cell.self_ref();
+    if let Some(reference) = self.live_actor_at(path) {
+      return reference;
     }
-    if let Some(running) = self.running.iter().find(|running| &running.path() == path) {
-      return running.clone();
-    }
-    if let Some(reference) = self.function_refs.iter().find(|reference| &reference.path() == path) {
+    if let Some(reference) = self.function_refs.iter().find(|reference| reference.has_path(path)) {
       return reference.clone();
     }
-    next_actor_ref(path.clone(), self.queue.boundary().clone())
+    next_actor_ref(path.clone(), self.boundary.clone())
   }
 
   /// Returns the guardian handle for a guardian `path`, when it is one.
@@ -624,12 +775,7 @@ impl Executor {
   /// Returns the (mailbox, stash) capacities resolved for `owner` when
   /// it was spawned, both unlimited when no definition applied.
   fn capacities_of(&self, owner: &ActorRef) -> (CapacityLimit, CapacityLimit) {
-    self
-      .actor_capacities
-      .iter()
-      .find(|(held, _, _)| held == owner)
-      .map(|(_, mailbox, stash)| (*mailbox, *stash))
-      .unwrap_or((CapacityLimit::Unlimited, CapacityLimit::Unlimited))
+    self.entry(owner).map_or((CapacityLimit::Unlimited, CapacityLimit::Unlimited), |entry| entry.capacities)
   }
 
   /// Publishes a [`DeadLetter`] for `message` on the event stream and
@@ -679,7 +825,7 @@ impl Executor {
       | None => props,
     };
     let reference = self.spawn_at(head_props, path, None, SupervisorStrategy::default_strategy(), false);
-    if name.is_some() && self.cells.iter().rev().any(|cell| cell.accepts(&reference)) {
+    if name.is_some() && self.has_cell(&reference) {
       self.user_children.insert(label, reference.clone());
     }
     Ok(reference)
@@ -699,7 +845,7 @@ impl Executor {
     strategy: SupervisorStrategy,
   ) -> ActorRef {
     assert!(
-      !self.parents.iter().any(|entry| &entry.parent == parent && entry.stopping),
+      !self.parent_entry(parent).is_some_and(|entry| entry.stopping),
       "{}",
       InvalidActorNameException::terminating()
     );
@@ -739,27 +885,30 @@ impl Executor {
     // a broken alias chain is a configuration error and panics, as the
     // original's `ConfigurationException` does, while an undefined name
     // keeps the unlimited behaviour.
-    let (mailbox_capacity, stash_capacity) = match &self.dispatch_settings {
+    let capacities = match &self.dispatch_settings {
       | Some(settings) => match settings.resolve_capacities(props.dispatcher(), props.mailbox()) {
         | Ok(capacities) => capacities,
         | Err(error) => panic!("{error}"),
       },
       | None => (CapacityLimit::Unlimited, CapacityLimit::Unlimited),
     };
-    let self_ref = next_actor_ref(path, self.queue.boundary().clone());
-    // Only a bounded actor needs an entry: an actor whose capacities
-    // both resolved to unlimited reads as unlimited without one, so
-    // a system without bounded definitions does not grow the table
-    // on every spawn. Moving the capacities onto the cell itself waits
-    // for the per-actor mailbox of #234, where the mailbox moves there
-    // too.
-    if mailbox_capacity != CapacityLimit::Unlimited || stash_capacity != CapacityLimit::Unlimited {
-      self.actor_capacities.push((self_ref.clone(), mailbox_capacity, stash_capacity));
-    }
+    let queue = Arc::new(UnboundedQueue::new(&SpinLockFactory));
+    let limits = RunLimits::new(Throughput::new(MANUAL_THROUGHPUT));
+    let mailbox = Arc::new(Mailbox::for_actor(queue, limits, &SpinLockFactory, Arc::downgrade(&self.manual)));
+    let self_ref = ActorRef::for_mailbox(next_actor_id(), Arc::new(path), Arc::clone(&mailbox));
     let cell = ActorCell::pending(self_ref.clone(), parent, props, strategy, strategy_inherited);
-    self.cells.push(cell);
-    let index = self.cells.len() - 1;
-    self.create_initial(index);
+    mailbox.put_back_cell(cell);
+    let entry = ActorEntry {
+      self_ref: self_ref.clone(),
+      mailbox,
+      stash: Vec::new(),
+      capacities,
+      supervision: None,
+      deferred_replies: Vec::new(),
+    };
+    self.actors.insert(self_ref.key(), entry);
+    self.live.insert(self_ref.clone());
+    self.create_initial(&self_ref);
     self_ref
   }
 
@@ -770,9 +919,9 @@ impl Executor {
   /// out of the table while the parent handles a message.
   pub(crate) fn register_parent_strategy(&mut self, parent: ActorRef, strategy: SupervisorStrategy) {
     self.require_restart_clock(&strategy);
-    match self.parents.iter_mut().find(|entry| entry.parent == parent) {
+    match self.parent_entry_mut(&parent) {
       | Some(entry) => entry.strategy = strategy,
-      | None => self.parents.push(ParentEntry { parent, strategy, children: Vec::new(), stopping: false }),
+      | None => self.insert_parent_entry(ParentEntry { parent, strategy, children: Vec::new(), stopping: false }),
     }
   }
 
@@ -790,8 +939,7 @@ impl Executor {
     props: Props,
     name: &str,
   ) -> Result<ActorRef, InvalidActorNameException> {
-    let Some(strategy) = self.parents.iter().find(|entry| &entry.parent == parent).map(|entry| entry.strategy.clone())
-    else {
+    let Some(strategy) = self.parent_entry(parent).map(|entry| entry.strategy.clone()) else {
       return Err(InvalidActorNameException::terminating());
     };
     self.spawn_named_child_under(parent, props, name, strategy, true)
@@ -813,11 +961,11 @@ impl Executor {
     name: &str,
     strategy: SupervisorStrategy,
   ) -> Result<ActorRef, InvalidActorNameException> {
-    if self.parents.iter().all(|entry| &entry.parent != parent) {
+    if self.parent_entry(parent).is_none() {
       if !self.is_live(parent) {
         return Err(InvalidActorNameException::terminating());
       }
-      self.parents.push(ParentEntry {
+      self.insert_parent_entry(ParentEntry {
         parent: parent.clone(),
         strategy: strategy.clone(),
         children: Vec::new(),
@@ -841,21 +989,21 @@ impl Executor {
     strategy: SupervisorStrategy,
     strategy_inherited: bool,
   ) -> Result<ActorRef, InvalidActorNameException> {
-    let Some(entry_index) = self.parents.iter().position(|entry| &entry.parent == parent) else {
+    let Some(entry) = self.parent_entry(parent) else {
       return Err(InvalidActorNameException::terminating());
     };
-    if self.terminated || self.parents[entry_index].stopping {
+    if self.terminated || entry.stopping {
       self.hook_child_creation_refused = true;
       return Err(InvalidActorNameException::terminating());
     }
     validate_actor_name(name)?;
-    if self.parents[entry_index].children.iter().any(|(used, _)| used == name) {
+    if entry.children.iter().any(|(used, _)| used == name) {
       return Err(InvalidActorNameException::name_taken(name));
     }
     let label = name.to_string();
     let child = self.spawn_child_with_origin(parent, props, Some(&label), strategy, strategy_inherited);
-    if self.cells.iter().any(|cell| cell.accepts(&child)) {
-      if let Some(entry) = self.parents.iter_mut().find(|entry| &entry.parent == parent) {
+    if self.has_cell(&child) {
+      if let Some(entry) = self.parent_entry_mut(parent) {
         entry.children.push((label, child.clone()));
       }
     }
@@ -885,7 +1033,7 @@ impl Executor {
         | Err(error) => panic!("{error}"),
       },
       | None => {
-        let stopping = self.parents.iter().any(|entry| &entry.parent == parent && entry.stopping);
+        let stopping = self.parent_entry(parent).is_some_and(|entry| entry.stopping);
         assert!(self.is_live(parent) && !stopping, "{TERMINATED_MESSAGE}");
         self.spawn_child(parent, props, None, strategy)
       },
@@ -899,7 +1047,7 @@ impl Executor {
 
   /// Marks the start of one actor execution frame.
   fn enter_frame(&mut self, target: &ActorRef) {
-    self.running.push(target.clone());
+    self.running.push(target.key());
   }
 
   /// Marks the end of one actor execution frame.
@@ -909,6 +1057,13 @@ impl Executor {
   /// that asked for them is out of the cell table until then.
   fn exit_frame(&mut self) {
     self.running.pop();
+  }
+
+  /// Returns whether `target` runs a frame: its cell is out of its mailbox
+  /// while it handles a message or runs a hook.
+  fn is_running(&self, target: &ActorRef) -> bool {
+    let key = target.key();
+    self.running.contains(&key)
   }
 
   /// Carries out the work deferred until the outermost actor frame returned.
@@ -976,8 +1131,8 @@ impl Executor {
     let mut deferred = Vec::new();
     let mut ready = Vec::new();
     for target in core::mem::take(&mut self.pending_stops) {
-      let is_child = self.cells.iter().any(|cell| cell.accepts(&target) && cell.is_child_of(parent));
-      let is_running = self.running.iter().any(|running| running == &target);
+      let is_child = self.with_cell(&target, |cell| cell.is_child_of(parent)) == Some(true);
+      let is_running = self.is_running(&target);
       if is_child && !is_running {
         ready.push(target);
       } else {
@@ -993,11 +1148,7 @@ impl Executor {
   /// Runs a child-terminated notice whose parent is no longer executing.
   fn flush_ready_child_terminated(&mut self) {
     loop {
-      let Some(index) = self
-        .pending_child_terminated
-        .iter()
-        .position(|(parent, _)| !self.running.iter().any(|running| running == parent))
-      else {
+      let Some(index) = self.pending_child_terminated.iter().position(|(parent, _)| !self.is_running(parent)) else {
         return;
       };
       let (parent, child) = self.pending_child_terminated.remove(index);
@@ -1021,15 +1172,14 @@ impl Executor {
   /// may no longer address this actor after the stops. The cell is found again
   /// before creation is retried, as Pekko's `Children` keeps the same child
   /// across attempts; a cell that is gone leaves nothing to retry.
-  fn create_initial(&mut self, mut index: usize) {
-    let self_ref = self.cells[index].self_ref();
+  fn create_initial(&mut self, self_ref: &ActorRef) {
     loop {
       let catcher = self.catcher.clone();
-      let mut cell = self.cells.remove(index);
+      let mut cell = self.take_cell(self_ref).expect("a cell being created is in its mailbox");
       let mut stack = cell.take_stack();
-      self.enter_frame(&self_ref);
+      self.enter_frame(self_ref);
       let outcome = {
-        let mut context = ActorContext::new(self_ref.clone(), self_ref.clone(), self, &mut stack);
+        let mut context = ActorContext::new(self_ref, self_ref.clone(), self, &mut stack);
         match catcher {
           | Some(catcher) => catcher.run(&mut || cell.create(&mut context)),
           | None => {
@@ -1042,7 +1192,7 @@ impl Executor {
       match outcome {
         | RunOutcome::Completed => {
           cell.restore_stack(stack);
-          self.cells.insert(index, cell);
+          self.put_cell(cell);
           self.finish_boundary();
           return;
         },
@@ -1051,12 +1201,12 @@ impl Executor {
           // `become` issued by a `pre_start` that threw does not survive into
           // the next creation. Dropping `stack` leaves the fresh empty one that
           // `take_stack` put in its place.
-          self.cells.insert(index, cell);
-          self.publish_child_failure(&self_ref, ACTOR_INITIALIZATION_CAUSE, &message);
-          let strategy = self.effective_strategy(&self.cells[index]);
+          self.put_cell(cell);
+          self.publish_child_failure(self_ref, ACTOR_INITIALIZATION_CAUSE, &message);
+          let strategy = self.strategy_of(self_ref);
           if strategy.is_all_for_one() {
             let retry = self.apply_all_for_one(
-              &self_ref,
+              self_ref,
               &strategy,
               FailureKind::Initialization,
               ACTOR_INITIALIZATION_CAUSE,
@@ -1067,38 +1217,36 @@ impl Executor {
               self.finish_boundary();
               return;
             }
-            self.stop_children_of(&self_ref);
-            let Some(found) = self.cells.iter().position(|cell| cell.accepts(&self_ref)) else {
+            self.stop_children_of(self_ref);
+            if !self.has_cell(self_ref) {
               self.finish_boundary();
               return;
-            };
-            index = found;
+            }
             continue;
           }
-          let count = self.cells[index].restart_count();
-          let decision = self.decide_catching(strategy, &self_ref, count, FailureKind::Initialization);
+          let count = self.with_cell(self_ref, ActorCell::restart_count).expect("the failed cell is back");
+          let decision = self.decide_catching(strategy, self_ref, count, FailureKind::Initialization);
           match decision {
             | Ok(Directive::Restart) => {
-              if !self.grant_restart_at(index) {
-                self.stop(&self_ref);
+              if !self.grant_restart_of(self_ref) {
+                self.stop(self_ref);
                 self.finish_boundary();
                 return;
               }
-              self.stop_children_of(&self_ref);
-              let Some(found) = self.cells.iter().position(|cell| cell.accepts(&self_ref)) else {
+              self.stop_children_of(self_ref);
+              if !self.has_cell(self_ref) {
                 self.finish_boundary();
                 return;
-              };
-              index = found;
+              }
             },
             | Ok(Directive::Stop) => {
-              self.stop(&self_ref);
+              self.stop(self_ref);
               self.finish_boundary();
               return;
             },
             | Err(message) => {
-              let supervisor = self.cells[index].parent();
-              self.fail_supervisor(supervisor, &self_ref, &message);
+              let supervisor = self.with_cell(self_ref, ActorCell::parent).flatten();
+              self.fail_supervisor(supervisor, self_ref, &message);
               self.finish_boundary();
               return;
             },
@@ -1110,9 +1258,7 @@ impl Executor {
 
   /// Stops every child of `parent`, letting `stop` carry out the usual order.
   pub(crate) fn stop_children_of(&mut self, parent: &ActorRef) {
-    let children: Vec<ActorRef> =
-      self.cells.iter().filter(|cell| cell.is_child_of(parent)).map(|cell| cell.self_ref()).collect();
-    for child in children {
+    for child in self.children_of(parent) {
       self.stop(&child);
     }
   }
@@ -1128,12 +1274,27 @@ impl Executor {
   fn effective_strategy(&self, cell: &ActorCell) -> SupervisorStrategy {
     if cell.strategy_inherited() {
       if let Some(parent) = cell.parent() {
-        if let Some(entry) = self.parents.iter().find(|entry| entry.parent == parent) {
+        if let Some(entry) = self.parent_entry(&parent) {
           return entry.strategy.clone();
         }
       }
     }
     cell.strategy().clone()
+  }
+
+  /// Returns the strategy that decides for `target`, whose cell is in its
+  /// mailbox, as [`effective_strategy`](Self::effective_strategy) does for a
+  /// taken cell.
+  fn strategy_of(&self, target: &ActorRef) -> SupervisorStrategy {
+    let (inherited, parent, own) = self
+      .with_cell(target, |cell| (cell.strategy_inherited(), cell.parent(), cell.strategy().clone()))
+      .expect("the cell that a strategy decides for is in its mailbox");
+    if inherited {
+      if let Some(entry) = parent.as_ref().and_then(|parent| self.parent_entry(parent)) {
+        return entry.strategy.clone();
+      }
+    }
+    own
   }
 
   /// Stops the actor or function reference `target`, telling every watcher that
@@ -1166,18 +1327,17 @@ impl Executor {
   }
 
   fn stop_with_sender(&mut self, target: &ActorRef, sender: Option<ActorRef>) {
-    let is_cell = self.cells.iter().any(|cell| cell.accepts(target));
+    let is_cell = self.has_cell(target);
     let is_function_ref = self.function_refs.contains(target);
     if !is_cell && !is_function_ref {
       return;
     }
     self.mark_stopping(target);
-    let parent_of_target = self.cells.iter().find(|cell| cell.accepts(target)).and_then(|cell| cell.parent());
+    let parent_of_target = self.with_cell(target, ActorCell::parent).flatten();
     self.stop_children_of(target);
     self.stop_function_refs_of(target);
     self.close_function_ref(target);
-    if let Some(index) = self.cells.iter().position(|cell| cell.accepts(target)) {
-      let mut cell = self.cells.remove(index);
+    if let Some(mut cell) = self.take_cell(target) {
       if !cell.post_stop_suppressed() {
         self.run_post_stop(&mut cell, sender);
       }
@@ -1187,28 +1347,29 @@ impl Executor {
     // References already ended above are gone from the registry, so
     // this second pass never notifies a watcher twice.
     self.stop_function_refs_of(target);
-    self.forget_child(target);
+    self.forget_child(target, parent_of_target.as_ref());
     self.stash_to_dead_letters(target);
     self.queued_to_dead_letters(target);
     self.finish_termination(target);
     self.flush_deferred_replies(target);
-    self.actor_capacities.retain(|(held, _, _)| held != target);
     if let Some(parent) = parent_of_target {
       self.run_child_terminated_hook(&parent, target);
     }
-    self.parents.retain(|entry| &entry.parent != target);
+    let entry = self.actors.remove(&target.key());
+    self.ref_parents.retain(|entry| &entry.parent != target);
+    drop(entry);
   }
 
   /// Marks `target` as stopping in the parent registry.
   fn mark_stopping(&mut self, target: &ActorRef) {
-    if let Some(entry) = self.parents.iter_mut().find(|entry| &entry.parent == target) {
+    if let Some(entry) = self.parent_entry_mut(target) {
       entry.stopping = true;
     }
   }
 
   /// Forgets the names the stopped actor held as a child of its parent.
-  fn forget_child(&mut self, child: &ActorRef) {
-    for entry in &mut self.parents {
+  fn forget_child(&mut self, child: &ActorRef, parent: Option<&ActorRef>) {
+    if let Some(entry) = parent.and_then(|parent| self.parent_entry_mut(parent)) {
       entry.children.retain(|(_, held)| held != child);
     }
     let child_path = child.path();
@@ -1229,13 +1390,13 @@ impl Executor {
   /// A parent that is still executing is out of the cell table, so its notice
   /// waits until the outermost frame returns instead of being dropped.
   fn run_child_terminated_hook(&mut self, parent: &ActorRef, child: &ActorRef) {
-    let Some(entry) = self.parents.iter().find(|entry| &entry.parent == parent) else {
+    let Some(entry) = self.parent_entry(parent) else {
       return;
     };
     if !entry.strategy.has_child_terminated() {
       return;
     }
-    if self.running.iter().any(|running| running == parent) {
+    if self.is_running(parent) {
       self.pending_child_terminated.push((parent.clone(), child.clone()));
       return;
     }
@@ -1250,28 +1411,24 @@ impl Executor {
   /// triggered it still finishes. The hook does not run for a parent that never
   /// finished starting, matching Pekko's `if (actor != null)` guard.
   fn execute_child_terminated_hook(&mut self, parent: &ActorRef, child: &ActorRef) {
-    let Some(entry) = self.parents.iter().find(|entry| &entry.parent == parent) else {
+    let Some(entry) = self.parent_entry(parent) else {
       return;
     };
     if !entry.strategy.has_child_terminated() {
       return;
     }
     let strategy = entry.strategy.clone();
-    let siblings: Vec<ActorRef> =
-      self.cells.iter().filter(|cell| cell.is_child_of(parent)).map(|cell| cell.self_ref()).collect();
-    let Some(index) = self.cells.iter().position(|cell| cell.accepts(parent)) else {
-      return;
-    };
-    if !self.cells[index].is_created() {
+    let siblings = self.children_of(parent);
+    if self.with_cell(parent, ActorCell::is_created) != Some(true) {
       return;
     }
-    let mut cell = self.cells.remove(index);
+    let mut cell = self.take_cell(parent).expect("the parent's cell was just read in its mailbox");
     let mut stack = cell.take_stack();
     self.hook_child_creation_refused = false;
     self.enter_frame(parent);
     let catcher = self.catcher.clone();
     let outcome = {
-      let mut context = ActorContext::new(parent.clone(), parent.clone(), self, &mut stack);
+      let mut context = ActorContext::new(parent, parent.clone(), self, &mut stack);
       match catcher {
         | Some(catcher) => catcher.run(&mut || strategy.handle_child_terminated(&mut context, child, &siblings)),
         | None => {
@@ -1282,7 +1439,7 @@ impl Executor {
     };
     self.exit_frame();
     cell.restore_stack(stack);
-    self.cells.insert(index, cell);
+    self.put_cell(cell);
     let refused = core::mem::replace(&mut self.hook_child_creation_refused, false);
     if matches!(outcome, RunOutcome::Failed { .. }) || refused {
       self.publish_child_failure(parent, HANDLE_CHILD_TERMINATED_FAILED_CAUSE, HANDLE_CHILD_TERMINATED_FAILED_MESSAGE);
@@ -1308,7 +1465,7 @@ impl Executor {
     match catcher {
       | Some(catcher) => {
         let ran = {
-          let mut context = ActorContext::new(self_ref.clone(), hook_sender, self, &mut stack);
+          let mut context = ActorContext::new(&self_ref, hook_sender, self, &mut stack);
           catcher.run(&mut || cell.post_stop_with_context(&mut context))
         };
         if let RunOutcome::Failed { message } = ran {
@@ -1316,7 +1473,7 @@ impl Executor {
         }
       },
       | None => {
-        let mut context = ActorContext::new(self_ref.clone(), hook_sender, self, &mut stack);
+        let mut context = ActorContext::new(&self_ref, hook_sender, self, &mut stack);
         cell.post_stop_with_context(&mut context);
       },
     }
@@ -1355,19 +1512,16 @@ impl Executor {
     message: Message,
     sender: ActorRef,
   ) -> Result<(), StashOverflowException> {
-    if let Some((_, stash)) = self.stashes.iter().find(|(held, _)| held == &owner) {
-      assert!(stash.last().is_none_or(|(last, _)| *last != delivery), "Can't stash the same message more than once");
-    }
     let (_, stash_capacity) = self.capacities_of(&owner);
-    let current = self.stashes.iter().find(|(held, _)| held == &owner).map(|(_, stash)| stash.len()).unwrap_or(0);
-    if !stash_capacity.allows(current) {
+    let entry = self.entry_mut(&owner).expect("only an actor with an entry stashes");
+    assert!(
+      entry.stash.last().is_none_or(|(last, _)| *last != delivery),
+      "Can't stash the same message more than once"
+    );
+    if !stash_capacity.allows(entry.stash.len()) {
       return Err(StashOverflowException::new(stash_capacity.bound().unwrap_or(0)));
     }
-    let envelope = Envelope::new(owner.clone(), message, sender);
-    match self.stashes.iter_mut().find(|(held, _)| held == &owner) {
-      | Some((_, stash)) => stash.push((delivery, envelope)),
-      | None => self.stashes.push((owner, alloc::vec![(delivery, envelope)])),
-    }
+    entry.stash.push((delivery, Envelope::without_recipient(message, sender)));
     Ok(())
   }
 
@@ -1375,7 +1529,7 @@ impl Executor {
   /// `recipient`, preserving each envelope's original sender.
   fn publish_envelopes_to_dead_letters(&mut self, envelopes: impl IntoIterator<Item = Envelope>, recipient: &ActorRef) {
     for envelope in envelopes {
-      let (_, message, sender) = envelope.into_parts();
+      let (message, sender) = envelope.into_message();
       self.publish_dead_letter(message, sender, recipient);
     }
   }
@@ -1388,7 +1542,7 @@ impl Executor {
     let (mailbox_capacity, _) = self.capacities_of(owner);
     let room = mailbox_capacity
       .bound()
-      .map(|bound| bound.saturating_sub(self.queue.count_addressed_to(owner)))
+      .map(|bound| bound.saturating_sub(self.entry(owner).map_or(0, |entry| entry.mailbox.number_of_messages())))
       .unwrap_or(usize::MAX);
     let total = stash.len();
     let mut envelopes = stash.into_iter().map(|(_, envelope)| envelope);
@@ -1408,8 +1562,8 @@ impl Executor {
   /// keeps its original recipient inside the `DeadLetter` it is wrapped in,
   /// so the dead letters handle publishes it as it is.
   fn stash_to_dead_letters(&mut self, owner: &ActorRef) {
-    if let Some(index) = self.stashes.iter().position(|(held, _)| held == owner) {
-      let (_, stash) = self.stashes.swap_remove(index);
+    let stash = self.entry_mut(owner).map(|entry| core::mem::take(&mut entry.stash)).unwrap_or_default();
+    if !stash.is_empty() {
       // Pekko's postStop returns the stash to the bounded mailbox: the
       // oldest excess goes to dead letters first (newest victim first),
       // and the newest messages that fit stay in the mailbox and are
@@ -1430,8 +1584,19 @@ impl Executor {
   /// and envelopes still waiting at the shard boundary reach the stopped actor
   /// later and are dropped there, as before.
   fn queued_to_dead_letters(&mut self, target: &ActorRef) {
-    for envelope in self.queue.take_addressed_to(target) {
-      let (_, message, sender) = envelope.into_parts();
+    let Some(entry) = self.entry(target) else {
+      return;
+    };
+    self.live.remove(target);
+    // The system messages left (a Resume at most, in stage 3) mean nothing
+    // to a closed mailbox, and the runs that wait for it would find it
+    // closed: both are dropped here, outside every lock.
+    let (envelopes, system) = entry.mailbox.close();
+    let runs = self.manual.take_runs_of(&entry.mailbox);
+    drop(system);
+    drop(runs);
+    for envelope in envelopes {
+      let (message, sender) = envelope.into_message();
       let message = match message.downcast_ref::<Arc<PendingTermination>>() {
         | Some(pending) => Message::new(pending.notice.clone()),
         | None => message,
@@ -1449,32 +1614,36 @@ impl Executor {
   /// watched actor, so notices for one target share a single pending record:
   /// the first one handled consumes it and the others are dropped.
   pub(crate) fn unstash_all(&mut self, owner: &ActorRef) {
-    if let Some(index) = self.stashes.iter().position(|(held, _)| held == owner) {
-      let (_, stash) = self.stashes.swap_remove(index);
-      // The bounded mailbox bounds this return, as Pekko's
-      // `enqueueFirst` into a bounded deque does: the messages already
-      // queued for the owner keep their room, the newest stashed
-      // messages that fit are prepended, and the oldest excess goes to
-      // dead letters, newest victim first. An unlimited mailbox returns
-      // everything.
-      let remaining = self.discard_stash_overflow(owner, stash);
-      let stash = remaining.into_iter().map(|envelope| self.requeue_notice(envelope)).collect();
-      self.queue.prepend_locally(stash);
+    let stash = self.entry_mut(owner).map(|entry| core::mem::take(&mut entry.stash)).unwrap_or_default();
+    if stash.is_empty() {
+      return;
     }
+    // The bounded mailbox bounds this return, as Pekko's
+    // `enqueueFirst` into a bounded deque does: the messages already
+    // queued for the owner keep their room, the newest stashed
+    // messages that fit are prepended, and the oldest excess goes to
+    // dead letters, newest victim first. An unlimited mailbox returns
+    // everything.
+    let remaining = self.discard_stash_overflow(owner, stash);
+    let envelopes: Vec<Envelope> = remaining.into_iter().map(|envelope| self.requeue_notice(owner, envelope)).collect();
+    let refused = match self.entry(owner) {
+      | Some(entry) => Mailbox::send_first(&entry.mailbox, envelopes).err().unwrap_or_default(),
+      | None => envelopes,
+    };
+    self.publish_envelopes_to_dead_letters(refused, owner);
   }
 
-  fn requeue_notice(&mut self, envelope: Envelope) -> Envelope {
-    let (recipient, message, sender) = envelope.into_parts();
+  fn requeue_notice(&mut self, owner: &ActorRef, envelope: Envelope) -> Envelope {
+    let (message, sender) = envelope.into_message();
     let message = match message.downcast_ref::<Terminated>() {
       | Some(notice) => {
         let queued = self.pending_terminations.iter().find(|pending| {
-          pending.watcher == recipient && Self::same_watch_target(pending.notice.target(), notice.target())
+          &pending.watcher == owner && Self::same_watch_target(pending.notice.target(), notice.target())
         });
         let pending = match queued {
           | Some(pending) => pending.clone(),
           | None => {
-            let pending =
-              Arc::new(PendingTermination { watcher: recipient.clone(), notice: notice.clone(), custom: None });
+            let pending = Arc::new(PendingTermination { watcher: owner.clone(), notice: notice.clone(), custom: None });
             self.pending_terminations.push(pending.clone());
             pending
           },
@@ -1483,33 +1652,21 @@ impl Executor {
       },
       | None => message,
     };
-    Envelope::new(recipient, message, sender)
+    Envelope::without_recipient(message, sender)
   }
 
   /// Registers a reply to `reply_to` after `target` stops.
   pub(crate) fn stop_and_reply(&mut self, target: &ActorRef, reply_to: ActorRef, message: Message) {
-    self.deferred_replies.push((target.clone(), DeferredReply { reply_to, message }));
+    let entry = self.entry_mut(target).expect("only an actor with an entry stops after a reply");
+    entry.deferred_replies.push(DeferredReply { reply_to, message });
   }
 
   /// Sends the replies that `target` deferred when it stopped.
   fn flush_deferred_replies(&mut self, target: &ActorRef) {
-    let mut remaining = Vec::new();
-    let mut ready = Vec::new();
-    for (actor, deferred) in self.deferred_replies.drain(..) {
-      if &actor == target {
-        ready.push(deferred);
-      } else {
-        remaining.push((actor, deferred));
-      }
-    }
-    self.deferred_replies = remaining;
+    let ready = self.entry_mut(target).map(|entry| core::mem::take(&mut entry.deferred_replies)).unwrap_or_default();
     for DeferredReply { reply_to, message } in ready {
       let sender = reply_to.clone();
-      let envelope = Envelope::new(reply_to, message, sender);
-      match envelope.into_local_if_same_shard(self.queue.boundary()) {
-        | Ok(local) => self.queue.enqueue_locally(local),
-        | Err(remote) => remote.post_to_boundary(),
-      }
+      reply_to.send_message(message, sender);
     }
   }
 
@@ -1527,8 +1684,7 @@ impl Executor {
     let name = alloc::format!("${}", next_spawn_name());
     let path = parent.path().with_child(&name);
     let dead_letters = self.dead_letters();
-    let boundary: Arc<dyn crate::kernel::executor::ShardBoundary> =
-      Arc::new(FunctionBoundary::new_with_dead_letters(Arc::new(handler), dead_letters));
+    let boundary = self.function_boundary(FunctionBoundary::new_with_dead_letters(Arc::new(handler), dead_letters));
     let reference = next_actor_ref(path, boundary);
     self.function_refs.push(reference.clone());
     self.function_parents.push((reference.clone(), parent.clone()));
@@ -1565,7 +1721,9 @@ impl Executor {
   fn close_function_ref(&mut self, target: &ActorRef) {
     if let Some(index) = self.function_refs.iter().position(|reference| reference == target) {
       let reference = self.function_refs.remove(index);
-      reference.boundary().close();
+      if let Some(boundary) = reference.boundary() {
+        boundary.close();
+      }
     }
     self.function_parents.retain(|(held, _)| held != target);
   }
@@ -1624,7 +1782,7 @@ impl Executor {
       }
     } else {
       let notice = Terminated::new(target.clone(), false, false);
-      Envelope::new(watcher, Message::new(notice), target.clone()).post_to_boundary();
+      watcher.send_message(Message::new(notice), target.clone());
     }
     target.clone()
   }
@@ -1749,35 +1907,218 @@ impl Executor {
       .retain(|pending| &pending.watcher != watcher || !Self::same_watch_target(pending.notice.target(), target));
   }
 
-  /// Delivers every message that is waiting, whether it is in the shard or at
-  /// its boundary, until nothing is left.
+  /// Runs every mailbox that has work, and delivers every envelope that is
+  /// waiting at the boundary, until nothing is left. A mailbox runs up to its
+  /// throughput at a time (design of #234, section 3.9).
   pub(crate) fn run_until_idle(&mut self) {
-    while self.run_one() {}
-  }
-
-  /// Delivers at most one message: it takes at most one envelope from the
-  /// boundary onto the local queue, then delivers at most one envelope from the
-  /// local queue. Returns whether it delivered one.
-  ///
-  /// Taking only one envelope per step keeps a boundary that never runs dry
-  /// from starving the local queue. The caller of `run_until_idle` still sees
-  /// every message, because the loop ends only once both the boundary and the
-  /// local queue are empty.
-  pub(crate) fn run_one(&mut self) -> bool {
-    self.queue.take_one_from_boundary();
-    match self.queue.pop() {
-      | Some(envelope) => {
-        self.deliver(envelope);
-        true
-      },
-      | None => false,
+    loop {
+      self.take_one_from_boundary();
+      let Some(task) = self.manual.pop() else {
+        return;
+      };
+      self.run_task(task, None);
     }
   }
 
-  /// Waits at most `max` for one envelope from the boundary and moves it onto
-  /// the local queue. Returns whether it found one.
+  /// Hands at most one normal message to an actor, or delivers at most one
+  /// envelope from the boundary, and returns whether it did.
+  ///
+  /// It first takes at most one envelope from the boundary and puts it behind
+  /// the work that waits, so a boundary that never runs dry does not starve
+  /// the mailboxes. Then it takes work in order: a mailbox runs with a
+  /// throughput of one, and a run that handles only system messages, or finds
+  /// nothing to do, does not count, so the next piece of work runs.
+  pub(crate) fn run_one(&mut self) -> bool {
+    self.take_one_from_boundary();
+    while let Some(task) = self.manual.pop() {
+      if self.run_task(task, Some(Throughput::new(1))) {
+        return true;
+      }
+    }
+    false
+  }
+
+  fn take_one_from_boundary(&mut self) {
+    if let Some(envelope) = self.boundary.poll() {
+      self.manual.submit(ManualTask::Envelope(envelope));
+    }
+  }
+
+  /// Runs one piece of work and returns whether it handed a normal message to
+  /// an actor or delivered an envelope.
+  fn run_task(&mut self, task: ManualTask<ActorCell>, budget: Option<Throughput>) -> bool {
+    match task {
+      | ManualTask::Envelope(envelope) => {
+        self.deliver(envelope, budget);
+        true
+      },
+      | ManualTask::Run(run) => self.run_mailbox(run, budget),
+    }
+  }
+
+  /// Runs one mailbox, then does what the run left. Returns whether the run
+  /// handed a normal message to the actor.
+  fn run_mailbox(&mut self, run: MailboxRun<ActorCell>, budget: Option<Throughput>) -> bool {
+    self.in_run = true;
+    let report = run.run(self, budget);
+    if let MailboxOutcome::Again(again) = report.outcome {
+      self.manual.submit(ManualTask::Run(again));
+    }
+    self.finish_run();
+    self.in_run = false;
+    report.delivered > 0
+  }
+
+  /// Does what a run left, now that the actor is back in its mailbox
+  /// (design of #234, section 11.11.2): the failure, `Kill`, or stop it
+  /// recorded, a `Resume` for an actor that a failure suspended and that
+  /// is still there, and the work at the boundary.
+  fn finish_run(&mut self) {
+    if let Some((key, after)) = self.after_run.take() {
+      let target = self.actors.get(&key).map(|entry| entry.self_ref.clone()).expect("a run's actor has an entry");
+      let suspended = match after {
+        | AfterRun::Kill => {
+          self.handle_kill(&target);
+          true
+        },
+        | AfterRun::Failed { message, sender } => {
+          let cell = self.take_cell(&target).expect("the run has put the cell back (invariant I1)");
+          self.apply_failure(cell, &target, RUNTIME_CAUSE, &message, Some(sender));
+          true
+        },
+        | AfterRun::Stop { sender } => {
+          self.stop_with_sender(&target, sender);
+          false
+        },
+      };
+      if suspended {
+        self.resume_if_open(&target);
+      }
+    }
+    self.finish_boundary();
+  }
+
+  /// Sends a `Resume` to `target` when its mailbox is still open: the parent
+  /// has decided for the failure that suspended it.
+  fn resume_if_open(&self, target: &ActorRef) {
+    if let Some(entry) = self.entry(target) {
+      if !entry.mailbox.is_closed() {
+        let _ = Mailbox::system_send(&entry.mailbox, SystemMessage::Resume);
+      }
+    }
+  }
+
+  /// Hands one normal message to the actor of `cell` (Pekko's
+  /// `ActorCell.invoke`), and says whether its run may take the next.
+  ///
+  /// A `Kill`, a `PoisonPill`, a failure under the catcher, a stop the actor
+  /// asked for after a reply, and work left at the boundary all need the
+  /// actor back in its mailbox, so the run yields and the executor does them
+  /// once the run has returned. A failure, and a `Kill`, suspend the mailbox
+  /// until the parent has decided, as Pekko's `handleInvokeFailure` does.
+  fn invoke(&mut self, cell: &mut ActorCell, mailbox: &Mailbox<ActorCell>, envelope: Envelope) -> Next {
+    let (message, sender) = envelope.into_message();
+    let message = match message.downcast_ref::<Arc<PendingTermination>>() {
+      | Some(pending) => match self.take_pending_termination(pending) {
+        | Some(message) => message,
+        | None => return Next::Continue,
+      },
+      | None => message,
+    };
+    let key = cell.key();
+    if message == KILL {
+      mailbox.suspend();
+      self.after_run = Some((key, AfterRun::Kill));
+      return Next::Yield;
+    }
+    if message == POISON_PILL {
+      self.after_run = Some((key, AfterRun::Stop { sender: None }));
+      return Next::Yield;
+    }
+    let catcher = self.catcher.clone();
+    self.running.push(key);
+    let (outcome, sender) = cell.receive(self, message, sender, catcher.as_deref());
+    self.exit_frame();
+    let deferred_stop = self.actors.get(&key).is_some_and(|entry| !entry.deferred_replies.is_empty());
+    match outcome {
+      | RunOutcome::Completed if deferred_stop => {
+        self.after_run = Some((key, AfterRun::Stop { sender: None }));
+        Next::Yield
+      },
+      | RunOutcome::Completed => {
+        if self.pending_stops.is_empty()
+          && self.pending_decider_failures.is_empty()
+          && self.pending_child_terminated.is_empty()
+        {
+          Next::Continue
+        } else {
+          Next::Yield
+        }
+      },
+      | RunOutcome::Failed { message } => {
+        mailbox.suspend();
+        let after =
+          if deferred_stop { AfterRun::Stop { sender: Some(sender) } } else { AfterRun::Failed { message, sender } };
+        self.after_run = Some((key, after));
+        Next::Yield
+      },
+    }
+  }
+
+  /// Consumes a queued DeathWatch notice and returns what the watcher
+  /// receives, or `None` when an `unwatch` cancelled it.
+  fn take_pending_termination(&mut self, pending: &Arc<PendingTermination>) -> Option<Message> {
+    let index = self.pending_terminations.iter().position(|queued| Arc::ptr_eq(queued, pending))?;
+    self.pending_terminations.swap_remove(index);
+    Some(match &pending.custom {
+      | Some(custom) => custom.clone(),
+      | None => Message::new(pending.notice.clone()),
+    })
+  }
+
+  /// Waits at most `max` for work: a mailbox to run, an envelope at the
+  /// boundary, or a message that reached a function reference. Returns
+  /// whether work came.
+  ///
+  /// With a boundary that hands out a [`WakeSignal`](crate::kernel::dispatch::WakeSignal),
+  /// the wait ends as soon as work comes. A signal raised for work that is
+  /// already done does not end it: the wait goes on until `max` (design of
+  /// #234, section 11.11.6). A boundary without a signal is polled for `max`,
+  /// and what it gives waits for the next run.
   pub(crate) fn await_envelope(&mut self, max: Duration) -> bool {
-    self.queue.await_one_from_boundary(max)
+    let arrived = self.arrivals.as_ref().map_or(0, |arrivals| arrivals.count());
+    let has_work = |executor: &Self| {
+      !executor.manual.is_empty()
+        || executor.boundary.has_pending()
+        || executor.arrivals.as_ref().is_some_and(|arrivals| arrivals.count() != arrived)
+    };
+    if has_work(self) {
+      return true;
+    }
+    let Some(arrivals) = self.arrivals.clone() else {
+      return match self.boundary.poll_within(max) {
+        | Some(envelope) => {
+          self.manual.submit(ManualTask::Envelope(envelope));
+          true
+        },
+        | None => false,
+      };
+    };
+    let Some(start) = self.boundary.monotonic_time() else {
+      arrivals.wait(max);
+      return has_work(self);
+    };
+    let deadline = start.saturating_add(max);
+    loop {
+      let now = self.boundary.monotonic_time().unwrap_or(deadline);
+      if now >= deadline {
+        return has_work(self);
+      }
+      arrivals.wait(deadline - now);
+      if has_work(self) {
+        return true;
+      }
+    }
   }
 
   /// Drops the actors and every queued message.
@@ -1793,20 +2134,37 @@ impl Executor {
   /// where Pekko's test actor has stopped and its messages are dead letters.
   pub(crate) fn stop_all(&mut self) {
     self.terminated = true;
-    self.queue.boundary().close();
+    self.fatal = false;
+    self.boundary.close();
     for reference in &self.function_refs {
-      reference.boundary().close();
+      if let Some(boundary) = reference.boundary() {
+        boundary.close();
+      }
     }
     self.function_refs.clear();
     self.function_parents.clear();
     self.function_watching.clear();
-    self.cells.clear();
-    self.queue.clear();
+    // Every mailbox closes before anything is dropped, so that an actor whose
+    // `Drop` sends finds its peers closed. The cells, the messages they held,
+    // and the work that waited are dropped after that, outside every lock.
+    let entries = core::mem::take(&mut self.actors);
+    let mut cells = Vec::with_capacity(entries.len());
+    let mut held = Vec::with_capacity(entries.len());
+    for entry in entries.values() {
+      held.push(entry.mailbox.close());
+      cells.push(entry.mailbox.try_take_cell());
+    }
+    let tasks = self.manual.close();
+    drop(cells);
+    drop(held);
+    drop(tasks);
+    drop(entries);
+    self.ref_parents.clear();
+    self.live.clear();
+    self.after_run = None;
+    self.in_run = false;
     self.watchers.clear();
     self.pending_terminations.clear();
-    self.stashes.clear();
-    self.deferred_replies.clear();
-    self.parents.clear();
     self.user_children.clear();
     self.pending_stops.clear();
     self.pending_decider_failures.clear();
@@ -1814,7 +2172,40 @@ impl Executor {
     self.running.clear();
     self.termination_callbacks.clear();
     self.boundary_active = false;
-    while self.queue.boundary().poll().is_some() {}
+    while self.boundary.poll().is_some() {}
+  }
+
+  /// Records that a caller's thread unwound out of the executor: a panic that
+  /// no catcher caught, which Pekko treats as fatal (design of #234, section
+  /// 11.11.2). The frames that were running are forgotten without running
+  /// user code, and the next call into the executor terminates the system.
+  fn mark_fatal(&mut self) {
+    self.fatal = true;
+    self.running.clear();
+    self.boundary_active = false;
+    self.in_run = false;
+  }
+
+  /// Lends the executor behind `executor` to `work`, the one way the system
+  /// and its weak handle reach it.
+  ///
+  /// When the call before unwound out of the executor while it was running
+  /// an actor (a panic that no catcher caught), the system is terminated
+  /// first, as Pekko's uncaught exception handler terminates the system on a
+  /// fatal error. When `work` unwinds in the middle of a frame, a run, or the
+  /// work at the boundary, the executor is marked so that the next call does
+  /// that (design of #234, section 11.11.2). A refusal the executor raises
+  /// before it changes anything, as Pekko throws to the caller, leaves the
+  /// system as it was.
+  pub(crate) fn lend<R>(executor: &spin::Mutex<Executor>, work: impl FnOnce(&mut Executor) -> R) -> R {
+    let mut guard = lock(executor);
+    if guard.fatal {
+      guard.stop_all();
+    }
+    let mut lent = Lent { executor: &mut guard, returned: false };
+    let result = work(lent.executor);
+    lent.returned = true;
+    result
   }
 
   /// Returns whether the system has been terminated.
@@ -1836,7 +2227,7 @@ impl Executor {
 
   pub(crate) fn stopped_noop_ref(&self, old: &ActorRef) -> ActorRef {
     assert!(
-      old.shares_boundary_with(self.queue.boundary()) && self.is_actor_terminated(old),
+      self.is_local(old) && self.is_actor_terminated(old),
       "expected a stopped actor on this shard: {}",
       old.path()
     );
@@ -1845,7 +2236,7 @@ impl Executor {
 
   /// Returns the identity of the shard boundary this executor posts to.
   pub(crate) fn boundary_key(&self) -> usize {
-    Arc::as_ptr(self.queue.boundary()) as *const () as usize
+    self.manual.key()
   }
 
   /// Refuses to start an actor once the system has been terminated.
@@ -1862,12 +2253,11 @@ impl Executor {
   /// for that path as the recipient, and a suppressed payload names that
   /// empty reference as the reference that processed it.
   fn deliver_selection(&mut self, path: &ActorPath, message: Message, sender: ActorRef) {
-    if let Some(cell) = self.cells.iter().find(|cell| &cell.self_ref().path() == path) {
-      let target = cell.self_ref();
-      self.deliver(Envelope::new(target, message, sender));
+    if let Some(target) = self.live_actor_at(path) {
+      target.send_message(message, sender);
       return;
     }
-    if let Some(reference) = self.function_refs.iter().find(|reference| &reference.path() == path) {
+    if let Some(reference) = self.function_refs.iter().find(|reference| reference.has_path(path)) {
       let target = reference.clone();
       self.send(sender, &target, message);
       return;
@@ -1877,7 +2267,7 @@ impl Executor {
       self.publish_unhandled(message, dead_letters, guardian);
       return;
     }
-    let empty = next_actor_ref(path.clone(), self.queue.boundary().clone());
+    let empty = next_actor_ref(path.clone(), self.boundary.clone());
     self.dead_letters_shared.route_unresolved(message, sender, empty);
   }
 
@@ -1888,37 +2278,38 @@ impl Executor {
   /// see itself as terminated from inside `receive`, `pre_start`,
   /// `post_restart`, or a child-terminated hook.
   fn is_live(&self, target: &ActorRef) -> bool {
-    self.cells.iter().any(|cell| cell.accepts(target))
-      || self.function_refs.contains(target)
-      || self.running.iter().any(|running| running == target)
+    self.has_cell(target) || self.function_refs.contains(target) || self.is_running(target)
+  }
+
+  /// Returns the handle of the live actor at `path`, counting the one that
+  /// runs a frame.
+  fn live_actor_at(&self, path: &ActorPath) -> Option<ActorRef> {
+    self
+      .actors
+      .values()
+      .find(|entry| entry.self_ref.has_path(path) && (entry.mailbox.has_cell() || self.is_running(&entry.self_ref)))
+      .map(|entry| entry.self_ref.clone())
   }
 
   /// Sends `message` to `target`, naming `sender` as the sender of the
-  /// envelope.
-  ///
-  /// A message to an actor of this shard goes onto the local queue; a message
-  /// to an actor of another shard, or to a function reference, goes through the
-  /// recipient's boundary.
+  /// envelope: onto the mailbox of an actor, or through the boundary of a
+  /// handle without one.
   pub(crate) fn send(&mut self, sender: ActorRef, target: &ActorRef, message: Message) {
-    let envelope = Envelope::new(target.clone(), message, sender);
-    match envelope.into_local_if_same_shard(self.queue.boundary()) {
-      | Ok(local) => self.queue.enqueue_locally(local),
-      | Err(remote) => remote.post_to_boundary(),
-    }
+    target.send_message(message, sender);
   }
 
-  /// Delivers one envelope.
+  /// Delivers one envelope that came across the boundary, or that a mailbox
+  /// turned away.
   ///
-  /// The envelope carries three kinds of message: `Kill` and `PoisonPill`, which
-  /// act on the actor without reaching `receive`, and any other message, which
-  /// the actor handles.
-  ///
-  /// The cell is taken out of the table before the actor runs, so the actor may
-  /// start a child or stop itself through the context without borrowing the
-  /// table twice. The context asks the executor directly, and the executor
-  /// carries out a stop-after-reply once the actor returns.
-  fn deliver(&mut self, envelope: Envelope) {
+  /// The notices the executor posts to itself (the dead letter listener's
+  /// stop, a selection to resolve) are carried out here. An envelope for a
+  /// live actor goes onto its mailbox. Any other envelope finds no actor: a
+  /// guardian reports it as unhandled, and the dead letter rules take the
+  /// rest, as a Pekko mailbox hands a message for a stopped actor to the dead
+  /// letters provider.
+  fn deliver(&mut self, envelope: Envelope, budget: Option<Throughput>) {
     let (recipient, message, sender) = envelope.into_parts();
+    let recipient = recipient.expect("an envelope outside a mailbox names its recipient");
     if message.downcast_ref::<StopDeadLetterListener>().is_some() {
       // The dead letter listener's handler posted this notice when its
       // state machine stopped itself. Carry the stop out here, where the
@@ -1936,87 +2327,49 @@ impl Executor {
       self.finish_boundary();
       return;
     }
-    let message = if let Some(pending) = message.downcast_ref::<Arc<PendingTermination>>() {
-      let Some(index) = self.pending_terminations.iter().position(|queued| Arc::ptr_eq(queued, pending)) else {
-        return;
-      };
-      self.pending_terminations.swap_remove(index);
-      match &pending.custom {
-        | Some(custom) => custom.clone(),
-        | None => Message::new(pending.notice.clone()),
-      }
-    } else {
-      message
-    };
-    let Some(index) = self.cells.iter().position(|cell| cell.accepts(&recipient)) else {
-      // A guardian has no cell: a message addressed to one is reported
-      // as unhandled, with the dead letters as its sender, as Pekko's
-      // guardians do for a message they will not act upon.
-      if recipient == self.root_guardian || recipient == self.user_guardian || recipient == self.system_guardian {
-        let dead_letters = self.dead_letters.clone();
-        self.publish_unhandled(message, dead_letters, recipient);
-        self.finish_boundary();
-        return;
-      }
-      // No actor answers for the recipient: the message is routed by the
-      // dead letter rules, as a Pekko mailbox hands a message for a
-      // stopped actor to the dead letters provider.
-      let dead_letters = self.dead_letters.clone();
-      self.dead_letters_shared.route_undeliverable(message, sender, recipient, &dead_letters);
-      // The routing publishes synchronously, so the dead letter listener
-      // may have reached its limit inside this delivery; the boundary
-      // work (including the listener's own stop) runs here as it does at
-      // the end of a delivered message.
-      self.finish_boundary();
-      return;
-    };
-    if message == KILL {
-      self.handle_kill(index, &recipient);
-      return;
-    }
-    if message == POISON_PILL {
-      self.stop_at_boundary(&recipient);
-      return;
-    }
-    let mut cell = self.cells.remove(index);
-    let mut stack = cell.take_stack();
-    let delivered = message.clone();
-    let catcher = self.catcher.clone();
-    self.enter_frame(&recipient);
-    let outcome = {
-      let mut context = ActorContext::new(recipient.clone(), sender.clone(), self, &mut stack);
-      match catcher {
-        | Some(catcher) => catcher.run(&mut || cell.deliver(&mut context, delivered.clone())),
-        | None => {
-          cell.deliver(&mut context, delivered);
-          RunOutcome::Completed
+    if let Some(entry) = self.entry(&recipient).filter(|entry| entry.mailbox.has_cell()) {
+      // A boundary that carries a message for an actor hands it to the
+      // actor's mailbox, and the mailbox runs in this same step, as the
+      // message would have been delivered before.
+      let mailbox = &entry.mailbox;
+      match mailbox.enqueue(Envelope::without_recipient(message, sender)) {
+        | Ok(()) => {
+          if let Some(run) = Mailbox::try_schedule(mailbox) {
+            self.run_mailbox(run, budget);
+          }
+        },
+        | Err(refused) => {
+          let (message, sender) = refused.into_message();
+          let dead_letters = self.dead_letters.clone();
+          self.dead_letters_shared.route_undeliverable(message, sender, recipient, &dead_letters);
+          self.finish_boundary();
         },
       }
-    };
-    self.exit_frame();
-    cell.restore_stack(stack);
-    match outcome {
-      | RunOutcome::Completed => {
-        self.cells.push(cell);
-        if self.deferred_stop(&recipient) {
-          self.stop(&recipient);
-        }
-      },
-      | RunOutcome::Failed { message } => {
-        if self.deferred_stop(&recipient) {
-          self.cells.push(cell);
-          self.stop_with_sender(&recipient, Some(sender));
-        } else {
-          self.apply_failure(cell, &recipient, RUNTIME_CAUSE, &message, Some(sender));
-        }
-      },
+      return;
     }
+    let message = match message.downcast_ref::<Arc<PendingTermination>>() {
+      | Some(pending) => match self.take_pending_termination(pending) {
+        | Some(message) => message,
+        | None => return,
+      },
+      | None => message,
+    };
+    // A guardian has no cell: a message addressed to one is reported
+    // as unhandled, with the dead letters as its sender, as Pekko's
+    // guardians do for a message they will not act upon.
+    if recipient == self.root_guardian || recipient == self.user_guardian || recipient == self.system_guardian {
+      let dead_letters = self.dead_letters.clone();
+      self.publish_unhandled(message, dead_letters, recipient);
+      self.finish_boundary();
+      return;
+    }
+    let dead_letters = self.dead_letters.clone();
+    self.dead_letters_shared.route_undeliverable(message, sender, recipient, &dead_letters);
+    // The routing publishes synchronously, so the dead letter listener
+    // may have reached its limit inside this delivery; the boundary
+    // work (including the listener's own stop) runs here as it does at
+    // the end of a delivered message.
     self.finish_boundary();
-  }
-
-  /// Returns whether the actor asked to stop after the reply it registered.
-  fn deferred_stop(&self, target: &ActorRef) -> bool {
-    self.deferred_replies.iter().any(|(actor, _)| actor == target)
   }
 
   /// Applies the supervisor's decision to a failure during `receive`, then
@@ -2037,7 +2390,7 @@ impl Executor {
     self.publish_child_failure(target, cause_name, message);
     let strategy = self.effective_strategy(&cell);
     if strategy.is_all_for_one() {
-      self.cells.push(cell);
+      self.put_cell(cell);
       self.apply_all_for_one(target, &strategy, FailureKind::MessageHandling, cause_name, message, original_sender);
       return;
     }
@@ -2049,16 +2402,16 @@ impl Executor {
         if self.grant_restart(&mut cell) {
           self.restart_cell(target, cell, FailureKind::MessageHandling, cause_name, message, original_sender);
         } else {
-          self.cells.push(cell);
+          self.put_cell(cell);
           self.stop_with_sender(target, original_sender);
         }
       },
       | Ok(Directive::Stop) => {
-        self.cells.push(cell);
+        self.put_cell(cell);
         self.stop_with_sender(target, original_sender);
       },
       | Err(message) => {
-        self.cells.push(cell);
+        self.put_cell(cell);
         self.fail_supervisor(supervisor, target, &message);
       },
     }
@@ -2089,20 +2442,20 @@ impl Executor {
     }
   }
 
-  /// Records a restart request on the cell at `index` and answers whether the
+  /// Records a restart request on the cell of `target` and answers whether the
   /// restart is permitted, as [`Executor::grant_restart`] does for a taken cell.
-  fn grant_restart_at(&mut self, index: usize) -> bool {
-    let strategy = self.effective_strategy(&self.cells[index]);
+  fn grant_restart_of(&mut self, target: &ActorRef) -> bool {
+    let strategy = self.strategy_of(target);
     match strategy.restart_permission() {
       | Some((limit, window)) => {
-        let mut history = self.cells[index].restart_history();
+        let mut history = self.with_cell(target, ActorCell::restart_history).expect("the cell is in its mailbox");
         let allowed = self.apply_permission_to(&mut history, limit, window);
-        self.cells[index].set_restart_history(history);
+        self.with_cell_mut(target, |cell| cell.set_restart_history(history));
         allowed
       },
       | None => {
         if strategy.records_plain_restart() {
-          self.cells[index].record_restart_request();
+          self.with_cell_mut(target, ActorCell::record_restart_request);
         }
         true
       },
@@ -2150,11 +2503,10 @@ impl Executor {
     message: &str,
     original_sender: Option<ActorRef>,
   ) -> bool {
-    let Some(parent) = self.cells.iter().find(|cell| cell.accepts(target)).and_then(ActorCell::parent) else {
+    let Some(parent) = self.with_cell(target, ActorCell::parent).flatten() else {
       return false;
     };
-    let siblings: Vec<ActorRef> =
-      self.cells.iter().filter(|cell| cell.is_child_of(&parent)).map(ActorCell::self_ref).collect();
+    let siblings = self.children_of(&parent);
     let restart = match self.decide_catching(strategy.clone(), target, 0, failure) {
       | Ok(directive) => directive == Directive::Restart,
       | Err(message) => {
@@ -2167,13 +2519,12 @@ impl Executor {
       if let Some((limit, window)) = strategy.restart_permission() {
         let now = if window.is_some() && !limit.forbids_restart() { self.now() } else { Duration::ZERO };
         for sibling in &siblings {
-          let Some(index) = self.cells.iter().position(|cell| cell.accepts(sibling)) else {
+          let Some(mut history) = self.with_cell(sibling, ActorCell::restart_history) else {
             permitted = false;
             break;
           };
-          let mut history = self.cells[index].restart_history();
           let allowed = history.request_permission(limit, window, now);
-          self.cells[index].set_restart_history(history);
+          self.with_cell_mut(sibling, |cell| cell.set_restart_history(history));
           if !allowed {
             permitted = false;
             break;
@@ -2189,10 +2540,9 @@ impl Executor {
         if &sibling == target && failure == FailureKind::Initialization {
           continue;
         }
-        let Some(index) = self.cells.iter().position(|cell| cell.accepts(&sibling)) else {
+        let Some(cell) = self.take_cell(&sibling) else {
           continue;
         };
-        let cell = self.cells.remove(index);
         let sender = if &sibling == target { original_sender.clone() } else { None };
         self.restart_cell(&sibling, cell, failure, cause_name, message, sender);
       }
@@ -2248,7 +2598,7 @@ impl Executor {
       self.publish_child_failure(failed, RUNTIME_CAUSE, message);
       return;
     };
-    if self.running.iter().any(|running| running == &supervisor) {
+    if self.is_running(&supervisor) {
       self.pending_decider_failures.push((supervisor, message.to_string()));
       return;
     }
@@ -2263,11 +2613,10 @@ impl Executor {
   /// it again. A deciding actor that has stopped since the panic was captured
   /// has no cell to fail, so the panic is reported once and nothing else runs.
   fn apply_supervisor_failure(&mut self, supervisor: &ActorRef, message: &str) {
-    let Some(index) = self.cells.iter().position(|cell| cell.accepts(supervisor)) else {
+    let Some(cell) = self.take_cell(supervisor) else {
       self.publish_child_failure(supervisor, RUNTIME_CAUSE, message);
       return;
     };
-    let cell = self.cells.remove(index);
     self.apply_failure(cell, supervisor, RUNTIME_CAUSE, message, None);
   }
 
@@ -2305,7 +2654,7 @@ impl Executor {
     self.enter_frame(target);
     let hook_sender = original_sender.unwrap_or_else(|| target.clone());
     let pre_restart_failed = {
-      let mut context = ActorContext::new(target.clone(), hook_sender, self, &mut old_stack);
+      let mut context = ActorContext::new(target, hook_sender, self, &mut old_stack);
       match catcher {
         | Some(catcher) => catcher.run(&mut || cell.pre_restart(&mut context, reason_box.as_ref())),
         | None => {
@@ -2328,12 +2677,7 @@ impl Executor {
     // Pekko's finishRecreate snapshots surviving children before the new
     // instance can spawn its own. Apply that propagation to a supervised Kill.
     let survivors = if failure == FailureKind::Killed {
-      self
-        .cells
-        .iter()
-        .filter(|child| child.is_child_of(target) && child.is_created())
-        .map(ActorCell::self_ref)
-        .collect::<Vec<_>>()
+      self.cells_where(|child| child.is_child_of(target) && child.is_created())
     } else {
       Vec::new()
     };
@@ -2341,7 +2685,7 @@ impl Executor {
     let mut stack = BehaviorStack::new();
     self.enter_frame(target);
     let restarted = {
-      let mut context = ActorContext::new(target.clone(), target.clone(), self, &mut stack);
+      let mut context = ActorContext::new(target, target.clone(), self, &mut stack);
       match catcher {
         | Some(catcher) => catcher.run(&mut || cell.restart(&mut context)),
         | None => {
@@ -2354,7 +2698,7 @@ impl Executor {
     cell.restore_stack(stack);
     match restarted {
       | RunOutcome::Completed => {
-        self.cells.push(cell);
+        self.put_cell(cell);
         // A retained child's decider can fail again; defer that failure until
         // this recovery returns instead of restarting the same parent inside it.
         self.enter_frame(target);
@@ -2362,24 +2706,18 @@ impl Executor {
           if self.pending_stops.contains(target) || self.pending_stops.contains(&child) {
             continue;
           }
-          if let Some(index) = self.cells.iter().position(|cell| cell.accepts(&child)) {
-            let cell = self.cells.remove(index);
+          if let Some(cell) = self.take_cell(&child) {
             self.restart_cell(&child, cell, failure, cause_name, message, None);
           }
         }
-        let children: Vec<ActorRef> = self
-          .cells
-          .iter()
-          .filter(|child| child.is_child_of(target) && !child.is_created())
-          .map(|child| child.self_ref())
-          .collect();
-        for child in children {
-          if !self.cells.iter().any(|cell| cell.accepts(&child) && !cell.is_created()) {
+        let not_created = |cell: &ActorCell| !cell.is_created();
+        for child in self.cells_where(|child| child.is_child_of(target) && !child.is_created()) {
+          if self.with_cell(&child, not_created) != Some(true) {
             continue;
           }
           self.stop_children_of(&child);
-          if let Some(index) = self.cells.iter().position(|cell| cell.accepts(&child) && !cell.is_created()) {
-            self.create_initial(index);
+          if self.with_cell(&child, not_created) == Some(true) {
+            self.create_initial(&child);
           }
         }
         self.exit_frame();
@@ -2387,7 +2725,7 @@ impl Executor {
       | RunOutcome::Failed { message } => {
         self.publish_child_failure(target, RUNTIME_CAUSE, &message);
         cell.suppress_post_stop();
-        self.cells.push(cell);
+        self.put_cell(cell);
         self.stop(target);
       },
     }
@@ -2397,12 +2735,12 @@ impl Executor {
   /// Handles a `Kill`: the instance fails with `ActorKilledException` and the
   /// supervisor decides for a killed child, which the default decider maps to
   /// `Stop`.
-  fn handle_kill(&mut self, index: usize, recipient: &ActorRef) {
+  fn handle_kill(&mut self, recipient: &ActorRef) {
     self.publish_child_failure(recipient, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE);
-    let mut cell = self.cells.remove(index);
+    let mut cell = self.take_cell(recipient).expect("the run has put the cell back (invariant I1)");
     let strategy = self.effective_strategy(&cell);
     if strategy.is_all_for_one() {
-      self.cells.push(cell);
+      self.put_cell(cell);
       self.apply_all_for_one(recipient, &strategy, FailureKind::Killed, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE, None);
       self.finish_boundary();
       return;
@@ -2415,16 +2753,16 @@ impl Executor {
         if self.grant_restart(&mut cell) {
           self.restart_cell(recipient, cell, FailureKind::Killed, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE, None);
         } else {
-          self.cells.push(cell);
+          self.put_cell(cell);
           self.stop(recipient);
         }
       },
       | Ok(Directive::Stop) => {
-        self.cells.push(cell);
+        self.put_cell(cell);
         self.stop(recipient);
       },
       | Err(message) => {
-        self.cells.push(cell);
+        self.put_cell(cell);
         self.fail_supervisor(supervisor, recipient, &message);
       },
     }
@@ -2511,27 +2849,64 @@ impl Executor {
     }
     for watcher in function_watchers {
       let notice = Terminated::new(target.clone(), existence_confirmed, address_terminated);
-      Envelope::new(watcher, Message::new(notice), target.clone()).post_to_boundary();
+      watcher.send_message(Message::new(notice), target.clone());
     }
   }
 
   /// The original and a detached reference can compare equal while addressing
   /// different delivery boundaries.
   fn same_watch_target(watched: &ActorRef, target: &ActorRef) -> bool {
-    watched == target && watched.shares_boundary_with(target.boundary())
+    watched == target && watched.shares_endpoint_with(target)
   }
 
   /// Enqueues a DeathWatch notice (plain `Terminated` or custom
   /// message), cancellable until it is delivered locally.
   fn enqueue_termination(&mut self, recipient: ActorRef, notice: Terminated, custom: Option<Message>) {
     let sender = recipient.clone();
-    if recipient.shares_boundary_with(self.queue.boundary()) {
+    if self.is_local(&recipient) {
       let pending = Arc::new(PendingTermination { watcher: recipient.clone(), notice, custom });
       self.pending_terminations.push(pending.clone());
-      self.queue.enqueue_locally(Envelope::new(recipient, Message::new(pending), sender));
+      recipient.send_message(Message::new(pending), sender);
     } else {
       let message = custom.unwrap_or_else(|| Message::new(notice));
-      Envelope::new(recipient, message, sender).post_to_boundary();
+      recipient.send_message(message, sender);
+    }
+  }
+}
+
+// Marks the executor fatal when the work it was lent to unwinds.
+struct Lent<'a> {
+  executor: &'a mut Executor,
+  returned: bool,
+}
+
+impl Drop for Lent<'_> {
+  fn drop(&mut self) {
+    let executor = &mut *self.executor;
+    if !self.returned && (!executor.running.is_empty() || executor.boundary_active || executor.in_run) {
+      executor.mark_fatal();
+    }
+  }
+}
+
+impl MailboxCell for ActorCell {
+  type Env = Executor;
+
+  fn invoke(&mut self, executor: &mut Executor, mailbox: &Mailbox<Self>, envelope: Envelope) -> Next {
+    executor.invoke(self, mailbox, envelope)
+  }
+
+  /// In stage 3 the executor sends one system message, the `Resume` after a
+  /// failure; a parent's suspend of its children waits for stage 4.
+  fn system_invoke(&mut self, _executor: &mut Executor, mailbox: &Mailbox<Self>, message: SystemMessage) {
+    match message {
+      | SystemMessage::Suspend => {
+        mailbox.suspend();
+      },
+      | SystemMessage::Resume => {
+        mailbox.resume();
+      },
+      | other => unreachable!("nothing sends {other:?} to an actor before stage 4 of #234"),
     }
   }
 }

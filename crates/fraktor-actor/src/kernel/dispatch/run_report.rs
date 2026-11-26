@@ -19,11 +19,11 @@
 use crate::kernel::dispatch::RunOutcome;
 
 /// The end of one [`MailboxRun::run`](super::MailboxRun::run).
-pub struct RunReport<C> {
+pub(crate) struct RunReport<C> {
   /// Whether the mailbox is to run again.
-  pub outcome: RunOutcome<C>,
+  pub(crate) outcome: RunOutcome<C>,
   /// How many normal messages the run took from the queue. A run that handles
   /// only system messages, or finds nothing (design of #234, section 3.10),
   /// takes none.
-  pub delivered: usize,
+  pub(crate) delivered: usize,
 }

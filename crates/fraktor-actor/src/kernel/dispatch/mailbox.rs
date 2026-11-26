@@ -23,6 +23,8 @@ use core::mem;
 use crate::kernel::dispatch::mailbox_status::MailboxStatus;
 use crate::kernel::dispatch::MailboxCell;
 use crate::kernel::dispatch::MailboxRun;
+use crate::kernel::dispatch::ManualExecutor;
+use crate::kernel::dispatch::ManualTask;
 use crate::kernel::dispatch::MessageQueue;
 use crate::kernel::dispatch::Next;
 use crate::kernel::dispatch::RunLimits;
@@ -32,6 +34,7 @@ use crate::kernel::message::Envelope;
 use crate::kernel::sync::Arc;
 use crate::kernel::sync::LockCell;
 use crate::kernel::sync::LockFactory;
+use crate::kernel::sync::Weak;
 
 #[cfg(test)]
 #[path = "mailbox_test.rs"]
@@ -56,6 +59,10 @@ mod tests;
 /// caller that turned the bit on gets the [`MailboxRun`] to hand to the pool.
 /// Every path reserves this way: a sender, a sender of a system message, and
 /// the end of a run.
+///
+/// **The way back.** A mailbox of an actor knows the dispatcher that runs it
+/// only through a `Weak`, the one edge out of the mailbox (condition 2 of the
+/// ownership model's revision, design of #234, section 11.11.4).
 // The gate gives invariant I6 of the design (design of #234, section 3.2).
 // It is a choice inside what Pekko allows, not a promise to users, so it is
 // written here and not in the rustdoc (docs/decisions/pekko-semantics-first.md):
@@ -64,43 +71,131 @@ mod tests;
 // its own takes the gate and then the queue's lock; nothing takes them the
 // other way round. Nothing that runs inside the gate is user code: queues
 // classify an envelope before the gate is taken (invariant I16).
-pub struct Mailbox<C> {
+pub(crate) struct Mailbox<C> {
   status: MailboxStatus,
   gate: LockCell<VecDeque<SystemMessage>>,
   queue: Arc<dyn MessageQueue>,
   shares_queue: bool,
   cell: LockCell<Option<C>>,
   limits: RunLimits,
+  executor: Weak<ManualExecutor<C>>,
 }
 
 impl<C: MailboxCell> Mailbox<C> {
-  /// Creates the mailbox of `cell` with a queue of its own. Closing the
-  /// mailbox takes what the queue still holds.
-  pub fn new(cell: C, queue: Arc<dyn MessageQueue>, limits: RunLimits, locks: &dyn LockFactory) -> Self {
-    Self::with_queue(cell, queue, false, limits, locks)
+  /// Creates the mailbox of `cell` with a queue of its own and no way back to
+  /// a dispatcher. Closing the mailbox takes what the queue still holds.
+  #[cfg(test)]
+  pub(crate) fn new(cell: C, queue: Arc<dyn MessageQueue>, limits: RunLimits, locks: &dyn LockFactory) -> Self {
+    Self::with_queue(Some(cell), queue, false, limits, locks, Weak::new())
   }
 
   /// Creates the mailbox of `cell` for a balancing team that shares `queue`.
   /// Closing the mailbox leaves the queue to the rest of the team.
-  pub fn sharing(cell: C, queue: Arc<dyn MessageQueue>, limits: RunLimits, locks: &dyn LockFactory) -> Self {
-    Self::with_queue(cell, queue, true, limits, locks)
+  #[cfg(test)]
+  pub(crate) fn sharing(cell: C, queue: Arc<dyn MessageQueue>, limits: RunLimits, locks: &dyn LockFactory) -> Self {
+    Self::with_queue(Some(cell), queue, true, limits, locks, Weak::new())
+  }
+
+  /// Creates the mailbox of an actor that `executor` runs, with a queue of its
+  /// own and its slot still empty: the actor goes in once it has been built.
+  pub(crate) fn for_actor(
+    queue: Arc<dyn MessageQueue>,
+    limits: RunLimits,
+    locks: &dyn LockFactory,
+    executor: Weak<ManualExecutor<C>>,
+  ) -> Self {
+    Self::with_queue(None, queue, false, limits, locks, executor)
   }
 
   fn with_queue(
-    cell: C,
+    cell: Option<C>,
     queue: Arc<dyn MessageQueue>,
     shares_queue: bool,
     limits: RunLimits,
     locks: &dyn LockFactory,
+    executor: Weak<ManualExecutor<C>>,
   ) -> Self {
     Self {
       status: MailboxStatus::new(),
       gate: LockCell::new(locks.new_lock(), VecDeque::new()),
       queue,
       shares_queue,
-      cell: LockCell::new(locks.new_lock(), Some(cell)),
+      cell: LockCell::new(locks.new_lock(), cell),
       limits,
+      executor,
     }
+  }
+
+  /// Puts a normal message on the queue and, when this send wins the
+  /// scheduled bit, hands the run to the dispatcher (Pekko's
+  /// `dispatcher.dispatch`: `enqueue` then `registerForExecution`).
+  ///
+  /// # Errors
+  ///
+  /// Hands the envelope back when [`enqueue`](Self::enqueue) does.
+  pub(crate) fn send(mailbox: &Arc<Self>, envelope: Envelope) -> Result<(), Envelope> {
+    mailbox.enqueue(envelope)?;
+    Self::schedule(mailbox);
+    Ok(())
+  }
+
+  /// Puts a system message on the system queue and, when this send wins the
+  /// scheduled bit, hands the run to the dispatcher (Pekko's
+  /// `systemDispatch`).
+  ///
+  /// # Errors
+  ///
+  /// Hands the message back when [`system_enqueue`](Self::system_enqueue)
+  /// does.
+  pub(crate) fn system_send(mailbox: &Arc<Self>, message: SystemMessage) -> Result<(), SystemMessage> {
+    mailbox.system_enqueue(message)?;
+    Self::schedule(mailbox);
+    Ok(())
+  }
+
+  /// Puts `envelopes` ahead of every queued message, keeping their order, and
+  /// schedules the mailbox (`unstashAll`'s `enqueueFirst`).
+  ///
+  /// # Errors
+  ///
+  /// Hands the envelopes back when the mailbox is closed or its queue cannot
+  /// put them first.
+  pub(crate) fn send_first(mailbox: &Arc<Self>, envelopes: Vec<Envelope>) -> Result<(), Vec<Envelope>> {
+    let status = &mailbox.status;
+    let queue = &mailbox.queue;
+    mailbox.gate.with(|_| if status.is_closed() { Err(envelopes) } else { queue.enqueue_first(envelopes) })?;
+    Self::schedule(mailbox);
+    Ok(())
+  }
+
+  /// Reserves the mailbox and, when this call wins, hands the run to the
+  /// dispatcher.
+  pub(crate) fn schedule(mailbox: &Arc<Self>) {
+    if let Some(run) = Self::try_schedule(mailbox) {
+      mailbox.hand_over(ManualTask::Run(run));
+    }
+  }
+
+  /// Hands `task` to the dispatcher of this mailbox. Without one (the system
+  /// is gone), the task is dropped here, outside every lock.
+  pub(crate) fn hand_over(&self, task: ManualTask<C>) {
+    if let Some(executor) = self.executor() {
+      executor.submit(task);
+    }
+  }
+
+  /// Returns the dispatcher of this mailbox, while its system is alive. The
+  /// only place that follows the way back.
+  pub(crate) fn executor(&self) -> Option<Arc<ManualExecutor<C>>> {
+    #[cfg(test)]
+    crate::kernel::sync::counts::count_upgrade();
+    self.executor.upgrade()
+  }
+
+  /// Returns whether `executor` is the dispatcher of this mailbox. Compares
+  /// the pointers, without following the way back.
+  pub(crate) fn belongs_to(&self, executor: &ManualExecutor<C>) -> bool {
+    core::ptr::eq(self.executor.as_ptr(), executor)
   }
 
   /// Puts a normal message on the queue.
@@ -110,7 +205,7 @@ impl<C: MailboxCell> Mailbox<C> {
   /// Hands the envelope back when the mailbox has a queue of its own and is
   /// closed, or when a bounded queue is full. The caller sends it to dead
   /// letters.
-  pub fn enqueue(&self, envelope: Envelope) -> Result<(), Envelope> {
+  pub(crate) fn enqueue(&self, envelope: Envelope) -> Result<(), Envelope> {
     if self.shares_queue {
       return self.queue.enqueue(envelope);
     }
@@ -134,7 +229,7 @@ impl<C: MailboxCell> Mailbox<C> {
   /// Hands the message back when the mailbox is closed. The caller sends it
   /// to dead letters, which answer a `Watch` with a `DeathWatchNotification`
   /// (Pekko's `Mailbox.systemEnqueue`, invariant I12).
-  pub fn system_enqueue(&self, message: SystemMessage) -> Result<(), SystemMessage> {
+  pub(crate) fn system_enqueue(&self, message: SystemMessage) -> Result<(), SystemMessage> {
     let status = &self.status;
     self.gate.with(|system| {
       if status.is_closed() {
@@ -155,8 +250,10 @@ impl<C: MailboxCell> Mailbox<C> {
   /// Between the two steps the work may be handled by the run that is still
   /// going, so the run returned may find nothing to do. Pekko has the same
   /// empty run, and the user never sees it (design of #234, section 3.10).
-  pub fn try_schedule(mailbox: &Arc<Self>) -> Option<MailboxRun<C>> {
+  pub(crate) fn try_schedule(mailbox: &Arc<Self>) -> Option<MailboxRun<C>> {
     if mailbox.reserve() {
+      #[cfg(test)]
+      crate::kernel::sync::counts::count_run();
       Some(MailboxRun::new(Arc::clone(mailbox)))
     } else {
       None
@@ -184,14 +281,14 @@ impl<C: MailboxCell> Mailbox<C> {
   /// Adds one to the suspend count and returns whether the mailbox was not
   /// suspended before. Only the thread that runs the actor calls it; a suspend
   /// from outside is a [`SystemMessage::Suspend`] (invariant I4).
-  pub fn suspend(&self) -> bool {
+  pub(crate) fn suspend(&self) -> bool {
     self.status.suspend()
   }
 
   /// Takes one from the suspend count, stopping at zero, and returns whether
   /// the mailbox is no longer suspended. Only the thread that runs the actor
   /// calls it.
-  pub fn resume(&self) -> bool {
+  pub(crate) fn resume(&self) -> bool {
     self.status.resume()
   }
 
@@ -199,7 +296,7 @@ impl<C: MailboxCell> Mailbox<C> {
   /// when the queue is shared) and the system messages, in order. The caller
   /// sends both to dead letters, after this returns and outside every lock.
   /// Closing a closed mailbox returns nothing.
-  pub fn close(&self) -> (Vec<Envelope>, Vec<SystemMessage>) {
+  pub(crate) fn close(&self) -> (Vec<Envelope>, Vec<SystemMessage>) {
     // Draining inside the gate means that nobody sees the mailbox closed
     // with messages still in its own queue, and that a second `close` cannot
     // return before the first has taken everything. Nothing is dropped
@@ -222,35 +319,62 @@ impl<C: MailboxCell> Mailbox<C> {
   }
 
   /// Returns whether the mailbox is closed.
-  pub fn is_closed(&self) -> bool {
+  pub(crate) fn is_closed(&self) -> bool {
     self.status.is_closed()
   }
 
   /// Returns whether the mailbox is suspended.
-  pub fn is_suspended(&self) -> bool {
+  #[cfg(test)]
+  pub(crate) fn is_suspended(&self) -> bool {
     self.status.is_suspended()
   }
 
   /// Returns whether the queue of normal messages holds a message. For a
   /// shared queue, the messages may be for any member of the team.
-  pub fn has_messages(&self) -> bool {
+  #[cfg(test)]
+  pub(crate) fn has_messages(&self) -> bool {
     self.queue.has_messages()
   }
 
   /// Returns how many normal messages the queue holds.
-  pub fn number_of_messages(&self) -> usize {
+  pub(crate) fn number_of_messages(&self) -> usize {
     self.queue.number_of_messages()
   }
 
   /// Returns whether a system message is waiting.
-  pub fn has_system_messages(&self) -> bool {
+  #[cfg(test)]
+  pub(crate) fn has_system_messages(&self) -> bool {
     self.has_queued_system_messages()
   }
 
   /// Takes the actor out for a run. Panics when it is not there: another
   /// thread is running the same actor, which breaks invariant I1.
   pub(crate) fn take_cell(&self) -> C {
-    self.cell.with(Option::take).expect("two runs of one mailbox at once (invariant I1)")
+    self.try_take_cell().expect("two runs of one mailbox at once (invariant I1)")
+  }
+
+  /// Takes the actor out, or returns `None` while a run or the executor has
+  /// it out, or before it has been built.
+  pub(crate) fn try_take_cell(&self) -> Option<C> {
+    self.cell.with(Option::take)
+  }
+
+  /// Returns whether the actor is in its slot.
+  pub(crate) fn has_cell(&self) -> bool {
+    self.cell.with(|slot| slot.is_some())
+  }
+
+  /// Reads the actor in its slot, or returns `None` when it is out. `read`
+  /// runs inside the slot's lock and must not run user code (invariant I16).
+  pub(crate) fn with_cell<R>(&self, read: impl FnOnce(&C) -> R) -> Option<R> {
+    self.cell.with(|slot| slot.as_ref().map(read))
+  }
+
+  /// Changes the actor in its slot, or returns `None` when it is out.
+  /// `change` runs inside the slot's lock and must not run user code
+  /// (invariant I16).
+  pub(crate) fn with_cell_mut<R>(&self, change: impl FnOnce(&mut C) -> R) -> Option<R> {
+    self.cell.with(|slot| slot.as_mut().map(change))
   }
 
   /// Puts the actor back after a run, before the scheduled bit is cleared.
@@ -262,6 +386,17 @@ impl<C: MailboxCell> Mailbox<C> {
 
   pub(crate) fn set_as_idle(&self) {
     self.status.set_as_idle();
+  }
+
+  // A run that unwinds out of the system queue has lowered the flag; raise
+  // it again while a message is left, so the next run does not skip it.
+  pub(crate) fn raise_system_flag_if_queued(&self) {
+    let status = &self.status;
+    self.gate.with(|system| {
+      if !system.is_empty() {
+        status.raise_system_flag();
+      }
+    });
   }
 
   /// Handles every waiting system message (Pekko's

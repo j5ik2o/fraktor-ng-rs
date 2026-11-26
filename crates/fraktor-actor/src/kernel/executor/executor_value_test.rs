@@ -233,7 +233,7 @@ impl Actor for Guardian {
 #[test]
 fn dropping_the_executor_releases_the_dead_letters_boundary() {
   let executor = death_watch_executor();
-  let boundary = Arc::downgrade(executor.dead_letters().boundary());
+  let boundary = Arc::downgrade(executor.dead_letters().boundary().expect("dead letters posts to a boundary"));
   drop(executor);
   assert!(boundary.upgrade().is_none(), "the dead letters handle must not keep its own boundary alive");
 }
@@ -639,7 +639,7 @@ impl Executor {
   /// count after a spawn-and-stop cycle. This accessor exists only for tests
   /// and is not part of the crate's API.
   pub(crate) fn parent_entry_count(&self) -> usize {
-    self.parents.len()
+    self.actors.values().filter(|entry| entry.supervision.is_some()).count() + self.ref_parents.len()
   }
 }
 
@@ -883,7 +883,7 @@ fn a_stopped_actor_sends_its_stash_to_dead_letters_with_the_original_senders_in_
   executor.run_until_idle();
 
   assert_eq!(*delivered.lock().unwrap(), alloc::vec![(first_sender, "a"), (second_sender, "b")]);
-  assert!(executor.stashes.is_empty());
+  assert!(executor.actors.values().all(|entry| entry.stash.is_empty()));
 }
 
 // Stashes every message and returns the stash to the mailbox in its stop hook,
@@ -988,5 +988,5 @@ fn stashing_the_newest_stashed_delivery_again_is_refused_and_another_delivery_is
   executor.stash(owner.clone(), 2, Message::new("b"), sender.clone());
   executor.unstash_all(&owner);
   executor.stash(owner.clone(), 2, Message::new("b"), sender);
-  assert_eq!(executor.stashes[0].1.len(), 1);
+  assert_eq!(executor.actors[&owner.key()].stash.len(), 1);
 }

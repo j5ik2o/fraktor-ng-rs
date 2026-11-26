@@ -79,4 +79,15 @@ pub trait MessageQueue: Send + Sync {
   /// A mailbox with a queue of its own calls this when it closes and sends
   /// what it gets to dead letters (Pekko's `cleanUp`).
   fn drain(&self) -> Vec<Envelope>;
+
+  /// Puts `envelopes` at the front of the queue, keeping their order, ahead
+  /// of everything already queued (Pekko's `DequeBasedMessageQueue.enqueueFirst`,
+  /// which `unstashAll` uses). The default cannot, and hands them back.
+  ///
+  /// # Errors
+  ///
+  /// Returns the envelopes when the queue cannot put them first.
+  fn enqueue_first(&self, envelopes: Vec<Envelope>) -> Result<(), Vec<Envelope>> {
+    Err(envelopes)
+  }
 }

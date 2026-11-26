@@ -61,4 +61,13 @@ impl MessageQueue for UnboundedQueue {
   fn drain(&self) -> Vec<Envelope> {
     self.envelopes.with(|queue| queue.drain(..).collect())
   }
+
+  fn enqueue_first(&self, envelopes: Vec<Envelope>) -> Result<(), Vec<Envelope>> {
+    self.envelopes.with(|queue| {
+      for envelope in envelopes.into_iter().rev() {
+        queue.push_front(envelope);
+      }
+    });
+    Ok(())
+  }
 }

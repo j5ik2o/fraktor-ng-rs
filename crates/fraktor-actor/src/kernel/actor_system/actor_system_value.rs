@@ -53,7 +53,6 @@ use crate::kernel::executor::ShardBoundary;
 use crate::kernel::extension::{ExtensionEntry, ExtensionError, ExtensionId, ExtensionStartup};
 use crate::kernel::setup::ActorSystemSetup;
 use crate::kernel::supervision::FailureCatcher;
-use crate::kernel::sync::lock;
 use crate::kernel::sync::Arc;
 
 #[cfg(test)]
@@ -114,14 +113,14 @@ impl ActorSystem {
     let executor = Arc::new(spin::Mutex::new(Executor::new(Self::root_path(name), boundary)));
     let system = WeakActorSystem::new(name.to_string(), Arc::downgrade(&executor));
     let event_stream = EventStream::new(system, false);
-    lock(&executor).set_event_stream(event_stream.clone());
+    Executor::lend(&executor, |executor| executor.set_event_stream(event_stream.clone()));
     if let Some(settings) = setup.get::<DispatchSettings>() {
-      lock(&executor).set_dispatch_settings(settings.clone());
+      Executor::lend(&executor, |executor| executor.set_dispatch_settings(settings.clone()));
     }
     if let Some(dispatchers) = setup.get::<crate::kernel::dispatch::Dispatchers>() {
-      lock(&executor).set_dispatchers(dispatchers.clone());
+      Executor::lend(&executor, |executor| executor.set_dispatchers(dispatchers.clone()));
     }
-    lock(&executor).set_dead_letter_bus(event_stream.downgrade());
+    Executor::lend(&executor, |executor| executor.set_dead_letter_bus(event_stream.downgrade()));
     // The four dead letter classes are subclasses of the AllDeadLetters
     // channel, as the trait links declare in Pekko.
     event_stream.declare_subclass::<DeadLetter, AllDeadLetters>();
@@ -142,7 +141,7 @@ impl ActorSystem {
     catcher: Arc<dyn FailureCatcher>,
   ) -> Self {
     let system = Self::with_setup(name, boundary, setup);
-    lock(&system.executor).set_failure_catcher(catcher);
+    Executor::lend(&system.executor, |executor| executor.set_failure_catcher(catcher));
     system
   }
 
@@ -154,7 +153,7 @@ impl ActorSystem {
   /// earlier milestones.
   pub fn with_failure_catcher(name: &str, boundary: Arc<dyn ShardBoundary>, catcher: Arc<dyn FailureCatcher>) -> Self {
     let system = Self::new(name, boundary);
-    lock(&system.executor).set_failure_catcher(catcher);
+    Executor::lend(&system.executor, |executor| executor.set_failure_catcher(catcher));
     system
   }
 
@@ -168,7 +167,7 @@ impl ActorSystem {
   /// way. A sink outside tests therefore sees one warning per unhandled
   /// message. A system created without a sink drops the events.
   pub fn set_event_sink(&self, sink: Arc<dyn crate::kernel::actor::Logging::EventSink>) {
-    lock(&self.executor).set_event_sink(sink);
+    Executor::lend(&self.executor, |executor| executor.set_event_sink(sink));
   }
 
   /// Installs the monotonic clock a time-windowed supervisor strategy reads.
@@ -178,7 +177,7 @@ impl ActorSystem {
   /// its own time, or the caller can install this override before starting
   /// actors supervised with a finite window.
   pub fn set_clock(&self, clock: Arc<dyn crate::kernel::Clock>) {
-    lock(&self.executor).set_clock(clock);
+    Executor::lend(&self.executor, |executor| executor.set_clock(clock));
   }
 
   fn root_path(name: &str) -> ActorPath {
@@ -258,7 +257,7 @@ impl ActorSystem {
     props: Props,
     name: Option<&str>,
   ) -> Result<ActorRef, crate::kernel::actor::ActorCreationError> {
-    lock(&self.executor).try_spawn_user(props, name)
+    Executor::lend(&self.executor, |executor| executor.try_spawn_user(props, name))
   }
 
   /// Resolves `path` to a handle, as `ActorRefProvider.resolveActorRef`
@@ -270,7 +269,7 @@ impl ActorSystem {
   /// answers nothing (Pekko's `EmptyLocalActorRef`); a path whose root
   /// belongs to another system resolves to the dead letters.
   pub fn resolve_actor_ref(&self, path: &ActorPath) -> ActorRef {
-    lock(&self.executor).resolve_actor_ref(path)
+    Executor::lend(&self.executor, |executor| executor.resolve_actor_ref(path))
   }
 
   /// Creates a running actor system as [`new`](Self::new) does, and then
@@ -371,7 +370,7 @@ impl ActorSystem {
   /// Mirrors `org.apache.pekko.actor.ActorSystem.stop`, which asks the
   /// guardian to stop the actor.
   pub fn stop(&mut self, target: &ActorRef) {
-    lock(&self.executor).stop_at_boundary(target);
+    Executor::lend(&self.executor, |executor| executor.stop_at_boundary(target));
   }
 
   /// Registers `watcher` to receive the `Terminated` notice of `target`.
@@ -383,7 +382,7 @@ impl ActorSystem {
   /// reply address of an `ask`, is reported at once with `existence_confirmed =
   /// false`; no later notice arrives for it, even if it stops afterwards.
   pub fn watch(&mut self, watcher: &ActorRef, target: &ActorRef) {
-    lock(&self.executor).watch(watcher, target);
+    Executor::lend(&self.executor, |executor| executor.watch(watcher, target));
   }
 
   /// Returns whether `target` no longer has a running actor behind it.
@@ -396,7 +395,7 @@ impl ActorSystem {
   /// address of an `ask`, has no cell here and reports true, the same limit
   /// `watch` documents.
   pub fn is_actor_terminated(&self, target: &ActorRef) -> bool {
-    lock(&self.executor).is_actor_terminated(target)
+    Executor::lend(&self.executor, |executor| executor.is_actor_terminated(target))
   }
 
   /// Starts a handle whose shard runs `handler` for each delivered message.
@@ -413,7 +412,7 @@ impl ActorSystem {
   where
     H: Fn(&ActorRef, crate::kernel::message::Message) + Send + Sync + 'static,
   {
-    lock(&self.executor).function_ref(name, handler)
+    Executor::lend(&self.executor, |executor| executor.function_ref(name, handler))
   }
 
   /// Registers the function reference `watcher` to receive the
@@ -422,14 +421,14 @@ impl ActorSystem {
   /// Mirrors `FunctionRef.watch`, lent through the system because the
   /// handle itself holds no executor reference.
   pub fn function_ref_watch(&mut self, watcher: &FunctionRef, target: &ActorRef) -> ActorRef {
-    lock(&self.executor).function_ref_watch(watcher, target)
+    Executor::lend(&self.executor, |executor| executor.function_ref_watch(watcher, target))
   }
 
   /// Stops the function reference `watcher` from watching `target`.
   ///
   /// Mirrors `FunctionRef.unwatch`, which is idempotent.
   pub fn function_ref_unwatch(&mut self, watcher: &FunctionRef, target: &ActorRef) -> ActorRef {
-    lock(&self.executor).function_ref_unwatch(watcher, target)
+    Executor::lend(&self.executor, |executor| executor.function_ref_unwatch(watcher, target))
   }
 
   /// Returns whether the function reference `watcher` watches `target`.
@@ -437,7 +436,7 @@ impl ActorSystem {
   /// Mirrors `FunctionRef.isWatching`: the registration survives the
   /// target's end until the reference unwatches or stops.
   pub fn function_ref_is_watching(&self, watcher: &FunctionRef, target: &ActorRef) -> bool {
-    lock(&self.executor).function_ref_is_watching(watcher, target)
+    Executor::lend(&self.executor, |executor| executor.function_ref_is_watching(watcher, target))
   }
 
   /// Returns a handle that can reach the executor without owning the system.
@@ -463,7 +462,7 @@ impl ActorSystem {
   /// as a `SuppressedDeadLetter` and never counted by the dead letter
   /// listener.
   pub fn register_dead_letter_suppression<T: core::any::Any + DeadLetterSuppression>(&self) {
-    lock(&self.executor).register_dead_letter_suppression(core::any::TypeId::of::<T>());
+    Executor::lend(&self.executor, |executor| executor.register_dead_letter_suppression(core::any::TypeId::of::<T>()));
   }
 
   /// Starts the dead letter listener with `settings` and returns its
@@ -483,7 +482,7 @@ impl ActorSystem {
     // with dead letter logging off never receives an event, so the handle
     // is created and returned without a subscription.
     let limit = settings.limit();
-    let listener = lock(&self.executor).start_dead_letter_listener(settings);
+    let listener = Executor::lend(&self.executor, |executor| executor.start_dead_letter_listener(settings));
     if limit != DeadLetterLogLimit::Off {
       let _ = self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<DeadLetter>());
       let _ = self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<Dropped>());
@@ -497,7 +496,7 @@ impl ActorSystem {
   /// Mirrors `ActorSystem.actorSelection`. The selection captures the
   /// shard boundary, so it never borrows the executor when it sends.
   pub fn actor_selection(&self, path: &ActorPath) -> ActorSelection {
-    lock(&self.executor).actor_selection(path.clone())
+    Executor::lend(&self.executor, |executor| executor.actor_selection(path.clone()))
   }
 
   /// Returns the handle that absorbs messages which no actor takes.
@@ -506,38 +505,38 @@ impl ActorSystem {
   /// path; the port makes one when the system is created and answers that same
   /// handle afterwards.
   pub fn dead_letters(&self) -> ActorRef {
-    lock(&self.executor).dead_letters()
+    Executor::lend(&self.executor, |executor| executor.dead_letters())
   }
 
   /// Delivers every message that is waiting until nothing is left.
   pub fn run_until_idle(&mut self) {
-    lock(&self.executor).run_until_idle();
+    Executor::lend(&self.executor, |executor| executor.run_until_idle());
   }
 
   /// Delivers at most one message and returns whether it delivered one, so a
   /// caller can check a deadline between messages instead of waiting for the
   /// whole queue to drain.
   pub fn run_one(&mut self) -> bool {
-    lock(&self.executor).run_one()
+    Executor::lend(&self.executor, |executor| executor.run_one())
   }
 
   /// Waits at most `max` for one message from the boundary and moves it onto
   /// the local queue without delivering it; call `run_until_idle` to deliver
   /// it. Returns whether a message arrived.
   pub fn await_envelope(&mut self, max: Duration) -> bool {
-    lock(&self.executor).await_envelope(max)
+    Executor::lend(&self.executor, |executor| executor.await_envelope(max))
   }
 
   /// Stops the system. Calling it again is a no-op, as in Pekko.
   pub fn terminate(&mut self) {
     if !self.is_terminated() {
-      lock(&self.executor).stop_all();
+      Executor::lend(&self.executor, |executor| executor.stop_all());
     }
   }
 
   /// Returns whether the system has been terminated.
   pub fn is_terminated(&self) -> bool {
-    lock(&self.executor).is_terminated()
+    Executor::lend(&self.executor, |executor| executor.is_terminated())
   }
 
   /// Returns the identity of the shard boundary this system posts to.
@@ -545,7 +544,7 @@ impl ActorSystem {
   /// A waiting `ask` uses the same identity, taken from the recipient handle,
   /// to find the step that drives this system.
   pub fn shard_key(&self) -> usize {
-    lock(&self.executor).boundary_key()
+    Executor::lend(&self.executor, |executor| executor.boundary_key())
   }
 
   /// Returns the event sink the system publishes to, if one was installed.
@@ -553,7 +552,7 @@ impl ActorSystem {
   /// The test kit reads it back to arm an `EventFilter` for the duration of an
   /// `intercept`.
   pub fn event_sink(&self) -> Option<Arc<dyn crate::kernel::actor::Logging::EventSink>> {
-    lock(&self.executor).event_sink()
+    Executor::lend(&self.executor, |executor| executor.event_sink())
   }
 }
 

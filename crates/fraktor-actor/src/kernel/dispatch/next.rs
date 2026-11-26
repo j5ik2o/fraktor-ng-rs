@@ -19,7 +19,7 @@
 /// What [`MailboxCell::invoke`](super::MailboxCell::invoke) tells the run
 /// after one normal message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Next {
+pub(crate) enum Next {
   /// Nothing is left for after the run: take the next message, up to the
   /// throughput.
   Continue,

@@ -33,7 +33,7 @@ use crate::kernel::message::Envelope;
 /// A run lends the cell what it needs to handle a message, as `env`: the
 /// executor of the actor system, while one lock still guards it (design of
 /// #234, section 11.11.2).
-pub trait MailboxCell: Send + Sized {
+pub(crate) trait MailboxCell: Send + Sized {
   /// What a run lends the cell while it handles messages.
   type Env: ?Sized;
 

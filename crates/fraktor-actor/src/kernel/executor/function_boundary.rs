@@ -23,6 +23,7 @@ use core::time::Duration;
 use crate::kernel::actor::DeadLetter;
 use crate::kernel::actor::SuppressedDeadLetter;
 use crate::kernel::actor_ref::ActorRef;
+use crate::kernel::executor::ArrivalNotice;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
@@ -51,11 +52,19 @@ pub(crate) struct FunctionBoundary {
   handler: Handler,
   open: AtomicBool,
   dead_letters: Option<ActorRef>,
+  arrivals: Option<Arc<ArrivalNotice>>,
 }
 
 impl FunctionBoundary {
   pub(crate) fn new(handler: Handler) -> Self {
-    Self { handler, open: AtomicBool::new(true), dead_letters: None }
+    Self { handler, open: AtomicBool::new(true), dead_letters: None, arrivals: None }
+  }
+
+  /// Returns the boundary that tells `arrivals` each time its handler has
+  /// run, so a caller waiting for a test actor wakes (design of #234,
+  /// section 11.11.6).
+  pub(crate) fn with_arrivals(self, arrivals: Arc<ArrivalNotice>) -> Self {
+    Self { arrivals: Some(arrivals), ..self }
   }
 
   /// Creates a boundary that, once closed, hands every later post to
@@ -65,7 +74,7 @@ impl FunctionBoundary {
   /// function reference. The route is fixed at creation and read
   /// without a lock, so the post path stays lock-free.
   pub(crate) fn new_with_dead_letters(handler: Handler, dead_letters: ActorRef) -> Self {
-    Self { handler, open: AtomicBool::new(true), dead_letters: Some(dead_letters) }
+    Self { handler, open: AtomicBool::new(true), dead_letters: Some(dead_letters), arrivals: None }
   }
 }
 
@@ -86,12 +95,15 @@ impl ShardBoundary for FunctionBoundary {
         // message itself: the dead letters route then wraps it naming
         // the handle itself as the recipient, not the stopped function
         // reference.
-        Envelope::new(dead_letters.clone(), message, sender).post_to_boundary();
+        dead_letters.send_message(message, sender);
       }
       return;
     }
     let (_, message, sender) = envelope.into_parts();
     (self.handler)(&sender, message);
+    if let Some(arrivals) = &self.arrivals {
+      arrivals.notify();
+    }
   }
 
   fn poll(&self) -> Option<Envelope> {

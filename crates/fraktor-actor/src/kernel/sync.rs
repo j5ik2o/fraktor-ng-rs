@@ -28,6 +28,8 @@
 //! [`SpinLockFactory`] is the kernel's default for a system that one thread
 //! drives.
 
+#[cfg(test)]
+pub(crate) mod counts;
 mod lock_cell;
 mod lock_factory;
 mod raw_lock;

@@ -269,7 +269,7 @@ impl ActorRef {
       }
     };
     let replier = self.replier("ask", handler);
-    let driver_key = Arc::as_ptr(self.boundary()) as *const () as usize;
+    let driver_key = self.driver_key();
     self.tell(Message::new(message), replier);
     AskFuture::new(slot, driver_key)
   }

@@ -59,6 +59,7 @@ impl MailboxStatus {
     self.load() & CLOSED != 0
   }
 
+  #[cfg(test)]
   pub(crate) fn is_suspended(&self) -> bool {
     self.load() >= SUSPEND_UNIT
   }
