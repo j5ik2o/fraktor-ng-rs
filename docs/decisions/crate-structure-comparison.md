@@ -155,7 +155,8 @@ tokio-rs や embassy が来ることがある」である。上の「推奨の�
 - 対象は fraktor-actor の kernel だけである。ほかのクレート（fraktor-testkit など）は未決定のままとする
 - クレートは割らない。lib.rs の `cfg_attr(not(feature = "std"), no_std)` と、`std` の機能の後ろに adaptor を置くことだけで
   分ける。段階 1（クレートの中で kernel と adaptor に分ける）の中に収まり、段階 2（クレートの分割）には進まない
-- 守り方：CI で、kernel を std なしの target（thumbv7em-none-eabihf と thumbv6m-none-eabi）で `cargo check` する。
+- 守り方：CI で、kernel を std なしの target で `cargo check` する。段 0 で thumbv7em-none-eabihf を足し、CAS の無い
+  thumbv6m-none-eabi は段 0b（[Issue #243](https://github.com/j5ik2o/fraktor-ng-rs/issues/243)。公開 API の変更を含む）のあとに足す（元帥、2026-11-26）。
   段階 1 の弱み（強制がコンパイラではなく checker に頼る）は、no_std については、この CI でコンパイラの強制に替わる
 - 実施は、[Issue #234](https://github.com/j5ik2o/fraktor-ng-rs/issues/234) の設計（`docs/design/issue-234-multithread-executor.md`）
   の段 0 で行う
