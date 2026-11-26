@@ -18,6 +18,7 @@ jobs:
     if: ${{ always() }}
     permissions: {}
     runs-on: ubuntu-latest
+    # The gate takes seconds; 5 minutes is a floor, not a measured multiple (#221).
     timeout-minutes: 5
     steps:
       - name: Require CI success

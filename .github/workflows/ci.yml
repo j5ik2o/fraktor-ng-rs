@@ -14,7 +14,9 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    # About 3x the slowest recent successful run, so that a hung test fails on
+    # time instead of being killed for memory (#221).
+    timeout-minutes: 18
     outputs:
       last-step-result: ${{ steps.syn_checker.outcome }}
     steps:
@@ -86,6 +88,7 @@ jobs:
   # and its real-host test runs only on Windows.
   windows:
     runs-on: windows-latest
+    # About 3x the slowest recent successful run (#221).
     timeout-minutes: 6
     steps:
       - uses: actions/checkout@v6
