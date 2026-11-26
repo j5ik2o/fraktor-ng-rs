@@ -27,7 +27,7 @@
 
 作らない・除外の提案は0件である。本 Spec には、provider をクラス名で選ぶケースのような、JVM や設定ファイルに固有のケースは無い。HOCON の設定を写す部分も本 Spec には無い（`PekkoSpec` の設定は土台の話で、本 Spec のケースは設定値を見ていない）。そのため、前例（#154 の D1、G0b の決定 E）の「HOCON は型付きの入力にする」という判断は、本件では生成の選択肢（名前と supervisor）を型付きの引数で受ける形にだけ効く（§3）。
 
-注1（ケース1の同期性）：原典は `fsm ! "go"` の直後の行で `stateName` を読む。原典の `TestActorRef` は CallingThreadDispatcher で動くので、送信がその場で処理される。今の fraktor-ng-rs の実行器では送信はキューに入り、待ちの運転手が処理するので、直後に読むと古い状態が見えうる。移植のテストは、送信の後で `awaitCond` に当たる `FraktorSpec::await_cond` で状態が変わるまで待ってから確かめる形にする。送信したその場で処理されるという強い同期性そのものを確かめる形への書き戻しは、testkit の CallingThreadDispatcher（[Issue #234](https://github.com/j5ik2o/fraktor-ng-rs/issues/234) の段7b、[Issue #259](https://github.com/j5ik2o/fraktor-ng-rs/issues/259)）の後とする。これはケースの除外ではなく、待ち方の違いである。アサーションの内容（状態名と状態データの遷移）は弱めない。
+注1（ケース1とケース2の同期性）：原典は `fsm ! "go"` の直後の行で `stateName` を読む。ケース2の「タイマを開始した後に `isTimerActive` が真」「取り消した後に偽」も、移植では制御メッセージを通るので同じく非同期である。原典の `TestActorRef` は CallingThreadDispatcher で動くので、送信がその場で処理される。今の fraktor-ng-rs の実行器では送信はキューに入り、待ちの運転手が処理するので、直後に読むと古い状態が見えうる。移植のテストは、送信の後で `awaitCond` に当たる `FraktorSpec::await_cond` で状態が変わるまで待ってから確かめる形にする。待ちは、ハンドルが持つ「処理を終えた制御メッセージの通し番号」が、送った最後の番号に達することでも待てるようにし、値の一致だけでは空振りで通らないようにする（§3.1、§4 の I6）。送信したその場で処理されるという強い同期性そのものを確かめる形への書き戻しは、testkit の CallingThreadDispatcher（[Issue #234](https://github.com/j5ik2o/fraktor-ng-rs/issues/234) の段7b、[Issue #259](https://github.com/j5ik2o/fraktor-ng-rs/issues/259)）の後とする。これはケースの除外ではなく、待ち方の違いである。アサーションの内容（状態名と状態データの遷移）は弱めない。
 
 注2（ケース1の状態タイムアウト）：ケース1の後半は `setState(timeout = 100.millis)` の後、80〜500ミリ秒の範囲で状態タイムアウトが発火し、`StateTimeout` のイベントで状態2へ移ることを見る。今の `Fsm` にはタイマも状態タイムアウトも無い（§2）。この部分は §3.4 のタイマ発火の案（案Aか案Bか）をレビューで確定してから実装する。確定できない場合は、ケース1を「状態データの読み書き（タイムアウト以外）」と「状態タイムアウト」に分け、後者だけを保留として報告し、台帳を green にしない。
 
@@ -74,9 +74,12 @@ impl<S: Clone, D: Clone> FsmHandle<S, D> {
 }
 ```
 
-- ハンドルは `Fsm::with_handle()` で有効にする形を提案する。`Fsm::new()` で作った通常の機械はハンドルを持たず、既存の利用者にコストと制約を足さない。`Props` の factory の中で `let handle = fsm.handle()` のように取り出し、factory の外側へ複製を渡す。これは既存の移植テストが `Arc<AtomicI32>` などを factory へ持ち込んで観測している形と同じである。
+- ハンドルは、外から受け取って付ける形にする。`Fsm::attach_handle(&mut self, handle: FsmHandle<S, D>)` を足し、`D: Clone` の境界はこのメソッドにだけ付ける。`Fsm::new()` で作った通常の機械はハンドルを持たず、既存の利用者にコストと制約を足さない。
+- ハンドルは `TestFsmRef` が1つ作り、包んだ factory が機械を作るたびに複製を渡す（§3.3）。再起動で factory が呼ばれ直しても、同じハンドルが新しい個体に付き直す。
+- スナップショットは、次の時点で書く。(1) `attach_handle` の時点と `start_with` の時点で、その時点の開始状態を書く。`initialize()` を呼ばない機械（原典のケース1とケース2は呼ばない）でも、生成の直後から `state_name` が読める。(2) `make_transition` が `current` を置いたら、通知の有無によらず書く（`stay().using(d)` でデータだけが変わる場合を含む）。移る先に状態関数が無いときだけ書かない。(3) `pre_start` の中で、アクター自身の `self_ref` をハンドルへ書く。アクター自身から見た名前と親を、テスト側が後から確かめられるようにするためである。
+- ハンドルは「処理を終えた制御メッセージの通し番号」を持つ。制御メッセージを処理するたびに1つ進める。テストと PBT は、送った最後の番号まで進んだことを待ってから読む（値の一致で待つと、途中の状態が最後と同じ値の操作列で空振りするため）。
 - ハンドルが状態データの複製を返すため、`D: Clone` が要る。原典の `stateData` は参照を返すので、これは Rust 側の制約として API 文書に書く。`Clone` でないデータの機械は、ハンドル無しの通常の形で使う。
-- スナップショットの更新は遷移の完了時点（`make_transition` が `current` を置いた直後）で行い、遷移しなかった場合（移る先の状態に状態関数が無い場合）は変えない。
+- ハンドルの共有には、kernel の `Arc`（`kernel::sync` のもの。ポインタ幅の原子操作が無いターゲットでは `portable-atomic-util` から来る）と `spin::Mutex` を使う。
 
 ```rust
 // crates/fraktor-actor/src/kernel/actor/state_timeout.rs
@@ -95,7 +98,9 @@ impl<S, D> Fsm<S, D> {
 }
 ```
 
-制御メッセージの型は公開しない。`crates/fraktor-actor/src/kernel/actor/fsm_control.rs` に、状態の設定（状態名とデータとタイムアウトの `Option` の組）と、タイマの開始（3種）と取り消しを表す列挙型を1つ置き、`Fsm::receive` が通常のイベントより前に処理する。制御メッセージはメールボックスの中で利用者のメッセージと同列に並ぶので、順序は「送った順」に保たれる。テスト側が状態を読むのはハンドル経由なので、制御メッセージの処理完了そのものは、`await_cond` でスナップショットの変化を見て確かめる。
+制御メッセージの組み立てと送信は、別のクレートである `fraktor-testkit` の `TestFsmRef` が行うので、`pub(crate)` では届かない。公開の経路は1つに決める。`fraktor-actor` に cargo の feature `test-support` を足し、制御メッセージの型と組み立て（状態の設定、タイマの開始と取り消し、発火の印）を、その feature の下でだけ `pub` にする。`fraktor-testkit` がこの feature を有効にする。原典で `applyState` が `private[pekko]` であることに合わせ、既定の公開 API には出さない（約束を足さないため）。`Fsm::receive` が通常のイベントより前に処理する。制御メッセージはメールボックスの中で利用者のメッセージと同列に並ぶので、順序は「送った順」に保たれる。
+
+制御メッセージの種類によって、状態タイマと世代への扱いが違う。通常のイベントと同じ扱い（前の状態タイマの取り消しと世代を上げること）をするのは、状態の設定だけである。タイマの開始と取り消しは、原典の proxy が `receive` を通らず状態タイマに触れないことに合わせ、世代を上げず、状態タイマも取り消さない。
 
 ### 3.2 fraktor-actor（kernel）に足すタイマの表
 
@@ -111,9 +116,11 @@ pub(crate) struct FsmTimer {
 }
 ```
 
-- 同じ名前で開始すると、前のタイマを取り消して置き換える（原典の `setTimer` の意味論）。
+- 同じ名前で開始すると、前のタイマを取り消して置き換える（原典の `setTimer` の意味論）。置き換えのたびに、そのタイマの世代を上げる。
 - 存在しない名前の取り消しは、何もしない（原典の `cancelTimer` は存在しない名前でも例外を投げない）。
 - `is_timer_active(name)` は表に名前があることと等しい。状態タイマは別の1枠で持ち、`is_state_timer_active()` が見る。
+- 世代は kernel の `Fsm` が振る。発火は、生のメッセージではなく、世代を載せた内部の印で届く（名前付きタイマは名前と世代と包んだメッセージ、状態タイマは世代）。`Fsm::receive` が受信の中で判定する。表にあって世代が合うときだけ受け付け、単一タイマなら表から消してから、包んだメッセージをイベントとして処理する。送る側で判定する形（判定と到着の間に取り消しや遷移が割り込む競合がある）は採らない。
+- 停止のとき（`post_stop`）は、原典の `terminate` と同じく、すべてのタイマを取り消して表を空にし、状態タイマも消し、ハンドルのスナップショットも空に戻す。再起動では、新しい個体が空の表から始まる（§3.3 の factory の形で、ハンドルは開始状態で書き直される）。
 - タイマの表の操作（開始、取り消し、有効か）は、この表だけで完結する。発火の仕組みは §3.4 で分ける。
 
 ### 3.3 fraktor-testkit に足す `TestFsmRef`
@@ -127,20 +134,26 @@ pub struct TestFsmRef<S, D> {
   name: String,
 }
 
+`TestFsmRef` は `Fsm` の値を直接は受け取らない。`Props::new` が `Fn() -> A` を取り、`Fsm` は `Clone` ではないので、値では再起動のたびに作り直せない。factory を受け取り、ハンドルは `TestFsmRef` が1つ作って、包んだ factory が機械を作るたびに `attach_handle` で付け直す。
+
 impl<S, D> TestFsmRef<S, D>
 where S: Clone + PartialEq + Send + Sync + 'static, D: Clone + Send + 'static {
   /// 既定の supervisor（guardian）とランダムな名前で作る。原典の `TestFSMRef(factory)`。
-  pub fn new(system: &mut ActorSystem, fsm: Fsm<S, D>) -> Self;
+  pub fn new<F>(system: &mut ActorSystem, factory: F) -> Self
+  where F: Fn() -> Fsm<S, D> + Send + Sync + 'static;
   /// 名前を指定して作る。原典の `TestFSMRef(factory, name)`。
   /// 名前が不正か使用中なら `Err`（原典は例外）。
-  pub fn with_name(system: &mut ActorSystem, fsm: Fsm<S, D>, name: &str)
-    -> Result<Self, ActorCreationError>;
+  pub fn with_name<F>(system: &mut ActorSystem, factory: F, name: &str)
+    -> Result<Self, ActorCreationError>
+  where F: Fn() -> Fsm<S, D> + Send + Sync + 'static;
   /// supervisor を指定して作る。原典の `TestFSMRef(factory, supervisor)`。
-  /// `WeakActorSystem::spawn_child` で、その親の子として作る。
-  pub fn with_supervisor(system: &mut ActorSystem, fsm: Fsm<S, D>, supervisor: &ActorRef) -> Self;
+  /// その親の子として作る。
+  pub fn with_supervisor<F>(system: &mut ActorSystem, factory: F, supervisor: &ActorRef) -> Self
+  where F: Fn() -> Fsm<S, D> + Send + Sync + 'static;
   /// supervisor と名前を指定して作る。原典の `TestFSMRef(factory, supervisor, name)`。
-  pub fn with_supervisor_and_name(system: &mut ActorSystem, fsm: Fsm<S, D>,
-    supervisor: &ActorRef, name: &str) -> Result<Self, ActorCreationError>;
+  pub fn with_supervisor_and_name<F>(system: &mut ActorSystem, factory: F,
+    supervisor: &ActorRef, name: &str) -> Result<Self, ActorCreationError>
+  where F: Fn() -> Fsm<S, D> + Send + Sync + 'static;
 
   pub fn actor_ref(&self) -> ActorRef;
   pub fn tell<M: Any + Send + Sync>(&self, message: M, sender: ActorRef); // 原典の `!`
@@ -161,38 +174,52 @@ where S: Clone + PartialEq + Send + Sync + 'static, D: Clone + Send + 'static {
 }
 ```
 
-ケース3〜6が原典で確かめる `underlyingActor.supervisor` と `underlyingActor.name` は、原典ではアクターが構築時に `context.parent` と `context.self.path.name` を自分のフィールドへ記録したものである。移植では、本体を返さないので、`TestFsmRef` が生成時に決まった supervisor と名前を保持して返す。値は生成の経路（guardian の子として作ったか、`spawn_child` で指定の親の子として作ったか）から決まるので、パスの親と名前とも一致する。テストは加えて `actor_ref` のパスからも同じ名前と親を確かめられる。この違い（アクター自身が記録した値ではなく、生成した側が保持する値を読むこと）は、ケースの主張（どの supervisor と名前で作られたか）を変えない。
+supervisor を指定する生成には、名前の拒否を `Result` で返す口が要る。既存の口を探した結果、`WeakActorSystem::spawn_child` は名前を拒否されると panic する形しかなく、`ActorSystem` 側には `try_actor_of`（トップレベル用）があるが、任意の親の下で `Result` を返す口は無い。並行の PR にも同じ口は無いことを確かめたうえで、kernel に `WeakActorSystem::try_spawn_child(parent, props, name, strategy) -> Result<ActorRef, ActorCreationError>` を足し、`spawn_child` はその上に panic する形で残す。渡す監督戦略は既定の戦略である。新しい公開 API なので、§8 の確認点に挙げる。
+
+ケース3〜6が原典で確かめる `underlyingActor.supervisor` と `underlyingActor.name` は、原典ではアクターが構築時に `context.parent` と `context.self.path.name` を自分のフィールドへ記録したものである。移植では、本体を返さないので、`TestFsmRef` が生成時に決まった supervisor と名前を保持して返す。ただし、それだけをテストで引数と比べるのは、自分の入力を返すだけの同語反復になり、実際にその親の子としてその名前で作られたことを確かめていない。そこで、パスでの確認を必須にする。`actor_ref().path().parent()` が supervisor のパス（ケース3では `resolve_actor_ref` で解決した `/user` の guardian のパス）と等しいことと、`actor_ref().path()` の名前が指定の名前であることを、ケース3〜6のすべてで見る。加えて、`pre_start` でハンドルへ書かれた `self_ref`（アクター自身から見た参照）からも、同じ名前を確かめる。
 
 ランダムな名前は、原典の `TestActorRef.randomName` と同じく、既存の名前と衝突しない生成名を使う。既存の生成名の仕組み（`actor_of` が採番する名前）に乗り、独自の採番は作らない。
 
 ### 3.4 タイマの発火をどうするか（レビューで確定してほしい点）
 
-ケース2は発火を見ていない（開始して有効を確かめ、取り消して無効を確かめるだけである）。発火が要るのは、ケース1の状態タイムアウトだけである。発火の置き場所について、2案を出す。
+ケース2は発火を見ていない（開始して有効を確かめ、取り消して無効を確かめるだけである）。発火が要るのは、ケース1の状態タイムアウトだけである。
 
-- 案A（推奨）：発火は testkit 側に閉じる。`TestFsmRef`（std のクレート）が期限を持つスレッドを持ち、期限が来たら対象のアクターへ発火メッセージ（名前付きタイマはそのメッセージ、状態タイマは `StateTimeout`）を送る。状態タイマと単一タイマは、ハンドルの世代番号が張った時点から変わっていないときだけ送る（遷移していたら送らない。原典で遷移が状態タイマを取り消すことに対応する）。利点は、本体の `Fsm` と `ActorContext` に scheduler の口を足さずに済み、本件の範囲で閉じることである。欠点は、本体の `Fsm` を通常の `Props` で使ったときのタイマ発火が、依然として未移植のまま残ることである。この残りは隠さず、§6 の範囲の外に書く。
-- 案B：`ActorContext` に scheduler の port を足し、`Fsm` 本体が発火までを持つ。利点は Pekko の `FSM` の意味論に本体ごと近づくことである。欠点は、scheduler の移植そのものが本件の範囲を超え、[Issue #234](https://github.com/j5ik2o/fraktor-ng-rs/issues/234) の実行器の段と調整が要ることである。
+決めた形は案Aである（中将の判断、2026-11-26。設計レビューの推奨と同じ）。ただし、最初の版の案A（送る側のスレッドが世代を判定し、生のメッセージを送る形）は採らない。競合（判定と到着の間に取り消しや受信が割り込む）と、単一タイマを表から消せない問題があるためである。決めた形は次のとおりである。
 
-推奨は案Aである。理由は、本 Spec の6件が見るのは testkit 経由の振る舞いだけであり、案Bの基盤は本 Spec の green に必要な大きさを超えるためである。ただし、案Aは「testkit の外では発火しない」という意味論の狭めになりうるので、`docs/decisions/pekko-semantics-first.md` の判断（狭めは利用者への約束として文書に書かない、作りのずれは直す）に照らして、レビューで上司の判断を仰ぐ。案Bを選ぶ場合は、本件を「タイマの表とケース2、ケース3〜6」と「状態タイムアウト（基盤の後）」に分ける。
+- 名前からタイマへの表、状態タイマ、世代、`StateTimeout`、受信の中での判定は、kernel の `Fsm` に置く（§3.2）。
+- kernel は時間を数えない。発火の要求の出口を1つだけ作る。ハンドルが「張った、取り消した」の記録を持ち、testkit の期限のスレッドがそれを読んで、期限が来たら世代を載せた印を送り返すだけにする。判定は受信の中で行う。
+- 期限のスレッドは、`TestFsmRef` の drop と、対象のアクターの停止で止める。
+
+案B（`ActorContext` に scheduler の口を足す形）は採らない。kernel の `Scheduler` の port は [Issue #234](https://github.com/j5ik2o/fraktor-ng-rs/issues/234) の段6（[Issue #257](https://github.com/j5ik2o/fraktor-ng-rs/issues/257)）が持ち主であり、いま本件がその port の形と公開 API を先に決めると二重になる。案Aでも kernel は時間を数えず、Scheduler の port 越しに時刻へ触れるという移植の規約に反しない。kernel の `Fsm` に公開のタイマ API を足さない限り、案Aは「testkit の外では発火しない」という約束を足すことにはならず、未移植の機能が無いだけである。その代わり、API 文書で「タイマは `TestFsmRef` の下でだけ動く」と約束しないことと、`fsm.rs` のモジュール文書の「Timers … are not part of it」を、表と判定はあるが発火は段6の port の後である、という正確な文へ直すことが条件である。
+
+後追いを別件として切る。段6（#257）が入ったら、発火の要求の出口を Scheduler の port へ差し替え、そのときに FSM の内側からのタイマの公開 API を足して、FSMTimingSpec と FSMActorSpec へ進む。kernel の表と判定は作り直さずに済む形にしてある。
+
+範囲の外を1つ記録する。FSMActorSpec も台帳で `test-fsm-ref` を要求している。そこでは FSM の内側（遷移ハンドラの中）から単一タイマを開始し、状態ごとのタイムアウトも使う。ハンドルが見せるタイマは、誰が張ったかによらず kernel の表を写す形にする。ただし、FSM の内側からのタイマの API そのものは本件では作らず、上の後追いの件で扱う。
 
 ### 3.5 `setState` の `stopReason` と `onTermination`
 
 原典の `setState` は `stopReason: Option[FSM.Reason]` も取るが、本 Spec のケースは使っていない。今の `Fsm` には `onTermination` も停止理由の処理も無い。本件では `stopReason` の引数は作らず、ケースが使う範囲（状態名、データ、タイムアウト）に限る。停止理由で止める振る舞いは、本体の `Fsm` に停止の意味論が入るときに一緒に扱う。これはケースの除外ではなく、本体の未移植部分の切り分けである。
 
+`set_state` と前の状態タイマの関係は、原典の実装と文書で食い違う。原典の `TestFSMRef.setState` は `receive` を通らずに `applyState` を直接呼ぶので、前の状態タイマを取り消さず、世代も上げない。そのため、タイムアウト付きの `setState` を2回続けると、同じ世代の印が2つ発火し、`StateTimeout` が2回届く。一方で原典の API 文書は「機械の内側から起きた遷移と等価」と約束している。本件は文書の約束のほうを採る。制御メッセージの `set_state` は、通常のイベントと同じく、前の状態タイマを取り消して世代を上げてから適用する。この選択は、原典の実装の癖を写さない意図した違いとして、ここに記録する。
+
 ### 3.6 no_std で書けるか
 
 - fraktor-actor 側の追加（ハンドル、タイマの表、制御メッセージ、`StateTimeout`）は `core` と `alloc` と、kernel がすでに使う `spin::Mutex`（`kernel::sync::lock`）だけで書ける。`std` の import は足さない。時刻は `core::time::Duration` で表し、実時間の計測は持たない（期限の管理は案Aでは testkit 側、案Bでは scheduler の port 側にある）。
 - fraktor-testkit 側は、もともと `std` のクレートである（`FraktorSpec` が `std::time::Instant` などを使う）。案Aの期限スレッドも `std` の範囲で書ける。
-- ハンドルのスナップショットは `alloc::sync::Arc` と `spin::Mutex` で持ち、スレッド境界を越えられる（`S` と `D` に既存の `Send` の境界がある）。
+- ハンドルのスナップショットは kernel の `Arc` と `spin::Mutex` で持ち、スレッド境界を越えられる（`S` と `D` に既存の `Send` の境界がある）。
 
 ## 4. 守る性質（不変条件）
 
 | 番号 | 不変条件 |
 |:---:|:---|
-| I1 | スナップショットの一致：ハンドルの状態名とデータは、機械が最後に完了した遷移の後の `current` と等しい。遷移しなかったイベントと、移る先に状態関数が無い移動では、スナップショットは変わらない（既存の `make_transition` の意味論のまま） |
+| I1 | スナップショットの一致：ハンドルの状態名とデータは、機械が最後に完了した遷移の後の `current` と等しい。スナップショットは、`attach_handle` と `start_with` の時点で開始状態を書き、`make_transition` が `current` を置いたら通知の有無によらず書く（`stay().using(d)` でデータだけが変わる場合を含む）。書かないのは、移る先に状態関数が無いときだけである |
 | I2 | `set_state` の既定：`None` の要素は今の値を保つ。状態名だけを変えてもデータは変わらず、データだけを変えても状態名は変わらない（ケース1が両方向を見る） |
-| I3 | `set_state` の遷移の扱い：状態の設定は、機械の内側から起きた遷移と等価である。遷移ハンドラと購読者への通知は、通常の遷移と同じ経路（`make_transition`）で起きる。移る先に状態関数が無い場合は、通常の移動と同じく、状態は変わらない |
+| I3 | `set_state` の遷移の扱い：状態の設定は `goto(状態名.unwrap_or(今の状態)).using(データ.unwrap_or(今のデータ))` と等価で、常に通知する。同じ状態への設定でも、遷移ハンドラと購読者に遷移が届く（原典の `State` の `notifies` の既定が真であるため）。遷移は通常と同じ経路（`make_transition`）で起きる。移る先に状態関数が無い場合は、通常の移動と同じく、状態は変わらない |
 | I4 | タイマの表：名前ごとにタイマは最大で1つである。同じ名前の開始は置き換えである。`is_timer_active(name)` は、開始の後で真、取り消しと（単一タイマの）発火の後で偽である。存在しない名前の取り消しは表を変えない |
-| I5 | 状態タイマは最大で1つである。新しい状態へ移るたびに、前の状態タイマは無効になる（世代番号で判定し、古い期限の発火は届けない）。`set_state` で張った状態タイマは、その状態にいる間だけ有効である |
+| I5 | 状態タイマは受信を単位に扱う。状態タイマは最大で1つである。通常のメッセージと、受け付けた名前付きタイマの印を受信するたびに、張ってある状態タイマを取り消し、世代を1つ上げる（原典の `FSM.receive` の意味論。購読の系統と ListenerTerminated と TimeoutMarker の受信では、どちらもしない）。そのうえで、遷移が次の状態のタイムアウト（明示の値、無ければその状態の既定）を持つときだけ張り直す。したがって、`stay()` で受けたメッセージの後では、状態が同じでも状態タイマは残らない。TimeoutMarker の受信は世代の一致だけを見て、世代を上げず、状態タイマの枠も空にしない。そのため、発火の直後は、次の通常のメッセージが来るまで `is_state_timer_active()` は真のままである（原典の癖を写す。FSMActorSpec がこの値を読むため） |
+| I8 | 古い印は処理されない：取り消したタイマ、置き換えたタイマ、世代がずれた状態タイマの印は、届いてもイベントとして処理されない |
+| I9 | 単一タイマは、受け付けた後で表から消える。繰り返しのタイマは表に残る |
+| I10 | 停止したらタイマの表は空になる。状態タイマも消え、ハンドルのスナップショットも空に戻る。再起動した個体は、空の表と開始状態から始まる |
 | I6 | 制御と利用者のメッセージの順序：制御メッセージはメールボックスの中で送った順に処理される。利用者のメッセージの合間に送った `set_state` は、その前後のイベントに対して送った順の位置で効く |
 | I7 | ハンドル無しの機械の不変：ハンドルを有効にしない `Fsm` の振る舞いは、既存のテスト（`fsm_transition_spec` など）が見る範囲で変わらない |
 
@@ -210,6 +237,14 @@ where S: Clone + PartialEq + Send + Sync + 'static, D: Clone + Send + 'static {
 | 存在しない状態への `set_state` | I3 のとおり、状態は変わらない | 既存の `make_transition` の意味論に合わせ、エラーにはしない |
 | 存在しないタイマの取り消し、同じ名前の再開始 | I4 のとおり | 何もしない、置き換える。どちらも panic しない |
 | 停止したアクターへの `set_state` とタイマ操作 | 制御メッセージは dead letters へ行き、スナップショットは変わらない | 例外にしない。テスト側は `await_cond` の時間切れで気づく |
+| 印が送られてから届くまでの間に、取り消し・置き換え・通常の受信が割り込む | 古い印が届く | 受信の中で世代を見て捨てる（I8）。Quint のモデルでも、発行と受信を分けてこの割り込みを置く（§6） |
+| 状態タイマを張った後に、`stay()` で受けるイベントが来る | 原典では状態タイマが取り消され、張り直されない | I5 のとおり受信で取り消す。ケース1の形（張った後に何も来なければ発火する）と合わせて、PBT のモデルにも入れる |
+| `initialize()` を呼ばない機械 | 開始状態がスナップショットに入らないと、最初の読み取りで panic する | `attach_handle` と `start_with` の時点で書く（I1） |
+| 状態関数が panic して再起動する | ハンドルが止まった個体の状態を返し続ける | factory が作るたびに同じハンドルを付け直し、開始状態で書き直す（§3.3） |
+| 状態関数が `stay().using(d)` を返す | 通知が無いので、スナップショットの書き忘れが起きうる | I1 のとおり、`current` を置いたら通知の有無によらず書く |
+| 同じ状態への `set_state` に購読者が付いている | 通知しない形に写すと `Transition(1, 1)` が届かない | I3 のとおり常に通知する |
+| 途中の状態が最後の状態と同じ値になる操作列（例：1、2、1） | 値の一致で待つと、途中で条件が成り立ち、残りの操作を落とす実装でも通る | 通し番号が最後まで進むことを待つ（§3.1） |
+| 状態関数が `context.change_behavior` で振る舞いを替える | それ以降の制御メッセージは `Fsm::receive` に届かず、失われる | 本件のケースには関係しない。制御メッセージを使う機械では振る舞いを替えないことを、API 文書に書く |
 
 ## 6. PBT と Quint
 
@@ -219,7 +254,7 @@ where S: Clone + PartialEq + Send + Sync + 'static, D: Clone + Send + 'static {
 
 | 番号 | 性質 | 確かめる不変条件 |
 |:---:|:---|:---|
-| P1 | ランダムな操作列（イベント送信、`set_state`、タイマの開始と取り消し）の後で、待ち合わせた後のスナップショットが、同じ操作列を単純なモデルで追った状態名とデータに等しい | I1、I2、I6 |
+| P1 | ランダムな操作列（イベント送信、`set_state`、タイマの開始と取り消し、`stay().using` を含む）の後で、通し番号が最後まで進むのを待った後のスナップショットが、同じ操作列を単純なモデルで追った状態名とデータに等しい。モデルは原典の意味論で追う（すべての通常の受信で状態タイマを取り消すこと、`set_state` は常に通知すること、`stay().using` でデータが変わること） | I1、I2、I3、I5、I6 |
 | P2 | 任意の名前の列（空文字、長い文字列、重複を含む）について、開始と取り消しの後の `is_timer_active` が、名前の集合のモデルと等しい | I4 |
 | P3 | 任意のタイムアウト値（`ZERO`、境界、非常に大きい値を含む）で `set_state` しても panic せず、状態名とデータは指定どおりになる | I2、§5 |
 
@@ -227,28 +262,60 @@ where S: Clone + PartialEq + Send + Sync + 'static, D: Clone + Send + 'static {
 
 判断：書く。理由は、`set_state` がイベント処理を通らない外部からの状態の書き換えであり、既存の `crates/fraktor-actor/specs/fsm_transition.qnt`（#194）はイベントによる遷移だけをモデルにしていて、外部からの書き換えとタイマの表と状態タイマの世代を取りこぼすためである。固定のテストは I4 と I5 の列の性質（置き換え、取り消し、古い世代の発火の抑止）を狭い範囲でしか見ない。
 
-範囲は小さく絞る。置き場所は testkit の既存の仕様と同じ `crates/fraktor-testkit/specs/test_fsm_ref.qnt` とする。
+範囲は小さく絞る。仕様が扱う状態は kernel の `Fsm` のものなので、置き場所は既存の `fsm_transition.qnt` と並ぶ `crates/fraktor-actor/specs/test_fsm_ref.qnt`（と、そのインスタンスと負の対照を置く `test_fsm_ref_test.qnt`）とする。書き方は CI の決まり（`docs/design/quint-in-ci.md`）に合わせ、不変条件は `val invariant` を1つにまとめ、`run` の名前は `Test` で終え、負の対照は `run bug…Test` で `.fail()` を期待する形にする（`fsm_transition.qnt` の前例どおり）。
 
-- 状態：今の状態名とデータ、タイマの表（名前の集合）、状態タイマの有無と世代、機械の世代
-- 遷移：`sendEvent`（既存の仕様の遷移の要約）、`setState`（要素の `Option` を非決定的に選ぶ）、`startTimer`、`cancelTimer`、`fireStateTimer`（世代が合うときだけ効く）
-- 不変条件：`snapshotMatches`（I1）、`oneTimerPerName`（I4）、`stateTimerGeneration`（I5。古い世代の発火では状態が変わらない）
-- 負の対照：世代の判定を落とした `bugStaleStateTimer`（古い状態タイマが遷移の後に効いてしまう）と、取り消しを落とした `bugCancelKeepsTimer` を置き、それぞれ狙った不変条件が落ちることを確かめる
+- 状態：今の状態名とデータ、タイマの表（名前の集合）、状態タイマの有無と世代、機械の世代、届く前の印の集合（名前付きタイマの印と状態タイマの印）
+- 遷移：`sendEvent`（受信で状態タイマを取り消し、世代を上げる）、`setState`（要素の `Option` を非決定的に選ぶ。通常の受信と同じく取り消しと世代の更新をしてから適用する）、`startTimer`、`cancelTimer`、印の発行（`timerDue`）と受信（`receiveMarker`）を分けた2つの手。発行と受信の間に `sendEvent`、`setState`、`cancelTimer` が割り込める
+- 不変条件：`snapshotMatches`（I1）、`oneTimerPerName`（I4）、状態タイムアウトが処理されるのは、張ってから通常のイベントを受けていないときだけであること（I5）、取り消し・置き換えたタイマの印はイベントとして処理されないこと（I8）、単一タイマは受け付けた後で表から消えること（I9）
+- 負の対照：世代の判定を落とした `bugStaleStateTimer`、取り消しを落とした `bugCancelKeepsTimer`、送る側で判定し受信では判定しない `bugSenderSideCheck`、遷移のときだけ世代を上げる `bugGenerationOnTransitionOnly` を置き、それぞれ狙った不変条件が落ちることを確かめる
 
 モデルにしないもの：実時間そのもの（期限は「発火してよいか」の真偽で表す）、ハンドラと購読者への通知の順序（既存の `fsm_transition.qnt` の範囲）、名前の文字列の中身（集合の要素としてだけ扱う）。
 
 ## 7. 第2段の進め方（この設計が通ってから）
 
 1. red：`crates/fraktor-testkit/tests/test_fsm_ref_spec.rs` に6件を書き、台帳の対象ノードを red にする。失敗が「型が無い」ことによることを確かめる。
-2. 本体：§3 の順に、fraktor-actor のハンドルと制御メッセージとタイマの表、fraktor-testkit の `TestFsmRef` を足す。新しいファイルには、自作のものも含めて Apache-2.0 のヘッダーを付ける。タイマの発火は §3.4 で確定した案で実装する。
+2. 本体：§3 の順に、fraktor-actor のハンドルと制御メッセージとタイマの表、fraktor-testkit の `TestFsmRef` を足す。新しいファイルには、自作のものも含めて Apache-2.0 のヘッダーを付ける。タイマの発火は §3.4 で確定した形で実装する。新しい関数や公開 API を足す前に、同じ働きの既存の関数を探し、並行の別の PR と同じ口を足していないかも確かめる（本件では `try_spawn_child` について確かめた記録が §3.3 にある）。レビューの経過をコードのコメントに書かない。理由は設計の文書と PR に書く。
 3. green：6件を通し、台帳の対象ノードを green（6/6/6、`verified_against: v2.0.0`）にする。ケース1の状態タイムアウトが案の確定待ちで保留になった場合は、その時点で止めて報告する（台帳を green にしない）。
 4. 検査：CI と同じ検査を流す（`cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、ledger/tools の Python テスト、Quint の typecheck と run と負の対照、syn チェッカー）。
 5. 多重スレッドの実行器（#234）との関係：本件の6件は、段7b（#259）の CallingThreadDispatcher を前提にしない。注1の同期性だけが段7b の後で直線の形に戻せるもので、本件の green を妨げない。
 
 ## 8. レビューで見てほしい点
 
-- §3.4 のタイマ発火の案Aと案Bのどちらにするか（本件の範囲と、意味論の狭めに当たるかの判断）
 - 本体を返さず、共有ハンドル（複製）と制御メッセージで表す形（§3）が、所有権モデルの決定と #182 の土台の共有化の進め方として妥当か
-- `D: Clone` の制約を、`state_data` が複製を返すことの代償として妥当と見るか
-- ケース3〜6について、アクター自身が記録した値ではなく、生成した側が保持する supervisor と名前を読む形（§3.3）で、原典の主張を保てると見るか
+- `D: Clone` の制約（`attach_handle` にだけ付ける）を、`state_data` が複製を返すことの代償として妥当と見るか
+- kernel に足す2つの口（feature `test-support` の下の制御メッセージと、`WeakActorSystem::try_spawn_child`）を妥当と見るか
+- `set_state` と前の状態タイマの関係で、原典の実装の癖ではなく文書の約束を採ったこと（§3.5）
+- 発火の直後に `is_state_timer_active()` が真のままになる原典の癖を写すこと（§4 の I5）
 - `stopReason` と `onTermination` を本件の範囲の外に置くこと（§3.5）
 - Quint の範囲（§6）が、既存の `fsm_transition.qnt` と重ならず、足りているか
+
+タイマ発火の案Aと案Bは、§3.4 のとおり案A（kernel に表・世代・受信の中での判定を置き、発火だけを testkit が担う形）で決まった。
+
+## 9. 設計レビュー（PR #275）への回答表
+
+レビューレポート `pr275-design-review.md`（判定：要修正、高5件・中7件・低6件）の指摘ごとに、扱いと直した場所を書く。高の4件目（状態タイマの意味論）は、原典の `FSM.scala`（v2.0.0）の `receive` と `makeTransition` と `terminate` を読み直して確かめたうえで直した。
+
+| 指摘 | 扱い | 内容と直した場所 |
+|:---:|:---:|:---|
+| 高1 | 直す | 開始状態がスナップショットに入らない問題。`attach_handle` と `start_with` の時点で開始状態を書く形に変えた（§3.1、§4 の I1、§5） |
+| 高2 | 直す | `TestFsmRef` は `Fsm` の値ではなく factory を受け取り、ハンドルは `TestFsmRef` が1つ作って作るたびに付け直す形に変えた。再起動でも同じハンドルが新しい個体に付く（§3.1、§3.3） |
+| 高3 | 直す | 制御メッセージの公開経路を、cargo の feature `test-support` の下でのみ `pub` にする形に決めた（§3.1） |
+| 高4 | 直す | 状態タイマは遷移ではなく受信を単位に扱う形へ、I5 と P1 と Quint を書き直した（§4 の I5、§5、§6）。`set_state` と前の状態タイマの関係は、文書の約束のほうを採る選択を §3.5 に記録した |
+| 高5 | 直す | 発火は世代を載せた印で届け、判定は受信の中で行う形に変えた。単一タイマは受け付けた後で表から消える（§3.2、§3.4、§4 の I8 と I9） |
+| 中1 | 直す | ケース3〜6で、パス（親と名前）の確認を必須にした。加えて `pre_start` でハンドルへ書かれた `self_ref` からも名前を確かめる（§3.3） |
+| 中2 | 直す | kernel に `try_spawn_child`（`Result` を返す）を足す形に決め、既存の口と並行の PR を確かめた記録と、渡す監督戦略（既定）を書いた（§3.3） |
+| 中3 | 直す | `set_state` は常に通知する、と I3 を書き直した（§4 の I3） |
+| 中4 | 直す | ハンドルに処理を終えた制御メッセージの通し番号を持たせ、最後の番号まで待つ形にした（§3.1、§1 の注1、§5） |
+| 中5 | 直す | `stay().using(d)` でもスナップショットを書く、と I1 を書き直し、P1 の操作列にも入れた（§4 の I1、§6） |
+| 中6 | 直す | 制御メッセージのうち状態タイマと世代に触れるのは状態の設定だけ、と §3.1 に書いた。停止と再起動での表の後始末も §3.2 と I10 に書いた |
+| 中7 | 直す | Quint のモデルで印の発行と受信を分け、届く前の印の集合と、割り込みの手と、不変条件3件と負の対照2件を足した（§6） |
+| 低1 | 直す | ハンドルの共有は kernel の `Arc` と `spin::Mutex` を使う、と §3.1 に書いた |
+| 低2 | 直す | Quint の置き場所を `crates/fraktor-actor/specs/` へ移し、CI の決まりに合わせた書き方を §6 に書いた |
+| 低3 | 直す | 発火の直後は次の通常のメッセージまで `is_state_timer_active()` が真のままになる原典の癖を写す、と I5 に決めた |
+| 低4 | 直す | FSMActorSpec との関係を §3.4 の範囲の外に書いた。ハンドルは kernel の表を写し、FSM の内側からのタイマの API は後追いの件で扱う |
+| 低5 | 直す | 同期性の注をケース2にも広げ、待ちを通し番号でも待てる形にした（§1 の注1） |
+| 低6 | 直す | `change_behavior` で振る舞いを替えると制御メッセージが失われることを、§5 の表に足した |
+| 案A／案B | 決まった | 案A（kernel に表・世代・受信の中での判定を置き、発火だけを testkit が担う形）で決まった（中将の判断）。案Bは段6（#257）の Scheduler の port と二重になるため採らない（§3.4） |
+| 後追い | 別件 | 段6（#257）の後に、発火の出口を Scheduler の port へ差し替え、FSM の内側からのタイマの公開 API を足す件を、別件として切る（§3.4） |
+
+採らないとした指摘は無い。
