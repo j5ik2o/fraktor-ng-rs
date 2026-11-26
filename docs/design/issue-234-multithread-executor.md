@@ -194,7 +194,7 @@ kernel が使う原子操作、Arc、ロックは、次の 3 つの決まりで�
 | 番号 | 決まり | 中身 |
 |:---|:---|:---|
 | C1 | 原子操作は `portable-atomic` 越しにする | API は core と同じで、その型の幅に対応する原子操作がある target では core の命令になる（thumbv7em では 64 ビットは該当せず、portable-atomic の中でスピンロックになる。§3.7、[Issue #263](https://github.com/j5ik2o/fraktor-ng-rs/issues/263)）。CAS の無い target では critical-section で代わりに行い、その実装は adaptor（embassy や HAL）が渡す。`MailboxStatus` と id の数え上げ（今の `NEXT_ID` などの `AtomicU64`）はこれを使う。各ファイルが `portable_atomic` を直接 import し、`kernel::sync` からは再公開しない（段 0 のあとの直し。§11.9）。switch の `AtomicBool` は段 0 では core のままにし、CAS の無い target 向けの置き換えは段 0b（[Issue #243](https://github.com/j5ik2o/fraktor-ng-rs/issues/243)）で行う |
-| C2 | ロックは kernel が持つ port 越しにする | 閉じた区間を渡す形にする（下の「ロックの port」）。embassy-sync のロック（`CriticalSectionRawMutex`、`ThreadModeRawMutex`）と同じ形で、std の `Mutex`、`parking_lot`、`spin` でも作れる。システム全体の表も、この port を使う（再レビュー L6 の「spin のまま」は取りやめた） |
+| C2 | ロックは kernel が持つ port 越しにする | 閉じた区間を渡す形にする（下の「ロックの port」）。embassy-sync のロック（`CriticalSectionRawMutex`、`ThreadModeRawMutex`）と同じ形で、std の `Mutex`、`parking_lot`、`spin` でも作れる。ただし embassy-sync のロックは同じスレッドからの再入を許すので、それで作るときは再入を断る印を足す（§11.10 の `RawLock`）。システム全体の表も、この port を使う（再レビュー L6 の「spin のまま」は取りやめた） |
 | C3 | Arc は kernel の中の別名 `kernel::sync::Arc` を使う | `cfg(target_has_atomic = "ptr")` なら `alloc::sync::Arc`、無ければ `portable_atomic_util::Arc`。target の cfg で選ぶので、kernel に `feature = "std"` を置かない決まり（syn-check の `cfg-std-forbid`）には触れない。所有権モデルの決定文書の「Arc」は、この別名を含む。CAS の無い target（thumbv6m、RP2040）も対象に入れる。ただし、その target で build できるようにするのは段 0b（#243）で、`Arc<dyn …>` の作り方と、`self: Arc<Self>` を使う公開 API の変更を含む |
 
 | 置き場所 | 型（名前は案） | 中身 |
@@ -209,7 +209,7 @@ kernel が使う原子操作、Arc、ロックは、次の 3 つの決まりで�
 | kernel `dispatch/message_queue_factory.rs` | trait `MessageQueueFactory: Send + Sync`（port） | dispatcher の設定が持ち、メールボックスごとに列を作る。std と tokio はロックを使わない列、embassy は固定長の列を渡せる（§3.7、§3.8 の工夫 3） |
 | kernel `dispatch/system_message.rs` | enum `SystemMessage` | Create、Suspend、Resume、Recreate、Terminate、Supervise、Watch、Unwatch、Failed、DeathWatchNotification、ChildTerminated |
 | kernel `dispatch/mailbox.rs` | `Mailbox` | 状態、閉じる門、通常のキュー（`Arc<dyn MessageQueue>`。Balancing では team で共有）、system message のキュー、`ActorCell` を入れる場所（`LockCell<Option<ActorCell>>`）、dispatcher への戻りの辺（§3.4 の条件 2 により `Weak` か id）。1 アクターに 1 つ |
-| kernel `dispatch/mailbox_run.rs` | `MailboxRun`（kernel が adaptor に渡す仕事） | `run(self) -> RunOutcome`。1 回の実行で、system message を処理し、通常のメッセージを throughput 件まで処理し、まだ残っているかを返す（§3.8 の工夫 1）。`RunOutcome::Again` は、run が読み直しで予約に勝った（scheduled の bit が立ったままの）状態で返す。adaptor は bit に触らず、受け取った仕事を `execute` で列に積み直すだけにする（予約を取り直さない。取り直すと、自分の立てた bit に阻まれて仕事を失う。Devin の指摘、PR #236）。`Idle` なら何もしない。`Idle` を返してよいのは、`set_as_idle` のあとに予約を読み直し、その予約に負けたとき（ほかの送り手が先に予約した、または仕事が無い）だけである。読み直して勝ったら `Again` を返す。この順を守らないと、`LostWakeup` と同じ取りこぼしになる。段 2 で、仕様の `finishIdle` と `finishRegister` に対応づける（再レビュー 3 の L2） |
+| kernel `dispatch/mailbox_run.rs` | `MailboxRun`（kernel が adaptor に渡す仕事） | `run(self) -> RunOutcome`。1 回の実行で、system message を処理し、通常のメッセージを throughput 件まで処理し、まだ残っているかを返す（§3.8 の工夫 1）。`RunOutcome::Again` は、run が読み直しで予約に勝った（scheduled の bit が立ったままの）状態で返す。adaptor は bit に触らず、受け取った仕事を `execute` で列に積み直すだけにする（予約を取り直さない。取り直すと、自分の立てた bit に阻まれて仕事を失う。Devin の指摘、PR #236）。`Idle` なら何もしない。`Idle` を返してよいのは、`set_as_idle` のあとに予約を読み直し、その予約に負けたとき（ほかの送り手が先に予約した、または仕事が無い）だけである。読み直して勝ったら `Again` を返す。この順を守らないと、`LostWakeup` と同じ取りこぼしになる。段 2 で、仕様の `finishIdle` と `finishRegister` に対応づける（再レビュー 3 の L2）。`Again` を積み直すときに `execute` が `Rejected` を返したら、ほかの予約と同じく §3.5 の扱い（1 回だけ試し直し、だめなら bit を下ろしてエラー）にする（再レビュー 5 の L3。bit を下ろす口は段 5 で I15 と一緒に入れる） |
 | kernel `dispatch/message_dispatcher.rs` | `MessageDispatcher` | id、throughput、期限、住人の数、観測口、`register_for_execution`（Pekko `Dispatcher.scala:146` の形）、Balancing の team |
 | kernel `dispatch/task_executor.rs` | trait `TaskExecutor: Send + Sync`（port） | `execute(Task) -> Result<(), Rejected>`、`shutdown`。`Task` は `MailboxRun` か、`Box<dyn FnOnce() + Send>`。これが kernel と adaptor の境目の 2 つ目（「このメールボックスを動かしてほしい」）である。断られたときの扱いは §3.5 |
 | kernel `dispatch/manual_executor.rs` | `ManualExecutor` | 実行待ちのメールボックスを `VecDeque` に積むだけ。`run_one` が 1 つ取り出して回す。今の決定論的な回し方の後継 |
@@ -255,7 +255,7 @@ bounded のキューが満杯で、push の待ち時間だけ待つとき（`Blo
 |:---|:---|
 | std のスレッドプール | std の `Mutex`、または `parking_lot`（待つときに休む） |
 | tokio | std と同じ。`.await` をまたいでロックを持たないことは、下の I16 が保証する |
-| embassy | 割り込みからも触るものは `CriticalSectionRawMutex`、スレッドのモードだけで触るものは `ThreadModeRawMutex` |
+| embassy | 割り込みからも触るものは `CriticalSectionRawMutex`、スレッドのモードだけで触るものは `ThreadModeRawMutex`。どちらも同じスレッドからの再入を許すので、再入を断る印を足して `RawLock` にする（§11.10） |
 | kernel の既定（`ActorSystem::new` の手で回す dispatcher） | `spin`（`portable_atomic` の機能つき）。単一スレッドなので取り合わない |
 
 `RawLock` の実装は、closure が panic で巻き戻っても、ロックを外す（再レビュー 3 の L4）。std の `Mutex` を使う実装は、毒
@@ -429,7 +429,7 @@ kernel と adaptor の境目は、次の 2 つだけである（§3.8 の工夫 
 | `RunOutcome::Again` の扱い | 列の後ろへ積み直す | 同じ（`spawn` し直す） | 同じ（`try_send` し直す） |
 | Pinned | 専用のスレッド 1 本 | 専用の常駐のタスク 1 本（止まって待つアクターなら `spawn_blocking` の上のスレッド） | 専用の静的なタスク 1 本 |
 | 止まって待つアクター | Pinned か、別の dispatcher に置く | `spawn_blocking` で回す dispatcher に置く（Pekko の blocking 用の dispatcher と同じ考え） | 置かない（待つときは `.await` を使うアクターにする話で、この設計の範囲の外） |
-| `LockFactory` | std の `Mutex` か `parking_lot` | std と同じ | `CriticalSectionRawMutex`、`ThreadModeRawMutex` |
+| `LockFactory` | std の `Mutex` か `parking_lot` | std と同じ | `CriticalSectionRawMutex`、`ThreadModeRawMutex` に、再入を断る印を足したもの（§11.10 の `RawLock`） |
 | 原子操作、Arc | core（`portable-atomic` はそのまま core の命令になる） | 同じ | thumbv7em の 64 ビットは、portable-atomic の中でスピンロックになり、割り込みから再入すると止まる（[Issue #263](https://github.com/j5ik2o/fraktor-ng-rs/issues/263)）。CAS の無い target（thumbv6m、RP2040）は段 0b（#243）のあとで、`portable-atomic` の critical-section と `portable_atomic_util::Arc` |
 | `MessageQueueFactory` | kernel の既定の列。段 5 でロックを使わない列に替えられる（§3.8 の工夫 3） | 同じ | 固定長の列（`heapless` の類。満杯は push の待ち時間 0 の bounded と同じく dead letters） |
 | `Clock` | `SystemClock`（今のもの） | `tokio::time::Instant` | `embassy_time::Instant` |
@@ -546,6 +546,34 @@ scratchpad の写しの仕様で確かめた（§10 の 16）。この PR の `m
 - 弱めた I13（`submittedWithWorkOrStaleRead`）は、R4 を捉え、正しい形（Pekko と同じ、仕事の無い予約を含む）を通す。
 - 強い I13 でしか捉えられない筋書きは、この形では残っていない。段 2 では、この形で仕様を直す。
 
+**段 2 で仕様を直して流し直した結果**（[Issue #250](https://github.com/j5ik2o/fraktor-ng-rs/issues/250)、§11.6 の L2）：
+
+`mailbox_scheduling.qnt` そのものを直した。写しとの違いは次のとおりである。
+
+- 予約の経路のすべてを「読む → `fetch_or`」の 2 手にした。送り手（`register` → `fetchOr`）、system message の送り手と親の判断
+  （`control`／`decide` → `regRead` → `regFetchOr`）、実行の終わり（`finishRegister` → `finishFetchOr`）である
+- `sawWork` は、1 手目の読みのときの `hasWork` で書いた（`canBeScheduled` ではない）。`staleSubmission` は、`sawWork` の呼び出し元の
+  `fetch_or` が、仕事の無い状態で予約したことである。プールから取られたときに下ろす
+- §3.8 の工夫 5 の印 `sysFlag` を足した。system message の送り手は、門の中で積んで印を立てる（1 手）。実行は印を下ろしてから列を
+  空にする。予約の 1 手目は、印ではなくキューを読む（印は、そのメッセージを処理したあとも立ったままのことがあり、印を読むと
+  仕事の無い予約が増えて I13 が破れるため）
+- 負の対照 `ClearFlagAfterDrain`（列を空にしてから印を下ろす）と、不変条件 `noHiddenSystemMessage` を足した
+
+流したのは scratchpad の写しで、`init<モード>` と比べるための `invariantStrongI13`（`invariant` と強い I13）、`invariantNoI13`
+（I13 を外した形）を足しただけである。backend は rust（60 手でも落ちなかった）。正しい形は typescript の backend でも流した。
+
+| 確かめたこと | 強い I13 | I13 を外しただけ | 弱めた I13（`invariant`） |
+|:---|:---|:---|:---|
+| 正しい形（30 手・3 万本、60 手・10 万本） | 違反（30 手、60 手とも） | 違反なし（`max=31`、`max=61`） | 違反なし（`max=31`、`max=61`）。typescript の backend で 30 手・3,000 本、60 手・2,000 本も違反なし |
+| I13 以外の 13 の不変条件を 1 つずつ（30 手・2 万本） | — | すべて違反なし | — |
+| 誤りの 8 つのモード（30 手・2 万本） | — | 8 つとも違反 | 8 つとも違反（`ClearFlagAfterDrain` は typescript でも違反） |
+| R4：suspend 中も通常のメッセージで予約する | 違反 | **見逃す** | 違反 |
+| R5、R6、R12 | 違反 | 違反 | 違反 |
+| R13：`fetch_or` が scheduled の bit を見ない | 違反 | 違反 | 違反 |
+
+結論は写しのときと変わらない。強い I13 は正しい形を誤って断り、I13 を外すと R4 を見逃し、弱めた I13 は正しい形を通して、
+R4 を含むすべての変異とモードを捉える。
+
 ## 4. 不変条件
 
 ### 4.1 メールボックスとスケジューリング
@@ -562,9 +590,9 @@ scratchpad の写しの仕様で確かめた（§10 の 16）。この PR の `m
 | I8 | 受け付けたメッセージは、処理済み、キューの中、処理中、dead letters のどれかにある | I6 と、閉じるときに dead letters へ流すこと | `messagesConserved` |
 | I9 | 同じ送り手から同じ宛先への順序は保つ（FIFO のキューで）。priority のキューは優先度の順、stable なら同じ優先度の中で FIFO | キューの実装 | Quint には無い。PBT（§7.3） |
 | I10 | あるメッセージの処理で書いた値は、次のメッセージの処理から見える。次の処理が別のスレッドでも見える | scheduled の bit の操作を AcqRel、キューのロックと `ActorCell` のロックで acquire と release がつながる | Quint は逐次一貫なので扱えない。ConsistencySpec と stress テスト（§7.3） |
-| I11 | system message は、実行の始めと、通常のメッセージ 1 件ごとのあとに、届いている分をすべて処理する。system message を追い越す通常のメッセージは、多くても 1 件（直前の処理し切りのあとで system message が届き、その直後に取り出したもの） | §3.5 の 1 と 2 | `systemBeforeNormal`（`drainDone` のあとでしか `startInvoke` できない。負の対照は `MessagesBeforeSystem`）と `noSystemSinceDrain`（空を確かめたあとで system message の処理を始めたら、列が空になるのを確かめ直すまで通常のメッセージを取れない。負の対照は `PartialDrain`。Devin の指摘、PR #236） |
+| I11 | system message は、実行の始めと、通常のメッセージ 1 件ごとのあとに、届いている分をすべて処理する。system message を追い越す通常のメッセージは、多くても 1 件（直前の処理し切りのあとで system message が届き、その直後に取り出したもの） | §3.5 の 1 と 2 | `systemBeforeNormal`（`drainDone` のあとでしか `startInvoke` できない。負の対照は `MessagesBeforeSystem`）と `noSystemSinceDrain`（空を確かめたあとで system message の処理を始めたら、列が空になるのを確かめ直すまで通常のメッセージを取れない。負の対照は `PartialDrain`。Devin の指摘、PR #236）。段 2 から `noHiddenSystemMessage`（開いたメールボックスの system message は、印が立っているか、印を下ろした実行が列を空にしている途中にある。負の対照は `ClearFlagAfterDrain`。§3.8 の工夫 5） |
 | I12 | system message も失われない。処理済み、キューの中、dead letters のどれかにある。閉じるときの残りと、閉じたあとに来たものは dead letters へ行く（DeathWatch のため。dead letters は Watch に DeathWatchNotification を返す） | 原典 `Mailbox.scala:318-338`、`:503-505` と同じ | `systemMessagesConserved` |
-| I13 | プールに入ったメールボックスには、その実行でできる仕事が必ずある（suspend 中を通常のメッセージで予約しない） | `can_be_scheduled` | `submittedOnlyWithWork` |
+| I13 | プールに入ったメールボックスには、その実行でできる仕事が必ずある。ただし、予約した呼び出し元が 1 手目で仕事を読み、2 手目の `fetch_or` までに仕事が無くなった場合を除く（Pekko でも起きる空の実行。§3.10）。suspend 中を通常のメッセージで予約しない | `can_be_scheduled`（キューを読む。印は読まない） | `submittedWithWorkOrStaleRead`（段 2 から。強い形の `submittedOnlyWithWork` は `invariant` の外に残し、`staleReadSubmitsARunTest` で破れることを示す） |
 | I14 | 何も進行中でない（送り手が途中にいない、実行も予約も無い、親の判断も待っていない）とき、開いたメールボックスは、できる仕事をやり終えている。suspend されているのは、外からの Suspend がまだ Resume で打ち消されていないときだけ | I3 と、失敗のたびに親が Resume を返すこと | `settledMeansIdle`（幽霊の変数 `externalSuspendsPending` は、外からの Suspend で 1 増え、外からの Resume で 1 減る。再レビュー L5） |
 | I15 | 実行器に断られたメールボックスに、scheduled の bit は残らない | §3.5 の「実行器に断られたとき」 | 段 5 で、実装より先に `mailbox_scheduling.qnt` に `reject` の動作と負の対照を足す（再レビュー L4）。止めた実行器の作り直しと合わせた形は `dispatcher_lifecycle.qnt`（段 6） |
 | I16 | ロックの中で利用者のコードを走らせない。`LockCell::with` の closure の中で、`receive`、ライフサイクルのフック、function ref の handler、`tell` を呼ばない。利用者の型の `Drop` も走らせない（中では値を外へ移すだけにし、捨てるのは出たあと）。`ActorCell` は、実行の初めに取り出し、ロックの外で `receive` を回し、`set_as_idle` より前に戻す。`receive` が panic で巻き戻るときも、drop guard で戻す | §3.2 の「ロックの中で利用者のコードを走らせない」。`LockCell` は `pub(crate)` で、closure に `&mut T` のほかを渡さない | Quint には無い（ロックの区間は仕様の 1 手の中に入る）。段 2 の設計で、型と、セルを取り出せなかったときの panic のテストで確かめる |
@@ -636,8 +664,8 @@ suspend されている」状態で待つ（T1）。この状態はこの仕様�
 
 ### 5.2 CI の決まりへの合わせ方
 
-- 不変条件は `invariant`。§4.1 の I1〜I8、I11〜I14 の論理積である
-- `run` は 22 本で、名前はどれも `Test` で終わる。`Test` で終わる名前は `run` にしか使っていない
+- 不変条件は `invariant`。§4.1 の I1〜I8、I11〜I14 の論理積である（段 2 から、I13 は `submittedWithWorkOrStaleRead`、I11 に `noHiddenSystemMessage` を足した）
+- `run` は 25 本（段 2 から）で、名前はどれも `Test` で終わる。`Test` で終わる名前は `run` にしか使っていない
 - 定数は `pure val`（`SENDERS`、`WORKERS`、`SENDS_PER_SENDER`、`THROUGHPUT`、`CONTROL_BUDGET`）。`const` は使わない
 - 負の対照は、別のファイルや `--main` に分けず、同じモジュールの `mode` で切り替える。`init` は
   `initWith(Fixed)` だけなので、CI の `quint run --invariant=invariant` は正しい形だけを探す。誤りの形は、
@@ -655,6 +683,7 @@ suspend されている」状態で待つ（T1）。この状態はこの仕様�
 | `LateEnqueue` | closed を見るのと積むのが 2 手 | `closedHoldsNothing` | `lateEnqueueLeavesAMessageInAClosedMailboxTest`（正しい形は `sendAfterCloseIsADeadLetterTest`） |
 | `MessagesBeforeSystem` | 待っている system message を処理し切らずに、次の通常のメッセージを取る | `systemBeforeNormal` | `messagesBeforeSystemOvertakesTest`（正しい形は `systemMessageGoesBeforeTheNextMessageTest`） |
 | `PartialDrain` | 空を確かめたあとに届いた system message を処理し始めたのに、処理し切る前に通常のメッセージを取る（前の版の仕様の Fixed がこの形を許していた。Devin の指摘、PR #236） | `noSystemSinceDrain` | `partialDrainLetsAMessageOvertakeTest`（正しい形は `startedDrainIsFinishedBeforeTheNextMessageTest`） |
+| `ClearFlagAfterDrain` | 実行が system message の列を空にしてから印を下ろす（§3.8 の工夫 5 の順を逆にした形。段 2 で足した） | `noHiddenSystemMessage`、`systemBeforeNormal` | `clearFlagAfterDrainHidesASystemMessageTest`（正しい形は `systemMessageDuringTheDrainIsHandledTest`） |
 | `DropSystemOnClose` | 閉じるときに残りの system message を捨て、閉じたあとの system message も捨てる。この仕様の最初の版（`e702bbe`）の誤りである（設計レビュー H2） | `systemMessagesConserved` | `dropSystemOnCloseLosesAWatchTest`（正しい形は `remainingSystemMessagesAreDeadLettersTest`、`systemMessageAfterCloseIsADeadLetterTest`） |
 
 `LateEnqueue` は、Pekko でも起きうる取りこぼし（閉じた直後に積まれたメッセージが、dead letters にならずに消える）
@@ -998,6 +1027,8 @@ S5〜S7 が大きいのは、今の実行器が宛先を線形に探すためで
 | 16 | `mailbox_scheduling.qnt` の写しで、送り手の予約を `register`（読む）と `fetchOr`（closed と scheduled の 2 ビットだけを見る）の 2 手にし、強い I13、I13 を外した形、弱めた I13（`submittedWithWorkOrStaleRead`）のそれぞれで `quint run --invariant=…`（30 手・3 万本、60 手・10 万本）。I13 以外の不変条件を 1 つずつ（30 手・2 万本）。誤りの 6 つのモードと、変異 R4、R5、R6、R12、R13（30 手・2 万本） | §3.10 の表のとおり。強い I13 だけが正しい形で破れる。I13 を外すと R4 を見逃す。弱めた I13 は正しい形を通し、R4 も含めてすべての変異と 6 つのモードを捉える |
 | 17 | Devin の指摘の筋書きを、前の版の仕様（`cc4b4d4`）と直した仕様の写しで `quint test --match=devinRepro`。直した仕様で `bash scripts/quint-check-specs.sh`（main の 7 本の仕様すべて）。誤りの 7 つのモードから `quint run`（30 手・2 万本）。正しい形を 60 手・5 万本 | 前の版：筋書きが通る（Suspend が残ったまま `startInvoke` でき、`invariant` も成り立つ）。直した版：`startInvoke` が止まる（`Tests failed`）。スクリプトは exit 0（`mailbox_scheduling.qnt` は 22 passing、`No violation found`）。7 つのモードはどれも `[violation]`。正しい形は `[ok]`、`max=53`（既定の rust の backend で流した。再レビュー 5 では、同じ版の正しい形を rust の backend で 25 手を超えて流すと `Error: invalid type: null, expected usize` で落ちることがあり、`--backend=typescript` では 30 手・3 万本と 60 手・2 万本で `[ok]` だった。道具の問題で、CI の 20 手には当たらない） |
 
+| 18 | 段 2（#250）で直した仕様で `bash scripts/quint-check-specs.sh`。§3.10 の「段 2 で流し直した結果」の表（写しに `init<モード>` と比べる不変条件を足して `quint run --backend=rust`、`--backend=typescript`） | スクリプトは exit 0（`mailbox_scheduling.qnt` は 25 passing、`No violation found`）。表は §3.10 のとおり |
+
 429、rate limit、overloaded は出なかった。
 
 ## 11. 設計の独立レビューの指摘の処理
@@ -1143,3 +1174,22 @@ bot の記録 `pr236-design-rereview3.md` にある。M1 と M2 は元帥が決�
 | ずれ 4：`portable-atomic-util` は target の cfg の依存に置く | `[target.'cfg(not(target_has_atomic = "ptr"))'.dependencies]` に置いた。thumbv7em とホストでは使わないので、ふつうの依存にすると cargo の `unused_dependencies` の警告が出るためである | §7.4 の依存 |
 | #263：§3.7 の表の「core と同じ」は誤り | thumbv7em の 64 ビットは、portable-atomic の中でスピンロックになり、割り込みから再入すると止まる（[Issue #263](https://github.com/j5ik2o/fraktor-ng-rs/issues/263)）と直した | §3.7 の「原子操作、Arc」の行の embassy の欄 |
 | #263：embassy の adaptor を作る段の完了条件 | embassy の adaptor を作る段の完了条件に「#263 を閉じる（割り込みから送っても止まらないこと）」を入れた。embassy では割り込みから送るのがふつうの使い方なので、この条件を満たさない限り embassy 対応とは言わない（元帥） | §3.7（embassy で前提になるもののあと） |
+
+### 11.10 段 2 の実装で決めたこと
+
+段 2（[Issue #250](https://github.com/j5ik2o/fraktor-ng-rs/issues/250)）で、この設計に書いていなかった形を、次のとおり決めた。
+どれも承認済みの不変条件の意味は変えていない（I13 は §3.10 の形にした）。I16 も例外なしで保つ（下の「priority と control-aware の関数」）。独立レビュー（固定 `b5e68e9`、判定は要修正、高 0・中 3・低 3）の指摘は、この表の各行に入れた。低 1（`ThroughputDeadline` の加算のあふれ）は、足すときに `Duration::MAX` で止める形に直した。
+
+| 項目 | 決めた形 | 理由 |
+|:---|:---|:---|
+| 予約の 1 手目が読むもの | 印ではなく、通常のキューと system message のキューを読む（Pekko の `canBeScheduledForExecution` の hint は使わない） | 印や hint を読むと、仕事の無い予約が、古い読み（§3.10）より広く起きる。仕様の `register` はキューを読み、弱めた I13 はそれを前提にする。状態の語は 1 回だけ読み、閉じていればキューを読まず、suspend 中なら system message のキューだけを読む（独立レビューの低 3。scheduled の bit で読みを省くことはしない。省くと LostWakeup になる） |
+| system message の印を立てる時点 | 門のロックの中で、積んだ直後に立てる | キューを見る者は、印より先にメッセージを見ない。仕様の `control` の 1 手に当たる |
+| `RawLock` | `unsafe trait` にした。安全の条件は、1 回の呼び出しで区間を 1 度だけ走らせること、同じロックの区間を同時に走らせないこと（別のスレッドや割り込みだけでなく、同じスレッドの再入も入れない。再入した `lock` は panic してもよいし止まってもよいが、区間に入ってはいけない）、前の区間の書き込みを次の区間に見せること（ロックを取るのが acquire、外すのが release）、巻き戻りでロックを外すこと。毒を無視して次の区間を走らせるのは、安全の条件ではなく kernel が求める振る舞い | `LockCell` は区間の中で `&mut T` を渡すので、排他を守らない実装があると安全なコードから未定義の振る舞いになる。`lock_api` の `RawMutex` も unsafe trait である。embassy-sync の `CriticalSectionRawMutex` と `ThreadModeRawMutex`、`critical_section::with` は、同じスレッドからの再入を許す（embassy-sync の `Mutex` が健全なのは、`&T` しか渡さず、借用の検査を中の `RefCell` に任せるため）。そのため embassy の adaptor は、これらにそのまま任せず、ロックごとの「区間の中」の印などで再入を断ってから区間を走らせる（独立レビューの中 2、PR #273） |
+| `kernel::sync` の可視性 | `pub mod sync;` にした（§3.2 の「可視性なしの `mod sync;`」から変えた） | adaptor が実装する port（`RawLock`、`LockFactory`）を公開するため。原子操作の型は今までどおり再公開しない |
+| `Mailbox` が持つアクター | `Mailbox<C: MailboxCell>` の型引数にした。`MailboxCell` は `invoke` と `system_invoke`（Pekko の `ActorCell` の 2 つの入口） | 段 2 は配線しないので、`ActorCell` をまだ入れられない。段 3 で `C` を `ActorCell` にする |
+| 門とキューのロック | 自分専用のキューでは、門のロックの中でキューのロックを取る（逆の順では取らない）。`enqueue` と、閉じるときの `drain` がこの形である。共有のキューでは門を取らない | キューは `Arc<dyn MessageQueue>` で差し替えられるので、門と同じロックにはできない。§3.2 のロックの順序の 3 の中の順として決めた。閉じるときの `drain` を門の中で行うのは、閉じたのに自分専用のキューにメッセージが残っている状態を誰にも見せず、2 度目の `close` が 1 度目より先に空で返らないようにするため（独立レビューの低 2） |
+| priority と control-aware の関数 | どのロックの外でも呼ぶ。`MessageQueue` の積む手を 2 つに分けた。`classify`（ロックの外。利用者の関数を呼んでよい）が `ClassifiedEnvelope`（Envelope と優先度）を作り、`enqueue_classified`（キューのロックの中で、自分専用のキューでは門のロックの中でもある）は値を移すだけにする。関数が panic したときの Envelope の `Drop` も、どのロックの外で走る。公開の文書には、Pekko の `PriorityGenerator` と同じく「メッセージだけで決まる純粋な関数」とだけ書き、その中から送ってよいとは書かない | I16 を例外なしで保つため（独立レビューの中 1。前の版は門のロックの中で呼んでいた）。原典の `PriorityBlockingQueue` は比較の関数をキューのロックの中で呼ぶが、Pekko はこの関数の中で何をしてよいかを約束していない。ロックの外で呼ぶのは原典が許す範囲の中の選び方で、約束は足さない（`docs/decisions/pekko-semantics-first.md`） |
+| std のロック | `std::sync::Mutex`（`StdLockFactory`） | 依存を足さないため（`parking_lot` は足さない。§7.4） |
+| throughput、期限、優先度 | 専用の型 `Throughput`（0 は 1）、`ThroughputDeadline`（1ms 未満は無し）、`MessagePriority`（小さい数が先。型の順序は先に出るものが大きい） | 移植の規約の domain-primitive（特別な扱いを持つ値を基本型のまま渡さない）。Devin の指摘、PR #273 |
+| bounded の priority と control-aware | 段 2 では入れない | 満杯の待ちと一緒に段 5 で入れる（dispatcher ごとのメールボックスの種類） |
+| dispatch の型の公開 | `Mailbox`、`MailboxCell`、`MailboxRun`、`RunOutcome`、`SystemMessage` などを、段 2 では `pub` にした。公開の rustdoc には、原典が約束しない保証（I6 など）を書かず、門の作りは内部のコメントに書いた | 段 2 は配線しないので、`pub(crate)` だと使う所が無く `dead_code` の警告になる（抑制は人間が決める）。段 3 で `ActorCell` を入れるときに、`Mailbox`、`MailboxCell`、`SystemMessage` は `pub(crate)` に戻し、adaptor へ渡す `MailboxRun` は型引数の無い形にする（[#252 のコメント](https://github.com/j5ik2o/fraktor-ng-rs/issues/252#issuecomment-7193760572)の 4）。`Mailbox::suspend`、`resume`、`close` は、それまで実行中のスレッドだけが呼ぶ前提である（独立レビューの中 3） |

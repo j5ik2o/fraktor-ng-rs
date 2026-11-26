@@ -20,6 +20,23 @@
 //! assume atomic compare-and-set. Targets with pointer-sized atomics use
 //! `alloc::sync`; the others use `portable_atomic_util`, whose atomics fall
 //! back to a critical section that the adaptor provides.
+//!
+//! It also holds the lock port (design of #234, section 3.2, rule C2). The
+//! kernel never assumes a kind of lock: a [`LockFactory`] that the adaptor
+//! passes makes a [`RawLock`] for each value the kernel guards, and the
+//! kernel reaches the value only through a closed section (`LockCell::with`).
+//! [`SpinLockFactory`] is the kernel's default for a system that one thread
+//! drives.
+
+mod lock_cell;
+mod lock_factory;
+mod raw_lock;
+mod spin_lock_factory;
+
+pub(crate) use lock_cell::LockCell;
+pub use lock_factory::LockFactory;
+pub use raw_lock::RawLock;
+pub use spin_lock_factory::SpinLockFactory;
 
 #[cfg(target_has_atomic = "ptr")]
 pub(crate) type Arc<T> = alloc::sync::Arc<T>;
