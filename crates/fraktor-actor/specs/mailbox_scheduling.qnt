@@ -70,9 +70,17 @@
 //                     the scheduled bit set (design 11.6 L5).
 //   PanicDropsSysFlag : a run that unwinds in the middle of the system
 //                     messages does not raise the flag again (design 11.6 L5).
+//   PanicAsRecoverable : a panic with no catcher is treated as if the system
+//                     could go on: nothing owes the system's termination, so
+//                     a Resume lost to the panic leaves the actor suspended for
+//                     good (the first stage 3 design, design review High 1).
+//   SilentSystemFailure : a system message whose handling fails under the
+//                     catcher is dropped without its effect, and neither
+//                     suspends the actor nor tells the parent (design review
+//                     High 1).
 //
-// Stage 3 of #234 (design section 11.11) adds three transitions that hold
-// until stage 4a turns a stop into a Terminate system message:
+// Stage 3 of #234 (design section 11.11) adds transitions that hold until
+// stage 4a turns a stop into a Terminate system message:
 //   closeOutside : the executor stops an actor synchronously and closes its
 //                  mailbox outside every run. Under the executor's lock it
 //                  never stops an actor whose run is in progress (it defers
@@ -83,9 +91,21 @@
 //                  failure, a stop, Kill, PoisonPill); the executor does that
 //                  work after the run returns.
 //   panicInvoke, panicSystem : `receive` or a system message panics with no
-//                  catcher. The guard puts the actor back, raises the flag
-//                  again when system messages wait, clears the scheduled bit
-//                  and reserves the mailbox again.
+//                  catcher. This is Pekko's fatal error, which escapes
+//                  ActorCell.invoke: the guard does what the `finally` of
+//                  Mailbox.run does (puts the actor back, raises the flag again
+//                  when system messages wait, clears the scheduled bit and
+//                  reserves the mailbox again), the message is lost, and the
+//                  system owes its termination (Pekko's uncaught exception
+//                  handler terminates the system). closeOutside stands for that
+//                  termination too.
+//   failSystem   : a system message fails under the catcher (Pekko's NonFatal,
+//                  caught for each message in systemInvoke). Its effect on
+//                  the mailbox stays, the actor suspends itself and tells its
+//                  parent (FaultHandling.handleInvokeFailure), and the run goes
+//                  on with the rest of the system queue. Terminate never takes
+//                  this path: a failing postStop is published and the stop
+//                  completes (FaultHandling.finishTerminate).
 //
 // A run handles every waiting system message before it takes a normal message,
 // at its start and again after each normal message (Mailbox.run calls
@@ -113,8 +133,11 @@ module mailbox_scheduling {
 
   type Mode = Fixed | LostWakeup | CheckThenAct | ExternalSuspend | LateEnqueue | DropSystemOnClose
     | MessagesBeforeSystem | PartialDrain | ClearFlagAfterDrain | CloseDuringRun | KeepQueuedRun
-    | PanicKeepsScheduled | PanicDropsSysFlag
+    | PanicKeepsScheduled | PanicDropsSysFlag | PanicAsRecoverable | SilentSystemFailure
   type SysMsg = Suspend | Resume | Terminate
+  // What an outside caller asks for: a system message, or (stage 3 to 4a) the
+  // executor's synchronous stop, closeOutside.
+  type Outside = OSystem(SysMsg) | OStop
   // mark: how many normal messages had been taken when the system message arrived.
   type SysEntry = { kind: SysMsg, mark: int }
   // SRegistering: enqueued, about to read whether the mailbox may be scheduled.
@@ -158,9 +181,13 @@ module mailbox_scheduling {
     // Ghost: the submission in the pool was made by a caller that read work in
     // its first step, and the work was gone by its fetch_or.
     staleSubmission: bool,
-    // Ghost: system messages whose handling panicked with no catcher. The run
-    // had already taken them off the queue, so their effect is lost.
-    panickedSystemMessages: int,
+    // A panic with no catcher has escaped a run (Pekko's fatal error). The
+    // system owes its termination, which closes the mailbox.
+    fatal: bool,
+    // Ghost: the normal and system messages a fatal panic took with it. They
+    // count in the conservation of messages, and only a fatal panic makes them.
+    lostToFatal: int,
+    sysLostToFatal: int,
   }
   // drained: the run has handled every waiting system message since it last took a normal message.
   // drainMark: how many system messages had been handled when the run last saw the queue empty.
@@ -226,10 +253,15 @@ module mailbox_scheduling {
   // Every message sent is processed, queued, being handled, or a dead letter.
   val messagesConserved =
     st.sent == st.processed + st.queue + st.deadLettered + countIn(Set(Invoking))
-      + SENDERS.filter(s => senders.get(s).phase == SEnqueuing).size()
+      + SENDERS.filter(s => senders.get(s).phase == SEnqueuing).size() + st.lostToFatal
 
-  // Every system message sent is applied, still queued, or a dead letter.
-  val systemMessagesConserved = st.sysSent == st.sysProcessed + st.sys.length() + st.sysDeadLettered
+  // Every system message sent is applied, still queued, a dead letter, or
+  // lost to a fatal panic.
+  val systemMessagesConserved =
+    st.sysSent == st.sysProcessed + st.sys.length() + st.sysDeadLettered + st.sysLostToFatal
+  // Only a fatal panic loses a message. A failure under the catcher handles
+  // the message it failed on (failInvoke, failSystem) and loses nothing.
+  val lossOnlyWhenFatal = (st.lostToFatal > 0 or st.sysLostToFatal > 0) implies st.fatal
   // I13 before stage 2: a submitted mailbox always has something its run may
   // do. The two-step reservation breaks it in a way Pekko allows (design
   // section 3.10), so it is not part of `invariant`; staleReadSubmitsARunTest
@@ -240,17 +272,21 @@ module mailbox_scheduling {
   // fetch_or. A suspended actor is never submitted for normal messages alone.
   val submittedWithWorkOrStaleRead = st.submitted > 0 implies (not(st.closed) and (hasWork or st.staleSubmission))
   // When nothing is in flight (no sender between its steps, no run, no
-  // submission, no decision owed by the parent), an open mailbox has handled
-  // everything it may handle, and it is suspended only if somebody asked for it,
-  // or a system message that would have resumed it panicked (panicSystem).
+  // submission, no decision owed by the parent, no termination owed after a
+  // fatal panic), an open mailbox has handled everything it may handle, and it
+  // is suspended only if somebody asked for it. A failure under the catcher is
+  // in flight until the parent has answered it, so it is no exception. After a
+  // fatal panic the system promises only to terminate, as Pekko does: the
+  // mailbox is not settled until it is closed.
   def settled: bool =
     SENDERS.forall(s => senders.get(s).phase == SReady) and countIn(Set(Free)) == WORKERS.size()
       and regs.keys().forall(r => regs.get(r).phase == RIdle)
       and st.submitted == 0 and st.pendingDecision == 0
+      and (not(st.fatal) or st.closed)
   val settledMeansIdle =
     (settled and not(st.closed)) implies
       (st.sys.length() == 0 and (st.suspendCount == 0 implies st.queue == 0)
-        and (st.suspendCount > 0 implies (st.externalSuspendsPending > 0 or st.panickedSystemMessages > 0)))
+        and (st.suspendCount > 0 implies st.externalSuspendsPending > 0))
   // A system message is overtaken by at most one normal message: the one a run
   // took right after its last drain, before the system message arrived.
   val systemBeforeNormal = st.sys.foldl(true, (ok, e) => ok and st.started <= e.mark + 1)
@@ -267,7 +303,7 @@ module mailbox_scheduling {
   val invariant = atMostOneRunner and scheduledMatchesTheRun and noStrandedMessage and noInvokeWhileSuspended
     and noInvokeAfterClose and closedHoldsNothing and throughputRespected and messagesConserved
     and systemMessagesConserved and submittedWithWorkOrStaleRead and settledMeansIdle and systemBeforeNormal
-    and noSystemSinceDrain and noHiddenSystemMessage
+    and noSystemSinceDrain and noHiddenSystemMessage and lossOnlyWhenFatal
 
   // ---- initial states ----------------------------------------------------
 
@@ -277,7 +313,7 @@ module mailbox_scheduling {
       closed: false, scheduled: false, suspendCount: 0, sysFlag: false, queue: 0, sys: [], submitted: 0,
       controlLeft: CONTROL_BUDGET, pendingDecision: 0, sent: 0, processed: 0, deadLettered: 0,
       sysSent: 0, sysProcessed: 0, sysDeadLettered: 0, started: 0, externalSuspendsPending: 0,
-      staleSubmission: false, panickedSystemMessages: 0,
+      staleSubmission: false, fatal: false, lostToFatal: 0, sysLostToFatal: 0,
     },
     workers' = WORKERS.mapBy(_ => { phase: Free, batch: 0, drained: false, drainMark: 0, drain: DNone, sawWork: false }),
     senders' = SENDERS.mapBy(_ => { phase: SReady, left: SENDS_PER_SENDER, sawWork: false }),
@@ -565,11 +601,13 @@ module mailbox_scheduling {
 
   // ---- stage 3 (design section 11.11) ------------------------------------
 
-  // The executor's synchronous stop (Executor::stop, until stage 4a): it
-  // closes the mailbox outside every run, moves what the mailbox held to dead
-  // letters, and takes the run still waiting in the pool out of the pool. It
-  // never closes a mailbox a worker holds; CloseDuringRun does, and
-  // KeepQueuedRun leaves the waiting run in the pool.
+  // The executor's synchronous stop (Executor::stop, until stage 4a), and the
+  // termination of the system (Executor::stop_all), which is also what a fatal
+  // panic owes: it closes the mailbox outside every run, moves what the
+  // mailbox held to dead letters, and takes the run still waiting in the pool
+  // out of the pool. It never closes a mailbox a worker holds (a stop asked for
+  // during a run waits until the run has returned, design 11.11.5);
+  // CloseDuringRun does, and KeepQueuedRun leaves the waiting run in the pool.
   action closeOutside: bool = all {
     not(st.closed),
     mode == CloseDuringRun or countIn(Set(Free)) == WORKERS.size(),
@@ -597,11 +635,14 @@ module mailbox_scheduling {
     setWorker(w, Finishing, workers.get(w).batch, st),
   }
 
-  // The guard of MailboxRun::run when the run unwinds: the actor goes back,
-  // the flag goes up again when system messages are still queued, and the
-  // scheduled bit comes down before the mailbox is reserved again
-  // (finishRegister). PanicKeepsScheduled leaves the bit set and the thread
-  // gone; PanicDropsSysFlag leaves the flag as the drain left it.
+  // The guard of MailboxRun::run when the run unwinds, which is the `finally`
+  // of Pekko's Mailbox.run: the actor goes back, the flag goes up again when
+  // system messages are still queued, and the scheduled bit comes down before
+  // the mailbox is reserved again (finishRegister). The panic had no catcher,
+  // so it is fatal and the system owes its termination (design 11.11.2).
+  // PanicKeepsScheduled leaves the bit set and the thread gone;
+  // PanicDropsSysFlag leaves the flag as the drain left it; PanicAsRecoverable
+  // goes on as if nothing had happened.
   action unwind(w: str, after: State): bool = setWorkerTo(
     w,
     {
@@ -615,28 +656,56 @@ module mailbox_scheduling {
       ...after,
       scheduled: if (mode == PanicKeepsScheduled) after.scheduled else false,
       sysFlag: if (mode == PanicDropsSysFlag) after.sysFlag else after.sysFlag or after.sys.length() > 0,
+      fatal: after.fatal or mode != PanicAsRecoverable,
     },
   )
 
-  // `receive` panics with no catcher: the message it was handling is spent.
+  // `receive` panics with no catcher: the message it was handling is lost.
   action panicInvoke(w: str): bool = all {
     phaseOf(w) == Invoking,
-    unwind(w, { ...st, processed: st.processed + 1 }),
+    unwind(w, { ...st, lostToFatal: st.lostToFatal + 1 }),
   }
 
-  // A system message panics while the run empties the system queue: that
-  // message is spent without its effect, the rest stay queued.
+  // A system message panics with no catcher while the run empties the system
+  // queue: that message is lost with its effect, the rest stay queued.
   action panicSystem(w: str): bool = all {
     phaseOf(w) == Running,
     not(st.closed),
     workers.get(w).drain == DDraining,
     st.sys.length() > 0,
-    unwind(w, {
-      ...st,
-      sys: st.sys.tail(),
-      sysProcessed: st.sysProcessed + 1,
-      panickedSystemMessages: st.panickedSystemMessages + 1,
-    }),
+    unwind(w, { ...st, sys: st.sys.tail(), sysLostToFatal: st.sysLostToFatal + 1 }),
+  }
+
+  // A system message fails under the catcher (systemInvoke catches each one).
+  // Its effect on the mailbox stays, then the actor suspends itself and asks
+  // its parent, as failInvoke does, and the drain goes on. Terminate is left
+  // out: a failing postStop is published and the stop completes, which is
+  // processSystem. SilentSystemFailure drops the message instead.
+  action failSystem(w: str): bool = all {
+    phaseOf(w) == Running,
+    not(st.closed),
+    workers.get(w).drain == DDraining,
+    st.sys.length() > 0,
+    st.sys.head().kind != Terminate,
+    val rest = { ...st, sys: st.sys.tail(), sysProcessed: st.sysProcessed + 1 }
+    val applied = match st.sys.head().kind {
+      | Suspend => rest.suspendCount + 1
+      | Resume => if (rest.suspendCount > 0) rest.suspendCount - 1 else 0
+      | Terminate => rest.suspendCount
+    }
+    val after =
+      if (mode == SilentSystemFailure) rest
+      else { ...rest, suspendCount: applied + 1, pendingDecision: rest.pendingDecision + 1 }
+    setWorker(w, Running, workers.get(w).batch, after),
+  }
+
+  // The synchronous stop is one of the outside operations, not a branch of its
+  // own: as its own branch it was enabled at every step of an open mailbox with
+  // no run, closed the mailbox early in most traces, and halved the average
+  // length of a trace (design 11.11.10).
+  action outside(c: str, op: Outside): bool = match op {
+    | OSystem(k) => control(c, k)
+    | OStop => closeOutside
   }
 
   action step = {
@@ -644,13 +713,13 @@ module mailbox_scheduling {
     nondet w = WORKERS.oneOf()
     nondet c = CONTROLLERS.oneOf()
     nondet r = CONTROLLERS.union(Set(PARENT)).oneOf()
-    nondet k = Set(Suspend, Resume, Terminate).oneOf()
+    nondet op = Set(OSystem(Suspend), OSystem(Resume), OSystem(Terminate), OStop).oneOf()
     any {
       send(s), enqueueLate(s), register(s), fetchOr(s), act(s),
-      control(c, k), decide, regRead(r), regFetchOr(r),
+      outside(c, op), decide, regRead(r), regFetchOr(r),
       take(w), clearSysFlag(w), beginDrain(w), processSystem(w), drainDone(w), startInvoke(w), endInvoke(w),
       failInvoke(w), decideFinish(w), finishIdle(w), finishRegister(w), finishFetchOr(w),
-      closeOutside, yieldRun(w), panicInvoke(w), panicSystem(w),
+      yieldRun(w), panicInvoke(w), panicSystem(w), failSystem(w),
     }
   }
 
@@ -805,13 +874,14 @@ module mailbox_scheduling {
       .then(yieldRun("w1")).then(finishIdle("w1")).then(finishRegister("w1")).then(finishFetchOr("w1"))
       .expect(st.submitted == 1 and st.scheduled and st.queue == 1 and invariant)
 
-  // A panic out of `receive` leaves the mailbox reserved for what is left.
+  // A panic with no catcher out of `receive` loses its message and leaves the
+  // mailbox reserved for what is left, and the system owes its termination.
   run panicInReceiveReschedulesTheRestTest =
     initWith(Fixed).then(send("s1")).then(register("s1")).then(fetchOr("s1"))
       .then(send("s1")).then(register("s1")).then(fetchOr("s1"))
       .then(take("w1")).then(drainDone("w1")).then(startInvoke("w1")).then(panicInvoke("w1"))
       .then(finishRegister("w1")).then(finishFetchOr("w1"))
-      .expect(st.submitted == 1 and st.scheduled and st.processed == 1 and st.queue == 1 and invariant)
+      .expect(st.submitted == 1 and st.scheduled and st.lostToFatal == 1 and st.queue == 1 and st.fatal and invariant)
 
   // A panic in the middle of the system messages raises the flag again, so
   // the next run handles the rest before any normal message.
@@ -820,6 +890,31 @@ module mailbox_scheduling {
       .then(take("w1")).then(clearSysFlag("w1")).then(panicSystem("w1"))
       .then(finishRegister("w1")).then(finishFetchOr("w1"))
       .expect(st.sysFlag and st.sys.length() == 1 and st.submitted == 1 and invariant)
+
+  // A Resume lost to a panic with no catcher leaves the actor suspended, but
+  // the mailbox is not settled: the system owes its termination, which closes
+  // it (design review High 1).
+  run fatalPanicOwesTheTerminationTest =
+    initWith(Fixed).then(control("c1", Suspend)).then(control("c2", Resume))
+      .then(regRead("c1")).then(regFetchOr("c1")).then(regRead("c2")).then(regFetchOr("c2"))
+      .then(take("w1")).then(clearSysFlag("w1")).then(processSystem("w1")).then(panicSystem("w1"))
+      .then(finishRegister("w1"))
+      .expect(st.fatal and st.suspendCount == 1 and st.sysLostToFatal == 1 and not(settled) and invariant)
+      .then(closeOutside)
+      .expect(st.closed and settled and invariant)
+
+  // A Resume that fails under the catcher keeps its effect, and the failure
+  // suspends the actor and asks the parent, whose Resume lets it go on.
+  run failedSystemMessageAsksTheParentTest =
+    initWith(Fixed).then(control("c1", Suspend)).then(control("c2", Resume))
+      .then(regRead("c1")).then(regFetchOr("c1")).then(regRead("c2")).then(regFetchOr("c2"))
+      .then(take("w1")).then(clearSysFlag("w1")).then(processSystem("w1")).then(failSystem("w1"))
+      .then(drainDone("w1")).then(decideFinish("w1")).then(finishIdle("w1")).then(finishRegister("w1"))
+      .expect(st.suspendCount == 1 and st.pendingDecision == 1 and not(settled) and invariant)
+      .then(decide).then(regRead(PARENT)).then(regFetchOr(PARENT))
+      .then(take("w2")).then(clearSysFlag("w2")).then(processSystem("w2")).then(drainDone("w2"))
+      .then(decideFinish("w2")).then(finishIdle("w2")).then(finishRegister("w2"))
+      .expect(st.suspendCount == 0 and settled and invariant)
 
   // ---- runs: the mistakes (negative controls) ----------------------------
 
@@ -842,6 +937,20 @@ module mailbox_scheduling {
     initWith(PanicDropsSysFlag).then(control("c1", Resume)).then(control("c2", Suspend))
       .then(regRead("c1")).then(regFetchOr("c1")).then(take("w1")).then(clearSysFlag("w1")).then(panicSystem("w1"))
       .expect(not(noHiddenSystemMessage))
+
+  run panicAsRecoverableLosesAResumeTest =
+    initWith(PanicAsRecoverable).then(control("c1", Suspend)).then(control("c2", Resume))
+      .then(regRead("c1")).then(regFetchOr("c1")).then(regRead("c2")).then(regFetchOr("c2"))
+      .then(take("w1")).then(clearSysFlag("w1")).then(processSystem("w1")).then(panicSystem("w1"))
+      .then(finishRegister("w1"))
+      .expect(settled and st.suspendCount == 1 and not(settledMeansIdle) and not(lossOnlyWhenFatal))
+
+  run silentSystemFailureLeavesTheActorSuspendedTest =
+    initWith(SilentSystemFailure).then(control("c1", Suspend)).then(control("c2", Resume))
+      .then(regRead("c1")).then(regFetchOr("c1")).then(regRead("c2")).then(regFetchOr("c2"))
+      .then(take("w1")).then(clearSysFlag("w1")).then(processSystem("w1")).then(failSystem("w1"))
+      .then(drainDone("w1")).then(decideFinish("w1")).then(finishIdle("w1")).then(finishRegister("w1"))
+      .expect(settled and st.suspendCount == 1 and not(settledMeansIdle))
 
   run clearFlagAfterDrainHidesASystemMessageTest =
     initWith(ClearFlagAfterDrain).then(send("s1")).then(register("s1")).then(fetchOr("s1"))
