@@ -1227,10 +1227,10 @@ nodes:
     module: actor-tests
     class: AsciiStringCopySpec
     test_cases_approx: 3
-  status: unported
+  status: not_built
   triage:
-    kind: pending
-    reason: null
+    kind: not_built
+    reason: "作らない区分（docs/design/issue-185-util-specs.md §7）。オーナーが 2026-11-26 に承認した"
   needs:
     testkit: []
     premise_flags: []
@@ -1238,14 +1238,31 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 3
+    ported: 0
+    passing: 0
     excluded: []
+    not_built:
+    - name: "select working algorithm"
+      reason: "選択アルゴリズムは JDK の内部表現（String.value の byte[]）へのアクセス方法の違いであり、Rust の str は常に UTF-8 のバイト列を公開する。選択する対象が無い（docs/design/issue-185-util-specs.md §7）"
+      alternative: "\"abcdefghijklmnopqrstuvxyz\".as_bytes() が、そのまま25バイトの US-ASCII の列である。選択を経ずに、常にこの形で得られる"
+      approved_by: j5ik2o
+      approved_at: 2026-11-26
+    - name: "copy string internal representation successfully"
+      reason: "元は sun.misc.Unsafe で String の内部表現を直接写す経路の検査であり、Rust の str はバイト列を公開 API で返すため、unsafe な写しの経路そのものが無い。利用者の EnvelopeBufferPool は remote の未移植のモジュールである（docs/design/issue-185-util-specs.md §7）"
+      alternative: "let source = \"abcdefghijklmnopqrstuvxyz\"; let mut copied = Vec::new(); copied.extend_from_slice(source.as_bytes()); assert_eq!(String::from_utf8(copied).unwrap(), source)。同じ25バイトの往復が、安全な公開 API だけで書ける"
+      approved_by: j5ik2o
+      approved_at: 2026-11-26
+    - name: "hash strings successfully"
+      reason: "戻り値への検査が無く、観測できる振る舞いは「25文字の ASCII 文字列をハッシュすると、例外を出さずに値が返る」だけである。確かめている本体は JDK の内部表現を読む分岐で落ちないことであり、Rust にはその分岐が無い。fastHash の利用者は remote の未移植のキャッシュだけである（docs/design/issue-185-util-specs.md §7）"
+      alternative: "let hasher = std::hash::BuildHasherDefault::<std::hash::DefaultHasher>::default(); let _value: u64 = std::hash::BuildHasher::hash_one(&hasher, \"abcdefghijklmnopqrstuvxyz\"); 標準のハッシュでも同じ観測できる振る舞い（例外なく値が返る）が示せる。値は一致させない。JVM と同じ値が要るのは、ハッシュで決まる順序を見る remote の Spec を移すときだけである"
+      approved_by: j5ik2o
+      approved_at: 2026-11-26
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue185
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/pattern/AskSpec.scala
   name: actor-tests:AskSpec
   kind: test
@@ -1647,10 +1664,10 @@ nodes:
     module: actor-tests
     class: ByteStringInitializationSpec
     test_cases_approx: 1
-  status: unported
+  status: not_built
   triage:
-    kind: pending
-    reason: null
+    kind: not_built
+    reason: "作らない区分（docs/design/issue-185-util-specs.md §7）。オーナーが 2026-11-26 に承認した"
   needs:
     testkit: []
     premise_flags: []
@@ -1658,14 +1675,21 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 1
+    ported: 0
+    passing: 0
     excluded: []
+    not_built:
+    - name: "not get confused by initializing CompactByteString before ByteString"
+      reason: "クラスローダでクラス群を読み直し、Pekko の ByteString と CompactByteString の object の静的初期化が循環しないことを試す、JVM の言語と実行時のための補助そのものの検査である。Rust には静的初期化が無く、CompactByteString という型も無い。対応する ByteString::empty() は static も遅延初期化も持たず Vec::new() だけであり、初期化の順序に当たるもの自体が無い（docs/design/issue-185-util-specs.md §7）"
+      alternative: "assert_eq!(ByteString::empty().iterator().count(), 0) を、ByteString に触る最初の操作として実行しても同じ結果になる。順序を入れ替える対象の型が無いため、順序の指定自体が不要である"
+      approved_by: j5ik2o
+      approved_at: 2026-11-26
   rust:
     crate: null
     test_file: null
-  goal: null
+  goal: G0issue185
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/util/ByteStringInputStreamSpec.scala
   name: actor-tests:ByteStringInputStreamSpec
   kind: test
@@ -2519,25 +2543,30 @@ nodes:
     module: actor-tests
     class: DurationSpec
     test_cases_approx: 3
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
   needs:
-    testkit: ['extends-pekko-spec', 'pekko-spec']
-    premise_flags: ['thread-sleep']
+    testkit: []
+    premise_flags: []
   depends_on_impl:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
-    excluded: []
+    total: 3
+    ported: 2
+    passing: 2
+    excluded:
+    - name: "respect correct treatment of infinities"
+      reason: "core::time::Duration には無限と未定義の値が無く、等価には書けない。今の fraktor-actor には無限同士の演算を必要とする利用者はいない。後続の移植は、使う場所ごとの Option か enum で表す（docs/design/issue-185-util-specs.md §7）"
+      approved_by: j5ik2o
+      approved_at: 2026-11-26
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/duration_spec.rs
+  goal: G0issue185
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/DynamicAccessSpec.scala
   name: actor-tests:DynamicAccessSpec
   kind: test
