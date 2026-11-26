@@ -1,3 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// license agreements; and to You under the Apache License, version 2.0:
+//
+//   https://www.apache.org/licenses/LICENSE-2.0
+//
+// This file is part of the Apache Pekko project, which was derived from Akka.
+//
+// Copyright (C) 2009-2022 Lightbend Inc. <https://www.lightbend.com>
+//
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE and NOTICE
+// at the repository root.
+//
+// This file has been modified from the Apache Pekko original.
+
 //! The state machine that logs dead letters up to a limit, then suspends.
 
 use alloc::format;
@@ -11,6 +27,7 @@ use crate::kernel::actor::DeadLetterSettings;
 use crate::kernel::actor::SuppressedDeadLetter;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::message::Message;
+use crate::kernel::pretty_duration::PrettyDurationInput;
 
 /// The counting and suspension state of the dead letter listener.
 ///
@@ -86,7 +103,10 @@ impl DeadLetterListener {
         if self.count == limit.get() {
           match self.settings.suspend_duration() {
             | Some(duration) => {
-              let done = format!(", no more dead letters will be logged in next [{}]", pretty_duration(duration));
+              let done = format!(
+                ", no more dead letters will be logged in next [{}]",
+                PrettyDurationInput::Finite(duration).pretty()
+              );
               let text = self.log_line(event, &done);
               self.suspended_until = Some(now + duration);
               Some(text)
@@ -185,45 +205,5 @@ fn limit_value(limit: DeadLetterLogLimit) -> u32 {
     | DeadLetterLogLimit::Count(count) => count.get(),
     | DeadLetterLogLimit::Unlimited => u32::MAX,
     | DeadLetterLogLimit::Off => 0,
-  }
-}
-
-/// Formats `duration` the way Pekko's `PrettyDuration.pretty` does: four
-/// significant digits and the unit abbreviation, such as `2.000 s`.
-///
-/// The crate has no `std` formatting for this in the kernel, so the digits
-/// are produced by scaling to the chosen unit and printing the integer and
-/// fractional parts by hand.
-pub(crate) fn pretty_duration(duration: Duration) -> String {
-  const UNITS: [(u64, &str); 7] = [
-    (86_400_000_000_000, "d"),
-    (3_600_000_000_000, "h"),
-    (60_000_000_000, "min"),
-    (1_000_000_000, "s"),
-    (1_000_000, "ms"),
-    (1_000, "us"),
-    (1, "ns"),
-  ];
-  let nanos = duration.as_nanos() as u64;
-  let (unit_nanos, unit) = UNITS.iter().find(|(size, _)| nanos >= *size).copied().unwrap_or((1, "ns"));
-  let scaled = nanos as f64 / unit_nanos as f64;
-  format!("{} {unit}", four_significant(scaled))
-}
-
-/// Prints `value` with four significant digits, keeping trailing zeros, as
-/// `%.4g` does for the values a suspend duration takes.
-fn four_significant(value: f64) -> String {
-  if value >= 1000.0 {
-    format!("{value:.0}")
-  } else if value >= 100.0 {
-    format!("{value:.1}")
-  } else if value >= 10.0 {
-    format!("{value:.2}")
-  } else if value >= 1.0 {
-    format!("{value:.3}")
-  } else if value > 0.0 {
-    format!("{value:.4}")
-  } else {
-    String::from("0.000")
   }
 }

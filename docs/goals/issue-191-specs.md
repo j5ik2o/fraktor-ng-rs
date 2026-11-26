@@ -95,3 +95,12 @@ ConsistencySpec は、このゴールには含めていない。fraktor の `Act
 | syn checker（`crates/fraktor-actor`、`crates/fraktor-testkit`） | 違反 0、抑制 0 |
 | `npm run check:aislop` | 既知の指摘と一致 |
 | 台帳の検査（`pekko_baseline.py check-ledger`、`check-refs`、`relocate_nodes.py check`、`report_ledger_1to1.py check`） | 成功 |
+| ライセンスヘッダー検査（`license_headers.py --check --manifest docs/design/issue-206-file-origin.tsv`） | 成功（885 件、missing 0、errors 0）。線引き一覧の再生成とも一致 |
+
+## main の取り込みとライセンスヘッダー（2026-11-26）
+
+PR #215（ライセンスヘッダー、ab8a616）を含む main を取り込んだ。競合は自動で解け、両方の変更が残っている。CI に入ったヘッダー検査に合わせ、新規ファイル 13 件に `Apache-2.0` のヘッダーを原典を指定して付けた（`tools/license-headers/license_headers.py --apply --kind pekko --source <原典>`）。`DeadLetterListener` は、main 側で入った #186 の `PrettyDurationInput` を使うように変え、自前の書式関数を消した。
+
+- `crates/fraktor-actor/tests/dead_letter_routing_property_test.rs` は自作である。原典に対応するファイルが無く、自分で設計したモデル検査なので、線引き一覧では「自分で書いた／保留」になり、保留のファイルにはヘッダーを付けない決まり（checker の `held-has-spdx`）に従ってヘッダーは付けていない。元帥の決定で扱いが決まるよう、PR 本文にも同じ内容を書いた。
+- main 側で #188 の新規ファイル 10 件（`ImmutableIntMap` と `TokenBucket` の実装とテスト）にヘッダーが無く、取り込んだ時点で検査が落ちる状態だった。この PR で原典を指定してヘッダーを付けた（判断が要る変更ではなく、検査を通すための機械的な付与）。
+- `actor_system_value.rs` は、取り込みで `Mirrors` の言及が増えて帰属する原典が広がったため、ヘッダーの表示を作り直した。
