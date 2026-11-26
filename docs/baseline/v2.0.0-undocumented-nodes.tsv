@@ -10,9 +10,11 @@ actor-tests/src/test/scala/org/apache/pekko/PekkoVersionSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/ActorLifeCycleSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/ActorPathSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/ActorTimeoutSpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/actor/ActorWithBoundedStashSpec.scala	unclassified
 actor-tests/src/test/scala/org/apache/pekko/actor/AddressSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/ForwardActorSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/HotSwapSpec.scala	no-report
+actor-tests/src/test/scala/org/apache/pekko/actor/ProviderSelectionSpec.scala	unclassified
 actor-tests/src/test/scala/org/apache/pekko/actor/RelativeActorPathSpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/RestartStrategySpec.scala	no-report
 actor-tests/src/test/scala/org/apache/pekko/actor/SupervisorMiscSpec.scala	no-report

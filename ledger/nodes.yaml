@@ -1093,7 +1093,7 @@ nodes:
     module: actor-tests
     class: ActorWithBoundedStashSpec
     test_cases_approx: 5
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -1104,14 +1104,16 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 5
+    ported: 5
+    passing: 5
     excluded: []
+    not_built: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/actor_with_bounded_stash_spec.rs
+  goal: G0issue192
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/actor/ActorWithStashSpec.scala
   name: actor-tests:ActorWithStashSpec
   kind: test
@@ -3952,7 +3954,7 @@ nodes:
     module: actor-tests
     class: ProviderSelectionSpec
     test_cases_approx: 4
-  status: unported
+  status: green
   triage:
     kind: pending
     reason: null
@@ -3963,14 +3965,16 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 4
+    ported: 4
+    passing: 4
     excluded: []
+    not_built: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/provider_selection_spec.rs
+  goal: G0issue192
+  verified_against: v2.0.0
 - id: actor-tests/src/test/scala/org/apache/pekko/routing/RandomSpec.scala
   name: actor-tests:RandomSpec
   kind: test

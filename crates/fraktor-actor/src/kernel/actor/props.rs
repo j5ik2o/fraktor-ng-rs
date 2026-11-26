@@ -43,6 +43,7 @@ mod tests;
 pub struct Props {
   factory: Arc<dyn Fn() -> Box<dyn Actor> + Send + Sync>,
   dispatcher: Option<Arc<str>>,
+  mailbox: Option<Arc<str>>,
 }
 
 /// The actor that [`Props::empty`] builds.
@@ -89,7 +90,7 @@ impl Props {
     F: Fn() -> A + Send + Sync + 'static,
     A: Actor + 'static,
   {
-    Self { factory: Arc::new(move || Box::new(factory())), dispatcher: None }
+    Self { factory: Arc::new(move || Box::new(factory())), dispatcher: None, mailbox: None }
   }
 
   /// Records the name of the dispatcher the actor should run on.
@@ -111,6 +112,26 @@ impl Props {
     self.dispatcher.as_deref()
   }
 
+  /// Records the name of the mailbox the actor should use.
+  ///
+  /// Mirrors `Props.withMailbox(name)`. As with
+  /// [`with_dispatcher`](Self::with_dispatcher), the port keeps the name
+  /// only: the executor resolves it against the system's
+  /// [`DispatchSettings`](crate::kernel::actor::dispatch_settings::DispatchSettings) when
+  /// the actor is spawned, and a name with no definition there changes
+  /// nothing.
+  pub fn with_mailbox(mut self, name: &str) -> Self {
+    self.mailbox = Some(Arc::from(name));
+    self
+  }
+
+  /// Returns the mailbox name the recipe records, when one was set.
+  ///
+  /// Mirrors `Props.mailbox`, narrowed to the name record this port keeps.
+  pub fn mailbox(&self) -> Option<&str> {
+    self.mailbox.as_deref()
+  }
+
   pub(crate) fn create_actor(&self) -> Box<dyn Actor> {
     (self.factory)()
   }
@@ -118,6 +139,6 @@ impl Props {
 
 impl Clone for Props {
   fn clone(&self) -> Self {
-    Self { factory: Arc::clone(&self.factory), dispatcher: self.dispatcher.clone() }
+    Self { factory: Arc::clone(&self.factory), dispatcher: self.dispatcher.clone(), mailbox: self.mailbox.clone() }
   }
 }

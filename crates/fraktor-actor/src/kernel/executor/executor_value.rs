@@ -13,6 +13,8 @@
 //
 // Copyright (C) 2017-2022 Lightbend Inc. <https://www.lightbend.com>
 //
+// Copyright (C) 2018-2022 Lightbend Inc. <https://www.lightbend.com>
+//
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE and NOTICE
 // at the repository root.
 //
@@ -29,19 +31,25 @@ use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 use core::time::Duration;
 
+use crate::kernel::actor::dispatch_settings::CapacityLimit;
+use crate::kernel::actor::dispatch_settings::DispatchSettings;
 use crate::kernel::actor::ActorContext;
 use crate::kernel::actor::BehaviorStack;
+use crate::kernel::actor::DeadLetter;
+use crate::kernel::actor::FunctionRef;
 use crate::kernel::actor::InvalidActorNameException;
 use crate::kernel::actor::Logging::Error;
 use crate::kernel::actor::Logging::EventSink;
 use crate::kernel::actor::Logging::Warning;
 use crate::kernel::actor::Props;
+use crate::kernel::actor::StashOverflowException;
 use crate::kernel::actor::Terminated;
 use crate::kernel::actor::UnhandledMessage;
 use crate::kernel::actor_path::ActorPath;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::event::EventStream;
 use crate::kernel::executor::ActorCell;
+use crate::kernel::executor::FunctionBoundary;
 use crate::kernel::executor::ShardQueue;
 use crate::kernel::message::Envelope;
 use crate::kernel::message::Message;
@@ -177,6 +185,10 @@ pub(crate) struct Executor {
   clock: Option<Arc<dyn Clock>>,
   stashes: Vec<(ActorRef, Vec<(u64, Envelope)>)>,
   next_delivery: u64,
+  dispatch_settings: Option<DispatchSettings>,
+  actor_capacities: Vec<(ActorRef, CapacityLimit, CapacityLimit)>,
+  function_parents: Vec<(ActorRef, ActorRef)>,
+  function_watching: Vec<(ActorRef, ActorRef)>,
 }
 
 impl Executor {
@@ -206,6 +218,10 @@ impl Executor {
       clock: None,
       stashes: Vec::new(),
       next_delivery: 0,
+      dispatch_settings: None,
+      actor_capacities: Vec::new(),
+      function_parents: Vec::new(),
+      function_watching: Vec::new(),
     };
     executor.function_refs.push(executor.dead_letters.clone());
     executor
@@ -306,6 +322,35 @@ impl Executor {
     self.event_sink.clone()
   }
 
+  /// Installs the dispatcher and mailbox definitions that spawn-time
+  /// resolution reads, from the system's
+  /// [`DispatchSettings`](crate::kernel::actor::dispatch_settings::DispatchSettings) setup.
+  pub(crate) fn set_dispatch_settings(&mut self, settings: DispatchSettings) {
+    self.dispatch_settings = Some(settings);
+  }
+
+  /// Returns the (mailbox, stash) capacities resolved for `owner` when
+  /// it was spawned, both unlimited when no definition applied.
+  fn capacities_of(&self, owner: &ActorRef) -> (CapacityLimit, CapacityLimit) {
+    self
+      .actor_capacities
+      .iter()
+      .find(|(held, _, _)| held == owner)
+      .map(|(_, mailbox, stash)| (*mailbox, *stash))
+      .unwrap_or((CapacityLimit::Unlimited, CapacityLimit::Unlimited))
+  }
+
+  /// Publishes a [`DeadLetter`] for `message` on the event stream and
+  /// hands the message to the dead letters handle, as Pekko's mailbox
+  /// clean-up both publishes and delivers.
+  fn publish_dead_letter(&mut self, message: Message, sender: ActorRef, recipient: &ActorRef) {
+    if let Some(stream) = self.event_stream.as_ref() {
+      stream.publish(DeadLetter::new(message.clone(), sender.clone(), recipient.clone()));
+    }
+    let dead_letters = self.dead_letters();
+    self.send(sender, &dead_letters, message);
+  }
+
   /// Starts an actor that the system owns directly, below `/user`.
   pub(crate) fn spawn_user(&mut self, props: Props) -> ActorRef {
     self.assert_running();
@@ -363,7 +408,20 @@ impl Executor {
     strategy_inherited: bool,
   ) -> ActorRef {
     self.assert_running();
+    // Resolve the actor's capacities now, as Pekko resolves the
+    // dispatcher and mailbox configuration when the actor is created:
+    // a broken alias chain is a configuration error and panics, as the
+    // original's `ConfigurationException` does, while an undefined name
+    // keeps the unlimited behaviour (design of #192, H2).
+    let (mailbox_capacity, stash_capacity) = match &self.dispatch_settings {
+      | Some(settings) => match settings.resolve_capacities(props.dispatcher(), props.mailbox()) {
+        | Ok(capacities) => capacities,
+        | Err(error) => panic!("{error}"),
+      },
+      | None => (CapacityLimit::Unlimited, CapacityLimit::Unlimited),
+    };
     let self_ref = next_actor_ref(path, self.queue.boundary().clone());
+    self.actor_capacities.push((self_ref.clone(), mailbox_capacity, stash_capacity));
     let cell = ActorCell::pending(self_ref.clone(), parent, props, strategy, strategy_inherited);
     self.cells.push(cell);
     let index = self.cells.len() - 1;
@@ -781,6 +839,7 @@ impl Executor {
     self.mark_stopping(target);
     let parent_of_target = self.cells.iter().find(|cell| cell.accepts(target)).and_then(|cell| cell.parent());
     self.stop_children_of(target);
+    self.stop_function_refs_of(target);
     if let Some(index) = self.function_refs.iter().position(|reference| reference == target) {
       let reference = self.function_refs.remove(index);
       reference.boundary().close();
@@ -792,6 +851,7 @@ impl Executor {
       }
     }
     self.forget_child(target);
+    self.function_watching.retain(|(watcher, _)| watcher != target);
     self.stash_to_dead_letters(target);
     self.queued_to_dead_letters(target);
     self.watchers.retain(|(watcher, _)| watcher != target);
@@ -801,6 +861,7 @@ impl Executor {
       callback(target);
     }
     self.flush_deferred_replies(target);
+    self.actor_capacities.retain(|(held, _, _)| held != target);
     if let Some(parent) = parent_of_target {
       self.run_child_terminated_hook(&parent, target);
     }
@@ -943,14 +1004,38 @@ impl Executor {
   /// `UnrestrictedStash.stash` compares the current envelope with
   /// `theStash.last`.
   pub(crate) fn stash(&mut self, owner: ActorRef, delivery: u64, message: Message, sender: ActorRef) {
+    if let Err(error) = self.try_stash(owner, delivery, message, sender) {
+      panic!("{error}");
+    }
+  }
+
+  /// Puts `message` aside as [`stash`](Self::stash) does, answering
+  /// with [`StashOverflowException`] instead of panicking when the
+  /// owner's stash is already at its resolved capacity; the state does
+  /// not change in that case. The double-stash contract still panics,
+  /// as it is a contract violation rather than a capacity one (design
+  /// of #192, L4).
+  pub(crate) fn try_stash(
+    &mut self,
+    owner: ActorRef,
+    delivery: u64,
+    message: Message,
+    sender: ActorRef,
+  ) -> Result<(), StashOverflowException> {
+    if let Some((_, stash)) = self.stashes.iter().find(|(held, _)| held == &owner) {
+      assert!(stash.last().is_none_or(|(last, _)| *last != delivery), "Can't stash the same message more than once");
+    }
+    let (_, stash_capacity) = self.capacities_of(&owner);
+    let current = self.stashes.iter().find(|(held, _)| held == &owner).map(|(_, stash)| stash.len()).unwrap_or(0);
+    if !stash_capacity.allows(current) {
+      return Err(StashOverflowException::new(stash_capacity.bound().unwrap_or(0)));
+    }
     let envelope = Envelope::new(owner.clone(), message, sender);
     match self.stashes.iter_mut().find(|(held, _)| held == &owner) {
-      | Some((_, stash)) => {
-        assert!(stash.last().is_none_or(|(last, _)| *last != delivery), "Can't stash the same message more than once");
-        stash.push((delivery, envelope));
-      },
+      | Some((_, stash)) => stash.push((delivery, envelope)),
       | None => self.stashes.push((owner, alloc::vec![(delivery, envelope)])),
     }
+    Ok(())
   }
 
   /// Sends `owner`'s stash to dead letters, each message with its original
@@ -964,10 +1049,32 @@ impl Executor {
   fn stash_to_dead_letters(&mut self, owner: &ActorRef) {
     if let Some(index) = self.stashes.iter().position(|(held, _)| held == owner) {
       let (_, stash) = self.stashes.swap_remove(index);
-      let dead_letters = self.dead_letters();
-      for (_, envelope) in stash {
-        let (_, message, sender) = envelope.into_parts();
-        self.send(sender, &dead_letters, message);
+      // Pekko's postStop returns the stash to the bounded mailbox: the
+      // newest messages that fit stay in the mailbox and are cleaned up
+      // in order, and the oldest excess goes to dead letters first,
+      // newest victim first (design of #192, B4). An unlimited mailbox
+      // keeps the previous behaviour of sending everything in order.
+      let (mailbox_capacity, _) = self.capacities_of(owner);
+      let bound = mailbox_capacity.bound().unwrap_or(usize::MAX);
+      let total = stash.len();
+      if total > bound {
+        let excess = total - bound;
+        let mut envelopes = stash.into_iter();
+        let victims: Vec<_> = envelopes.by_ref().take(excess).collect();
+        let rest: Vec<_> = envelopes.collect();
+        for (_, envelope) in victims.into_iter().rev() {
+          let (_, message, sender) = envelope.into_parts();
+          self.publish_dead_letter(message, sender, owner);
+        }
+        for (_, envelope) in rest {
+          let (_, message, sender) = envelope.into_parts();
+          self.publish_dead_letter(message, sender, owner);
+        }
+      } else {
+        for (_, envelope) in stash {
+          let (_, message, sender) = envelope.into_parts();
+          self.publish_dead_letter(message, sender, owner);
+        }
       }
     }
   }
@@ -982,14 +1089,13 @@ impl Executor {
   /// and envelopes still waiting at the shard boundary reach the stopped actor
   /// later and are dropped there, as before.
   fn queued_to_dead_letters(&mut self, target: &ActorRef) {
-    let dead_letters = self.dead_letters();
     for envelope in self.queue.take_addressed_to(target) {
       let (_, message, sender) = envelope.into_parts();
       let message = match message.downcast_ref::<Arc<PendingTermination>>() {
         | Some(pending) => Message::new(pending.notice.clone()),
         | None => message,
       };
-      self.send(sender, &dead_letters, message);
+      self.publish_dead_letter(message, sender, target);
     }
   }
 
@@ -1004,7 +1110,27 @@ impl Executor {
   pub(crate) fn unstash_all(&mut self, owner: &ActorRef) {
     if let Some(index) = self.stashes.iter().position(|(held, _)| held == owner) {
       let (_, stash) = self.stashes.swap_remove(index);
-      let stash = stash.into_iter().map(|(_, envelope)| self.requeue_notice(envelope)).collect();
+      // The bounded mailbox bounds this return, as Pekko's
+      // `enqueueFirst` into a bounded deque does: the messages already
+      // queued for the owner keep their room, the newest stashed
+      // messages that fit are prepended, and the oldest excess goes to
+      // dead letters, newest victim first (design of #192, B3). An
+      // unlimited mailbox returns everything, as before.
+      let (mailbox_capacity, _) = self.capacities_of(owner);
+      let room = mailbox_capacity
+        .bound()
+        .map(|bound| bound.saturating_sub(self.queue.count_addressed_to(owner)))
+        .unwrap_or(usize::MAX);
+      let total = stash.len();
+      let mut envelopes = stash.into_iter();
+      if total > room {
+        let victims: Vec<_> = envelopes.by_ref().take(total - room).collect();
+        for (_, envelope) in victims.into_iter().rev() {
+          let (_, message, sender) = envelope.into_parts();
+          self.publish_dead_letter(message, sender, owner);
+        }
+      }
+      let stash = envelopes.map(|(_, envelope)| self.requeue_notice(envelope)).collect();
       self.queue.prepend_locally(stash);
     }
   }
@@ -1055,6 +1181,121 @@ impl Executor {
         | Err(remote) => remote.post_to_boundary(),
       }
     }
+  }
+
+  /// Registers a function reference below `parent`, running `handler`
+  /// for each message it receives.
+  ///
+  /// Mirrors `ActorCell.addFunctionRef`: the reference lives below the
+  /// parent's path with a generated name, ends when the parent ends,
+  /// and can be removed with [`remove_function_ref`](Self::remove_function_ref).
+  pub(crate) fn add_function_ref<H>(&mut self, parent: &ActorRef, handler: H) -> FunctionRef
+  where
+    H: Fn(&ActorRef, Message) + Send + Sync + 'static,
+  {
+    self.assert_running();
+    let name = alloc::format!("${}", next_spawn_name());
+    let path = parent.path().with_child(&name);
+    let dead_letters = self.event_stream.as_ref().map(|stream| stream.downgrade());
+    let boundary: Arc<dyn crate::kernel::executor::ShardBoundary> =
+      Arc::new(FunctionBoundary::new_with_dead_letters(Arc::new(handler), dead_letters));
+    let reference = next_actor_ref(path, boundary);
+    self.function_refs.push(reference.clone());
+    self.function_parents.push((reference.clone(), parent.clone()));
+    FunctionRef::new(reference)
+  }
+
+  /// Removes the function reference `target` that `parent` created.
+  ///
+  /// Mirrors `ActorCell.removeFunctionRef`, whose `require` refuses a
+  /// reference of another cell: removing another actor's function
+  /// reference panics, as the original's `IllegalArgumentException`
+  /// fails the actor. Removing one's own reference is idempotent, and
+  /// the removal tells its watchers and closes its boundary, so later
+  /// messages go to dead letters.
+  pub(crate) fn remove_function_ref(&mut self, parent: &ActorRef, target: &FunctionRef) {
+    let target = target.as_actor_ref();
+    if let Some((_, owner)) = self.function_parents.iter().find(|(held, _)| held == &target) {
+      assert!(owner == parent, "removeFunctionRef: {} is not a function ref of {}", target.path(), parent.path());
+    }
+    if self.function_refs.contains(&target) {
+      self.stop_function_ref(&target);
+    }
+  }
+
+  /// Ends one live function reference: closes its boundary, clears the
+  /// watches it held, and tells its watchers, as a stop does.
+  fn stop_function_ref(&mut self, target: &ActorRef) {
+    if let Some(index) = self.function_refs.iter().position(|reference| reference == target) {
+      let reference = self.function_refs.remove(index);
+      reference.boundary().close();
+    }
+    self.function_watching.retain(|(watcher, _)| watcher != target);
+    self.watchers.retain(|(watcher, _)| watcher != target);
+    self.pending_terminations.retain(|pending| &pending.watcher != target);
+    self.notify_watchers(target, true, false);
+    for callback in &self.termination_callbacks {
+      callback(target);
+    }
+  }
+
+  /// Ends every function reference `parent` created, as the parent's
+  /// own stop ends them in Pekko.
+  fn stop_function_refs_of(&mut self, parent: &ActorRef) {
+    let owned: Vec<ActorRef> = self
+      .function_parents
+      .iter()
+      .filter(|(_, owner)| owner == parent)
+      .map(|(reference, _)| reference.clone())
+      .filter(|reference| self.function_refs.contains(reference))
+      .collect();
+    for reference in owned {
+      self.stop_function_ref(&reference);
+    }
+  }
+
+  /// Registers the function reference `watcher` to receive the
+  /// `Terminated` of `target` as a message.
+  ///
+  /// Mirrors `FunctionRef.watch`: the registration is kept apart from
+  /// the delivery watchers table, because it survives the notice until
+  /// the reference unwatches or stops (design of #192, F3). A target
+  /// that is not live is reported at once, as `watch` does.
+  pub(crate) fn function_ref_watch(&mut self, watcher: &FunctionRef, target: &ActorRef) -> ActorRef {
+    let watcher = watcher.as_actor_ref();
+    if target.is_detached() || self.is_live(target) {
+      if !self
+        .function_watching
+        .iter()
+        .any(|(held, watched)| held == &watcher && Self::same_watch_target(watched, target))
+      {
+        self.function_watching.push((watcher, target.clone()));
+      }
+    } else {
+      let notice = Terminated::new(target.clone(), false, false);
+      Envelope::new(watcher, Message::new(notice), target.clone()).post_to_boundary();
+    }
+    target.clone()
+  }
+
+  /// Stops the function reference `watcher` from watching `target`.
+  ///
+  /// Mirrors `FunctionRef.unwatch`, which is idempotent.
+  pub(crate) fn function_ref_unwatch(&mut self, watcher: &FunctionRef, target: &ActorRef) -> ActorRef {
+    let watcher = watcher.as_actor_ref();
+    self.function_watching.retain(|(held, watched)| held != &watcher || !Self::same_watch_target(watched, target));
+    target.clone()
+  }
+
+  /// Returns whether the function reference `watcher` watches `target`.
+  ///
+  /// Mirrors `FunctionRef.isWatching`: the registration survives the
+  /// target's end, so this stays true after the notice until
+  /// [`function_ref_unwatch`](Self::function_ref_unwatch) or the
+  /// reference's own stop.
+  pub(crate) fn function_ref_is_watching(&self, watcher: &FunctionRef, target: &ActorRef) -> bool {
+    let watcher = watcher.as_actor_ref();
+    self.function_watching.iter().any(|(held, watched)| held == &watcher && Self::same_watch_target(watched, target))
   }
 
   /// Registers `watcher` to receive the `Terminated` notice of `target`.
@@ -1765,6 +2006,21 @@ impl Executor {
     self.watchers.retain(|(_, watched)| !Self::same_watch_target(watched, target));
     for watcher in watchers {
       self.enqueue_to(watcher, Terminated::new(target.clone(), existence_confirmed, address_terminated));
+    }
+    // Function references that watch through the dedicated table are
+    // told apart by that table, not by the delivery branch (re-review
+    // N4 of #192): they receive the notice as a message whose sender
+    // is the ended target itself (design M5), and their registration
+    // survives the notice until they unwatch or stop (design F3).
+    let function_watchers: Vec<ActorRef> = self
+      .function_watching
+      .iter()
+      .filter(|(_, watched)| Self::same_watch_target(watched, target))
+      .map(|(watcher, _)| watcher.clone())
+      .collect();
+    for watcher in function_watchers {
+      let notice = Terminated::new(target.clone(), existence_confirmed, address_terminated);
+      Envelope::new(watcher, Message::new(notice), target.clone()).post_to_boundary();
     }
   }
 

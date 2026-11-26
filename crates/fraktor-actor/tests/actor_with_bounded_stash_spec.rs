@@ -1,3 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// license agreements; and to You under the Apache License, version 2.0:
+//
+//   https://www.apache.org/licenses/LICENSE-2.0
+//
+// This file is part of the Apache Pekko project, which was derived from Akka.
+//
+// Copyright (C) 2009-2022 Lightbend Inc. <https://www.lightbend.com>
+//
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE and NOTICE
+// at the repository root.
+//
+// This file has been modified from the Apache Pekko original.
+
 // Ported from Pekko v2.0.0 (SHA 9fbd2283b1cf701c90a1223bf621942c191db61f):
 //   actor-tests/src/test/scala/org/apache/pekko/actor/ActorWithBoundedStashSpec.scala
 //
@@ -15,7 +31,8 @@
 use std::sync::Arc;
 
 use fraktor_actor::adaptor::{ChannelBoundary, UnwindCatcher};
-use fraktor_actor::kernel::actor::{Actor, ActorContext, DeadLetter, DispatchSettings, MailboxDefinition, Props};
+use fraktor_actor::kernel::actor::dispatch_settings::{DispatchSettings, MailboxDefinition};
+use fraktor_actor::kernel::actor::{Actor, ActorContext, DeadLetter, Props};
 use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::actor_system::ActorSystem;
 use fraktor_actor::kernel::event::EventClass;
@@ -150,7 +167,8 @@ fn test_stash_overflow(kit: &mut TestKit, stasher: ActorRef) {
 #[test]
 fn bounded_stash_dead_letters_on_unstash_overflow_via_dispatcher() {
   let mut kit = kit();
-  let stasher = kit.system_mut().actor_of(Props::new(|| StashingActor { after_world: false }).with_dispatcher("my-dispatcher-1"));
+  let stasher =
+    kit.system_mut().actor_of(Props::new(|| StashingActor { after_world: false }).with_dispatcher("my-dispatcher-1"));
   test_dead_letters(&mut kit, stasher);
 }
 
@@ -158,7 +176,8 @@ fn bounded_stash_dead_letters_on_unstash_overflow_via_dispatcher() {
 #[test]
 fn bounded_stash_dead_letters_on_unstash_overflow_via_mailbox() {
   let mut kit = kit();
-  let stasher = kit.system_mut().actor_of(Props::new(|| StashingActor { after_world: false }).with_mailbox("my-mailbox-1"));
+  let stasher =
+    kit.system_mut().actor_of(Props::new(|| StashingActor { after_world: false }).with_mailbox("my-mailbox-1"));
   test_dead_letters(&mut kit, stasher);
 }
 
@@ -166,8 +185,9 @@ fn bounded_stash_dead_letters_on_unstash_overflow_via_mailbox() {
 #[test]
 fn bounded_stash_overflows_at_the_twenty_first_stash_via_dispatcher() {
   let mut kit = kit();
-  let stasher =
-    kit.system_mut().actor_of(Props::new(|| StashingActorWithOverflow { stashed: 0 }).with_dispatcher("my-dispatcher-2"));
+  let stasher = kit
+    .system_mut()
+    .actor_of(Props::new(|| StashingActorWithOverflow { stashed: 0 }).with_dispatcher("my-dispatcher-2"));
   test_stash_overflow(&mut kit, stasher);
 }
 
@@ -184,7 +204,8 @@ fn bounded_stash_overflows_at_the_twenty_first_stash_via_mailbox() {
 #[test]
 fn bounded_stash_resolves_stash_capacity_through_dispatcher_aliases() {
   let mut kit = kit();
-  let stasher =
-    kit.system_mut().actor_of(Props::new(|| StashingActor { after_world: false }).with_dispatcher("my-aliased-dispatcher-2"));
+  let stasher = kit
+    .system_mut()
+    .actor_of(Props::new(|| StashingActor { after_world: false }).with_dispatcher("my-aliased-dispatcher-2"));
   test_dead_letters(&mut kit, stasher);
 }

@@ -1,3 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed to the Apache Software Foundation (ASF) under one or more
+// license agreements; and to You under the Apache License, version 2.0:
+//
+//   https://www.apache.org/licenses/LICENSE-2.0
+//
+// This file is part of the Apache Pekko project, which was derived from Akka.
+//
+// Copyright (C) 2019-2022 Lightbend Inc. <https://www.lightbend.com>
+//
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE and NOTICE
+// at the repository root.
+//
+// This file has been modified from the Apache Pekko original.
+
 // Ported from Pekko v2.0.0 (SHA 9fbd2283b1cf701c90a1223bf621942c191db61f):
 //   actor-tests/src/test/scala/org/apache/pekko/actor/ProviderSelectionSpec.scala
 //
@@ -9,7 +25,9 @@
 // `ProviderSelection.apply` (design issue-192-specs.md section 1.1 and the
 // faithfulness note E1 in section 5).
 
-use fraktor_actor::kernel::actor::{CLUSTER_PROVIDER_FQCN, LOCAL_PROVIDER_FQCN, ProviderSelection, REMOTE_PROVIDER_FQCN};
+use fraktor_actor::kernel::actor::{
+  ProviderSelection, CLUSTER_PROVIDER_FQCN, LOCAL_PROVIDER_FQCN, REMOTE_PROVIDER_FQCN,
+};
 
 // Original: "create a Local ProviderSelection and set local provider fqcn in Settings"
 #[test]
