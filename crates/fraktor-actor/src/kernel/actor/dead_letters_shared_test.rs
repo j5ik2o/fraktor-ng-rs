@@ -14,22 +14,6 @@
 //
 // This file has been modified from the Apache Pekko original.
 
-// Issue #297 (design `docs/design/issue-296-297-dead-letters-followup.md`,
-// section 7.2): `DeadLettersShared::route_system_undeliverable` is the one
-// place that decides how a system message that reached a closed mailbox goes
-// to dead letters (design section 5.4). `Terminate` and `ChildTerminated` are
-// suppressed; every other kind is a plain `DeadLetter` whose sender and
-// recipient are both the closed mailbox's owner. The reports go through the
-// bus, so this test builds an `EventStreamBus`, hands its weak handle to the
-// shared state with `set_bus`, and subscribes a function reference to
-// `EventClass::any()` to read the reports back.
-//
-// The test calls `route_system_undeliverable`, which #297 adds. That method
-// does not exist yet, so the test does not compile; binding the module with
-// `#[cfg(any())]` keeps the rest of the kernel's unit tests building (green)
-// while this red is pinned. Swap the gate for `#[cfg(test)]` when #297 lands,
-// and the test fails on its assertions until the routing is fixed.
-
 use std::sync::Mutex;
 use std::vec::Vec;
 

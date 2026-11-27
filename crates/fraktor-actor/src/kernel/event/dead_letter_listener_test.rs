@@ -14,19 +14,6 @@
 //
 // This file has been modified from the Apache Pekko original.
 
-// Issue #297 (design `docs/design/issue-296-297-dead-letters-followup.md`,
-// section 7.2, review high 3): a system message that reaches dead letters is
-// reported under the name of its kind, not under the name of the
-// `SystemMessage` enum. Pekko's `DeadLetterListener` writes
-// `unwrapped.getClass.getName` (`event/DeadLetterListener.scala`, lines 139
-// and 140), so the line names `Create`, `Resume`, and so on; the port wraps
-// the enum in a `Message`, whose type name is `SystemMessage` for every kind.
-// After #297 `SystemMessage` carries `class_name`, and the listener reads it
-// for a system message payload (design section 5.4). The counts and the log
-// limit are unchanged.
-//
-// `SystemMessage` is `pub(crate)` and this is a kernel unit test.
-
 use core::time::Duration;
 
 use crate::adaptor::ChannelBoundary;
