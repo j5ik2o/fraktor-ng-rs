@@ -136,6 +136,13 @@ impl<'a> ActorContext<'a> {
     self.executor.weak_system()
   }
 
+  /// Resolves `path` to a handle, as the system's own resolution
+  /// does, reached from inside an actor that is running in the system.
+  #[cfg(feature = "test-support")]
+  pub fn resolve_actor_ref(&self, path: &crate::kernel::actor_path::ActorPath) -> ActorRef {
+    self.executor.resolve_actor_ref(path)
+  }
+
   /// Starts an actor a test wraps, attaching `handle` to its cell.
   ///
   /// Mirrors the creation `TestActorRef` performs from inside an

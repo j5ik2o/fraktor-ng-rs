@@ -291,7 +291,7 @@ impl TestActorRef {
     let actor_ref = context.try_spawn_test_actor(supervisor, props, name, handle.clone())?;
     let supervisor = match supervisor {
       | Some(supervisor) => supervisor.clone(),
-      | None => system.resolve_actor_ref(&actor_ref.path().parent()),
+      | None => context.resolve_actor_ref(&actor_ref.path().parent()),
     };
     let name = actor_ref.path().name().to_string();
     Ok(Self { actor_ref, handle, name, supervisor, system, dead_letters })

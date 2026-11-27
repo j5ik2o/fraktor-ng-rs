@@ -36,6 +36,10 @@ use portable_atomic::Ordering;
 
 use crate::kernel::actor::dispatch_settings::CapacityLimit;
 use crate::kernel::actor::dispatch_settings::DispatchSettings;
+#[cfg(feature = "test-support")]
+use crate::kernel::actor::test_support::ActorControl;
+#[cfg(feature = "test-support")]
+use crate::kernel::actor::test_support::ActorHandle;
 use crate::kernel::actor::ActorContext;
 use crate::kernel::actor::ActorCreationError;
 use crate::kernel::actor::ActorSelection;
@@ -55,10 +59,6 @@ use crate::kernel::actor::Logging::Info;
 use crate::kernel::actor::Logging::Warning;
 use crate::kernel::actor::Props;
 use crate::kernel::actor::ReceiveTimeout;
-#[cfg(feature = "test-support")]
-use crate::kernel::actor::test_support::ActorControl;
-#[cfg(feature = "test-support")]
-use crate::kernel::actor::test_support::ActorHandle;
 use crate::kernel::actor::ReceiveTimeoutSetting;
 use crate::kernel::actor::ReceiveTimeoutState;
 use crate::kernel::actor::StashOverflowException;
@@ -1630,9 +1630,9 @@ impl Executor {
       }
       let strategy = match self.parent_entry(&parent) {
         | Some(entry) => entry.strategy.clone(),
-        | None => self
-          .with_cell(&parent, |cell| cell.strategy().clone())
-          .unwrap_or_else(SupervisorStrategy::default_strategy),
+        | None => {
+          self.with_cell(&parent, |cell| cell.strategy().clone()).unwrap_or_else(SupervisorStrategy::default_strategy)
+        },
       };
       (strategy, true)
     };
