@@ -564,12 +564,52 @@ impl Actor for RestartingParent {
 }
 
 // The failing message at 10s leaves the task scheduled at 10.1s. The
-// `pre_restart` that turns the timeout off does not cancel it
-// (`setReceiveTimeout` only changes the setting), and the restart waits
-// for the child, whose stop takes until 10.2s. The deadline comes in that
-// wait, as Pekko's scheduler fires the task on its own thread; the
-// `ReceiveTimeout(100ms)` waits in the suspended mailbox and the restarted
-// actor gets it.
+// `pre_restart` that turns the timeout off does not cancel it: in Pekko
+// `setReceiveTimeout` only writes the setting and the version
+// (`ReceiveTimeout.scala` lines 39-47), and `pre_restart` runs inside
+// `faultRecreate`, from `systemInvoke` (`ActorCell.scala` lines 490-555),
+// which checks nothing. The next check for this actor is at 10.2s, in
+// `finishRecreate` (`FaultHandling.scala` line 289).
+//
+// Whether 10.1s comes before that check is a race in Pekko, and nothing
+// guarantees which side runs first. If the timer thread
+// (`LightArrayRevolverScheduler.scala` lines 340-356) extracts the task and
+// sends it (lines 403-411) first, the deadline is delivered; if the check
+// runs first, the reschedule below replaces the old deadline and it never
+// arrives. The test's layout, a failure at 10.0s, a deadline at 10.1s and a
+// restart that ends at 10.2s, gives the timer thread a 100ms margin (a tick
+// is about 10ms, and `LightArrayRevolverScheduler.scala` lines 181-186
+// round a delay up to one), so an ordinary scheduler is likely to run the
+// timer thread first. That is an expectation, not a guarantee: a margin
+// under one tick still delivers if the task is extracted in it, and a small
+// margin can go either way.
+//
+// The `pre_start` of the restarted actor sets the 100ms again (Pekko's
+// `postRestart` calls `preStart`: `Actor.scala` lines 645-647), so at the
+// check the setting is not `Undefined` but `Finite(100ms)`: the check
+// cancels nothing and reschedules the timeout for 10.3s (`reschedule =
+// true` at `FaultHandling.scala` line 289, `ReceiveTimeout.scala` lines
+// 56-72). That new deadline is past the 10.2s point the test reads, so the
+// one message in `deliveries` is the old 10.1s one.
+//
+// The `ReceiveTimeout(100ms)` fired while the restart waited for the child.
+// The failure suspends the mailbox (`FaultHandling.scala` line 218) and
+// only `finishRecreate` resumes it (line 283), but enqueue does not look at
+// the status (`Mailbox.scala` line 106), so it is accepted: the message
+// waits in the suspended mailbox and is handled after the resume, in the
+// same run. Cancelling a task after it fired cannot take the message back
+// either: the scheduler's `cancel` fails once the task is extracted
+// (`LightArrayRevolverScheduler.scala` lines 418-425), and
+// `cancelReceiveTimeoutTask` only stops the `Cancellable`
+// (`ReceiveTimeout.scala` lines 95-102).
+//
+// The port has no scheduler thread of its own: a deadline that has come
+// fires at a drive point (`run_until_idle`, `finish_run`,
+// `await_envelope`), which sends the `ReceiveTimeout` into the mailbox. The
+// hand-driven clock makes the drive points, not a thread race, decide the
+// order: the child's stop and its `finish_run` come before the parent's
+// `ChildTerminated` run, and the deadline fires before the restart ends.
+// That order, not Pekko's race, is what the test pins.
 #[test]
 fn timeout_turned_off_in_pre_restart_still_delivers_a_deadline_that_came_during_the_restart() {
   let (mut spec, clock) = spec_with_clock();
