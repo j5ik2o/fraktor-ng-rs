@@ -59,6 +59,7 @@ use std::thread::ThreadId;
 use std::vec::Vec;
 
 use fraktor_actor::adaptor::ChannelBoundary;
+use fraktor_actor::adaptor::SenderThreadTrampoline;
 use fraktor_actor::kernel::actor::Actor;
 use fraktor_actor::kernel::actor::ActorContext;
 use fraktor_actor::kernel::actor::DeadLetter;
@@ -182,50 +183,59 @@ fn a_thousand_resends_to_a_stopped_actor_finish_flat_on_the_senders_thread() {
   assert_ne!(sending_thread, outer_thread);
 }
 
-// Stage (ii): the trampoline the design adds. Left out until it exists.
-//
-// It is written against `ActorSystem::with_dead_letter_trampoline`,
-// `SenderThreadTrampoline`, and `DeadLetterTrampoline`, which #296 adds (design
-// section 3.1: the kernel port, the std adaptor's `SenderThreadTrampoline`,
-// and the two `ActorSystem` faces). Writing it now would not compile, so it
-// stays commented. It repeats the stage above with the std trampoline
-// installed explicitly, so the thread-local marker, the queue, and `try_with`
-// are exercised even though the default `SharedTrampoline` would give the same
-// single-thread observation (design section 7.1).
-//
-// Turn it on (uncomment, add `use` for `SenderThreadTrampoline` and the port):
-//
-//   #[test]
-//   fn a_thousand_resends_finish_flat_with_the_sender_thread_trampoline() {
-//     let mut system = ActorSystem::with_dead_letter_trampoline(
-//       "DeadLettersSenderThreadTrampoline",
-//       Arc::new(ChannelBoundary::new()),
-//       Arc::new(SenderThreadTrampoline::new()),
-//     );
-//     let target = stopped_actor(&mut system);
-//     let log = subscribe_resender(&mut system, target.clone(), RESENDS);
-//     let sender = system.function_ref("sender", |_: &ActorRef, _: Message| {});
-//
-//     let seen = std::thread::Builder::new()
-//       .name(String::from("trampoline-resends"))
-//       .stack_size(STACK_BYTES)
-//       .spawn(move || {
-//         let sending_thread = std::thread::current().id();
-//         target.tell(0u32, sender);
-//         // Asserts, in the order the design lists them (section 7.1):
-//         // 1. the 1000 resends finished without overflowing the stack (the
-//         //    join below returns);
-//         // 2. the subscriber received all 1001 letters;
-//         // 3. the numbers arrived in order, 0 to 1000;
-//         // 4. every handler ran on this thread, and all 1001 were there
-//         //    before the tell returned (no run_until_idle was called).
-//         (sending_thread, log.lock().unwrap().clone())
-//       })
-//       .expect("the resend thread")
-//       .join()
-//       .expect("the resend thread finishes");
-//     let (sending_thread, seen) = seen;
-//     assert_eq!(seen.numbers.len(), (RESENDS + 1) as usize);
-//     assert_eq!(seen.numbers, (0..=RESENDS).collect::<Vec<u32>>());
-//     assert!(seen.threads.iter().all(|thread| *thread == sending_thread));
-//   }
+// Stage (ii): the same resends, with the standard library's trampoline
+// installed explicitly through `ActorSystem::with_dead_letter_trampoline`,
+// so the thread-local marker, the queue, and `try_with` of
+// `SenderThreadTrampoline` are exercised even though the single-thread
+// observation is the same as the default `SharedTrampoline` (design section
+// 3.1 and 7.1). The four observations are the ones the design lists:
+// 1. the 1000 resends finish without overflowing the stack (the join returns);
+// 2. the subscriber receives all 1001 letters;
+// 3. the numbers arrive in order, 0 to 1000;
+// 4. every handler runs on the thread that made the outermost `tell`, and all
+//    1001 letters are there by the time that `tell` returns (no
+//    `run_until_idle` in between).
+#[test]
+fn a_thousand_resends_finish_flat_with_the_sender_thread_trampoline() {
+  let mut system = ActorSystem::with_dead_letter_trampoline(
+    "DeadLettersSenderThreadTrampoline",
+    Arc::new(ChannelBoundary::new()),
+    Arc::new(SenderThreadTrampoline::new()),
+  );
+  let target = stopped_actor(&mut system);
+  let log = subscribe_resender(&mut system, target.clone(), RESENDS);
+  let sender = system.function_ref("sender", |_: &ActorRef, _: Message| {});
+
+  let outer_thread = std::thread::current().id();
+  let seen = {
+    let target = target.clone();
+    let log = Arc::clone(&log);
+    let sender = sender.clone();
+    std::thread::Builder::new()
+      .name(String::from("trampoline-resends"))
+      .stack_size(STACK_BYTES)
+      .spawn(move || {
+        let sending_thread = std::thread::current().id();
+        target.tell(0u32, sender);
+        (sending_thread, log.lock().unwrap().clone())
+      })
+      .expect("the resend thread")
+      .join()
+      .expect("the resend thread finishes")
+  };
+  let (sending_thread, seen) = seen;
+
+  assert_eq!(
+    seen.numbers.len(),
+    (RESENDS + 1) as usize,
+    "the subscriber receives every letter before the outermost tell returns: {} received",
+    seen.numbers.len()
+  );
+  let expected: Vec<u32> = (0..=RESENDS).collect();
+  assert_eq!(seen.numbers, expected, "the numbers arrive in order, 0 to {RESENDS}");
+  assert!(
+    seen.threads.iter().all(|thread| *thread == sending_thread),
+    "every handler runs on the thread that made the outermost tell"
+  );
+  assert_ne!(sending_thread, outer_thread);
+}
