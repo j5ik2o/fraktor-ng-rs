@@ -817,14 +817,21 @@ fn inserts_its_path_in_an_actor_initialization_exception() {
   // the `Error` event's own `cause_message()`, not off a filter that happens to
   // match: the cause text itself has to name the failed path.
   spec.system().event_stream().subscribe(Some(test_actor), EventClass::of::<Error>()).expect("subscribe to Error");
-  let (tx, rx) = promise_pair();
-  // `throw new IllegalStateException` (`:282`): no message, so the text that
-  // reaches the caller is empty.
-  let props = promise_intercept(tx, || -> FailingActor { panic!("") });
-  let created = spec.system_mut().actor_of_named(props, "failingActor").expect("the name is free");
-  // The factory runs when the system is driven, so the failure is raised here.
-  spec.system_mut().run_until_idle();
-  let text = wrap(rx);
+  // The original wraps the case in
+  // `EventFilter.typed("ActorInitializationException").contains("/user/failingActor:").with_occurrences(1)`
+  // (design section 1.3, case 2): exactly one error on the failing path, and
+  // any other kind of error on the same subscription is not part of that count.
+  let filter = EventFilter::typed("ActorInitializationException").contains("/user/failingActor:").with_occurrences(1);
+  let (created, text) = spec.intercept(&filter, |spec| {
+    let (tx, rx) = promise_pair();
+    // `throw new IllegalStateException` (`:282`): no message, so the text that
+    // reaches the caller is empty.
+    let props = promise_intercept(tx, || -> FailingActor { panic!("") });
+    let created = spec.system_mut().actor_of_named(props, "failingActor").expect("the name is free");
+    // The factory runs when the system is driven, so the failure is raised here.
+    spec.system_mut().run_until_idle();
+    (created, wrap(rx))
+  });
   // The original's cause carries no message, so the failure reaching the caller
   // is empty.
   assert!(text.is_empty(), "expected the cause without a message, got {text:?}");
