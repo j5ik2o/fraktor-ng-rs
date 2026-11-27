@@ -333,6 +333,93 @@ fn decode_string_replaces_malformed_utf8() {
   assert_eq!(split_char.decode_string(), "\u{e9}");
 }
 
+// The expected strings below are what `new String(bytes, StandardCharsets.UTF_8)`
+// returns on the JDK for the same bytes.
+fn assert_decodes_like_the_jdk(cases: &[(&[u8], &str)]) {
+  for &(input, expected) in cases {
+    assert_eq!(ByteString::from_array(input, 0, input.len()).decode_string(), expected, "{input:02X?}");
+  }
+}
+
+#[test]
+fn decode_string_replaces_a_utf8_encoded_surrogate_with_one_replacement_character() {
+  assert_decodes_like_the_jdk(&[
+    (&[0xED, 0xA0, 0x80], "\u{FFFD}"),
+    (&[0xED, 0xBF, 0xBF], "\u{FFFD}"),
+    (&[b'a', 0xED, 0xA0, 0x80, b'b'], "a\u{FFFD}b"),
+    (&[0xED, 0xA0, 0x80, 0xED, 0xB0, 0x80], "\u{FFFD}\u{FFFD}"),
+    (&[0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x80], "\u{FFFD}\u{FFFD}"),
+    (&[0xED, 0xA0, 0x80, 0x80], "\u{FFFD}\u{FFFD}"),
+    (&[0xC3, 0xA9, 0xED, 0xBF, 0xBF, 0xC3, 0xA9], "\u{e9}\u{FFFD}\u{e9}"),
+  ]);
+  let fragmented = ByteString::from_array(&[0xED], 0, 1).concat(&ByteString::from_array(&[0xA0, 0x80], 0, 2));
+  assert_eq!(fragmented.decode_string(), "\u{FFFD}");
+}
+
+#[test]
+fn decode_string_replaces_a_cut_surrogate_prefix_with_one_replacement_character() {
+  assert_decodes_like_the_jdk(&[
+    (&[0xED, 0xA0], "\u{FFFD}"),
+    (&[0xED, 0xBF], "\u{FFFD}"),
+    (&[b'a', 0xED, 0xA0], "a\u{FFFD}"),
+    (&[0xED, 0xA0, b'A'], "\u{FFFD}A"),
+    (&[0xED, 0xBF, b'A'], "\u{FFFD}A"),
+    (&[0xED, 0xA0, 0xC3, 0xA9], "\u{FFFD}\u{e9}"),
+    (&[0xED, 0xA0, 0xED, 0xA0, 0x80], "\u{FFFD}\u{FFFD}"),
+    (&[0xED, 0xA0, 0x80, 0xED, 0xBF, 0xBF, 0xED, 0xAF, b'A'], "\u{FFFD}\u{FFFD}\u{FFFD}A"),
+  ]);
+}
+
+#[test]
+fn decode_string_replaces_other_malformed_utf8_like_the_jdk() {
+  assert_decodes_like_the_jdk(&[
+    // Overlong forms.
+    (&[0xC0, 0x80], "\u{FFFD}\u{FFFD}"),
+    (&[0xC1, 0xBF], "\u{FFFD}\u{FFFD}"),
+    (&[0xE0, 0x80, 0x80], "\u{FFFD}\u{FFFD}\u{FFFD}"),
+    (&[0xE0, 0x9F, 0xBF], "\u{FFFD}\u{FFFD}\u{FFFD}"),
+    (&[0xF0, 0x80, 0x80, 0x80], "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}"),
+    (&[0xF0, 0x8F, 0xBF, 0xBF], "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}"),
+    // Above U+10FFFF.
+    (&[0xF4, 0x90, 0x80, 0x80], "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}"),
+    (&[0xF4, 0x90], "\u{FFFD}\u{FFFD}"),
+    // Cut sequences.
+    (&[0xC3], "\u{FFFD}"),
+    (&[0xE2, 0x82], "\u{FFFD}"),
+    (&[0xE2, 0x82, b'A'], "\u{FFFD}A"),
+    (&[0xE0, 0x80], "\u{FFFD}\u{FFFD}"),
+    (&[0xF0, 0x9F, 0x98], "\u{FFFD}"),
+    (&[0xF0, 0x9F, 0x98, b'A'], "\u{FFFD}A"),
+    (&[0xF0, 0x80, 0x80], "\u{FFFD}\u{FFFD}\u{FFFD}"),
+    (&[0xF4, 0x8F, 0xBF], "\u{FFFD}"),
+    (&[0xE1, b'A', 0x80], "\u{FFFD}A\u{FFFD}"),
+    (&[0xE1, 0x80, 0xC2, 0xA9], "\u{FFFD}\u{a9}"),
+    (&[0xF0, 0x9F, 0x98, 0xF0, 0x9F, 0x98, 0x80], "\u{FFFD}\u{1F600}"),
+    // Lone continuation bytes and bytes that never occur in UTF-8.
+    (&[0x80], "\u{FFFD}"),
+    (&[0x80, 0x80], "\u{FFFD}\u{FFFD}"),
+    (&[0xF5], "\u{FFFD}"),
+    (&[0xF5, 0x80, 0x80, 0x80], "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}"),
+    (&[0xF8, 0x88, 0x80, 0x80, 0x80], "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}"),
+    (&[0xFE, 0xFF], "\u{FFFD}\u{FFFD}"),
+    // Mixtures.
+    (&[b'a', 0x80, b'b', 0xF0, 0x9F, 0x98, 0x80], "a\u{FFFD}b\u{1F600}"),
+    (
+      &[0xC0, 0xAF, 0xE0, 0x80, 0xBF, 0xF0, 0x81, 0x82, b'A'],
+      "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}A",
+    ),
+    (
+      &[0xF4, 0x91, 0x92, 0x93, 0xFF, b'A', 0x80, 0xBF, b'B'],
+      "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}A\u{FFFD}\u{FFFD}B",
+    ),
+    (&[0xE1, 0x80, 0xE2, 0xF0, 0x91, 0x92, 0xF1, 0xBF, b'A'], "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}A"),
+    // The scalar values next to the surrogates are not malformed.
+    (&[0xED, 0x9F, 0xBF], "\u{D7FF}"),
+    (&[0xED, 0x80, 0x80], "\u{D000}"),
+    (&[0xEE, 0x80, 0x80], "\u{E000}"),
+  ]);
+}
+
 fn base64(text: &[u8]) -> ByteString {
   ByteString::from_array(text, 0, text.len())
 }

@@ -558,19 +558,63 @@ fn assert_matches_model(value: &ByteString, model: &Model, what: &str) {
   }
 }
 
-fn reference_base64(bytes: &[u8]) -> Vec<u8> {
-  const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  let mut out = Vec::new();
-  for group in bytes.chunks(3) {
-    let b0 = u32::from(group[0]);
-    let b1 = group.get(1).copied().map_or(0, u32::from);
-    let b2 = group.get(2).copied().map_or(0, u32::from);
-    let triple = (b0 << 16) | (b1 << 8) | b2;
-    out.push(ALPHABET[(triple >> 18) as usize & 63]);
-    out.push(ALPHABET[(triple >> 12) as usize & 63]);
-    out.push(if group.len() > 1 { ALPHABET[(triple >> 6) as usize & 63] } else { b'=' });
-    out.push(if group.len() > 2 { ALPHABET[triple as usize & 63] } else { b'=' });
+// The Base64 alphabet of RFC 4648 section 4, Table 1, by value ranges.
+fn reference_base64_symbol(value: u8) -> u8 {
+  match value {
+    | 0..=25 => b'A' + value,
+    | 26..=51 => b'a' + (value - 26),
+    | 52..=61 => b'0' + (value - 52),
+    | 62 => b'+',
+    | 63 => b'/',
+    | _ => unreachable!("{value} is not a 6-bit value"),
   }
+}
+
+// `java.util.Base64.getEncoder.encode`, written as RFC 4648 section 4 says
+// it: the input is one stream of bits, most significant bit first; each 6
+// bits become one symbol, the last symbol is filled up with zero bits, and
+// `=` pads the output to a multiple of 4 symbols. The vectors in
+// `reference_base64_matches_known_vectors` check this reference.
+fn reference_base64(bytes: &[u8]) -> Vec<u8> {
+  let bits: Vec<bool> = bytes.iter().flat_map(|&byte| (0..8).rev().map(move |shift| byte >> shift & 1 == 1)).collect();
+  let mut out: Vec<u8> = bits
+    .chunks(6)
+    .map(|chunk| {
+      let value = (0..6).fold(0_u8, |acc, index| acc << 1 | u8::from(chunk.get(index).copied().unwrap_or(false)));
+      reference_base64_symbol(value)
+    })
+    .collect();
+  while !out.len().is_multiple_of(4) {
+    out.push(b'=');
+  }
+  out
+}
+
+// `new String(bytes, StandardCharsets.UTF_8)` of the JDK. It replaces as
+// `String::from_utf8_lossy` does (one U+FFFD for each maximal subpart of an
+// ill-formed sequence), except for `0xED` followed by `0xA0..=0xBF`, the start
+// of an encoded surrogate: the JDK replaces `0xED`, that byte and a next
+// continuation byte (`0x80..=0xBF`), if there is one, with a single U+FFFD.
+// `0xED` never ends up inside another replaced sequence, so the parts between
+// those sequences decode on their own.
+fn reference_decode_utf8(bytes: &[u8]) -> String {
+  let mut out = String::new();
+  let mut start = 0;
+  let mut index = 0;
+  while index < bytes.len() {
+    if bytes[index] == 0xED && bytes.get(index + 1).is_some_and(|byte| (0xA0..=0xBF).contains(byte)) {
+      out.push_str(&String::from_utf8_lossy(&bytes[start..index]));
+      out.push('\u{FFFD}');
+      index += 2;
+      if bytes.get(index).is_some_and(|byte| (0x80..=0xBF).contains(byte)) {
+        index += 1;
+      }
+      start = index;
+    } else {
+      index += 1;
+    }
+  }
+  out.push_str(&String::from_utf8_lossy(&bytes[start..]));
   out
 }
 
@@ -1339,7 +1383,7 @@ mod group1_properties {
   }
 
   // Property 5: a string round-trips through UTF-8, and malformed UTF-8
-  // decodes as `String::from_utf8_lossy` does.
+  // decodes as the JDK decodes it.
   #[test]
   fn decode_string_round_trips_and_replaces_malformed_input() {
     check("decode_string round-trips and replaces malformed input", |input| {
@@ -1348,8 +1392,75 @@ mod group1_properties {
       assert_eq!(content(&encoded), s.as_bytes());
       assert_eq!(encoded.decode_string(), s);
       let a = input.byte_string();
-      assert_eq!(a.value.decode_string(), String::from_utf8_lossy(a.bytes()));
+      assert_eq!(a.value.decode_string(), reference_decode_utf8(a.bytes()), "{:02X?}", a.bytes());
     });
+  }
+
+  // The reference encoder against outputs it does not compute: the RFC 4648
+  // section 10 vectors, and the output of Python's `base64.b64encode` for the
+  // other inputs.
+  #[test]
+  fn reference_base64_matches_known_vectors() {
+    let ascending: Vec<u8> = (0..=255).collect();
+    let descending: Vec<u8> = (0..=255).rev().collect();
+    let vectors: [(&[u8], &str); 18] = [
+      (b"", ""),
+      (b"f", "Zg=="),
+      (b"fo", "Zm8="),
+      (b"foo", "Zm9v"),
+      (b"foob", "Zm9vYg=="),
+      (b"fooba", "Zm9vYmE="),
+      (b"foobar", "Zm9vYmFy"),
+      (&[0x00], "AA=="),
+      (&[0x00, 0x00], "AAA="),
+      (&[0x00, 0x00, 0x00], "AAAA"),
+      (&[0xFF], "/w=="),
+      (&[0xFF, 0xFF], "//8="),
+      (&[0xFF, 0xFF, 0xFF], "////"),
+      (&[0xFB, 0xFF], "+/8="),
+      (&[0xFF, 0xEF], "/+8="),
+      (&[0x14, 0xFB, 0x9C, 0x03, 0xD9, 0x7E], "FPucA9l+"),
+      (
+        &ascending,
+        concat!(
+          "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZH",
+          "SElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6P",
+          "kJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX",
+          "2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w==",
+        ),
+      ),
+      (
+        &descending,
+        concat!(
+          "//79/Pv6+fj39vX08/Lx8O/u7ezr6uno5+bl5OPi4eDf3t3c29rZ2NfW1dTT0tHQz87NzMvKycjHxsXEw8LBwL++vby7urm4",
+          "t7a1tLOysbCvrq2sq6qpqKempaSjoqGgn56dnJuamZiXlpWUk5KRkI+OjYyLiomIh4aFhIOCgYB/fn18e3p5eHd2dXRzcnFw",
+          "b25tbGtqaWhnZmVkY2JhYF9eXVxbWllYV1ZVVFNSUVBPTk1MS0pJSEdGRURDQkFAPz49PDs6OTg3NjU0MzIxMC8uLSwrKiko",
+          "JyYlJCMiISAfHh0cGxoZGBcWFRQTEhEQDw4NDAsKCQgHBgUEAwIBAA==",
+        ),
+      ),
+    ];
+    for (plain, encoded) in vectors {
+      assert_eq!(String::from_utf8(reference_base64(plain)).unwrap(), encoded, "{plain:02X?}");
+    }
+  }
+
+  // The reference decoder against what `new String(bytes, UTF_8)` returns on
+  // the JDK for the same bytes.
+  #[test]
+  fn reference_decode_utf8_matches_known_jdk_outputs() {
+    let vectors: [(&[u8], &str); 8] = [
+      (&[0xED, 0xA0, 0x80], "\u{FFFD}"),
+      (&[b'a', 0xED, 0xBF, 0xBF, b'b'], "a\u{FFFD}b"),
+      (&[0xED, 0xA0], "\u{FFFD}"),
+      (&[0xED, 0xA0, b'A'], "\u{FFFD}A"),
+      (&[0xE1, 0x80, 0xED, 0xA0, 0x80, 0x80], "\u{FFFD}\u{FFFD}\u{FFFD}"),
+      (&[0xE0, 0x80, 0x80], "\u{FFFD}\u{FFFD}\u{FFFD}"),
+      (&[0xF0, 0x9F, 0x98, b'A'], "\u{FFFD}A"),
+      (&[0xED, 0x9F, 0xBF, 0xF0, 0x9F, 0x98, 0x80], "\u{D7FF}\u{1F600}"),
+    ];
+    for (bytes, decoded) in vectors {
+      assert_eq!(reference_decode_utf8(bytes), decoded, "{bytes:02X?}");
+    }
   }
 
   // Property 5: Base64 matches the reference encoder, round-trips with and

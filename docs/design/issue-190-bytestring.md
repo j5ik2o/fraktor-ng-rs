@@ -434,7 +434,7 @@ pub(crate) struct ByteChunk {
 | `grouped(size)` | `grouped(&self, size: usize) -> impl Iterator<Item = ByteString>` | `assert!(size > 0, "size={size} must be positive")` を**空かどうかの判定より先に**検査して panic する（原典 `ByteString.scala:2676` と同じ。空の `ByteString` に対する `grouped(0)` でも即 panic することを単体テストの `#[should_panic]` で確かめる。§8.3）。非空に対する `grouped(usize::MAX)` は1要素を返して終了する |
 | `isCompact`、`compact` | `is_compact(&self) -> bool`、`compact(&self) -> Self` | `is_compact()` は空または単一フルチャンクのとき `true`、それ以外は `false`（群1の2187行・2250行・2261行、群3の517行、群7の2835–2866行・3022行）。`compact()` はすでに `is_compact()` なら `self.clone()` で再確保せず同じ `Arc<[u8]>` を共有し、非コンパクトなら1つのフルチャンクへ写す |
 | `++`（連結） | 既存の `concat(&self, other: &ByteString) -> Self` | 片方が空なら他方を `clone()`。両側がともに単一チャンクで同じ配列の隣り合う範囲なら1チャンクに結合し（原典 `ByteString.scala:667-669`）、それ以外はチャンク列をゼロコピー連結する（§4.1）。連結の向きと2断片／多断片のケース（2158行・2171行）は `concat` で確かめる。具象型の検査の写し方は表の下の「内部表現の検査の写し方」に書く |
-| `fromString(s)`、`decodeString`（UTF-8） | 既存の `from_string(&str) -> Self` と、足す `decode_string(&self) -> String` | この Spec の復号はすべて UTF-8。JDK の `new String(bytes, StandardCharsets.UTF_8)` と同じく Unicode 標準の maximal subpart 置換則（`String::from_utf8_lossy`）で U+FFFD へ置換する（群2の1861行・1907行のマルチバイト途中切り出しにも必須。§8.2） |
+| `fromString(s)`、`decodeString`（UTF-8） | 既存の `from_string(&str) -> Self` と、足す `decode_string(&self) -> String` | この Spec の復号はすべて UTF-8。不正なバイト列は JDK の `new String(bytes, StandardCharsets.UTF_8)` と同じ置換則で U+FFFD へ置換する。この置換則は `String::from_utf8_lossy` と同じではない（§8.2）。断片をまたぐマルチバイト文字は1文字に戻す（群2の1861行・1907行のマルチバイト途中切り出しにも必須） |
 | `encodeBase64`、`decodeBase64`（2235行） | `encode_base64(&self) -> Self`、`decode_base64(&self) -> Option<Self>` | 外部クレートは足さず kernel 内の `core`/`alloc` で実装し no_std を保つ。型は原典 `ByteString.scala:2926-2931` に合わせて入出力とも `ByteString` とする（§8.4）。厳密な仕様は表の下の「Base64 の仕様」に定義する |
 | `ByteString(iterator)`（2243行） | `from_iterator(iter: impl IntoIterator<Item = u8>) -> Self` | イテレータを1回だけたどり、空なら `Self::empty()`、非空ならコンパクトな単一チャンクを返す。群3の `CompactByteString.apply` も同じ形を使う |
 | `fromArrayUnsafe(array)`、`fromArrayUnsafe(array, offset, length)`（2294行、群7の2529行。テストでは `ByteString1C(array)`・`ByteString1(array, offset, length)` の作り方にも使う） | `from_shared(bytes: Arc<[u8]>) -> Self`、`from_shared_range(bytes: Arc<[u8]>, offset: usize, length: usize) -> Self` | 渡された `Arc<[u8]>` をコピーせずに持つ。前者はフルチャンク（`is_compact() == true`）、後者は範囲を張り付けた部分チャンク（配列全体なら `is_compact() == true`、それ以外は `false`）を返し、どちらも長さ0なら `Self::empty()`。詳細は §4.1 |
@@ -495,7 +495,7 @@ pub(crate) struct ByteChunk {
 2. **不変条件の維持。** `ByteString` の全 `ByteChunk` は `len > 0 && start + len <= bytes.len()` を満たす（空チャンクを持たない）。切り出しの結果が空になる場合は `empty()` を返す。
 3. **不変性とゼロコピー共有。** 操作は元の値を変えず、`take`・`drop`・`take_right`・`drop_right`・`slice`・`split_at`・`concat` はバイトを写さずに `Arc<[u8]>` を共有する。非空に対する `take(len)`、`compact()`（すでにコンパクトなとき）、`slice(0, len)`、`from_shared` / `from_shared_range`、および `as_non_empty_byte_slices()` はバッキング配列のポインタ共有を保つ。`concat` は、両側が同じ配列の隣り合う単一チャンクのときに限り1チャンクへ結合し、それ以外では結合しない（原典 `ByteString.scala:667-669`）。
 4. **張り付き（例外を投げない切り出しとあふれ防止）。** `take`、`drop`、`take_right`、`drop_right`、`slice`、`split_at`、`copy_to_array` は、どんな `usize` の入力（`usize::MAX` を含む）でも算術あふれで panic せず、Scala と同じ張り付き方・クランプ方をする。
-5. **往復と独立参照一致。** `from_string(s).decode_string() == s`、`bs.encode_base64().decode_base64() == Some(bs)` を満たし、さらに `encode_base64` の出力は RFC 4648 §10 既知ベクタおよびテスト側の独立参照エンコーダと一致する。
+5. **往復と独立参照一致。** `from_string(s).decode_string() == s`、`bs.encode_base64().decode_base64() == Some(bs)` を満たす。任意のバイト列の `decode_string` は、テスト側に書いた JDK の置換則（§8.2）の参照デコーダと一致する。`encode_base64` の出力は、テスト側の独立参照エンコーダと一致する。この参照エンコーダは RFC 4648 §4 の定義どおりにビット列を6ビットずつ区切る形で書き、製品の実装（3バイト単位の変換）とは別の形にする。参照エンコーダ自体は RFC 4648 §10 既知ベクタと、外部ツール（Python の `base64.b64encode`）が出した出力で確かめる。
 6. **原典準拠の表示形式。** `Display` は空の `"ByteString()"`、`b as i8` の符号付き10進、`", "` 区切り、および `len > 100` での `... and [<len - 100>] more` 切り詰めを正確に満たす。
 
 壊しうる入力と、その扱いは次のとおりである。
@@ -516,7 +516,7 @@ pub(crate) struct ByteChunk {
 | `from_shared` に空の `Arc<[u8]>` を渡す | `Self::empty()`（空のチャンクを作らない不変条件を守る） |
 | `Display` の境界入力（`[]`, `[0xFF]`, `[1, 2]`, 長さ 100, 長さ 101） | それぞれ `"ByteString()"`, `"ByteString(-1)"`, `"ByteString(1, 2)"`, 省略なし 100 要素, 先頭 100 要素＋`"... and [1] more"` |
 | Base64 の境界入力（`[0xFB, 0xFF]`, `b"QQ"`, `b"AB=="`, `b"QQ==\n"`, `b"QQ =="`, `b"A"`, `b"A==="`, `b"AA="`, `b"A=AA"`, `b"QQ==A"`, `b"-_8="`, `b"\xff\xff\xff\xff"`） | `[0xFB, 0xFF]` は `b"+/8="`、`b"QQ"`→`Some([0x41])`、`b"AB=="`→`Some([0x00])`、空白・改行・URL-safe・不正長・不正 `=`・非 ASCII はすべて `None` |
-| 不正な UTF-8 バイト列の `decode_string` | `String::from_utf8_lossy` で U+FFFD へ置換する（JDK 互換） |
+| 不正な UTF-8 バイト列の `decode_string`（`[0xED, 0xA0, 0x80]`、`[0xED, 0xA0]`、`[0xC0, 0x80]`、`[0xE0, 0x80, 0x80]`、`[0xF4, 0x90, 0x80, 0x80]`、`[0xF0, 0x9F, 0x98]`、`[0x80]`、`[0xF5]`〜`[0xFF]`） | JDK の置換則（§8.2）で U+FFFD へ置換する。`[0xED, 0xA0, 0x80]` と `[0xED, 0xA0]` は U+FFFD 1つ、`[0xE0, 0x80, 0x80]` は3つ、`[0xF0, 0x9F, 0x98]` は1つ |
 | `for_each` / `fold` での加算（2399行・2406行） | テスト側のアキュムレータに `u32` / `i32` / `i64` を使い、`u8` のデバッグ加算あふれを起こさない |
 | 大きな連結（チャンク数が多い値）への `len` と `to_vec` | `len` は `saturating_add` で数え、`to_vec` は全バイトを順に写す |
 
@@ -653,7 +653,11 @@ pub(crate) struct ByteChunk {
 独立レビュー（固定 HEAD `2fdf7072c8ac7970cc07b54edca9d6199ee9954a`、2026-11-27）の推奨を反映した各論点の結論である。
 
 1. **範囲外と空の扱い（§8.1：条件付き承認を反映）。** `tail`・`init` は原典 `ByteString.scala:2269,2271` 自身が `drop(1)` / `dropRight(1)` であり空でも例外を投げず空を返すという事実誤認を訂正した。`get`・`head`・`last` は失敗理由が範囲外／空の1通りだけのため `Option<u8>` とし、「単一要素取得は `Option<u8>`、範囲／複数バイト読み取りは `Result<T, IndexOutOfBoundsError>`」という基準を §4.2 に明記した。
-2. **`decode_string` の不正な UTF-8 の扱い（§8.2：承認）。** `String::from_utf8_lossy` による U+FFFD 置換（`-> String`）とする。JDK 8+ と同じ maximal subpart 置換則であり、群2 L1861・L1907 のマルチバイト途中切り出しテストとも整合する。
+2. **`decode_string` の不正な UTF-8 の扱い（§8.2）。** 戻り値は `String` とし、不正なバイト列は JDK の `new String(bytes, StandardCharsets.UTF_8)`（原典 `ByteString.scala:210-211`・`634-636`）と同じ置換則で U+FFFD へ置換する。これが契約である。JDK の置換則は次のとおり。
+    - 基本は Unicode 標準の maximal subpart 置換（不正な列の最長の部分ごとに U+FFFD を1つ置く）であり、`String::from_utf8_lossy` と同じ結果になる。overlong（`[0xC0, 0x80]` は2つ、`[0xE0, 0x80, 0x80]` は3つ）、U+10FFFF を超える列（`[0xF4, 0x90, 0x80, 0x80]` は4つ）、途中で切れた列（`[0xF0, 0x9F, 0x98]` は1つ）、単独の継続バイト（`[0x80]`）、UTF-8 に現れないバイト（`0xF5`〜`0xFF`、1バイトにつき1つ）がこれに当たる。
+    - 例外は、`0xED` の次に `0xA0..=0xBF` が続く列（UTF-8 で符号化したサロゲート U+D800〜U+DFFF とその途中まで）だけである。`0xED`、その次のバイト、さらに次が継続バイト（`0x80..=0xBF`）ならそれも含めて、U+FFFD 1つに置き換える。`[0xED, 0xA0, 0x80]` は1つ（`from_utf8_lossy` は3つ）、末尾の `[0xED, 0xA0]` は1つ（同2つ）、`[0xED, 0xA0, 0x41]` は U+FFFD と `A` になる。`0xED` が前の不正な列に含まれることは無い。
+    - この例外は、JDK の UTF-8 復号（`sun.nio.cs.UTF_8` と `java.lang.String` の UTF-8 の高速経路）が3バイトの列を復号した後にサロゲートを3バイトまとめて不正とし、途中で切れた3バイトの列では2バイト目がサロゲートの範囲かを見ないことから来る。JDK（Temurin 26.0.2）の `new String(bytes, UTF_8)` で、先頭が `0x80` 以上の長さ1〜3の全バイト列、4〜5バイトの代表列、長さ0〜100の乱択列（計約1,080万件）と照合し、すべて一致した。
+    - 置換は断片の境界に左右されない。群2 L1861・L1907 のマルチバイト途中切り出しテストとも整合する。
 3. **`grouped(0)` の扱い（§8.3：承認）。** 契約違反として `assert!(size > 0, ...)` で panic する。空の `ByteString` に対する `grouped(0)` でも空判定より先に即 panic することを §4.2・§4.3 に明記し、単体テストの `#[should_panic]` で確かめる。
 4. **Base64 の置き場所と失敗の形（§8.4：修正反映）。** 外部クレートを足さず kernel 内の `core`/`alloc` で実装する方針を維持したうえで、公開 API を原典に合わせて `encode_base64(&self) -> Self` と `decode_base64(&self) -> Option<Self>` に改め、RFC 4648 §4 標準アルファベット・パディング・JDK `Base64.getDecoder()` 互換の受理／拒否規則と、RFC 4648 §10 既知ベクタおよび独立参照エンコーダとの照合を §4.2・§4.3 に明記した。
 5. **群7の Java 直列化（§8.5：元帥の決定（2026-11-27）を反映）。** 対象漏れ4件を補って L2461–2527 の全7件とし、`fraktor-ng-rs` に直列化の仕組みが無いことを確かめた。代替例が無いので `not_built` には入れない。元帥が 2026-11-27 に、7件を除外にせず、台帳の `cases` にも書かず、数から外さずに後続の issue（`actor-tests:PrimitivesSerializationSpec` の移植の前提）へ分けること、#190 は239件を移した時点で red（246/239/239）のまま閉じることを決めた。§5.1 と §6 をこの決定に合わせた。群1の第2段はこの扱いに左右されない。
