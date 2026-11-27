@@ -2566,6 +2566,7 @@ impl Executor {
       | None => max,
     };
     let deadline = start.saturating_add(wait_cap);
+    let mut unchanged_waits = 0_u32;
     loop {
       let now = wait_clock(self).unwrap_or(deadline);
       if now >= deadline {
@@ -2576,6 +2577,22 @@ impl Executor {
       self.fire_due_receive_timeouts();
       if has_work(self) {
         return true;
+      }
+      if signaled {
+        // The clock that bounds this wait is expected to advance with
+        // real time while the thread waits (the boundary clock's
+        // contract when it reports one). A clock that stands still
+        // through many signaled waits does not: counting those waits
+        // ends the wait instead of turning on the same reading forever,
+        // as a wait whose clock reaches the deadline ends.
+        if wait_clock(self).is_some_and(|reading| reading > now) {
+          unchanged_waits = 0;
+        } else {
+          unchanged_waits += 1;
+          if unchanged_waits >= 128 {
+            return has_work(self);
+          }
+        }
       }
       if !signaled {
         // The real wait ran out without a signal. A clock the caller
