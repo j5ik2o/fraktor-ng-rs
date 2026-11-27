@@ -27,7 +27,6 @@ use crate::kernel::actor::ActorContext;
 use crate::kernel::actor_path::ActorPath;
 use crate::kernel::actor_ref::Endpoint;
 use crate::kernel::dispatch::Mailbox;
-use crate::kernel::dispatch::ManualTask;
 use crate::kernel::executor::ActorCell;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
@@ -81,15 +80,27 @@ impl ActorRef {
 
   /// Sends a message to the actor, naming `sender` as the sender.
   ///
-  /// If the actor has stopped, the message goes to dead letters on this
-  /// (the sender's) thread, before `tell` returns (issue #286): a dead
-  /// letter subscriber whose handler runs where it is told (a function
-  /// reference) is called on this thread. Such a handler runs while the
-  /// sender's work is in progress, so it must not call back into the same
-  /// system's driving calls (spawning, stopping, or running the system):
-  /// the executor is lent for the duration of a run and those calls would
-  /// wait for it. Telling another actor from the handler is fine, as it
-  /// only enqueues.
+  /// If the actor has stopped, the message goes to dead letters, and a
+  /// dead letter subscriber whose handler runs where it is told (a
+  /// function reference) runs on this (the sender's) thread. Such a
+  /// handler may tell another actor, including a stopped one: a dead
+  /// letter that telling raises is delivered without nesting inside the
+  /// delivery already under way. Which thread a queued delivery runs on
+  /// depends on the system's trampoline: with the kernel's own, which
+  /// [`ActorSystem::new`] installs, a delivery queued by one thread may
+  /// run on another thread that is already running the queue, while the
+  /// standard-library sender-thread trampoline delivers what was queued
+  /// on the thread that raised the outermost delivery, once that
+  /// delivery returns. A handler must not call back into the same
+  /// system's driving calls (spawning, stopping, or running the system,
+  /// or waiting for an `ask` to answer): the executor is lent for the
+  /// duration of a run and those calls would wait for it. On a system
+  /// whose dead letters run through the sender-thread trampoline, a
+  /// handler must not drive another system either, waiting for its
+  /// `ask` included: that system's dead letters are delivered only once
+  /// the handler returns.
+  ///
+  /// [`ActorSystem::new`]: crate::kernel::actor_system::ActorSystem::new
   pub fn tell<M: Any + Send + Sync>(&self, message: M, sender: ActorRef) {
     self.send_message(Message::new(message), sender);
   }
@@ -107,19 +118,15 @@ impl ActorRef {
   /// A message for a mailbox goes onto its queue without the handle: the
   /// mailbox is the recipient, as Pekko's `Envelope` holds only the message
   /// and the sender. Only when the mailbox turns it away (closed, or a full
-  /// bounded queue) does the handle go with it: the mailbox's refused route
-  /// hands it to dead letters on this (the sender's) thread, as Pekko's
-  /// dead letter mailbox does (issue #286). A mailbox with no route
-  /// installed hands it to the dispatcher instead, which routes it when it
-  /// gets to it.
+  /// bounded queue) does the handle go with it: the mailbox's refused
+  /// route, installed when the mailbox was created, hands it to dead
+  /// letters on this (the sender's) thread, as Pekko's dead letter mailbox
+  /// does.
   pub(crate) fn send_message(&self, message: Message, sender: ActorRef) {
     match &self.endpoint {
       | Endpoint::Mailbox(mailbox) => {
         if let Err(refused) = Mailbox::send(mailbox, Envelope::without_recipient(message, sender)) {
-          let refused = refused.with_recipient(self.clone());
-          if let Some(refused) = mailbox.route_refused(refused) {
-            mailbox.hand_over(ManualTask::Envelope(refused));
-          }
+          mailbox.route_refused(refused.with_recipient(self.clone()));
         }
       },
       | Endpoint::Boundary(boundary) => boundary.post(Envelope::new(self.clone(), message, sender)),

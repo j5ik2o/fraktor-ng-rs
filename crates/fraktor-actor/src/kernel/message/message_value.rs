@@ -17,6 +17,7 @@
 //! A type-erased message sent to an actor.
 
 use alloc::boxed::Box;
+use alloc::string::ToString;
 use core::any::Any;
 use core::any::TypeId;
 use core::fmt;
@@ -35,23 +36,69 @@ mod tests;
 /// private trait, whose one implementation records the name when the value
 /// is wrapped, so no field is added to each message.
 ///
-/// The blanket implementation also covers `Arc<dyn Payload>` itself, so
-/// the accessors on [`Message`] call through the trait object; calling a
-/// method on the `Arc` directly would resolve to the blanket
-/// implementation for the `Arc` type and answer for the pointer instead
-/// of the payload.
+/// The trait is implemented only by the two private wrappers below, so
+/// the accessors on [`Message`] call through the trait object and answer
+/// for the payload the wrapper holds.
 trait Payload: Any + Send + Sync {
   fn type_name(&self) -> &'static str;
   fn as_any(&self) -> &dyn Any;
+  fn fmt_display(&self, formatter: &mut fmt::Formatter<'_>) -> Option<fmt::Result>;
+  fn has_display(&self) -> bool;
 }
 
-impl<T: Any + Send + Sync> Payload for T {
+/// The plain wrapper [`Message::new`] uses: it carries no `Display`
+/// text of its own.
+struct PlainPayload<M>(M);
+
+impl<M: Any + Send + Sync> Payload for PlainPayload<M> {
   fn type_name(&self) -> &'static str {
-    core::any::type_name::<T>()
+    core::any::type_name::<M>()
   }
 
   fn as_any(&self) -> &dyn Any {
-    self
+    &self.0
+  }
+
+  fn fmt_display(&self, _formatter: &mut fmt::Formatter<'_>) -> Option<fmt::Result> {
+    None
+  }
+
+  fn has_display(&self) -> bool {
+    false
+  }
+}
+
+/// The wrapper [`Message::with_display`] uses: it keeps the value's
+/// `Display` text, as Pekko keeps the `toString` of the object it sends.
+struct DisplayPayload<M: fmt::Display>(M);
+
+impl<M: Any + Send + Sync + fmt::Display> Payload for DisplayPayload<M> {
+  fn type_name(&self) -> &'static str {
+    core::any::type_name::<M>()
+  }
+
+  fn as_any(&self) -> &dyn Any {
+    &self.0
+  }
+
+  fn fmt_display(&self, formatter: &mut fmt::Formatter<'_>) -> Option<fmt::Result> {
+    Some(fmt::Display::fmt(&self.0, formatter))
+  }
+
+  fn has_display(&self) -> bool {
+    true
+  }
+}
+
+/// Renders a payload through its `fmt_display`, for `display_text`.
+struct DisplayAdapter<'a>(&'a dyn Payload);
+
+impl fmt::Display for DisplayAdapter<'_> {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self.0.fmt_display(formatter) {
+      | Some(result) => result,
+      | None => formatter.write_str(""),
+    }
   }
 }
 
@@ -78,11 +125,84 @@ impl Message {
   /// A `Message` given to this function is returned unchanged, so forwarding a
   /// message keeps the payload a recipient can compare against.
   pub fn new<M: Any + Send + Sync>(payload: M) -> Self {
-    let boxed: Box<dyn Payload> = Box::new(payload);
+    let boxed: Box<dyn Payload> = Box::new(PlainPayload(payload));
     match (*boxed).as_any().downcast_ref::<Message>() {
       | Some(inner) => inner.clone(),
       | None => Self { payload: Arc::from(boxed) },
     }
+  }
+
+  /// Wraps a value as a message, keeping its `Display` text.
+  ///
+  /// Mirrors sending a Pekko message whose `toString` a log line can
+  /// print: [`display_text`](Self::display_text) answers with the
+  /// value's `Display`. A `Message` cannot be given to this function,
+  /// because a `Message` has no `Display` of its own; forwarding a
+  /// message that already carries a text goes through
+  /// [`Message::new`], which returns a `Message` unchanged and so
+  /// keeps the text it was wrapped with.
+  pub fn with_display<M: Any + Send + Sync + fmt::Display>(payload: M) -> Self {
+    let boxed: Box<dyn Payload> = Box::new(DisplayPayload(payload));
+    Self { payload: Arc::from(boxed) }
+  }
+
+  /// Returns the text Pekko's `value.toString` would print for the
+  /// payload.
+  ///
+  /// A value wrapped with [`with_display`](Self::with_display) answers
+  /// with its `Display`; a plain string, an integer, or a boolean
+  /// answers with its own text, without quotes; anything else answers
+  /// with the name of its type.
+  pub fn display_text(&self) -> alloc::string::String {
+    if (*self.payload).has_display() {
+      return alloc::format!("{}", DisplayAdapter(&*self.payload));
+    }
+    if let Some(text) = self.downcast_ref::<&'static str>() {
+      return (*text).to_string();
+    }
+    if let Some(text) = self.downcast_ref::<alloc::string::String>() {
+      return text.clone();
+    }
+    if let Some(value) = self.downcast_ref::<i32>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<i64>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<u32>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<u64>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<i8>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<i16>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<u8>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<u16>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<i128>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<u128>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<isize>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<usize>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<bool>() {
+      return value.to_string();
+    }
+    self.payload_type_name().to_string()
   }
 
   /// Returns the payload as the given type, or `None` if it has another type.

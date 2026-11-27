@@ -28,19 +28,42 @@ use fraktor_actor::kernel::actor_system::ActorSystem;
 
 impl EventFilter {
   /// Runs `body` while muting the events this filter matches, then checks that
-  /// exactly one of them was published.
+  /// the number of them that was published is the filter's occurrences.
   ///
   /// Mirrors `EventFilter.intercept`, which installs the filter on the event
   /// stream, runs the body, and fails when the number of matching events differs
-  /// from the expected count. The ported tests all expect one occurrence, which
-  /// is Pekko's `occurrences = 1`; the port arms the filter on the registry the
-  /// system was created with, drives the system to completion, reads the count,
+  /// from the expected count. The expected count is the filter's
+  /// `occurrences`, which defaults to one, as Pekko's ported call sites
+  /// expect; the port arms the filter on the registry the system was
+  /// created with, drives the system to completion, reads the count,
   /// and disarms the filter.
   ///
   /// # Panics
   ///
   /// Panics when the system has no event sink, or when the number of matching
-  /// events after the body differs from one.
+  /// events after the body differs from the filter's occurrences.
+  ///
+  /// Runs `body` while muting the events this filter matches, and
+  /// leaves the number of matched events unasserted.
+  ///
+  /// Mirrors `EventFilter.intercept` called for its side of muting
+  /// alone: the port cannot keep `intercept`'s own name for a second
+  /// meaning, so it carries the `any` suffix of `expectMsgType`'s
+  /// sibling `expectMsgAnyOf`. The matched events are discarded, as
+  /// `intercept` discards them after counting.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the system has no event sink.
+  pub fn intercept_any<R>(&self, system: &mut ActorSystem, body: impl FnOnce() -> R) -> R {
+    let registry = registry_of(system).expect("the actor system has no event sink to intercept");
+    let index = registry.arm(self.clone());
+    let outcome = body();
+    system.run_until_idle();
+    registry.disarm(index);
+    outcome
+  }
+
   pub fn intercept<R>(&self, system: &mut ActorSystem, body: impl FnOnce() -> R) -> R {
     let registry = registry_of(system).expect("the actor system has no event sink to intercept");
     let index = registry.arm(self.clone());
@@ -48,7 +71,12 @@ impl EventFilter {
     system.run_until_idle();
     let matched = registry.matched(index);
     registry.disarm(index);
-    assert_eq!(matched, 1, "expected 1 event matching {self:?} but found {matched}");
+    assert_eq!(
+      matched,
+      self.occurrences(),
+      "expected {} event(s) matching {self:?} but found {matched}",
+      self.occurrences()
+    );
     outcome
   }
 }

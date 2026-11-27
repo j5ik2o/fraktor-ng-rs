@@ -141,7 +141,7 @@ fn router_head_reports_messages_as_unhandled() {
   let head = spec.system_mut().try_actor_of(props, None).expect("the router head is created");
   let dead_letters = spec.system().dead_letters();
   let filter = fraktor_testkit::event_filter::EventFilter::warning()
-    .with_message(&format!("unhandled message from {}", dead_letters.path()));
+    .start(&format!("unhandled message from {}", dead_letters.path()));
   let from = dead_letters.clone();
   fraktor_testkit::event_filter::EventFilter::intercept(&filter, spec.system_mut(), move || {
     head.tell("hello", from);

@@ -24,13 +24,18 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use fraktor_actor::adaptor::ChannelBoundary;
+use fraktor_actor::adaptor::SenderThreadTrampoline;
 use fraktor_actor::adaptor::UnwindCatcher;
 use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::actor_system::ActorSystem;
+use fraktor_actor::kernel::dispatch::{DispatcherConfig, DispatcherKind, Dispatchers};
 use fraktor_actor::kernel::message::Message;
+use fraktor_actor::kernel::setup::ActorSystemSetup;
 
+use crate::event_filter::EventFilter;
 use crate::event_filter::EventSinkRegistry;
 use crate::fraktorspec::fraktor_spec_hooks::FraktorSpecHooks;
+use crate::test_actor_ref::CALLING_THREAD_DISPATCHER_ID;
 use crate::test_kit::expected_messages::ClassOf;
 use crate::test_kit::AutoPilot;
 use crate::test_kit::ReceiveWhile;
@@ -78,13 +83,51 @@ impl FraktorSpec {
     Self::with_hooks_and_settings(system_name, Box::new(NoHooks), Some(factor))
   }
 
+  /// Creates the spec with `configs` as the system's dispatcher
+  /// definitions, in addition to the calling-thread dispatcher every
+  /// spec's system knows.
+  ///
+  /// Mirrors a `PekkoSpec` built from a configuration text that defines
+  /// a dispatcher, as the original's `"disp1.type=Dispatcher"` does:
+  /// a definition in `configs` whose id is the calling-thread
+  /// dispatcher's own id is the one the system uses, because the
+  /// caller's definitions are placed before the testkit's.
+  pub fn with_dispatchers(system_name: &str, configs: Vec<DispatcherConfig>) -> Self {
+    let mut spec = Self::with_hooks_and_dispatchers(system_name, Box::new(NoHooks), None, configs);
+    spec.hooks.at_startup(&mut spec.test_kit);
+    spec
+  }
+
   fn with_hooks_and_settings(
     system_name: &str,
     hooks: Box<dyn FraktorSpecHooks>,
     factor: Option<TestTimeFactor>,
   ) -> Self {
-    let system =
-      ActorSystem::with_failure_catcher(system_name, Arc::new(ChannelBoundary::new()), Arc::new(UnwindCatcher));
+    Self::with_hooks_and_dispatchers(system_name, hooks, factor, Vec::new())
+  }
+
+  fn with_hooks_and_dispatchers(
+    system_name: &str,
+    hooks: Box<dyn FraktorSpecHooks>,
+    factor: Option<TestTimeFactor>,
+    configs: Vec<DispatcherConfig>,
+  ) -> Self {
+    // Every spec's system knows the calling-thread dispatcher, as
+    // Pekko's testkit `reference.conf` defines
+    // `pekko.test.calling-thread-dispatcher` for every system built
+    // with the testkit on the classpath. The caller's definitions go
+    // first, so one of them wins over the testkit's for the same id.
+    let mut definitions = configs;
+    definitions
+      .push(DispatcherConfig { id: CALLING_THREAD_DISPATCHER_ID.to_string(), kind: DispatcherKind::CallingThread });
+    let setup = ActorSystemSetup::empty().and(Dispatchers::new(definitions));
+    let system = ActorSystem::with_setup_and_failure_catcher(
+      system_name,
+      Arc::new(ChannelBoundary::new()),
+      setup,
+      Arc::new(UnwindCatcher),
+    );
+    system.set_dead_letter_trampoline(Arc::new(SenderThreadTrampoline::new()));
     let registry = Arc::new(EventSinkRegistry::new());
     system.set_event_sink(registry);
     fraktor_actor::adaptor::attach_wait_driver(&system);
@@ -274,6 +317,80 @@ impl FraktorSpec {
     value
   }
 
+  /// Runs `body` while the spec's sink counts the events `filter`
+  /// matches, then checks that the number published is the filter's
+  /// occurrences.
+  ///
+  /// Counting is all the sink does with a match: the executor offers
+  /// an event to the event stream and to the sink separately, so a
+  /// matching event still reaches the stream's subscribers. The
+  /// intercept verifies the count; it does not suppress delivery.
+  ///
+  /// The `FraktorSpec` form of [`EventFilter::intercept`]: the body
+  /// receives this spec, so it can call `within`, `expect_msg`, and
+  /// `actor_of` while the filter is armed, which the
+  /// `&mut ActorSystem` form cannot offer without a borrow conflict.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the spec's system has no event sink, or when the
+  /// number of matching events after the body differs from the
+  /// filter's occurrences.
+  pub fn intercept<R>(&mut self, filter: &EventFilter, body: impl FnOnce(&mut Self) -> R) -> R {
+    let registry = self.event_registry();
+    let id = registry.arm(filter.clone());
+    let _guard = ArmedGuard { registry: registry.clone(), ids: vec![id] };
+    let outcome = body(self);
+    self.system_mut().run_until_idle();
+    let matched = registry.matched(id);
+    assert_eq!(
+      matched,
+      filter.occurrences(),
+      "expected {} event(s) matching {filter:?} but found {matched}",
+      filter.occurrences()
+    );
+    outcome
+  }
+
+  /// Runs `body` while the spec's sink counts the events every
+  /// filter in `filters` matches, then checks that each filter matched
+  /// its occurrences. As with [`intercept`](Self::intercept), a match
+  /// is only counted; the event still reaches the event stream's
+  /// subscribers.
+  ///
+  /// Mirrors Pekko's `filterEvents(filters)(block)`: every filter is
+  /// armed at once, the body runs on this spec, the system is driven
+  /// to idle, and each filter's count is compared with its own
+  /// occurrences before all of them are disarmed.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the spec's system has no event sink, or when any
+  /// filter's count after the body differs from its occurrences.
+  pub fn filter_events<R>(&mut self, filters: &[EventFilter], body: impl FnOnce(&mut Self) -> R) -> R {
+    let registry = self.event_registry();
+    let ids: Vec<usize> = filters.iter().map(|filter| registry.arm(filter.clone())).collect();
+    let _guard = ArmedGuard { registry: registry.clone(), ids: ids.clone() };
+    let outcome = body(self);
+    self.system_mut().run_until_idle();
+    let matched: Vec<usize> = registry.matched_all(&ids);
+    for (filter, count) in filters.iter().zip(matched.iter()) {
+      assert_eq!(
+        *count,
+        filter.occurrences(),
+        "expected {} event(s) matching {filter:?} but found {count}",
+        filter.occurrences()
+      );
+    }
+    outcome
+  }
+
+  /// Returns the event sink registry this spec's system publishes to.
+  fn event_registry(&self) -> Arc<EventSinkRegistry> {
+    let sink = self.system().event_sink().expect("the spec system has an event sink");
+    sink.into_any().downcast::<EventSinkRegistry>().expect("the spec uses an EventSinkRegistry")
+  }
+
   /// Returns the time left in the innermost `within` scope.
   ///
   /// Mirrors `TestKitBase.remaining`: the time left saturates to zero once the
@@ -315,5 +432,21 @@ struct ScopeReset {
 impl Drop for ScopeReset {
   fn drop(&mut self) {
     *self.scope.borrow_mut() = self.previous;
+  }
+}
+
+/// Disarms the filters an `intercept` or a `filter_events` armed when
+/// the scope ends, so a body that panics leaves no filter behind on
+/// the registry to match the events of a later intercept.
+struct ArmedGuard {
+  registry: Arc<EventSinkRegistry>,
+  ids: Vec<usize>,
+}
+
+impl Drop for ArmedGuard {
+  fn drop(&mut self) {
+    for id in &self.ids {
+      self.registry.disarm(*id);
+    }
   }
 }

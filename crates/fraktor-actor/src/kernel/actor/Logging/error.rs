@@ -218,4 +218,8 @@ impl LogEvent for Error {
   fn cause_name(&self) -> Option<&str> {
     self.cause.as_deref()
   }
+
+  fn cause_message(&self) -> Option<&str> {
+    self.cause_message.as_deref()
+  }
 }

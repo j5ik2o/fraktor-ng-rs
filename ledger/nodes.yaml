@@ -33544,10 +33544,10 @@ nodes:
     module: testkit
     class: TestActorRefSpec
     test_cases_approx: 23
-  status: unported
+  status: red
   triage:
     kind: pending
-    reason: null
+    reason: 20件のテストを red で書いた（設計の第2段の手順1）。ケース3、5、6（送ったその場で処理が終わることそのものを見る）は #234 の段7b（#259）の CallingThreadDispatcher に依存するため後続の issue へ分け、数からは外さない。弱めた版は書かない
   needs:
     testkit: ['extends-pekko-spec', 'pekko-spec', 'test-actor', 'default-timeout', 'expect-msg', 'test-probe', 'event-filter', 'test-actor-ref', 'calling-thread-dispatcher']
     premise_flags: []
@@ -33555,13 +33555,13 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 23
+    ported: 20
+    passing: 20
     excluded: []
   rust:
-    crate: null
-    test_file: null
+    crate: fraktor-testkit
+    test_file: crates/fraktor-testkit/tests/test_actor_ref_spec.rs
   goal: null
 - id: testkit/src/test/scala/org/apache/pekko/testkit/TestActorsSpec.scala
   name: testkit:TestActorsSpec

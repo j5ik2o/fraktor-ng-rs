@@ -12,6 +12,7 @@ pub(crate) use actor_cell::ActorCell;
 pub(crate) use actor_cell::StartFailure;
 pub(crate) use arrival_notice::ArrivalNotice;
 pub(crate) use executor_value::Executor;
+pub(crate) use executor_value::FsmTimerRequest;
 pub(crate) use function_boundary::FunctionBoundary;
 pub(crate) use live_actors::LiveActors;
 pub(crate) use noop_boundary::NoOpBoundary;
