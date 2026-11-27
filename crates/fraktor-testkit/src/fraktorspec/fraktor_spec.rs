@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use fraktor_actor::adaptor::ChannelBoundary;
+use fraktor_actor::adaptor::SenderThreadTrampoline;
 use fraktor_actor::adaptor::UnwindCatcher;
 use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::actor_system::ActorSystem;
@@ -85,6 +86,7 @@ impl FraktorSpec {
   ) -> Self {
     let system =
       ActorSystem::with_failure_catcher(system_name, Arc::new(ChannelBoundary::new()), Arc::new(UnwindCatcher));
+    system.set_dead_letter_trampoline(Arc::new(SenderThreadTrampoline::new()));
     let registry = Arc::new(EventSinkRegistry::new());
     system.set_event_sink(registry);
     fraktor_actor::adaptor::attach_wait_driver(&system);

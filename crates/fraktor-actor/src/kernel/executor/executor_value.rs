@@ -45,7 +45,9 @@ use crate::kernel::actor::BehaviorStack;
 use crate::kernel::actor::ConfigurationException;
 use crate::kernel::actor::DeadLetter;
 use crate::kernel::actor::DeadLetterSettings;
+use crate::kernel::actor::DeadLetterTrampoline;
 use crate::kernel::actor::DeadLettersShared;
+use crate::kernel::actor::SharedTrampoline;
 use crate::kernel::actor::FunctionRef;
 use crate::kernel::actor::Identify;
 use crate::kernel::actor::InvalidActorNameException;
@@ -436,6 +438,7 @@ pub(crate) struct Executor {
 impl Executor {
   pub(crate) fn new(root: ActorPath, boundary: Arc<dyn ShardBoundary>) -> Self {
     let dead_letters_shared = Arc::new(DeadLettersShared::new());
+    dead_letters_shared.set_dead_letter_trampoline(Arc::new(SharedTrampoline::new()));
     let dead_letters = Self::create_dead_letters(&root, dead_letters_shared.clone());
     // The guardians are handles without cells: Pekko's guardians are
     // real actors, but this port keeps no actor behind them, so a
@@ -567,12 +570,33 @@ impl Executor {
     self.parent_entry(target).is_some_and(|entry| entry.waiting.is_some())
   }
 
-  /// Sends `message` to the mailbox of `target`. A closed mailbox, or a
-  /// target without one, drops it (section 11.12.3).
-  fn send_system(&self, target: &ActorRef, message: SystemMessage) {
-    if let Some(entry) = self.entry(target) {
-      Mailbox::system_send(&entry.mailbox, message).ok();
+  /// Sends `message` to the mailbox of `target`. A closed mailbox hands
+  /// the message back, and it goes to dead letters through
+  /// [`route_closed_system_message`](Self::route_closed_system_message);
+  /// a target without a mailbox has nowhere to route it from and the
+  /// message is dropped.
+  fn send_system(&mut self, target: &ActorRef, message: SystemMessage) {
+    let mailbox = self.entry(target).map(|entry| Arc::clone(&entry.mailbox));
+    if let Some(mailbox) = mailbox {
+      if let Err(message) = Mailbox::system_send(&mailbox, message) {
+        self.route_closed_system_message(message, target.clone());
+      }
     }
+  }
+
+  /// Routes a system message whose delivery met a closed mailbox to dead
+  /// letters, through the one place that decides how such a message is
+  /// reported.
+  fn route_closed_system_message(&mut self, message: SystemMessage, recipient: ActorRef) {
+    let dead_letters = self.dead_letters.clone();
+    self.dead_letters_shared.route_system_undeliverable(message, recipient, &dead_letters);
+  }
+
+  /// Installs the trampoline the dead letter routing rules publish
+  /// through, replacing the kernel's own trampoline the executor was
+  /// created with.
+  pub(crate) fn set_dead_letter_trampoline(&self, trampoline: Arc<dyn DeadLetterTrampoline>) {
+    self.dead_letters_shared.set_dead_letter_trampoline(trampoline);
   }
 
   /// Takes one from the suspend count of `target` and reserves its mailbox,
@@ -1288,8 +1312,7 @@ impl Executor {
     };
     let queue = Arc::new(UnboundedQueue::new(&SpinLockFactory));
     let limits = RunLimits::new(Throughput::new(MANUAL_THROUGHPUT));
-    let mut mailbox = Mailbox::for_actor(queue, limits, &SpinLockFactory, Arc::downgrade(&self.manual));
-    mailbox.set_refused_route(self.dead_letter_route());
+    let mailbox = Mailbox::for_actor(queue, limits, &SpinLockFactory, Arc::downgrade(&self.manual), self.dead_letter_route());
     let mailbox = Arc::new(mailbox);
     let label = path.name().to_string();
     let self_ref = ActorRef::for_mailbox(next_actor_id(), Arc::new(path), Arc::clone(&mailbox));
@@ -1695,7 +1718,9 @@ impl Executor {
     if let Some(record) = entry.parent.clone().and_then(|parent| self.parent_entry_mut(&parent)) {
       record.mark_dying(target);
     }
-    Mailbox::system_send(&mailbox, SystemMessage::Terminate).ok();
+    if let Err(message) = Mailbox::system_send(&mailbox, SystemMessage::Terminate) {
+      self.route_closed_system_message(message, target.clone());
+    }
   }
 
   /// Handles `Terminate` (Pekko's `FaultHandling.terminate`, section
@@ -1740,14 +1765,19 @@ impl Executor {
     // A post_stop hook receives a context and can create function
     // references; those belong to the stopping actor and end here too.
     self.stop_function_refs_of(&target);
-    self.stash_to_dead_letters(&target);
     self.queued_to_dead_letters(&target);
     match cell.parent() {
-      | Some(parent) => match self.entry(&parent) {
-        | Some(entry) => {
-          Mailbox::system_send(&entry.mailbox, SystemMessage::ChildTerminated { child: target.clone() }).ok();
-        },
-        | None => self.child_ended_under(&parent, &target),
+      | Some(parent) => {
+        let parent_mailbox = self.entry(&parent).map(|entry| Arc::clone(&entry.mailbox));
+        match parent_mailbox {
+          | Some(mailbox) => {
+            let notice = SystemMessage::ChildTerminated { child: target.clone() };
+            if let Err(message) = Mailbox::system_send(&mailbox, notice) {
+              self.route_closed_system_message(message, parent.clone());
+            }
+          },
+          | None => self.child_ended_under(&parent, &target),
+        }
       },
       | None => {},
     }
@@ -1927,44 +1957,42 @@ impl Executor {
     }
   }
 
-  /// Applies `owner`'s bounded mailbox capacity to a returning stash:
-  /// the oldest excess envelopes go to dead letters (newest victim
+  /// Applies `owner`'s bounded mailbox capacity to a returning stash,
+  /// counting the `queued_backlog` envelopes already in the mailbox
+  /// against the capacity: the oldest excess envelopes are the overflow
+  /// (returned in the order they go to dead letters, newest victim
   /// first), and the newest envelopes that fit are returned in stash
-  /// order.
-  fn discard_stash_overflow(&mut self, owner: &ActorRef, stash: Vec<(u64, Envelope)>) -> Vec<Envelope> {
+  /// order after them.
+  ///
+  /// The backlog is an argument because the stop-time clean-up reads it
+  /// before the mailbox closes: closing drains the queue, and a backlog
+  /// read afterwards would always be zero.
+  fn split_stash_overflow(
+    &self,
+    owner: &ActorRef,
+    stash: Vec<(u64, Envelope)>,
+    queued_backlog: usize,
+  ) -> (Vec<Envelope>, Vec<Envelope>) {
     let (mailbox_capacity, _) = self.capacities_of(owner);
-    let room = mailbox_capacity
-      .bound()
-      .map(|bound| bound.saturating_sub(self.entry(owner).map_or(0, |entry| entry.mailbox.number_of_messages())))
-      .unwrap_or(usize::MAX);
+    let room = mailbox_capacity.bound().map(|bound| bound.saturating_sub(queued_backlog)).unwrap_or(usize::MAX);
     let total = stash.len();
     let mut envelopes = stash.into_iter().map(|(_, envelope)| envelope);
     if total > room {
       let victims: Vec<_> = envelopes.by_ref().take(total - room).collect();
-      self.publish_envelopes_to_dead_letters(victims.into_iter().rev(), owner);
+      let victims: Vec<_> = victims.into_iter().rev().collect();
+      return (victims, envelopes.collect());
     }
-    envelopes.collect()
+    (Vec::new(), envelopes.collect())
   }
 
-  /// Sends `owner`'s stash to dead letters, each message with its original
-  /// sender and in the order it was stashed.
-  ///
-  /// Mirrors what Pekko does with the stash of a stopped actor:
-  /// `UnrestrictedStash.postStop` returns it to the mailbox, and the mailbox
-  /// clean-up hands every message left there to `deadLetters`. Each message
-  /// keeps its original recipient inside the `DeadLetter` it is wrapped in,
-  /// so the dead letters handle publishes it as it is.
-  fn stash_to_dead_letters(&mut self, owner: &ActorRef) {
-    let stash = self.entry_mut(owner).map(|entry| core::mem::take(&mut entry.stash)).unwrap_or_default();
-    if !stash.is_empty() {
-      // Pekko's postStop returns the stash to the bounded mailbox: the
-      // oldest excess goes to dead letters first (newest victim first),
-      // and the newest messages that fit stay in the mailbox and are
-      // cleaned up in order. An unlimited mailbox sends everything in
-      // order.
-      let remaining = self.discard_stash_overflow(owner, stash);
-      self.publish_envelopes_to_dead_letters(remaining, owner);
-    }
+  /// Sends a returning stash's overflow to dead letters and returns the
+  /// envelopes that fit, as [`split_stash_overflow`](Self::split_stash_overflow)
+  /// divides them against the backlog now in `owner`'s mailbox.
+  fn discard_stash_overflow(&mut self, owner: &ActorRef, stash: Vec<(u64, Envelope)>) -> Vec<Envelope> {
+    let backlog = self.entry(owner).map_or(0, |entry| entry.mailbox.number_of_messages());
+    let (victims, remaining) = self.split_stash_overflow(owner, stash, backlog);
+    self.publish_envelopes_to_dead_letters(victims, owner);
+    remaining
   }
 
   /// Sends the envelopes still queued locally for the stopped `target` to dead
@@ -1977,18 +2005,41 @@ impl Executor {
   /// and envelopes still waiting at the shard boundary reach the stopped actor
   /// later and are dropped there, as before.
   fn queued_to_dead_letters(&mut self, target: &ActorRef) {
+    // The backlog is read before the mailbox closes, and the stash is
+    // taken and divided against it here: closing drains the queue, so a
+    // backlog read afterwards would give the stash overflow the whole
+    // capacity as its room. Dividing the stash here also fixes the order
+    // the clean-up publishes in, below.
+    let taken = self.entry_mut(target).map(|entry| {
+      let backlog = entry.mailbox.number_of_messages();
+      (backlog, core::mem::take(&mut entry.stash))
+    });
+    let Some((backlog, stash)) = taken else {
+      return;
+    };
+    let (overflow, remaining) = self.split_stash_overflow(target, stash, backlog);
     let Some(entry) = self.entry(target) else {
       return;
     };
+    let mailbox = Arc::clone(&entry.mailbox);
+    // The order mirrors Pekko's clean-up: the stash overflow goes first,
+    // before the mailbox closes (in `postStop`'s `unstashAll` the
+    // overflow is refused and routed before the mailbox clean-up runs),
+    // then the system messages the closed mailbox still held (a
+    // `Terminate` is suppressed, a `Resume` or a `Create` is a dead
+    // letter), then the rest of the stash, and then the queued
+    // envelopes. A stash that `postStop` already returned through
+    // `unstash_all` is empty here and rides in the envelopes instead,
+    // in the same place.
+    self.publish_envelopes_to_dead_letters(overflow, target);
     self.live.remove(target);
-    // The system messages left (a `Terminate`, a `Resume`, or a `Create`
-    // that a stop overtook) mean nothing to a closed mailbox, and the runs
-    // that wait for it would find it closed: both are dropped here, outside
-    // every lock.
-    let (envelopes, system) = entry.mailbox.close();
-    let runs = self.manual.take_runs_of(&entry.mailbox);
-    drop(system);
+    let (envelopes, system) = mailbox.close();
+    let runs = self.manual.take_runs_of(&mailbox);
     drop(runs);
+    for message in system {
+      self.route_closed_system_message(message, target.clone());
+    }
+    self.publish_envelopes_to_dead_letters(remaining, target);
     for envelope in envelopes {
       let (message, sender) = envelope.into_message();
       let message = match message.downcast_ref::<Arc<PendingTermination>>() {
@@ -2837,8 +2888,7 @@ impl Executor {
           }
         },
         | Err(refused) => {
-          let (message, sender) = refused.into_message();
-          self.route_undeliverable(message, sender, recipient);
+          mailbox.route_refused(refused.with_recipient(recipient));
           self.finish_boundary();
         },
       }
@@ -3445,8 +3495,11 @@ impl Executor {
         // The watcher has already stopped, so its mailbox turns the notice
         // away. Route the notice itself to dead letters here: the pending
         // record is consumed (never registered) and the internal carrier
-        // never surfaces as a dead letter's payload.
-        let message = custom.unwrap_or_else(|| Message::new(notice));
+        // never surfaces as a dead letter's payload. A custom notice is
+        // dropped rather than routed: the notice is a `Terminated`, which
+        // the routing rules suppress, so no log line names a text the
+        // watcher never asked to have written for a delivery that failed.
+        let message = Message::new(notice);
         self.route_undeliverable(message, sender, recipient);
         return;
       }
