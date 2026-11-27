@@ -18,6 +18,17 @@
 //! routing rules that turn an undeliverable message into a dead letter
 //! event.
 
+// Issue #297: the unit tests for `route_system_undeliverable` are written in
+// `dead_letters_shared_test.rs` (design `issue-296-297-dead-letters-followup.md`,
+// section 7.2). The tests call that method, which #297 adds, so the module does
+// not compile yet; `cfg(any())` keeps it out of the build so the rest of the
+// kernel's unit tests stay green, and the red is pinned here for the
+// implementation step. Replace `cfg(any())` with `cfg(test)` when
+// `route_system_undeliverable` exists.
+#[cfg(any())]
+#[path = "dead_letters_shared_test.rs"]
+mod tests;
+
 use alloc::collections::BTreeSet;
 use core::any::TypeId;
 
