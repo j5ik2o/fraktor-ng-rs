@@ -390,11 +390,16 @@ fn allows_a_state_timeout_override() {
       Some(transition) if transition.fsm == initial_machine && transition.from == State::Initial
     )
   });
-  spec.within(millis(400), |spec| {
+  // `forMax(Duration.Inf)` disables the state's own timeout, which is the
+  // dilated 800 milliseconds. The quiet wait has to outlast that timeout: a
+  // shorter one would pass even when the machine ignored `Infinite` and armed
+  // the timer, because the `Cancel` below would then arrive first. The wait is
+  // twice the dilated state timeout and the scope covers it, so a timeout
+  // armed by mistake reaches the test actor during the wait and fails it.
+  let state_timeout = dilated(settings, millis(800));
+  spec.within(state_timeout * 2, |spec| {
     fsm.tell("TestStateTimeout", test_actor.clone());
-    // `forMax(Duration.Inf)` disables the state's own 800 milliseconds, so the
-    // default no-message length passes quietly.
-    expect_no_message_by_default(spec);
+    spec.test_kit_mut().expect_no_message(state_timeout * 2);
   });
   spec.within(millis(1000), |spec| {
     fsm.tell(Cancel, test_actor.clone());

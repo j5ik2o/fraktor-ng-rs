@@ -74,7 +74,7 @@ use fraktor_actor::kernel::{
 use fraktor_testkit::{
   event_filter::{EventFilter, EventSinkRegistry},
   fraktorspec::FraktorSpec,
-  test_kit::{TestLatch, TestProbe},
+  test_kit::{ReceiveWhile, TestLatch, TestProbe},
 };
 
 const SPEC_SYSTEM_NAME: &str = "ActorRefSpec";
@@ -561,15 +561,23 @@ struct SmallCase {
   outer_fails: bool,
   /// The outer actor's failure text, when small case 13 names one.
   text: Option<&'static str>,
+  /// Whether the outer is built around an inner actor at all. Small case 2's
+  /// outer constructor throws before it creates one (design section 1.3.1,
+  /// row 2); every other case creates both sides.
+  inner_created: bool,
 }
 
 impl SmallCase {
   fn new(inner_fails: bool, outer_fails: bool) -> Self {
-    Self { inner_fails, outer_fails, text: None }
+    Self { inner_fails, outer_fails, text: None, inner_created: true }
   }
 
   fn expecting(self, text: &'static str) -> Self {
     Self { text: Some(text), ..self }
+  }
+
+  fn without_inner(self) -> Self {
+    Self { inner_created: false, ..self }
   }
 
   fn occurrences(&self) -> usize {
@@ -599,15 +607,20 @@ fn run_initialization_case(spec: &mut FraktorSpec, case: SmallCase) {
   // the count is taken per actor path below.
   let test_actor = spec.test_actor();
   spec.system().event_stream().subscribe(Some(test_actor), EventClass::of::<Error>()).expect("subscribe to Error");
-  // Both sides exist in every case: a one-sided failure still leaves the other
-  // actor running, which is what design section 1.3.1 checks (`FailingOuterActor`
-  // wraps a normal inner in small cases 3 and 5, `OuterActor` wraps a failing
-  // inner in small case 4, and so on).
-  let makers = [("failingInner", case.inner_fails), ("failingOuter", case.outer_fails)];
+  // Both sides exist in every case but small case 2: a one-sided failure still
+  // leaves the other actor running, which is what design section 1.3.1 checks
+  // (`FailingOuterActor` wraps a normal inner in small cases 3 and 5,
+  // `OuterActor` wraps a failing inner in small case 4, and so on). Small case
+  // 2's outer throws before it creates an inner, so only the outer is made
+  // there (row 2).
+  let makers = [("failingInner", case.inner_created && case.inner_fails), ("failingOuter", case.outer_fails)];
   let mut receivers = Vec::new();
   let mut created = Vec::new();
   let mut survivors = Vec::new();
   for (name, fails) in makers {
+    if name == "failingInner" && !case.inner_created {
+      continue;
+    }
     let (actor, rx) = make_case_actor(spec, name, fails, case.text);
     if fails {
       receivers.push(rx.expect("the maker's receiver"));
@@ -623,12 +636,34 @@ fn run_initialization_case(spec: &mut FraktorSpec, case: SmallCase) {
   // Per path: every actor that failed has exactly one initialization failure,
   // and an actor that did not fail has none. A total alone would pass when one
   // side failed twice and the other not at all, so the events are grouped by
-  // the path they name.
+  // the path they name. The `Error` events and the `Terminated` notices of the
+  // failed actors do not arrive in a fixed order, so each wait takes only the
+  // type it is about and puts the other type back for the other wait. The wait
+  // has a limit.
   let mut failures_by_path: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-  for _ in 0..case.occurrences() {
-    let event: Error = spec.expect_msg_type();
+  let mut errors: Vec<Error> = Vec::new();
+  while errors.len() < created.len() {
+    let batch = spec.test_kit_mut().receive_while(ReceiveWhile::new().max(millis(5000)).idle(millis(100)), |message| {
+      message.downcast_ref::<Error>().cloned()
+    });
+    if batch.is_empty() {
+      break;
+    }
+    errors.extend(batch);
+  }
+  for event in errors {
     assert_eq!(event.cause_name(), Some("ActorInitializationException"), "the logged event is the failure");
     *failures_by_path.entry(event.log_source().to_string()).or_default() += 1;
+  }
+  let mut stopped: Vec<ActorRef> = Vec::new();
+  while stopped.len() < created.len() {
+    let batch = spec.test_kit_mut().receive_while(ReceiveWhile::new().max(millis(5000)).idle(millis(100)), |message| {
+      message.downcast_ref::<Terminated>().map(|terminated| terminated.target().clone())
+    });
+    if batch.is_empty() {
+      break;
+    }
+    stopped.extend(batch);
   }
   for actor in &created {
     let path = actor.path().to_string();
@@ -660,13 +695,8 @@ fn run_initialization_case(spec: &mut FraktorSpec, case: SmallCase) {
       assert!(!text.is_empty(), "the failure reached the caller");
     }
   }
-  // The supervisor stops the failed actors; the order of the notices is not
-  // fixed, so the test collects them and compares the set.
-  let mut stopped = Vec::new();
-  for _ in 0..created.len() {
-    let terminated: Terminated = spec.expect_msg_type();
-    stopped.push(terminated.target().clone());
-  }
+  // The supervisor stops the failed actors; their notices were collected above
+  // together with the errors, as their order is not fixed.
   for actor in &created {
     assert!(stopped.contains(actor), "the supervisor stopped the failed actor");
   }
@@ -682,16 +712,29 @@ fn run_initialization_case(spec: &mut FraktorSpec, case: SmallCase) {
   // the same name can be made under the *same parent*. The original creates
   // both the failed actor and its replacement with one `import system.actorOf`,
   // and recreating under `/user` would prove nothing about the namespace the
-  // child actually lived in. The port creates both as children of the test
-  // actor, through the test kit's child API, and recreates with that same API.
+  // child actually lived in. The port creates both as top-level actors under
+  // `/user`, with `system.actor_of_named` as design section 1.3 says, and
+  // recreates with that same call.
   for actor in &created {
     let name = actor.path().name().to_string();
-    let replacement =
-      spec.test_kit_mut().child_actor_of(reply_actor_props(), Some(&name), SupervisorStrategy::default_strategy());
+    let replacement = spec
+      .system_mut()
+      .actor_of_named(reply_actor_props(), name.as_str())
+      .expect("the name of the failed actor is free again under /user");
     assert_eq!(
       replacement.path().parent(),
       actor.path().parent(),
       "the replacement sits under the same parent as the child that failed"
+    );
+    assert_eq!(
+      replacement.path().parent(),
+      spec.system().resolve_actor_ref(&replacement.path().parent()).path(),
+      "both actors are children of the user guardian, as design section 1.3 says"
+    );
+    assert!(
+      replacement.path().to_string().contains("/user/"),
+      "the replacement sits under /user: {}",
+      replacement.path()
     );
     assert_eq!(replacement.path().name(), name, "the replacement keeps the name under that parent");
     let reply = replacement.ask("hello").await_result(millis(1000));
@@ -706,12 +749,15 @@ fn run_initialization_case(spec: &mut FraktorSpec, case: SmallCase) {
   }
 }
 
-/// Starts one actor of a small case under the test actor, as the original's
-/// `import system.actorOf` creates it, watching it from the test actor, and
-/// returns it with the maker's report receiver when it was made to fail.
+/// Starts one actor of a small case under `/user`, as the original's
+/// `import system.actorOf` creates it (design section 1.3), watching it from
+/// the test actor, and returns it with the maker's report receiver when it was
+/// made to fail.
 ///
-/// The actor is created through the test kit's child API so that the failed
-/// child and its replacement (in `run_initialization_case`) share one parent.
+/// The actor is created through `system.actor_of_named` so that the failed
+/// actor and its replacement (in `run_initialization_case`) share one parent,
+/// `/user`. The test actor still watches it, so the stop of the failed side
+/// reaches the test actor.
 fn make_case_actor(
   spec: &mut FraktorSpec,
   name: &str,
@@ -727,7 +773,7 @@ fn make_case_actor(
   } else {
     promise_intercept(tx, || ReplyActor)
   };
-  let actor = spec.test_kit_mut().child_actor_of(props, Some(name), SupervisorStrategy::default_strategy());
+  let actor = spec.system_mut().actor_of_named(props, name).expect("the name is free under /user");
   spec.test_kit_mut().watch(&actor);
   (actor, fails.then_some(rx))
 }
@@ -737,8 +783,10 @@ fn make_case_actor(
 fn does_not_allow_actors_to_be_created_outside_of_an_actor_of() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   // Small case 1 (`:150-152`) is not built (decision 4).
-  // Small case 2 (`:156-166`): the outer constructor's `new Actor`.
-  run_initialization_case(&mut spec, SmallCase::new(false, true));
+  // Small case 2 (`:156-166`): the outer constructor's `new Actor`. Its
+  // `FailingOuterActor(message)` throws in the outer, so no inner is created
+  // (design section 1.3.1, row 2).
+  run_initialization_case(&mut spec, SmallCase::new(false, true).without_inner());
   // Small case 3 (`:168-175`): `FailingOuterActor(actorOf(InnerActor))`.
   run_initialization_case(&mut spec, SmallCase::new(false, true));
   // Small case 4 (`:177-184`): `OuterActor(actorOf(FailingInnerActor))`.
@@ -782,9 +830,10 @@ fn inserts_its_path_in_an_actor_initialization_exception() {
   assert!(text.is_empty(), "expected the cause without a message, got {text:?}");
   // The event the parent logged for the failed child: its source is the child's
   // path, and its `cause_message()` carries that path as the original's
-  // exception message does (`ActorInitializationException`).
+  // exception message does (`ActorInitializationException`, design section 1.3).
   let event: Error = spec.expect_msg_type();
   assert_eq!(event.log_source(), created.path().to_string(), "the event names the failed child");
+  assert_eq!(event.cause_name(), Some("ActorInitializationException"), "the logged event is the failure");
   let cause = event.cause_message().expect("the initialization failure carries a cause message");
   // The original's `EventFilter(pattern = "/user/failingActor:")` matches the
   // exception message, which is `pekko://<system>/user/failingActor: exception
@@ -886,6 +935,14 @@ fn supports_advanced_nested_actor_ofs() {
   outer.tell(ForwardedOuter(outer.clone(), test_actor.clone()), test_actor.clone());
   let seen_outer: ActorRef = spec.expect_msg_type();
   assert_eq!(seen_outer, outer, "the forwarded outer answers back as the outer the test body sent");
+  // The test body also sends the outer's own handle as a bare `ActorRef`. It is
+  // neither `"self"` nor a `ForwardedOuter`, so the outer forwards it to the
+  // inner, and the inner answers with the handle it was sent, which is the
+  // outer. A bare `ActorRef` is not unwrapped as a message, so this is the
+  // direct form of `a ? a`.
+  outer.tell(outer.clone(), test_actor.clone());
+  let seen_direct: ActorRef = spec.expect_msg_type();
+  assert_eq!(seen_direct, outer, "a bare outer handle is forwarded and answers back as the outer");
   // `Await.result(a ? "self", ...) should ===(a)`: the outer answers `"self"`
   // with its own handle and does not forward it, so the answer is the outer
   // and not the inner.
@@ -960,6 +1017,10 @@ fn supports_reply_via_sender() {
   }
   assert_eq!(texts.iter().filter(|text| **text == "complexReply").count(), 1, "round 1 answers complex once");
   assert_eq!(texts.iter().filter(|text| **text == "simpleReply").count(), 3, "round 1 answers simple three times");
+  // Round 1 answers nothing else: the same upper bound `receive_n` is given,
+  // with no further message in it.
+  let upper_bound = settings.dilated(TestLatch::DEFAULT_TIMEOUT);
+  spec.test_kit_mut().expect_no_message(upper_bound);
   // Round 2: the original's `latch.reset()`, `complex2`, `simple`, `simple`,
   // `simple`. The second round's first request is `complex2`, which the reply
   // actor gives to a worker that answers the request's sender directly.
@@ -997,6 +1058,9 @@ fn supports_reply_via_sender() {
   }
   assert_eq!(texts.iter().filter(|text| **text == "complexReply").count(), 1, "round 2 answers complex2 once");
   assert_eq!(texts.iter().filter(|text| **text == "simpleReply").count(), 3, "round 2 answers simple three times");
+  // Round 2 answers nothing else either, under the same upper bound as
+  // `receive_n`.
+  spec.test_kit_mut().expect_no_message(upper_bound);
   let direct_sender = direct_sender.expect("round 2 has one complexReply");
   // The workers stop themselves, as `context.stop(self)` does; one worker per
   // complex request, so the two workers leave the hierarchy once idle.

@@ -292,6 +292,17 @@ where
   }
 
   fn start_timer(&self, name: &str, message: Message, delay: Duration, kind: FsmTimerKind) {
+    // The same condition `FsmView` puts on its repeating timers: a fixed delay
+    // or fixed rate of zero would fire without end, which Pekko's scheduler
+    // rejects. The check runs before the control message is sent, so the
+    // machine never sees the start. A single timer may still have a delay of
+    // zero, which fires at once.
+    if matches!(kind, FsmTimerKind::FixedDelay | FsmTimerKind::FixedRate) {
+      assert!(
+        !delay.is_zero(),
+        "FSM timer {name}: a repeating timer needs a delay greater than zero (Pekko rejects it as creating an infinite loop)"
+      );
+    }
     let sequence = self.handle.allocate_sequence();
     self.send_control(FsmControl::StartTimer { sequence, name: name.to_string(), kind, message, delay });
   }
