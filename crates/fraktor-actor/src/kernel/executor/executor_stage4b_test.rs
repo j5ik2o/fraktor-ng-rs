@@ -50,6 +50,12 @@ use crate::{
 
 type Log = Arc<Mutex<Vec<String>>>;
 
+/// The cause name and the message of one recorded event.
+type RecordedEvent = (Option<&'static str>, String);
+
+/// The recorded events, shared with the actor system's sink.
+type RecordedEvents = Arc<Mutex<Vec<RecordedEvent>>>;
+
 fn new_log() -> Log {
   Arc::new(Mutex::new(Vec::new()))
 }
@@ -627,7 +633,7 @@ fn a_child_terminated_hook_failure_publishes_twice_with_the_two_causes() {
   // Design 11.13.3, the two-publish table: the first publish names
   // `IllegalStateException("handleChildTerminated failed")`, the second the
   // original failure. Stage 4a publishes only the first.
-  let events = Arc::new(Mutex::new(Vec::<(Option<&'static str>, String)>::new()));
+  let events: RecordedEvents = Arc::new(Mutex::new(Vec::<RecordedEvent>::new()));
   let log = new_log();
   let mut system = with_catcher("Stage4bHookPublishesTwice");
   system.set_event_sink(Arc::new(RecordingSink { events: Arc::clone(&events) }));
@@ -663,7 +669,7 @@ fn a_child_terminated_hook_failure_publishes_twice_with_the_two_causes() {
 
 /// Records the cause name and the message of every event it is given.
 struct RecordingSink {
-  events: Arc<Mutex<Vec<(Option<&'static str>, String)>>>,
+  events: RecordedEvents,
 }
 
 impl EventSink for RecordingSink {
