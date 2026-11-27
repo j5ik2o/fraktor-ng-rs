@@ -18,7 +18,7 @@
 
 use alloc::vec::Vec;
 
-use super::ByteString;
+use super::{ByteChunk, ByteString};
 use crate::kernel::sync::Arc;
 
 #[cfg(test)]
@@ -34,9 +34,9 @@ mod tests;
 /// copying them, as Pekko's does.
 #[derive(Clone, Debug, Default)]
 pub struct ByteStringBuilder {
-  // Never holds an empty array.
-  arrays: Vec<Arc<[u8]>>,
-  // Not yet confirmed into `arrays`; copied once `append` or `result` needs it.
+  // Never holds an empty chunk.
+  chunks: Vec<ByteChunk>,
+  // Not yet confirmed into `chunks`; copied once `append` or `result` needs it.
   pending: Vec<u8>,
 }
 
@@ -60,7 +60,7 @@ impl ByteStringBuilder {
       return self;
     }
     self.confirm_pending();
-    self.arrays.extend(bytes.arrays().iter().cloned());
+    self.chunks.extend(bytes.arrays().iter().cloned());
     self
   }
 
@@ -71,19 +71,19 @@ impl ByteStringBuilder {
   /// Corresponds to Pekko's `result()`.
   #[must_use]
   pub fn result(&self) -> ByteString {
-    let mut arrays = self.arrays.clone();
+    let mut chunks = self.chunks.clone();
     if !self.pending.is_empty() {
-      arrays.push(Arc::from(self.pending.as_slice()));
+      chunks.push(ByteChunk::full(Arc::from(self.pending.as_slice())));
     }
-    ByteString::from_arrays(arrays)
+    ByteString::from_chunks(chunks)
   }
 
-  // Moves the pending bytes into `arrays` as one array, before more arrays are
+  // Moves the pending bytes into `chunks` as one chunk, before more chunks are
   // added, so the added bytes keep their order.
   fn confirm_pending(&mut self) {
     if !self.pending.is_empty() {
       let bytes = core::mem::take(&mut self.pending);
-      self.arrays.push(Arc::from(bytes));
+      self.chunks.push(ByteChunk::full(Arc::from(bytes)));
     }
   }
 }

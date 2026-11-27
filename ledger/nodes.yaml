@@ -1725,10 +1725,10 @@ nodes:
     module: actor-tests
     class: ByteStringSpec
     test_cases_approx: 121
-  status: unported
+  status: red
   triage:
     kind: pending
-    reason: null
+    reason: 原典246件を7群に分けて移植する（docs/design/issue-190-bytestring.md）。群1（43件）を移した。群2〜6と、群7のうち直列化以外の26件は未移植。群7の Java 直列化7件（ByteStringSpec.scala 2461-2527行）は除外にせず数からも外さず、#190 を閉じるときに後続の issue へ分ける（actor-tests:PrimitivesSerializationSpec の移植の前提）
   needs:
     testkit: []
     premise_flags: ['java-serialization']
@@ -1736,14 +1736,14 @@ nodes:
     modules: []
     coverage: approx
   cases:
-    total: null
-    ported: null
-    passing: null
+    total: 246
+    ported: 43
+    passing: 43
     excluded: []
   rust:
-    crate: null
-    test_file: null
-  goal: null
+    crate: fraktor-actor
+    test_file: crates/fraktor-actor/tests/byte_string_spec.rs
+  goal: G0issue190
 - id: actor-tests/src/test/java/org/apache/pekko/util/ByteStringTest.java
   name: actor-tests:ByteStringTest
   kind: test
