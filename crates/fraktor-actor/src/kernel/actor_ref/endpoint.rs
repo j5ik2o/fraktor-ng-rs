@@ -21,7 +21,7 @@ use crate::kernel::executor::ActorCell;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::sync::Arc;
 
-/// Where the messages of one handle go (design of #234, section 3.4).
+/// Where the messages of one handle go.
 pub(crate) enum Endpoint {
   /// The mailbox of an actor with a cell: a message goes straight onto its
   /// queue, as in Pekko, where an `ActorRef` reaches its `ActorCell`'s
@@ -43,8 +43,7 @@ impl Endpoint {
   }
 }
 
-// Written by hand, so that a test can count the clones (condition 1 of the
-// ownership model's revision, design of #234, section 11.11.7).
+// Written by hand, so that a test can count the clones.
 impl Clone for Endpoint {
   fn clone(&self) -> Self {
     match self {

@@ -44,7 +44,7 @@ mod tests;
 /// The mailbox of one actor: its status, the gate, its queue of normal
 /// messages, its queue of system messages, and the actor itself.
 ///
-/// Mirrors `org.apache.pekko.dispatch.Mailbox` (design of #234, section 3.2).
+/// Mirrors `org.apache.pekko.dispatch.Mailbox`.
 /// The behaviour of the status and of scheduling is the fixed mailbox of
 /// `specs/mailbox_scheduling.qnt`.
 ///
@@ -62,9 +62,9 @@ mod tests;
 /// the end of a run.
 ///
 /// **The way back.** A mailbox of an actor knows the dispatcher that runs it
-/// only through a `Weak`, the one edge out of the mailbox (condition 2 of the
-/// ownership model's revision, design of #234, section 11.11.4).
-// The gate gives invariant I6 of the design (design of #234, section 3.2).
+/// only through a `Weak`, the one edge out of the mailbox.
+// The gate keeps a closed mailbox from accepting new messages while allowing a
+// shared queue to outlive one mailbox.
 // It is a choice inside what Pekko allows, not a promise to users, so it is
 // written here and not in the rustdoc (docs/decisions/pekko-semantics-first.md):
 // a sender looks at the closed bit and enqueues inside the gate's lock, and
@@ -130,8 +130,7 @@ impl<C: MailboxCell> Mailbox<C> {
   /// Runs the installed refused route on this (the sender's) thread and
   /// returns `None`, or hands the envelope back when no route is installed.
   /// The route is called through the reference the mailbox holds, so a
-  /// routing clones no handle and walks no way back (design of #234,
-  /// section 11.11.7, the refused path of condition 1).
+  /// routing clones no handle and walks no way back.
   pub(crate) fn route_refused(&self, envelope: Envelope) -> Option<Envelope> {
     match &self.refused_route {
       | Some(route) => {
@@ -260,7 +259,7 @@ impl<C: MailboxCell> Mailbox<C> {
   ///
   /// Between the two steps the work may be handled by the run that is still
   /// going, so the run returned may find nothing to do. Pekko has the same
-  /// empty run, and the user never sees it (design of #234, section 3.10).
+  /// empty run, and the user never sees it.
   pub(crate) fn try_schedule(mailbox: &Arc<Self>) -> Option<MailboxRun<C>> {
     if mailbox.reserve() {
       // syn-check: allow(tests-location) -- 所有権モデルの条件1の数え上げ（設計 §11.11.7、オーナーの許可 2026-11-27、元帥の項目472）

@@ -3,6 +3,7 @@ name = "syn-check"
 version = "0.1.0"
 edition = "2024"
 publish = false
+default-run = "syn-check"
 description = "Static checker for fraktor-ng-rs structure rules. Parses with syn and never compiles the target code."
 
 [dependencies]

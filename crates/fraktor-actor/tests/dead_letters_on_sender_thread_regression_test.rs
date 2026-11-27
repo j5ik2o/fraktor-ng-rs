@@ -14,13 +14,12 @@
 //
 // This file has been modified from the Apache Pekko original.
 
-// Regression tests for the review of PR #295 (issue #286): two shapes the
-// sender-thread routing must not change.
+// Regression tests for issue #286: two shapes the sender-thread routing
+// must keep.
 //
-// - A system that has terminated discards a refused envelope, as the closed
-//   executor queue discarded it before #286. A subscriber of another system
-//   that was subscribed to the terminated system's event stream receives
-//   nothing further.
+// - A system that has terminated discards a refused envelope. A subscriber
+//   of another system that was subscribed to the terminated system's event
+//   stream receives nothing further.
 // - An immediate DeathWatch notice for a watcher that has already stopped
 //   is routed as the notice itself: a `Terminated` is a suppressed type in
 //   the port's dead letter rules, so it surfaces as a

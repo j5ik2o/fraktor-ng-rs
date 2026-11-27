@@ -49,7 +49,7 @@ pub enum PoolKind {
   /// with; a deployment section never supplies it, because the
   /// original's `Config` constructor does not read
   /// `virtual-nodes-factor` and the factor stays at its default of
-  /// zero there (design of #195, section 2.4).
+  /// zero there.
   ConsistentHashing {
     /// The virtual nodes factor.
     virtual_nodes_factor: u32,

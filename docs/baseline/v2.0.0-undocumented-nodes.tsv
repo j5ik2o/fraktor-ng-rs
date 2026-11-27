@@ -70,7 +70,7 @@ testkit/src/test/scala/org/apache/pekko/testkit/ImplicitSenderSpec.scala	no-repo
 testkit/src/test/scala/org/apache/pekko/testkit/PekkoSpec.scala	no-report
 testkit/src/test/scala/org/apache/pekko/testkit/TestActorsSpec.scala	no-report
 testkit/src/test/scala/org/apache/pekko/testkit/TestEventListenerSpec.scala	no-report
-testkit/src/test/scala/org/apache/pekko/testkit/TestFSMRefSpec.scala	unclassified
+testkit/src/test/scala/org/apache/pekko/testkit/TestFSMRefSpec.scala	no-report
 testkit/src/test/scala/org/apache/pekko/testkit/TestProbeSpec.scala	no-report
 testkit/src/test/scala/org/apache/pekko/testkit/TestTimeSpec.scala	no-report
 testkit/src/test/scala/org/apache/pekko/testkit/metrics/MetricsKitSpec.scala	unclassified
