@@ -1,10 +1,10 @@
 # 設計：#198 FSMTimingSpec／ActorRefSpec の移植
 
-[Issue #198](https://github.com/j5ik2o/fraktor-ng-rs/issues/198) の第1段（設計だけ）の記録である。実装は、別の担当がこの設計をレビューして通ってから行う。第2段では、テストは Claude Opus の担当が先に red で書き、実装の担当はそのテストを書き換えずに通す実装だけを書く。この文書は実装を含まない。
+[Issue #198](https://github.com/j5ik2o/fraktor-ng-rs/issues/198)（[PR #288](https://github.com/j5ik2o/fraktor-ng-rs/pull/288)）の第 1 段（設計と設計に付く Quint 仕様のみ）の記録である。実装とテストは、この設計が独立レビューを通ってから第 2 段で行う。第 2 段では、テストを Claude Opus 5.5 の担当が先に red で書き、実装の担当はそのテストを書き換えずに通す実装だけを書く。この文書と `crates/fraktor-actor/specs/fsm_timing.qnt` の段では実装・テスト・台帳を触らない。
 
-対象は Pekko v2.0.0（commit `9fbd2283b1cf701c90a1223bf621942c191db61f`）の actor-tests にある `FSMTimingSpec` と `ActorRefSpec` である。原典の本体は、actor の `FSM.scala`（名前付きタイマ、状態タイムアウト、`whenUnhandled` の動的な差し替え）と `ActorRef`／`ActorCell`／`LocalActorRefProvider`（生成の失敗、入れ子の生成、子の存在確認、直列化）である。移植先は `crates/fraktor-actor` である。依存の [Issue #180](https://github.com/j5ik2o/fraktor-ng-rs/issues/180)（`receiveWhile`、`TestLatch`）は main に入っている。依存する issue はほかに無い。
+対象は Pekko v2.0.0（commit `9fbd2283b1cf701c90a1223bf621942c191db61f`）の actor-tests にある `FSMTimingSpec` と `ActorRefSpec` である。原典の本体は、actor の `FSM.scala`（名前付きタイマ、状態タイムアウト、`onTransition` からのタイマ操作、`stay()`・未処理イベントでの状態タイムアウト張り直し、`whenUnhandled` の動的差し替え）と `ActorRef.scala`／`Actor.scala`／`ActorCell.scala`／`LocalActorRefProvider`（非同期生成と `ActorInitializationException` のパス同梱、入れ子の生成、`context.child`、`EmptyLocalActorRef`、直列化）である。移植先は `crates/fraktor-actor`（および不足している `EventFilter` 拡張について `crates/fraktor-testkit`）である。依存の [Issue #180](https://github.com/j5ik2o/fraktor-ng-rs/issues/180)（`receiveWhile`、`TestLatch`）および [Issue #200](https://github.com/j5ik2o/fraktor-ng-rs/issues/200)（[PR #283](https://github.com/j5ik2o/fraktor-ng-rs/pull/283)、`Executor` の期限索引と `await_envelope` の期限カット）は `main`（`53014ed`）に入っている。
 
-進め方の規約は `.takt/facets/knowledge/fraktor-porting-rules.md`、設計文書の前例は [PR #205](https://github.com/j5ik2o/fraktor-ng-rs/pull/205) の `docs/design/issue-177-frequency-sketch.md`、直近の `docs/design/issue-194-specs.md`（FSMTransitionSpec ほか）と `docs/design/issue-181-testfsmref.md`（TestFSMRef、FSM のタイマの表・世代・状態タイマのスロット）に従う。オーナーの指針（`docs/decisions/pekko-semantics-first.md`、main）は、速さより Pekko の意味論を優先することである。Scala・Java の書き方の対応は `docs/decisions/scala-java-to-rust-correspondence.md` を先に引いた（§2.3）。新しい Rust ファイルには、自作のものも含めて Apache-2.0 のヘッダーを付ける（決まりの見直しは [Issue #241](https://github.com/j5ik2o/fraktor-ng-rs/issues/241) で進行中であり、この件では現行の決まりに従う）。
+進め方の規約は `.takt/facets/knowledge/fraktor-porting-rules.md`、設計文書の前例は `docs/design/issue-181-testfsmref.md`（[PR #275](https://github.com/j5ik2o/fraktor-ng-rs/pull/275)）、`docs/design/issue-200-receive-timeout.md`（[PR #283](https://github.com/j5ik2o/fraktor-ng-rs/pull/283)）、`docs/design/issue-234-multithread-executor.md`（段 6：[Issue #257](https://github.com/j5ik2o/fraktor-ng-rs/issues/257)）に従う。方針は `docs/decisions/pekko-semantics-first.md`（速さより Pekko の意味論を優先する）と `docs/decisions/scala-java-to-rust-correspondence.md`（§2.3）に従う。新しい Rust・Quint ファイルには Apache-2.0 のヘッダーを付ける。
 
 ## 1. 何を移植するか
 
@@ -18,278 +18,566 @@
 | `actor-tests/src/test/scala/org/apache/pekko/actor/ActorRefSpec.scala` | 12／12 | **12** |
 | 合計 | 22／12 | **22** |
 
-台帳の `FSMTimingSpec` ノードの `test_cases_approx: 0` は目安が入っていない値であり、数え直しは 10 件で issue の目安と一致する。第2段で台帳を更新するときに `cases.total: 10` として記録する。`ActorRefSpec` は issue、台帳、数え直しがすべて 12 件で一致する。
-
 台帳の対象ノードは次の 2 件で、どちらも `status: unported`、`triage.kind: pending` である。
 
-- `actor-tests/src/test/scala/org/apache/pekko/actor/FSMTimingSpec.scala`（needs: extends-pekko-spec、pekko-spec、test-kit、test-actor、implicit-sender、expect-msg、expect-no-message、event-filter、within、await-cond、receive-while、ignore-msg。premise_flags: thread-sleep）
-- `actor-tests/src/test/scala/org/apache/pekko/actor/ActorRefSpec.scala`（needs: extends-pekko-spec、pekko-spec、test-actor、default-timeout、expect-msg、expect-terminated、event-filter、test-latch。premise_flags: java-serialization、thread-sleep）
+- `actor-tests/src/test/scala/org/apache/pekko/actor/FSMTimingSpec.scala`（全 10 件に `taggedAs TimingTest`。needs: `extends-pekko-spec`, `pekko-spec`, `test-kit`, `test-actor`, `implicit-sender`, `expect-msg`, `expect-no-message`, `event-filter`, `within`, `await-cond`, `receive-while`, `ignore-msg`。premise_flags: `thread-sleep`）
+- `actor-tests/src/test/scala/org/apache/pekko/actor/ActorRefSpec.scala`（needs: `extends-pekko-spec`, `pekko-spec`, `test-actor`, `default-timeout`, `expect-msg`, `expect-terminated`, `event-filter`, `test-latch`。premise_flags: `java-serialization`, `thread-sleep`）
 
-移す先はどちらも `crates/fraktor-actor/tests/` で、ノード 1 件＝ファイル 1 件、ファイルの冒頭に出典（Pekko v2.0.0 のファイルパス）をコメントで残す。
+移す先は `crates/fraktor-actor/tests/` にノード 1 件＝ファイル 1 件で置き、冒頭に Pekko v2.0.0 の原典パスをコメントで残す。
 
 - `crates/fraktor-actor/tests/fsm_timing_spec.rs`
 - `crates/fraktor-actor/tests/actor_ref_spec.rs`
 
 ### 1.2 対応表：FSMTimingSpec（10 件）
 
-原典の機械は 1 つである。testActor へ遷移と Tick／Tock を送る `StateMachine`（状態は `Initial`、`TestStateTimeout`、`TestStateTimeoutOverride`、`TestSingleTimer`、`TestSingleTimerResubmit`、`TestRepeatedTimer`、`TestUnhandled`、`TestCancelTimer`、`TestCancelStateTimerInNamedTimerMessage`、`TestCancelStateTimerInNamedTimerMessage2`、データは `Int`）と、停止する `StoppingActor` である。移植の機械は本体の `Fsm`（§2.1）を `Props` の factory の中で組む形にし、原典のコンストラクタの呼び出し（`startWith`、`when`、`onTransition`、`initialize`）を写す。ただし原典の `when(state, stateTimeout = …)`、状態関数の中からの `startSingleTimer`／`startTimerWithFixedDelay`／`cancelTimer`、`goto(…).forMax(…)` は、現行の `Fsm` には無い（§2.1）。§3.1 の追加が入って初めて書ける。
+原典は 1 つの `StateMachine` インスタンスを 10 ケースで順次使い回すが、Rust の `#[test]` は並列実行されるため、**ケースごとに独立した `FraktorSpec` と `StateMachine` を起動する**構成にする。共通ヘルパ `start_fsm(spec)` が次を毎回行う：
 
-原典は実時間で待つ（`TimingTest` タグ、`within` と `dilated`）。移植も実時間で書き、時間の幅は testkit の `dilated`（`TestKitSettings::dilated`）と `FraktorSpec::within`／`within_range` の前例に合わせる。仮想時間（testkit の `ManualScheduler`）へ置き換える案は採らない。原典が確かめるのは「実際の期限が来たら発火し、来る前は発火しない」ことであり、仮想時間では期限の実測にならないためである。
+1. `spec.test_kit_settings()` を `Props` の factory へ渡し、`StateMachine`（`Fsm<State, i32>`）を起動する。
+2. `SubscribeTransitionCallBack(spec.test_actor())` を送り、`expect_msg_within(Duration::from_secs(1), ...)` 相当で `CurrentState { fsm, state: State::Initial }` を受ける（`FSMTimingSpec.scala:26-27`）。
+3. `spec.test_kit_mut().ignore_msg(|msg| matches!(msg.downcast_ref::<Transition<State>>(), Some(t) if t.from == State::Initial))` を登録する（`FSMTimingSpec.scala:29-31`）。`FraktorSpec` 自身には `ignore_msg`／`expect_no_message` の直接メソッドが無いため、いずれも `spec.test_kit_mut()` 経由で呼ぶ。`TestKit::expect_no_message(max)` は原典の `expectNoMessage(max)` と同じく `max` を dilate しない。原典の 2 つの形は別の長さを待つので、写し方を分ける：
+   - `expectNoMessage(remainingOrDefault)`（ケース 1・2・3）：`within` の中なので `remainingOrDefault` は `remaining` と同じ。`spec.test_kit_mut().expect_no_message(spec.remaining())` と書く。
+   - 引数なしの `expectNoMessage()`（ケース 4・5・6）：原典 `TestKit.scala:733-734` は `ExpectNoMessageDefaultTimeout.dilated`（`pekko.test.expect-no-message-default = 100ms`、`testkit/src/main/resources/reference.conf:26`）を待つ。scope の残りは待たない。`let settings = spec.test_kit_settings(); spec.test_kit_mut().expect_no_message(settings.dilated(settings.expect_no_message_default_timeout()))` と書く（`TestProbe::expect_no_message` の doc が示す形。testkit に引数なしの口は足さない）。
 
-| # | 原典のケース | Rust のテスト名 | 移す／作らない |
+時間の扱い（`dilated` と CI 揺れ対策）：
+
+- 原典 `FSMTimingSpec.scala` に合わせ、`StateMachine` の遅延（`800ms`, `500ms`, `100ms`, `1ms`：`FSMTimingSpec.scala:207, 210, 216, 226, 231, 239, 243, 266, 268`）は `TestKitSettings::dilated` で伸ばす。一方 `StoppingActor` の `when(Initial, 200.millis)`（`FSMTimingSpec.scala:295`）は原典どおり dilate しない。
+- `FraktorSpec::within_range(min, max)` は `max` のみ dilate し `min` は伸ばさない（原典 `TestKitBase.within(min, max)` と同一）。
+- 発火の運搬は §3.1 の案 C（`#200` 型の `Executor` 期限索引＋`Clock`＋`await_envelope` の期限カット）を採る。1ms ポーリングスレッドとスレッド間起床遅延が無いので、実時間テストの CI 揺れを最小限に抑えられる。仮想時間（`ManualScheduler`）への置き換えは行わない（実時間の発火確認は Spec が担い、決定論的な境界・順序の網羅は §5 の PBT が `ActorSystem::set_clock` で担う）。
+
+| # | 原典のケース | Rust のテスト名 | 移す／保留と具体的な写し方 |
 |:---:|:---|:---|:---|
-| 1 | receive StateTimeout | `receives_a_state_timeout` | 移す（本体の追加が要る。§3.1）。状態 `TestStateTimeout`（状態タイムアウト 800ms）へ移り、`StateTimeout` のイベントで `Initial` へ戻る。500ms〜2 秒の `within_range` で `Transition` を受ける |
-| 2 | cancel a StateTimeout | `cancels_a_state_timeout` | 移す（本体の追加が要る）。`TestStateTimeout` へ移った直後に `Cancel` を送ると、状態タイムアウトより先に処理されて `Initial` へ戻り、その後は黙る。普通のメッセージの受信が張ってある状態タイマを取り消す規則（§4 の I1）を見る |
-| 3 | cancel a StateTimeout when actor is stopped | `cancels_a_state_timeout_when_the_actor_is_stopped` | 移す（本体の追加が要る）。`StoppingActor` は `Initial`（状態タイムアウト 200ms）で自分を止める。testActor が DeadLetter を購読し、400ms の間 DeadLetter が来ないことを見る。停止でタイマがすべて消える規則（§4 の I4）を見る |
-| 4 | allow StateTimeout override | `allows_a_state_timeout_override` | 移す（本体の追加が要る）。`Initial` から `goto(TestStateTimeout).forMax(Duration.Inf)` で移ると、状態自身の 800ms では発火せず（400ms 黙る）、`Cancel` で戻れる。`forMax` の上書きと無限の扱い（§3.1 の `FsmTimeout`）を見る |
-| 5 | receive single-shot timer | `receives_a_single_shot_timer` | 移す（本体の追加が要る）。`startSingleTimer("tester", Tick, 500ms)` を張り、`Tick` が 1 回だけ届いて `Initial` へ戻り、その後は黙る |
-| 6 | resubmit single-shot timer | `resubmits_a_single_shot_timer` | 移す（本体の追加が要る）。遷移ハンドラ（`Initial -> TestSingleTimerResubmit`）が単一タイマを張り、発火のたびに同じ名前で張り直して `Tick`、`Tock` の順に届く。張り直しで世代が進み、古い印が通らないこと（§4 の I2）を含む |
-| 7 | correctly cancel a named timer | `correctly_cancels_a_named_timer` | 移す（形を変える。本体の追加が要る）。原典は `Tick` の処理の中で 1ms のタイマ「hallo」を張り、メールボックスにメッセージが溜まったことを `awaitCond` で確かめてから取り消し、返信して 500ms で張り直す。移植のアクターの中からはメールボックスの滞留を読めない（§2.1）ため、処理の中で「張る→取り消す→返信する→張り直す」を続けて行う形にする。観測できる振る舞い（最初の `Tock` は届かず、張り直した `Tock` が約 500ms で届く）は同じである。「すでにキューへ入った印を取り消しで捨てる」こと自体は、§5 の PBT（P1）と §6 の Quint が担い、このケースの形の変更で弱めない。次に `Cancel` でタイマを取り消して `Initial` へ戻る |
-| 8 | not get confused between named and state timers | —（#234 の段 6 の後。§1.4） | この issue では移さない。名前付きタイマの受信が状態タイマを取り消し、状態タイマの印が名前付きタイマの世代で無効にならないこと（[PR #275](https://github.com/j5ik2o/fraktor-ng-rs/pull/275) のレビューで分けた世代の分離）を見るケースだが、原典は `ActorRefWithCell.suspend()`／`resume()` とメールボックスの滞留の観測を使う。どちらも移植には外向けの口が無く、前提は §1.4 に書く。除外にも作らない区分にもしない。台帳の件数からは外さず、red のまま残す形にする |
-| 9 | receive and cancel a repeated timer | `receives_and_cancels_a_repeated_timer` | 移す（本体の追加が要る）。`startTimerWithFixedDelay("tester", Tick, 100ms)` を張り、データ 4 から数えて `Tick` が 5 回届き（`receiveWhile`、[Issue #180](https://github.com/j5ik2o/fraktor-ng-rs/issues/180) で入った `TestProbe::receive_while` を使う）、最後に自分で取り消して `Initial` へ戻る |
-| 10 | notify unhandled messages | `notifies_unhandled_messages` | 移す（本体の追加が要る。§3.2）。`TestUnhandled` で処理できない `Tick` と `Unhandled("test")` が、警告「unhandled event … in state TestUnhandled」として `EventFilter.warning` に 1 回ずつ掛かる。途中で `SetHandler` が `whenUnhandled` を差し替えると次の `Tick` はテストへ届き、`Cancel` でハンドラを空に戻してから `Initial` へ戻る |
+| 1 | receive StateTimeout | `receives_a_state_timeout` | 移す（§3.1）。`TestStateTimeout`（`when_with_state_timeout` で 800ms dilated）へ移り、`StateTimeout` で `Initial` へ戻る。`within(2s)` の内側で `within_range(500ms, 2s)` に `Transition(fsm, TestStateTimeout, Initial)` を受け、その後 `expect_no_message(spec.remaining())` |
+| 2 | cancel a StateTimeout | `cancels_a_state_timeout` | 移す（§3.1）。`TestStateTimeout` へ移った直後に `Cancel` を送り、`within(1s)` 内で `Cancel` と `Transition(fsm, TestStateTimeout, Initial)` を受け、`expect_no_message(spec.remaining())`。通常メッセージ受信で状態タイマが取り消されること（I1）を見る |
+| 3 | cancel a StateTimeout when actor is stopped | `cancels_a_state_timeout_when_the_actor_is_stopped` | 移す（§3.1）。`StoppingActor` は `initialize()` を呼ばず、`when_with_state_timeout(Initial, Some(200ms), ...)` で `context.stop(&context.self_ref()); Some(FsmState::stay())` を返す。`make_transition(stay())` が 200ms の状態タイマを張り、直後の `post_stop_with_context`（および停止処理の `clear_fsm_timers`）がそれを取り消す原典の構造（`FSMTimingSpec.scala:292-300`）をそのまま写す。`test_actor` が `DeadLetter` を購読し、`within(400ms)` で `expect_no_message(spec.remaining())`（I4） |
+| 4 | allow StateTimeout override | `allows_a_state_timeout_override` | 移す（§3.1）。`Initial` から `FsmState::goto(TestStateTimeout).for_max(FsmTimeout::Infinite)` で移ると、状態自身の 800ms は張られず、`within(400ms)` の中で既定の長さ（100ms dilated）の `expect_no_message` を通る。続く `within(1s)` で `Cancel` を送り `Cancel` と `Transition(fsm, TestStateTimeout, Initial)` を受ける |
+| 5 | receive single-shot timer | `receives_a_single_shot_timer` | 移す（§3.1）。状態関数内で `view.start_single_timer("tester", Message::new(Tick), dilated(500ms))` を張り、`within(2s)` 内側の `within_range(500ms, 1s)` で `Tick` と `Transition(fsm, TestSingleTimer, Initial)` を受け、既定の長さ（100ms dilated）の `expect_no_message` |
+| 6 | resubmit single-shot timer | `resubmits_a_single_shot_timer` | 移す（§3.1）。`on_transition_with_view` の `Initial -> TestSingleTimerResubmit` で `view.start_single_timer("blah", Message::new(Tick), dilated(500ms))` を張り、発火時に同じ名前 `"blah"` で `Tock` を張り直す。`within(2.5s)` の内側で `within_range(500ms, 1s)` に `Tick`、続く `within(1s)` に `Tock` と `Transition(fsm, TestSingleTimerResubmit, Initial)`、最後に既定の長さ（100ms dilated）の `expect_no_message` |
+| 7 | correctly cancel a named timer | `correctly_cancels_a_named_timer` | 移す（形を変える。§3.1）。原典（`FSMTimingSpec.scala:237-251`）は `Tick` 処理の中で 1ms タイマ `"hallo"` を張り `ActorCell.mailbox.hasMessages` を `awaitCond` で待ってから取り消し、返信し 500ms で張り直す。移植ではアクター内からメールボックス滞留を読めないため、状態関数内で「1ms で張る → `cancel_timer("hallo")` → `Tick` を返信 → 500ms で張り直す」の順で実行し、`within(500ms)` で `Tick`、`within_range(300ms, 1s)` で `Tock`、`Cancel` 後に 1s 以内で `Transition(fsm, TestCancelTimer, Initial)` を受ける。**この形では、Spec の中で「すでにメールボックスに入った古いタイマ印が `cancel_timer`／張り直しで捨てられる」ところを通らない**（案 C の期限検査は `run_one` の境目で走り、状態関数の中では 1ms タイマが発火しないため）。この性質は §5 の PBT（P1）が手動時計 `ActorSystem::set_clock` で滞留の順序を再現して確かめ、§6 の Quint でも確かめる。原典より弱めるので伺う（§1.5 伺い 6） |
+| 8 | not get confused between named and state timers | —（#234 段 6 #257 の後。§1.4、§1.5） | この issue では移さない（#257 後の後続 issue へ回す）。外からの `suspend`／`resume` と `mailbox.hasMessages` が必要。除外・作らない区分にはせず、台帳は `total: 10, ported: 9, passing: 9, status: unported`（`verified_against` なし）のまま残す（伺うこと：§1.5） |
+| 9 | receive and cancel a repeated timer | `receives_and_cancels_a_repeated_timer` | 移す（§3.1）。`view.start_timer_with_fixed_delay("tester", Message::new(Tick), dilated(100ms))` を張り、データ 4 から数えて 5 回 `Tick` を `FraktorSpec::receive_while`（2s）で受け（長さ 5）、0 で `cancel_timer("tester")` して `Initial` へ戻り、`within(500ms)` で `Transition(fsm, TestRepeatedTimer, Initial)` を受ける |
+| 10 | notify unhandled messages | `notifies_unhandled_messages` | 移す（§3.2、§3.5）。`EventFilter::filter_events` に 2 本の `EventFilter::warning()`（`"unhandled event Tick in state TestUnhandled"` と `"unhandled event Unhandled(test) in state TestUnhandled"`、どちらも `source = fsm.path().to_string()`、`occurrences = 1`）を同時に張り、`Message::with_display(Tick)`・`SetHandler`（`FsmState::stay().with_unhandled(...)`）・`Tick`（`Unhandled(Tick)` を受信）・`Message::with_display(Unhandled("test"))`・`Cancel`（`FsmState::goto(Initial).clear_unhandled()`）を実行し、`within(3s)` 内で `Transition(fsm, TestUnhandled, Initial)` を受ける |
 
 ### 1.3 対応表：ActorRefSpec（12 件）
 
-原典のアクターは、返信役の `ReplyActor`、仕事役の `WorkerActor`、送信役の `SenderActor`（`TestLatch` を数える）、転送役の `OuterActor`、内側の `InnerActor` と、それらのコンストラクタの中で別のアクターを作って失敗する変種（`FailingOuterActor`、`FailingInheritingOuterActor`、`FailingInnerActor`、`FailingInheritingInnerActor`）である。移植ではどれも通常の `Actor` 実装として書き、生成は `Props` の factory の中で行う。原典の設定文字列（`pekko.actor.allow-java-serialization = on`）はケース 3〜5 のためのもので、HOCON は写さない（§1.5、§2.3）。
+原典のアクター群（`ReplyActor`, `WorkerActor`, `SenderActor`, `OuterActor`, `InnerActor` および失敗変種）は通常の `Actor` 実装として書く。HOCON の `pekko.actor.allow-java-serialization = on` はケース 3〜5 のための設定であり写さない（§1.5、§2.3）。
 
-| # | 原典のケース | Rust のテスト名 | 移す／作らない |
+現行の `fraktor-ng-rs` の生成モデル（`crates/fraktor-actor/src/kernel/executor/executor_value.rs:1249-1325, 1602-1636`）を先に確認しておく：
+
+- `ActorSystem::actor_of`／`actor_of_named`・`ActorContext::actor_of`／`actor_of_with_strategy` は**非同期**であり、即座に `ActorRef` を返して `SystemMessage::Create` を積む。
+- `Create` の実行（`Executor::create_now`）は `UnwindCatcher` の下で `Props` factory と `Actor::pre_start` を呼び、panic すれば `FailureKind::Initialization`（原因名 `"ActorInitializationException"`）を発生させ、既定の監督戦略が `Error` ログを発行して `Directive::Stop` で停止・名前解放する。
+- **`Props::new` クロージャの中から `system.actor_of`／`weak.try_actor_of` を呼ぶと、`Executor::lend` の排他ロックがすでに保持されているため再入 panic（`"already borrowed: re-entrant or concurrent use"`）で壊れる。** したがって、アクター内部からの入れ子生成は必ず `Actor::pre_start` の中で `context.actor_of`／`context.actor_of_with_strategy` を使う。
+- **外側と内側の監督の形**：原典 `ActorRefSpec.scala:149` の `import system.actorOf` により、外側も内側も `/user` の子（兄弟）として作られる。内側の `actorOf` は外側の `Props` の creator の中で評価されるので、内側の `Create` が先に積まれる。Rust では外側の factory の中から `system.actor_of` を呼べない（上の再入 panic）。そこで**テストの本体が先に内側を `system.actor_of_named` で作り、その参照を外側の factory に閉じ込めてから外側を `system.actor_of_named` で作る**。こうすると、両方 `/user` の子で、内側の `Create` が先に積まれる、という原典の形がそのまま残る。
+  - レビュー H4 の直し方にある「`pre_start` での入れ子の子の生成」は、ケース 1 では採らない。内側を外側の子として `pre_start` で作ると、外側が失敗して suspend している間に内側の失敗が `entry.held` に保留され、外側の停止で捨てられる（`executor_value.rs:2893-2922`）。双方失敗の `occurrences = 2` が 1 になり、原典の監督の形とも変わる。`pre_start` での入れ子の生成は、原典がそうしているケース 6（`supports_nested_actor_ofs`）とケース 12 で使う。
+
+| # | 原典のケース | Rust のテスト名 | 移す／除外と具体的な写し方 |
 |:---:|:---|:---|:---|
-| 1 | not allow Actors to be created outside of an actorOf | `does_not_allow_actors_to_be_created_outside_of_an_actor_of` | 移す（形を変える。直接生成の小ケースだけ作らない提案。§1.5）。原典の本体は、コンストラクタの中で別の `Actor` を `new` すると `ActorInitializationException` になり、生成が失敗し、失敗の後も context のスタックが空（＝系が壊れていない）ことである。移植では「生成」＝`Props` の factory の呼び出しであり、factory の中で失敗（panic）した生成は初期化の失敗として表に出て参照を渡さず、その後も系が通常どおりアクターを作れることを見る。失敗の変種（外側で失敗、内側で失敗、継承した変種、2 回失敗、通常の例外がそのまま伝わる）は、factory の中で panic する対象を入れ替えて写す。factory の panic を実行器がどう表に出すか（捕まえて初期化の失敗にするか、そのまま伝えるか）は現行の実装で確定していないため、第2段の最初に小さな確認テストで実測し、その結果に合わせてアサーションの形を決める（§7） |
-| 2 | insert its path in a ActorInitializationException | `inserts_its_path_in_an_actor_initialization_exception` | 移す（本体の追加が要る可能性がある。§3.4）。名前 `failingActor` で factory が失敗する生成を行い、初期化の失敗の表出（エラーか失敗のログ）に `/user/failingActor:` のパスが入ることを `EventFilter` 相当かエラーの文面で見る |
-| 3 | be serializable using Java Serialization on local node | — | **作らない・除外の提案**（§1.5）。Java Serialization そのものは JVM の仕組みであり、Rust で同じ振る舞いを作れない |
-| 4 | throw an exception on deserialize if no system in scope | — | **作らない・除外の提案**（§1.5）。ケース 3 と同じく Java のデシリアライズの振る舞いである |
-| 5 | return EmptyLocalActorRef on deserialize if not present in actor hierarchy (and remoting is not enabled) | `returns_an_empty_local_actor_ref_for_a_path_that_is_not_in_the_hierarchy` | 移す（形を変える。バイト列の部分だけ作らない提案。§1.5）。中身の性質は「階層にいないパスを解決すると、何も答えない参照（Pekko の `EmptyLocalActorRef`）が返る」ことであり、移植には `ActorSystem::resolve_actor_ref` がすでにある（§2.2）。`ReplyActor` を名前 `non-existing` で作って止め、そのパスの文字列表現から解決し直した参照が、元のパスを持ち、知らせても返信が無く dead letters へ流れることを見る。Java のバイト列を経由する部分は写さない。なお Pekko の `EmptyLocalActorRef` はパスで等しいが、移植の `ActorRef` の等価性は id と世代で決まる（所有権モデルの決定）ため、解決し直した参照同士の等価はアサーションに入れない。この違いは形の変更としてここに記録する |
-| 6 | support nested actorOfs | `supports_nested_actor_ofs` | 移す（形を変える）。原典はコンストラクタの中で `system.actorOf` して入れ子を作る。移植の factory の中では系を借り直せないため、入れ子は `pre_start` で `ActorContext::actor_of_with_strategy`（名前なし）から作り、受けたメッセージにその参照を返す形にする。外側と入れ子が別の参照であることを見る |
-| 7 | support advanced nested actorOfs | `supports_advanced_nested_actor_ofs` | 移す。`OuterActor` が `InnerActor` へ `forward`（送信者を保つ）し、`ask` で「innerself」「self」「msg」が正しく返る。`forward` は `ActorRef::forward`／`ActorContext::forward` がすでにある。`ask` は adaptor の `AskFuture` を使う |
-| 8 | support reply via sender | `supports_reply_via_sender` | 移す。`SenderActor` が `complex`／`simple` を送り、`ReplyActor` と `WorkerActor` の応答で `TestLatch(4)` が満ちることを 2 巡見る。`WorkerActor` の 1 秒の仕事は原典どおり実時間の sleep（`dilated`）で写す。`TestLatch` は [Issue #180](https://github.com/j5ik2o/fraktor-ng-rs/issues/180) で入っている |
-| 9 | support actorOfs where the class of the actor isn't public | `supports_actor_ofs_where_the_type_of_the_actor_is_not_public` | 移す（形を変える）。原典は非公開クラスの `createProps()` 経由で作る。移植では、テストファイルの中の非公開モジュールにアクター型を置き、そのモジュールが公開する factory 関数が返す `Props` で作る形にする。「pigdog」を知らせて同じ文が返ることを見る。リフレクションでコンストラクタを探す仕組みそのものは写さない（対応表の前例、§2.3） |
-| 10 | stop when sent a poison pill | `stops_when_sent_a_poison_pill` | 移す。`ask(5)` と `ask(0)` を送ってから `PoisonPill` を送ると、先の 2 件の返信（"five" と "null"）が届いてから止まる。実行器は `PoisonPill` をシステムメッセージとしてすでに扱う（§2.2）。`watch` と `expectTerminated` で停止を見る |
-| 11 | restart when Kill:ed | `restarts_when_killed` | 移す。親が `OneForOneStrategy`（再試行 2 回、1 秒の範囲）を持ち、子へ `Kill` を送ると子の `pre_restart` と `post_restart` が `TestLatch(2)` を満ちる。実行器は `Kill` を `ActorKilledException` の失敗としてすでに扱い、`Actor` の `pre_restart`／`post_restart` フックもすでにある（§2.2） |
-| 12 | be able to check for existence of children | `can_check_for_the_existence_of_children` | 移す（本体の追加が要る。§3.3）。親が子 `child` を作り、受けた名前について `context.child(name)` の有無を返す。`child` は真、`whatnot` は偽であること `ask` で見る。現行の `ActorContext` に `child` は無い |
+| 1 | not allow Actors to be created outside of an actorOf | `does_not_allow_actors_to_be_created_outside_of_an_actor_of` | 移す（13 の小ケースの写し方は下の §1.3.1。**直接の `new Actor` を `ActorCell.contextStack` で禁じる性質は作れないので §1.5 伺い 4**）。1 つの `FraktorSpec` の中で、原典と同じ順に小ケースを続けて流す |
+| 2 | insert its path in a ActorInitializationException | `inserts_its_path_in_an_actor_initialization_exception` | 移す（§3.4、§3.5）。factory が panic するアクターを `system.actor_of_named(props, "failingActor")` で起こし、`EventFilter::typed("ActorInitializationException").contains("/user/failingActor:").with_occurrences(1).intercept(...)` で包む。原典と同じく、この文字列は原因の文面（`"pekko://ActorRefSpec/user/failingActor: exception during creation, root cause message: [...]"`）に当たる。原典の `intercept[IllegalStateException]`（`Promise` で呼び手まで届くこと）は、§1.3.1 の末尾と同じく `watch` で受ける `Terminated` で代える |
+| 3 | be serializable using Java Serialization on local node | — | **除外の伺い（§1.5）**。Java Serialization 固有。オーナー判断待ち |
+| 4 | throw an exception on deserialize if no system in scope | — | **除外の伺い（§1.5）**。`JavaSerializer.currentSystem` 固有。オーナー判断待ち |
+| 5 | return EmptyLocalActorRef on deserialize if not present in actor hierarchy (and remoting is not enabled) | `returns_an_empty_local_actor_ref_for_a_path_that_is_not_in_the_hierarchy` | 移す（**バイト列往復と `EmptyLocalActorRef` 同士の `==` 省略は §1.5 の「伺うこと」へ提示**）。`ReplyActor` を `"non-existing"` で作って `PoisonPill` で停止確認（`watch`＋`expect_msg_terminated`）した後、そのパス文字列を `ActorPath::from_string` → `system.resolve_actor_ref` で解決した参照について、`EmptyLocalActorRef` の 4 性質すべてを検証する：① `resolved.path() == stopped.path()`、② `system.is_actor_terminated(&resolved) == true`、③ メッセージ送信で返信が無く `DeadLetter`（`recipient.path() == resolved.path()`）が発行される、④ `watch(&resolved)` で `Terminated { existence_confirmed: false, .. }` が即座に届く |
+| 6 | support nested actorOfs | `supports_nested_actor_ofs` | 移す（形を変える）。原典（`ActorRefSpec.scala:367-377`）はコンストラクタ内で `system.actorOf`（親 `/user`）を呼ぶが、移植では `Props` factory 内の再入ロックを避けるため `pre_start` で `context.actor_of_with_strategy`（親は `a`）により入れ子を作り、任意のメッセージへその参照を返す（親子関係が `/user` から `a` へ変わる違いをテスト冒頭にも 1 行記録する）。`ask` で受けた `nested` が `a` と別参照（`a != nested`）であることを検証する |
+| 7 | support advanced nested actorOfs | `supports_advanced_nested_actor_ofs` | 移す。`OuterActor` が `InnerActor` へ `ActorRef::forward(&inner, message, context)`（`actor_ref_value.rs:101`。`ActorContext::forward` は `pub(crate)` なので `ActorRef::forward` を使う）で転送し、`ask` で `"innerself"`（`!= a`）、`a`（`== a`）、`"self"`（`== a`）、`"msg"`（`== "msg"`）を検証する |
+| 8 | support reply via sender | `supports_reply_via_sender` | 移す。`SenderActor` が `"complex"`／`"simple"` と `"complex2"`／`"simple"` の 2 巡を送り、`ReplyActor` と `WorkerActor`（`1s` を `TestKitSettings::dilated` で sleep）の応答で `TestLatch(4)` が 2 巡とも満ちることを確認し、最後に `system.stop` する |
+| 9 | support actorOfs where the class of the actor isn't public | `supports_actor_ofs_where_the_type_of_the_actor_is_not_public` | 移す（形を変える。対応表 §2.3）。テストファイル内の非公開モジュール `mod non_public` に非公開のアクター型を置き、公開関数 `create_props() -> Props` 経由で `system.actor_of` し、`"pigdog"` を送って同じ文が返ることを確認し `system.stop` する |
+| 10 | stop when sent a poison pill | `stops_when_sent_a_poison_pill` | 移す。`ask(5)` と `ask(0)` の後に `"PoisonPill"`（または定数）を送り、`"five"` と `"null"` の 2 返信が届いてから停止することを `watch`＋`TestKit::expect_msg_terminated`（または `TestProbe::expect_msg_terminated_within`）で確認する |
+| 11 | restart when Kill:ed | `restarts_when_killed` | 移す。原典（`ActorRefSpec.scala:443`）の `filterException[ActorKilledException]` に合わせ、`EventFilter::typed("ActorKilledException").intercept(...)` で包む。親が `OneForOneStrategy(max_nr_of_retries = 2, within = 1s)` を持ち、子へ `Kill` を送って子の `pre_restart`・`post_restart` が `TestLatch(2)` を 5s 以内に満たすことを確認する |
+| 12 | be able to check for existence of children | `can_check_for_the_existence_of_children` | 移す（§3.3）。親 `"parent"` が `pre_start` で子 `"child"` を作り、受けた名前に対し `context.child(name).is_some()` を返す。`ask("child") == true`、`ask("whatnot") == false` を確認する |
 
-### 1.4 #234 を前提にするケース（FSMTimingSpec のケース 8）
+### 1.3.1 ActorRefSpec ケース 1 の 13 の小ケース
 
-ケース 8 は、FSM を suspend した間に名前付きタイマ（1ms）と状態タイマ（`forMax(1ms)`）の両方の期限が来てキューに溜まり、resume の後に名前付きタイマの `Tock` が先に処理されて次の状態へ移り、状態タイマの印は捨てられる（名前付きタイマの受信が状態タイマを取り消す）ことを見る。世代の分離そのものは [PR #275](https://github.com/j5ik2o/fraktor-ng-rs/pull/275) で kernel に入っている。
+原典の小ケースは 2 つの性質を同時に見ている。
 
-前提になるのはタイマではなく、セルの外からの suspend／resume と、メールボックスにメッセージが溜まったことの観測（`mailbox.hasMessages` と `TestKit.awaitCond`）である。現行の fraktor-ng-rs では、メールボックスの suspend／resume は `MailboxStatus` の中の数えだけがあり、`ActorRef` や `ActorContext` から呼ぶ口が無い。[Issue #234](https://github.com/j5ik2o/fraktor-ng-rs/issues/234) の設計（`docs/design/issue-234-multithread-executor.md` §1.2）は、外からの suspend／resume を「dispatcher の観測口」と一緒に要るものとして挙げ、その実装を段 6（dispatcher のライフサイクル）に置いている。したがってこのケースは「#234 の段 6 の後」と分けて書き、この issue では移さない。
+- **Rust で作れない性質**：`trait Actor` のコンストラクタが `ActorCell.contextStack`（`Actor.scala:500-506`、`ActorCell.scala:640-657`）を見て、`actorOf` の外で直接 `new` された `Actor` を `ActorInitializationException` で拒む。小ケース 1 はこれだけを見る。小ケース 2〜12 の `Failing*` の失敗の原因も、すべてコンストラクタの中の `val fail = new InnerActor`（`ActorRefSpec.scala:89, 98, 109, 118`）、または creator の中の 2 回目の `new`（`:257`）である。Rust の `Actor` は構造体に付けるトレイトなので、値を作るときにセルも検査も通らない。この性質は作れない（§1.5 伺い 4）。
+- **Rust で写せる性質**：初期化に失敗したアクターごとに `ActorInitializationException` のエラーログが 1 件出る（`occurrences = 1`／`2`）。失敗の原因の文面がそのログに残る（小ケース 13）。失敗のあとも系は壊れず、次の生成が普通に動く（`contextStackMustBeEmpty()`）。
 
-- ケース 8 は除外（`cases.excluded`）にも作らない区分（`cases.not_built`）にもしない。台帳の `FSMTimingSpec` ノードは `status: unported` のまま、`cases.total: 10`、`ported: 9`、`passing: 9` とし、最上位の `verified_against` は書かない形を第2段に提案する（[Issue #194](https://github.com/j5ik2o/fraktor-ng-rs/issues/194) の `LocalActorRefProviderSpec` の扱いと同じ）。
-- 残りの 21 件は #234 に依存しない。FSM の残り 9 件は単一シャードの実行器と実時間のドライバで確かめられ、ActorRefSpec の 12 件も同じである。
+写し方：失敗の原因は「直接の `new`」の代わりに **`Props` の factory の中の panic** で起こす。panic の文面は原典の `contextStack` の文面（`ActorCell.scala` の `"You cannot create an instance of [...] explicitly using the constructor (new). ..."`）をテスト側の定数にして使う。Rust には継承が無いので、`FailingOuterActor` と `FailingInheritingOuterActor`、`FailingInnerActor` と `FailingInheritingInnerActor` は同じ形になる。内側と外側の作り方は §1.3 の「外側と内側の監督の形」に従う。各小ケースは `EventFilter::typed("ActorInitializationException").with_occurrences(n).intercept(...)` で包む。
 
-### 1.5 作らない・除外の提案（決めるのはオーナー）
+| 小ケース | 原典の行 | 原典の形 | 原典の `occurrences` | Rust の形 |
+|:---:|:---|:---|:---:|:---|
+| 1 | `:150-152` | `actorOf` の外の `new Actor` | （フィルタ無し） | **作らない**（§1.5 伺い 4） |
+| 2 | `:156-166` | 外側のコンストラクタの中の `new Actor` | 1 | 外側の factory が panic。内側は作らない |
+| 3 | `:168-175` | `FailingOuterActor(actorOf(InnerActor))` | 1 | 内側は正常、外側の factory が panic |
+| 4 | `:177-184` | `OuterActor(actorOf(FailingInnerActor))` | 1 | 内側の factory が panic、外側は正常 |
+| 5 | `:186-193` | `FailingInheritingOuterActor(actorOf(InnerActor))` | 1 | 小ケース 3 と同じ形 |
+| 6 | `:195-203` | `FailingOuterActor(actorOf(FailingInheritingInnerActor))` | 2 | 内側と外側の両方の factory が panic |
+| 7 | `:205-213` | `FailingInheritingOuterActor(actorOf(FailingInheritingInnerActor))` | 2 | 小ケース 6 と同じ形 |
+| 8 | `:215-223` | `FailingInheritingOuterActor(actorOf(FailingInnerActor))` | 2 | 小ケース 6 と同じ形 |
+| 9 | `:225-234` | `OuterActor(actorOf(new InnerActor { val a = new InnerActor }))` | 1 | 小ケース 4 と同じ形 |
+| 10 | `:236-244` | 小ケース 6 と同じ式（原典の重複） | 2 | 小ケース 6 と同じ形（原典に合わせて重複のまま流す） |
+| 11 | `:246-253` | `OuterActor(actorOf(FailingInheritingInnerActor))` | 1 | 小ケース 4 と同じ形 |
+| 12 | `:255-263` | `OuterActor(actorOf({ new InnerActor; new InnerActor }))` | 1 | 小ケース 4 と同じ形 |
+| 13 | `:265-274` | `OuterActor(actorOf(throw new IllegalStateException("Ur state be b0rked")))` | 1 | 内側の factory が `panic!("Ur state be b0rked")`。フィルタを `with_message("Ur state be b0rked")` で絞る。原典の `logFailure` の文面は原因の `getMessage` そのもの（§3.4）なので、完全一致で原典の `getMessage should ===("Ur state be b0rked")` と同じことを確かめられる |
 
-次の提案は、この文書では提案として書くだけにし、台帳へは書かない。承認は `cases.excluded`／`cases.not_built` への `approved_by` と `approved_at` の記録で受ける（移植の規約）。
+各小ケースのあとに、原典の `intercept[ActorInitializationException]` と `contextStackMustBeEmpty()` の代わりとして次を確かめる。
 
-| 対象 | 提案 | 理由 |
-|:---|:---|:---|
-| ActorRefSpec ケース 3（Java Serialization で直列化できる） | 除外 | 確かめる対象が Java の `ObjectOutputStream`／`ObjectInputStream` と `JavaSerializer` そのものであり、Rust には対応する仕組みが無い。`ActorRef` の等価・パス・停止の観測といった、Rust で同じ振る舞いを作れる部分はケース 5（形を変えた形）と既存の `actor_ref_value_test.rs` が担う |
-| ActorRefSpec ケース 4（系がスコープに無いデシリアライズで例外） | 除外 | ケース 3 と同じく、Java のデシリアライズの入口の振る舞いである。直列化そのものを除外すれば、このケースの前提も無くなる |
-| ActorRefSpec ケース 5 のバイト列の部分 | 作らない（ケース自体は形を変えて移す） | `SerializedActorRef` のバイト列化は Java Serialization の一部である。パスの文字列表現からの解決で同じ性質（階層にいないパスは何も答えない参照になる）を確かめる |
-| ActorRefSpec ケース 1 の直接生成の小ケース（`new Actor { … }` を actorOf の外で作ると例外） | 作らない | Rust では `Actor` を実装した値を作ること自体はただの値の構築であり、セルも自己参照も生まれない。作ることを禁じる仕組みは言語に無く、禁じなくても観測できる振る舞いは何も変わらない。ケースの残り（生成の中での失敗）は形を変えて移す |
+- 失敗したアクターは監督に止められている：作る前に `watch` しておき、`expect_msg_terminated` で `Terminated` を受ける。失敗しなかった側（小ケース 3 の内側、小ケース 4 の外側など）は止まっていない（`system.is_actor_terminated(&r) == false`）。
+- 名前が空いている：失敗したアクターと同じ名前で、正常なアクターを `system.actor_of_named` で作り直せる（`ActorRefSpec` の `ReplyActor` を使い、`ask` に返事が返る）。
+- 原典の `intercept[ActorInitializationException]` は、失敗が呼び手まで届くことを `Promise` で見ている（`ActorRefSpec.scala:128-144`）。fraktor-ng-rs の `actor_of` は `Create` の前に参照を返すので、呼び手は panic を受け取らない。届いたことは、上のエラーログの件数と `Terminated` で確かめる。
 
-HOCON の設定を写す部分は、ActorRefSpec の設定文字列（`allow-java-serialization = on`）だけであり、上の除外提案と一緒に落ちる。前例（[Issue #154](https://github.com/j5ik2o/fraktor-ng-rs/issues/154) の D1、G0b の決定 E）どおり、設定は型付きの入力にするという判断は、本件では「設定でしか選べない振る舞いをケースの前提にしない」形で効く。FSMTimingSpec に設定文字列は無い。
+### 1.4 `#234` 段 6（`#257`）を前提にするケース（FSMTimingSpec ケース 8）
 
-## 2. 対応する本体が fraktor-ng-rs にすでにあるか
+ケース 8（`FSMTimingSpec.scala:115-129, 262-277`）は、FSM を外部から `suspend` した間に名前付きタイマ（1ms）と状態タイマ（`forMax(1ms)`）の両方の期限が来てメールボックスへ積まれ、`resume` の後に名前付きタイマ `Tock` が先に処理されて状態タイマをキャンセルし、続いて届く古い `StateTimeout` の印が捨てられることを見る。
 
-2026-11-27 の main（`c0f94f0`、[PR #275](https://github.com/j5ik2o/fraktor-ng-rs/pull/275) のマージ直後）で確かめた。
+世代分離そのものは [PR #275](https://github.com/j5ik2o/fraktor-ng-rs/pull/275) および本設計 §3.1（`state_generation` と `named_timer_generation` の分離）で kernel に入るが、テストが依存する「セルの外からの `suspend`／`resume`」と「`mailbox.hasMessages` の観測口」は [Issue #234](https://github.com/j5ik2o/fraktor-ng-rs/issues/234) 段 6（[Issue #257](https://github.com/j5ik2o/fraktor-ng-rs/issues/257)）の実装範囲である。
 
-### 2.1 FSM 側
+- ケース 8 は除外（`cases.excluded`）にも作らない区分（`cases.not_built`）にもしない。台帳の `FSMTimingSpec` ノードは `status: unported`、`cases.total: 10, ported: 9, passing: 9`、`verified_against` なしのまま残し、**`#257` 完了後にケース 8 を移植する後続 issue を切る**（[Issue #194](https://github.com/j5ik2o/fraktor-ng-rs/issues/194) の `LocalActorRefProviderSpec`・後続 [Issue #265](https://github.com/j5ik2o/fraktor-ng-rs/issues/265) および [Issue #200](https://github.com/j5ik2o/fraktor-ng-rs/issues/200) の `ReceiveTimeoutSpec` ケース 9 と同一の運用）。
+- 残る 21 件は `#234` 段 6 に依存しない。
 
-| 原典の本体 | fraktor-ng-rs の現状 |
+### 1.5 伺うこと（作れないもの・弱めるもの・段 6 後回し）
+
+`docs/decisions/pekko-semantics-first.md` の伺う基準（「Pekko どおりに写せるものは伺わずに写す。伺うのは Rust で同じ振る舞いを作れず、数から外す・弱めるときだけ」）に従い、以下の 6 件は設計担当では決めず、上長経由でオーナーへ伺う対象として整理する。この設計の段では台帳へは書かない。
+
+#### 伺い 1：ActorRefSpec ケース 3（`be serializable using Java Serialization on local node`）の除外
+
+- **原典の行**：`actor-tests/src/test/scala/org/apache/pekko/actor/ActorRefSpec.scala:288-317`
+- **作れない理由**：`java.io.ObjectOutputStream`／`ObjectInputStream` と `JavaSerializer`（`ActorRef.writeReplace` → `SerializedActorRef` → `readResolve`）という JVM 固有の直列化機構そのものを検査しており、Rust に対応する仕組みが無い。
+- **原典の Serialization 経路の調査結果（grep 実測）**：
+  - `actor-tests/src/test/scala/org/apache/pekko/serialization/PrimitivesSerializationSpec.scala`：`ActorRef`／`SerializedActorRef`／`serializedActorPath` の検査は **0 件**（`Long`/`Int`/`Boolean`/`String`/`ByteString` のプリミティブのみ）。
+  - `actor-tests/src/test/scala/org/apache/pekko/serialization/SerializeSpec.scala:520-537`：`"serialize DeadLetterActorRef"` があるが、これも同じ `ObjectOutputStream`／`ObjectInputStream`＋`JavaSerializer.currentSystem.withValue` の JVM 固有検査であり、一般の `LocalActorRef` の非 Java 直列化経路ではない。
+  - `remote/src/test/scala/org/apache/pekko/remote/serialization/MiscMessageSerializerSpec.scala:91, 112, 152-160` および `SerializationTransportInformationSpec.scala:39-40, 63-64, 115`：protobuf ベースの `MiscMessageSerializer` と `Serialization.serializedActorPath` による `ActorRef` 直列化検査は `pekko-remote` モジュール側に置かれており、`actor-tests`（`pekko-actor`）の範囲外である。
+  - なお原典の本体 `actor/src/main/scala/org/apache/pekko/actor/ActorRef.scala:445-462` の `SerializedActorRef` の実体は、`Serialization.serializedActorPath(actorRef)` のパス文字列を保存し、`readResolve` で `provider.resolveActorRef(path)` を呼ぶだけである。
+- **Rust で代わりに確かめること**：`SerializedActorRef` の非 JVM な本質である「パス文字列を経由した解決（`ref.path().to_string()` → `ActorPath::from_string` → `ActorSystem::resolve_actor_ref`）で同一の生存中 `ActorRef` が返ること」は、既存の `crates/fraktor-actor/tests/local_actor_ref_provider_spec.rs:92-95` と `crates/fraktor-actor/src/kernel/actor_ref/actor_ref_value_test.rs` で確かめている。Java Serialization 自体は代替不能のため、ケース 3 の除外（`cases.excluded`）を伺う。
+
+#### 伺い 2：ActorRefSpec ケース 4（`throw an exception on deserialize if no system in scope`）の除外
+
+- **原典の行**：`actor-tests/src/test/scala/org/apache/pekko/actor/ActorRefSpec.scala:319-339`
+- **作れない理由**：`JavaSerializer.currentSystem`（スレッドローカル `DynamicVariable`）を設定せずに `ObjectInputStream.readObject` したときの `IllegalStateException` を検証する JVM 固有のケースである。Rust の `ActorSystem::resolve_actor_ref(&self, path: &ActorPath)` は `&ActorSystem` を型で必須としており、「系がスコープに無い状態で解決する」こと自体が型上作れない。
+- **Rust で代わりに確かめること**：型システムにより静的に排除される（動的な代替テストは無い）。ケース 4 の除外（`cases.excluded`）を伺う。
+
+#### 伺い 3：ActorRefSpec ケース 5 のバイト列往復と `EmptyLocalActorRef` 同士の等価比較の省略
+
+- **原典の行**：`actor-tests/src/test/scala/org/apache/pekko/actor/ActorRefSpec.scala:341-365`（バイト列往復は `:344-354, 361-363`、`EmptyLocalActorRef` の `===` 等価比較は `:363`）
+- **作れない理由**：`SerializedActorRef` を `ObjectOutputStream`／`ObjectInputStream` でバイト列化する部分は JVM 固有で作れない。また解決結果同士を `==` で比較する部分は、所有権モデルの決定により `fraktor-ng-rs` の `ActorRef` の等価性が `(id, generation)` で決まり（I8）、未存在パスの解決ごとに別 id が採番される仕様と両立しない。
+- **Rust で代わりに確かめること**：ケース本体は移し、停止済みの `"non-existing"` のパスを `ActorPath::from_string` → `ActorSystem::resolve_actor_ref` で解決した参照に対し、`EmptyLocalActorRef` の 4 つの観測可能な振る舞い（① `path` 一致、② `is_actor_terminated == true`、③ メッセージ送信で返信せず `DeadLetter`（`recipient.path() == ref.path()`）を発行、④ `watch` で `Terminated(existence_confirmed = false)` を即時返却）をすべて検証する。バイト列部分および等価比較部分の省略（`cases.not_built` 相当の記録または形の変更承認）を伺う。
+
+#### 伺い 4：ActorRefSpec ケース 1 の直接 `new Actor` 禁止（`ActorCell.contextStack` 検査）の小ケース
+
+- **原典の行**：`actor-tests/src/test/scala/org/apache/pekko/actor/ActorRefSpec.scala:148-263`（サブケース 1：`:150-152`、サブケース 2〜12：`:156-263`。原典の検査本体は `Actor.scala:500-506`・`ActorCell.scala:374, 640-657` の `ThreadLocal` `contextStack`）
+- **作れない理由**：Pekko では `trait Actor` のコンストラクタが `ActorCell.contextStack` を検査し、`actorOf` の外での `new Actor`（サブケース 1）だけでなく、コンストラクタ内で別の `Actor` を直接 `new` する行為（サブケース 2〜12 の `FailingOuterActor`・`FailingInnerActor` 等にある `val fail = new InnerActor` および `{ new InnerActor; new InnerActor }`）もすべて `ActorInitializationException` で禁止する。Rust では `Actor` は通常の構造体に実装するトレイトであり、構造体値の構築時にセルも自己参照も作られず、`contextStack` のようなコンストラクタフックを置けないため、直接値構築そのものを禁止する性質（サブケース 1〜12 の `contextStack` 検査）は作れない。
+- **Rust で代わりに確かめること**：小ケース 1 は作らない。小ケース 2〜12 は、失敗の原因（直接の `new`）を `Props` の factory の中の panic に置き換え、それ以外は原典どおりに写す（§1.3.1 の表）。確かめるのは次のとおり：① 失敗したアクターごとに `ActorInitializationException` のエラーログが出て、監督が止める（`Terminated` を受ける）、② 外側だけ・内側だけの失敗は `occurrences = 1`、両方の失敗（小ケース 6・7・8・10）は `occurrences = 2`、③ 小ケース 13 で根の原因の文面 `"Ur state be b0rked"` がログの文面に完全一致で残る、④ 失敗のあとに同じ名前で正常なアクターを作り直せて返事が返る（`contextStackMustBeEmpty()` の代わり）。伺うのは 2 点：(1) 小ケース 1 を作らないこと、(2) 小ケース 2〜12 で、失敗の原因を「直接の `new`」から「factory の中の panic」に置き換えること。
+
+#### 伺い 5：FSMTimingSpec ケース 8 を `#234` 段 6（`#257`）の後へ回すこと
+
+- **原典の行**：`actor-tests/src/test/scala/org/apache/pekko/actor/FSMTimingSpec.scala:115-129, 262-277`
+- **今移せない理由**：外からの `ActorRefWithCell.suspend()`／`resume()` と `mailbox.hasMessages` の観測口が未実装であり、それらは [Issue #234](https://github.com/j5ik2o/fraktor-ng-rs/issues/234) 段 6（[Issue #257](https://github.com/j5ik2o/fraktor-ng-rs/issues/257)）の範囲である。除外・作らない区分にはせず、台帳 `cases.total: 10, ported: 9, passing: 9, status: unported` のまま残し、#257 完了後の後続 issue で移植する。
+- **Rust で代わりに確かめること**：名前付きタイマ受信時の状態タイマキャンセルと世代分離は、単体テスト・PBT（P1・P2：手動時計 `ActorSystem::set_clock` でメールボックス滞留順序を確定的に再現）・Quint（`crates/fraktor-actor/specs/fsm_timing.qnt`）で先行検証する。ケース 8 を段 6 後へ回す扱いについて伺う。
+
+#### 伺い 6：FSMTimingSpec ケース 7 のメールボックス滞留待ちを落とすこと
+
+- **原典の行**：`actor-tests/src/test/scala/org/apache/pekko/actor/FSMTimingSpec.scala:102-113`（テスト本体）、`:237-251`（`when(TestCancelTimer)`、滞留待ちは `:240` の `TestKit.awaitCond(context.asInstanceOf[ActorCell].mailbox.hasMessages, 1.second.dilated)`）
+- **同じ形で作れない理由**：原典は状態関数の中で 1ms タイマを張り、その印がメールボックスに入るまで待ってから `cancelTimer` する。fraktor-ng-rs には、アクターが自分のメールボックスの滞留を見る口が無い（`mailbox.hasMessages` は #257 の範囲で、ケース 8 と同じ）。そのうえ案 C では、期限の検査は `Executor` の `run_one`／`run_until_idle` の境目と `await_envelope` の前後で走る。状態関数が走っている間に印がメールボックスへ入ることは無い。
+- **Rust で代わりに確かめること**：ケースは数に入れて移す（§1.2 の形：1ms で張る → 取り消す → 返信 → 500ms で張り直す。`Tick`、`within_range(300ms, 1s)` の `Tock`、`Cancel` のあとの遷移）。「滞留した古い印は取り消し・張り直しのあとに捨てられる」は §5 P1 の決まった手順（手動時計で期限を過ぎさせ、`Cancel` が処理される前に印を積ませる）と、§6 の Quint（`staleNamedNeverFires`）で確かめる。ケース 7 をこの形で `ported`／`passing` に数えてよいか伺う。数えないなら、ケース 8 と同じく #257 のあとの後続 issue へ回す。
+
+## 2. fraktor-ng-rs の現状（`main` `53014ed` 基準）
+
+[PR #275](https://github.com/j5ik2o/fraktor-ng-rs/pull/275)（#181）および [PR #283](https://github.com/j5ik2o/fraktor-ng-rs/pull/283)（#200 `ReceiveTimeoutSpec`）がマージ済みの `main`（`53014ed`）の実物を確認した。
+
+### 2.1 FSM・タイマ・TestKit 側
+
+| 原典の本体 | fraktor-ng-rs の現状（実物確認済み） |
 |:---|:---|
-| `FSM` の状態遷移（`goto`、`stay`、`using`、`replying`、遷移の通知、購読） | ある。`crates/fraktor-actor/src/kernel/actor/fsm.rs` の `Fsm<S, D>`、`fsm_state.rs` の `FsmState<S, D>`、`fsm_view.rs` の `FsmView<S>`（[Issue #194](https://github.com/j5ik2o/fraktor-ng-rs/issues/194)） |
-| FSM のタイマの表、世代、状態タイマのスロット | **test-support の下にだけある**。`Fsm` の `timers` と `state_timer`、`test_support/fsm_handle.rs` の `FsmHandle`（タイマの記録と状態タイマの記録、世代の数え）が [Issue #181](https://github.com/j5ik2o/fraktor-ng-rs/issues/181) で入った。ただしこれは `TestFSMRef` が外から駆動するためのもので、機械自身が状態関数の中からタイマを張る口は無い。名前付きタイマと状態タイマの世代を分ける判定は `Fsm::handle_control` の `TimerMark`／`StateTimeoutMark` にある（[PR #275](https://github.com/j5ik2o/fraktor-ng-rs/pull/275)） |
-| 状態ごとのタイムアウト（`when(state, stateTimeout = …)`） | 無い。`Fsm::when` は状態関数だけを登録する。状態に入ったときに状態タイマを張る処理も、通常の機械（ハンドルなし）には無い |
-| `forMax`（遷移ごとのタイムアウトの上書き、`Duration.Inf` を含む） | 無い。`FsmState` は `goto`／`stay`／`using`／`replying` だけを持つ |
-| 状態関数の中からのタイマ操作（`startSingleTimer`、`startTimerWithFixedDelay`、`cancelTimer`、`isTimerActive`） | 無い。状態関数は `&FsmView`（読み取り専用。`listener_count` と `state_name` だけ）を受け取る |
-| タイマの発火を運ぶ仕組み（通常の機械向け） | 無い。`TestFSMRef` には testkit のドライバのスレッド（`crates/fraktor-testkit/src/test_fsm_ref/test_fsm_ref_value.rs` の `drive_timers`。1ms ごとに記録を見て印を送る）があるが、これはハンドルを持つ機械専用である。kernel に Scheduler の port は無く（`kernel/clock.rs` の `Clock` だけがある）、`ActorContext` からスケジューラを取る口も無い |
-| `StateTimeout` のイベント型 | ある。`crates/fraktor-actor/src/kernel/actor/state_timeout.rs` の `StateTimeout`（[Issue #181](https://github.com/j5ik2o/fraktor-ng-rs/issues/181)） |
-| `whenUnhandled` | 一部ある。`Fsm::when_unhandled` で構築時に 1 つ登録できる。ただし (a) 処理できなかったイベントへの警告の発行が無い（現行は黙って現状態を保つ。#194 の設計が記録したとおり警告の文面も Pekko と違う）、(b) 実行中に差し替える口が無い（原典のケース 10 は状態関数の中で差し替え、空に戻す） |
-| セルの suspend／resume、メールボックスの滞留の観測 | 無い（外向けには）。`kernel/dispatch/mailbox_status.rs` に suspend の数えはあるが、`ActorRef`／`ActorContext` から呼ぶ口と、`hasMessages` に当たる観測口は無い。#234 の段 6 の対象である（§1.4） |
-| テストの土台（`within`、`expectMsg`、`expectNoMessage`、`ignoreMsg`、`receiveWhile`、`EventFilter`） | ある。`FraktorSpec::within`／`within_range`、`TestProbe::expect_msg`／`expect_no_message`／`ignore_msg`／`receive_while`、`EventFilter::warning`。台帳の needs のうち満たされていないものは無い |
+| `FSM` の状態遷移（`goto`, `stay`, `using`, `replying`, 通知, 購読） | ある（`crates/fraktor-actor/src/kernel/actor/fsm.rs`、`fsm_state.rs`、`fsm_view.rs`）。ただし `Fsm<S, D>` の境界は `S: Clone + PartialEq + Send + Sync + 'static` で `Display`/`Debug` 境界は無い。`FsmView<S>` は 9 ファイル 27 箇所で型注釈付きで使われている |
+| FSM のタイマの表、世代、状態タイマのスロット | **`#[cfg(feature = "test-support")]` の下にだけある**（`fsm.rs:106-111`、`test_support/fsm_handle.rs`、`test_support/fsm_control.rs`）。世代カウンタが `FsmHandle` 側にあり、通常の機械（ハンドルなし）にはタイマ表も状態タイマも無い。また `FsmControl` にテスト制御と発火印（`TimerMark`／`StateTimeoutMark`）が混在している |
+| 状態ごとのタイムアウト（`when(state, stateTimeout = …)`）と `forMax` | 無い。さらに現行 `fsm.rs:587-590` は `apply_event` が `None`（未処理）のとき `make_transition` を呼ばないため、未処理イベント後に既定の `stateTimeout` が張り直されない |
+| `onTransition` からのタイマ操作 | 無い。`Fsm::on_transition`（`fsm.rs:221`）と `on_transition_with_data`（`fsm.rs:239`）は `&FsmView` を受け取らない |
+| 状態関数からのタイマ操作（`startSingleTimer` 等）と `isTimerActive` | 無い。`FsmView<S>` は `listener_count` と `state_name` の読み取り専用 |
+| タイマの発火を運ぶ仕組み | **`Executor` に `#200`（[PR #283](https://github.com/j5ik2o/fraktor-ng-rs/pull/283)）の期限索引（`BTreeMap`）＋`Clock`＋`await_envelope` 期限カットがある**（`executor_value.rs:431-433, 949-1063, 2517-2601`）。一方、`TestFsmRef` は `test_fsm_ref_value.rs:340-394` に独自の 1ms ポーリングスレッド `drive_timers` を持つ。kernel の汎用 `Scheduler` port は `#234` 段 6（[Issue #257](https://github.com/j5ik2o/fraktor-ng-rs/issues/257)）の持ち物 |
+| `StateTimeout` のイベント型 | ある（`crates/fraktor-actor/src/kernel/actor/state_timeout.rs`、`kernel::actor::StateTimeout` で既公開） |
+| `whenUnhandled` と未処理警告 | `Fsm::when_unhandled` の構築時登録のみある。実行中の差し替え・解除が無く、未処理警告も発行していない。`ActorContext` にも任意の `Warning` を `event_stream`/`event_sink` へ出す口が無い（`publish_unhandled` は `UnhandledMessage` と `"unhandled message from ..."` 固定） |
+| `Message` の文字列化 | `message_value.rs:43-56, 117-127` の `Payload` トレイトは `Any + Send + Sync` のみで `Display`/`Debug` を保持せず、`Debug for Message` は `&'static str` と `i32` 以外を `"<message of an unknown type>"` と出力する（`unhandled_notification_spec.rs:132` がこの出力を検証している） |
+| テストの土台（`within`, `ignoreMsg`, `expectNoMessage`, `receiveWhile`, `EventFilter`） | `FraktorSpec::within`／`within_range`／`remaining`／`receive_while`（`fraktor_spec.rs:196, 235-287`）、`TestKit::ignore_msg`／`expect_no_message`／`expect_msg_terminated`（`test_kit_value.rs:149, 242, 285`）、`TestProbe::expect_msg_terminated_within` がある。**不足**：`EventFilter::Warning` がユニットバリアントで `with_message` を黙殺しており（`event_filter_value.rs:43, 117`）、`source` 照合・`pattern` 部分一致・`occurrences` 指定・複数フィルタ同時登録 `filter_events` がいずれも未実装 |
 
 ### 2.2 ActorRef 側
 
-| 原典の本体 | fraktor-ng-rs の現状 |
+| 原典の本体 | fraktor-ng-rs の現状（実物確認済み） |
 |:---|:---|
-| `ActorRef`（等価、ハッシュ、パス、`tell`、`forward`） | ある。`crates/fraktor-actor/src/kernel/actor_ref/actor_ref_value.rs` の `ActorRef`。等価とハッシュは id と世代で決まる（所有権モデルの決定）。`path()`、`tell`、`forward` がある |
-| 生成の入口（系の直下、親の下） | ある。`ActorSystem::actor_of`／`actor_of_named`／`try_actor_of`（[Issue #278](https://github.com/j5ik2o/fraktor-ng-rs/issues/278) で `actor_of_named` に一本化）、`ActorContext::actor_of`（名前つき）、`ActorContext::actor_of_with_strategy`（名前なし）、`WeakActorSystem::try_spawn_child`（[Issue #181](https://github.com/j5ik2o/fraktor-ng-rs/issues/181)） |
-| 生成の失敗（初期化の失敗） | 一部ある。実行器に `ActorInitializationException` の原因名と `FailureKind::Initialization` があり、既定の監督は初期化の失敗を Stop にする。ただし factory の panic の扱いと、失敗した生成の名前の解放、失敗へのパスの同梱は、この設計では未確認として残す（§3.4、§7） |
-| 入れ子の生成（`pre_start` での子の生成） | ある。`ActorContext::actor_of_with_strategy` と `actor_of` が `pre_start` の中から呼べる（ほかの Spec の移植で使用済み） |
-| `PoisonPill`、`Kill` | ある。実行器が文字列のシステムメッセージとして扱い、`Kill` は `ActorKilledException` の失敗になる。`Actor::pre_restart`／`post_restart` のフックもある |
-| 監督（`OneForOneStrategy`） | ある。`crates/fraktor-actor/src/kernel/supervision/supervisor_strategy.rs`。`Actor::supervisor_strategy` で親が上書きする |
-| `ask` | ある。adaptor の `AskFuture`（`ActorRef::ask`／`ask_with_timeout`） |
-| 子の存在確認（`context.child(name)`） | **無い**。実行器は親ごとに子の名前と参照の表（`ParentEntry.children`）を持つが、`ActorContext` から引く口が無い |
-| 階層にいないパスの解決（`EmptyLocalActorRef` 相当） | ある。`ActorSystem::resolve_actor_ref` が、生きていないパスには「パスを保ち、何も答えない」参照を返すと文書に書いている |
-| 直列化（Java Serialization、`SerializedActorRef`） | 無い。作らない（§1.5 の提案） |
-| テストの土台（`DefaultTimeout`、`expectTerminated`、`TestLatch`、`EventFilter`） | ある。`TestProbe::expect_msg_terminated` 系、`fraktor-testkit` の `TestLatch`（[Issue #180](https://github.com/j5ik2o/fraktor-ng-rs/issues/180)）、`EventFilter` |
+| `ActorRef`（等価、ハッシュ、パス、`tell`、`forward`） | ある（`actor_ref_value.rs`）。等価・ハッシュは `(id, generation)`。`ActorRef::forward(&self, message, context)` が公開（`actor_ref_value.rs:101`）。`ActorContext::forward` は `pub(crate)`（`actor_context.rs:502`） |
+| 生成と初期化失敗（`ActorInitializationException`） | 非同期生成モデル（`executor_value.rs:1249-1325, 1602-1636`）。`actor_of` は即座に `ActorRef` を返し、`SystemMessage::Create`（`create_now`）が `UnwindCatcher` 下で factory＋`pre_start` を呼ぶ。panic 時は `FailureKind::Initialization`（原因名 `"ActorInitializationException"`）となり、既定監督が `Stop` して停止・名前解放する。**不足**：`executor_value.rs:1631, 3343-3345` はパスを `log_source` にしか入れず `message` には生の panic 文字列しか入っていない（原典 `Actor.scala:203-204` の `enrichedMessage` は `s"${actor.path}: $message"`） |
+| `PoisonPill`、`Kill` | ある。通常メッセージ（`&'static str`）として `Executor::invoke`（`executor_value.rs:2450-2462`）で特別扱いし、`PoisonPill` が `SystemMessage::Terminate` を積み、`Kill` が `ActorKilledException` の失敗になる |
+| 監督（`OneForOneStrategy`）・`ask`・`TestLatch` | ある（`supervisor_strategy.rs`, `AskFuture`, `TestLatch`） |
+| 子の存在確認（`context.child(name)`） | **無い**。`ParentEntry.children: Vec<(String, ActorRef)>`（`executor_value.rs:255`）はすでにあるが `ActorContext` から引く口が無い |
+| 階層にいないパスの解決（`EmptyLocalActorRef` 相当） | ある（`executor_value.rs:1146-1164, 2855`、`actor_system_value.rs:397-405`）。未存在パスに返す参照は ① パスを保持、② `is_actor_terminated == true`、③ 送信で `DeadLetter`（`recipient.path() == ref.path()`）を発行、④ `watch` で `Terminated(existence_confirmed = false)` を即時返却、の 4 点を満たす |
+| Java Serialization | 無い（§1.5 伺い 1〜3） |
 
-### 2.3 対応表（scala-java-to-rust-correspondence.md）を引いた結果
+### 2.3 対応表（`docs/decisions/scala-java-to-rust-correspondence.md`）を引いた結果
 
-- `Duration.Inf` の代数を持つ汎用型は作らない。「上限が無い」は使う場所ごとの型で表し、FSM と ReceiveTimeout では `Option` を比較に使わず専用の enum にする（`docs/design/issue-185-util-specs.md:123` の行）。§3.1 の `FsmTimeout` はこの行に従う。
-- `classOf[…]` とリフレクションでコンストラクタを探す組み立ては、引数を捕まえたクロージャを `Props::new` へ渡して写す（`docs/design/issue-193-specs.md:46` の行）。ActorRefSpec のケース 9 はこの行に従い、factory 関数経由の形にする。
-- HOCON の `Config` で設定を受ける部分は型付きの入力にする（`docs/goals/issue-154-id-generator-and-dns-settings.md:26` の行ほか）。本件の設定文字列は直列化の許可だけであり、§1.5 のとおりケースごと提案に回す。
-- 伺う基準：Pekko どおりに写せるものは伺わずに写し、伺うのは Rust で同じ振る舞いを作れず、数から外す・弱めるときだけである。§1.5 の 4 件だけがこの基準に当たる。
+- `Duration.Inf` の汎用代数は作らず、FSM のタイムアウトには `Option<Duration>` を比較に使わない専用 enum `FsmTimeout` を使う（`docs/design/issue-185-util-specs.md:123`）。
+- `classOf[…]`／非公開クラスのリフレクション生成は factory 関数が返す `Props` で写す（`docs/design/issue-193-specs.md:46`）。ActorRefSpec ケース 9 が従う。
+- HOCON の設定文字列は写さない（`docs/goals/issue-154-id-generator-and-dns-settings.md:26`）。
+- 伺う基準：Pekko どおりに写せるものは伺わずに写し、作れない／弱める／保留する §1.5 の 6 件のみ伺う。
 
 ## 3. 新しく足すものと、公開 API の形
 
-新しい型は、syn チェッカーの型ごとに 1 ファイルの決まりに従い、1 型 1 ファイルで置く。シグネチャは設計の形であり、名前の細部は実装のときに既存の命名へ合わせる。追加はすべて `crates/fraktor-actor` の kernel と、`crates/fraktor-actor/tests/` の 2 ファイルであり、testkit への追加は無い（ケース 8 を除くすべての土台がすでにある）。
+新しい型は syn-check の 1 ファイル 1 型・平坦モジュール規則に従い、`crates/fraktor-actor/src/kernel/actor/` 直下に置く（入れ子のサブディレクトリは作らない）。追加は `crates/fraktor-actor` の kernel と `crates/fraktor-testkit` の `event_filter`（および `TestFsmRef` の二重ドライバ解消）である。既存の公開 API のシグネチャ・ジェネリック境界は壊さない。
 
-### 3.1 FSM のタイマと状態タイムアウト（通常の機械へ広げる）
+### 3.1 FSM のタイマ・状態タイムアウト・発火運搬（案 C 採用）
 
-方針は、[Issue #181](https://github.com/j5ik2o/fraktor-ng-rs/issues/181) で入った仕組みを重ねて作らず、通常の機械へ広げることである。タイマの表、世代の数え、状態タイマのスロット、印の判定（`TimerMark`／`StateTimeoutMark`）は、現行では `#[cfg(feature = "test-support")]` の下にある。これを feature の外へ出し、`Fsm` が常時持つ形にする。`FsmHandle` はテスト側の読み取り口として残し、表と判定は機械本体が持つ。そうすると `TestFSMRef` のケース（testkit の TestFSMRefSpec、green 済み）は同じ判定を通り続け、FSMTimingSpec の機械は同じ表を使う。
+#### (a) 原典 `FSM.scala:511-513, 615-644, 755-763, 768-772, 817-914` との 1 対 1 対応
 
-状態関数からタイマを操作する口は、`FsmView` に足す。状態関数のシグネチャ（`&mut ActorContext`、`&FsmView`、`&Message`、`&D`）は [Issue #194](https://github.com/j5ik2o/fraktor-ng-rs/issues/194) と [Issue #181](https://github.com/j5ik2o/fraktor-ng-rs/issues/181) のテストが使う形であり、変えると既存の移植がすべて書き換えになる。`FsmView` は今は値のスナップショットだが、機械のタイマの共有状態（現行の `FsmHandle` と同じ `Arc<spin::Mutex<…>>` の形）への参照を持たせ、コマンドを記録する面を足す。コマンドは状態関数の実行が終わった後、遷移の適用と並んで機械が取り込む（§4 の I1、I3 の順序はこの取り込み位置で決まる）。
+1. **状態登録（`when` / `when_with_state_timeout`、`FSM.scala:475-476, 755-763`）**：
+   - 同一状態 `S` に複数回登録した場合、状態関数は登録順に試行し（`orElse`）、状態の既定タイムアウトは **`timeout.or(existing)`** で合成する（新しい登録が `Some(d)` なら上書き、`None` なら既存の既定タイムアウトを保持する）。
+2. **`onTransition` からのタイマ操作（`FSMTimingSpec.scala:225-227`）**：
+   - 既存の `Fsm::on_transition`（`(&mut ActorContext<'_>, &S, &S)`）と `Fsm::on_transition_with_data`（`(&mut ActorContext<'_>, &S, &S, &D, &D)`）のシグネチャは変えない。
+   - 新たに **`Fsm::on_transition_with_view`**（`(&mut ActorContext<'_>, &FsmView<S>, &S, &S)`）を追加し（内部の `TransitionHandler<S, D>` に `&FsmView<S>` を通す）、遷移ハンドラの中から `view.start_single_timer` 等を呼べるようにする。`FSM.scala:893-899` と同じく `handleTransition` は `currentState = nextState` の前に走るため、`view.state_name()` は遷移前の状態名を返し、直後にタイマ操作を `Executor` へ反映する。
+3. **`FsmView` のタイマ操作の即時反映（`FSM.scala:596-625`）**：
+   - 状態関数のシグネチャ（`&mut ActorContext<'_>, &FsmView<S>, &Message, &D -> Option<FsmState<S, D>>`）は変えない。
+   - `Fsm` は名前付きタイマのライブ表を `Arc<spin::Mutex<FsmTimerState>>` で持ち、`FsmView<S>` にその参照を貸す。`FsmTimerState` は「ライブな名前付きタイマ表 `timers`」「名前付きタイマ専用の単調増加カウンタ `named_timer_gen: u64`」「`Executor` 期限索引への同期キュー `pending_ops`」「（`test-support` 時のみ）`FsmHandle` への同期フック」を持つ。
+   - 状態関数または `on_transition_with_view` の中で `view.start_single_timer`／`start_timer_with_fixed_delay`／`start_timer_at_fixed_rate`／`cancel_timer` を呼ぶと、**即座に `timers` を更新して `named_timer_gen` を進め、`pending_ops` に積む**。したがって、**同一ハンドラ内で直後に `view.is_timer_active(name)` を呼べば直前の開始・取り消しを即座に反映した真偽値が返る**（原典 `FSM.scala:625` と一致）。複数登録された状態関数が `None` でフォールバックした先や `whenUnhandled` からも同じライブ状態が見える。
+   - 状態関数・各遷移ハンドラの終了直後に `Fsm` が `pending_ops` を `context` 経由で `Executor` の期限索引へ反映する（1 ターン中に `start` → `cancel` されたタイマは索引に残らず、最終的にライブ表に存在する行のみ最新世代で期限登録される）。また `test-support` 有効時は `FsmHandle` のタイマ記録へも同期し、`TestFsmRef::is_timer_active` が内側から張ったタイマも見える約束（#181 設計 line 219）を満たす。
+4. **`receive` と `make_transition` の完全な手順（`FSM.scala:817-914`）**：
+   - `SubscribeTransitionCallBack`／`UnsubscribeTransitionCallBack`／`ListenerTerminated`：状態タイマを取り消さず、`state_generation` も進めない。
+   - **通常メッセージ**：
+     1. 張ってある状態タイマを取り消し（`Executor` 期限索引から削除し `state_timer = None`、`handle` 同期）、`state_generation += 1`。
+     2. 状態関数を順に試行し、すべて `None` なら `unhandled_function` を試行する。
+     3. いずれも `None` の場合（未処理）：§3.2 の警告 `"unhandled event {event} in state {state}"`（`source = self.path()`）を発行し、**`FsmState::stay()` として `make_transition` を通す**（原典 `FSM.scala:768-772, 868-871`）。
+     4. `Some(next)` の場合：`pending_ops` を反映し、`next` に載った `whenUnhandled` の差し替え／解除（§3.2）を適用した上で `make_transition` を通す。
+   - **名前付きタイマの印（`FsmTimerMark::Named { instance_id, name, generation }`）**：
+     1. `instance_id == self.instance_id` かつ `timers` に `name` があり `entry.generation == generation` のときのみ受理（原典 `FSM.scala:823` の `owner eq this` を含む 3 条件）。不一致は黙って破棄する。
+     2. 受理した場合：`Single` なら `timers` から削除（`handle` 同期）し、通常メッセージと同じく状態タイマを取り消して `state_generation += 1` したうえで、そのタイマの `message` をイベントとして処理する（状態関数 → 未処理なら警告＋`stay()` → `make_transition`）。
+   - **状態タイムアウトの印（`FsmTimerMark::StateTimeout { instance_id, generation }`）**：
+     1. `instance_id == self.instance_id` かつ `self.state_timer == Some(generation)` かつ `self.state_generation == generation` のときのみ受理。不一致は黙って破棄する。
+     2. 受理した場合：原典 `FSM.scala:818-821` どおり **`state_generation` は進めない**。`StateTimeout` をイベントとして処理し `make_transition` を通す。次の遷移が新しい状態タイマを張らない場合（例：`for_max(Infinite)` または既定タイムアウト無しの状態への遷移）、`Executor` の期限行は発火時に消費済みのため二度と発火しない一方、`is_state_timer_active`（`self.state_timer.is_some()`）は原典どおり次の通常メッセージまで `true` のまま残る（#181 設計 I5 を維持）。次の遷移が新しい状態タイマを張る場合（`for_max(After(d))` または既定タイムアウトありの状態への `stay()`/`goto`）は、現在の `state_generation` のまま `Executor` に新しい期限を登録する。
+   - **`make_transition` での状態タイムアウト選択（`FSM.scala:901-912`）**：
+     - 遷移先が存在しない状態なら遷移せず、状態タイマも張らない（現行どおり）。さらに、原典 `FSM.scala:886-888` はこのとき `terminate` を呼び、`terminate`（`FSM.scala:933-939`）は**名前付きタイマをすべて取り消して表を空にし、状態タイマも取り消す**。この issue で通常の機械にも名前付きタイマが入るので、存在しない状態への遷移でも名前付きタイマの表と `Executor` の期限索引の行を空にする（§6 の Quint `gotoNonExistentClearsTimersTest`）。原典はこのとき `logTermination` でエラーログ（`"Next state X does not exist"`）も出し、`onTermination` を呼ぶが、port には `onTermination` が無く、ログも今は出していない（`fsm.rs:293-306` の doc）。これはタイマと別の話なので、この issue では足さない（§8 の別件）。
+     - 遷移が成立したら、`replies` 送信 → `onTransition` 実行（直後に `pending_ops` を反映）→ リスナー通知 → `current` 更新（`handle` スナップショット同期）の順で進めた後、`next_state.timeout` に従って状態タイマを張る：
+       1. `Some(FsmTimeout::Infinite)` → **張らない**（既定タイムアウトを無効化）。
+       2. `Some(FsmTimeout::After(d))` → `d` で張る（`self.state_timer = Some(self.state_generation)`、`Executor` 期限索引へ登録、`handle` 同期）。
+       3. `None`（`goto`／`stay()`／未処理既定のすべてがここに入る）→ `state_timeouts[next_state]` が `Some(d)` なら `d` で張る、`None` なら張らない。
+   - **`initialize()`（`pre_start`）**：`initialized == true` なら初期状態への `make_transition` を実行し、初期状態に既定タイムアウトがあれば張る。`StoppingActor` のように `initialize()` を呼ばない機械では `pre_start` で張らず、最初のイベント処理の `make_transition(stay())` で初めて張られる（原典どおり）。
+   - **停止（`post_stop_with_context`）**：`timers`・`state_timer` を空にし、`context` 経由で `Executor::clear_fsm_timers(self_key)` を呼んで期限索引から全行を即時削除する。さらに `Executor` 側の停止完了・`faultCreate`・`stop_all` でも `clear_fsm_timers(key)` を呼び、panic で `post_stop` が抑止されても期限が残らないようにする。
+
+#### (b) 再起動をまたぐ `instance_id` 分離と `test-support` の公開面最小化（レビュー M1）
+
+- `Fsm::new()` ごとに `portable_atomic::AtomicU64` の静的カウンタから一意の `instance_id: u64` を採番する（`no_std` 対応）。
+- `state_generation: u64` と `named_timer_gen: u64` を別カウンタにし、名前付きタイマの開始が状態タイマ世代を動かさないことを構造で保証する（[PR #275](https://github.com/j5ik2o/fraktor-ng-rs/pull/275) の I2 をさらに明確化）。
+- 再起動で新しい `Fsm` 個体が作られローカル世代が `0` から始まっても、古い個体の印は古い `instance_id` を持つため必ず破棄される（原典 `FSM.scala:823` の `owner eq this` に対応）。
+- 発火印は **`pub(crate) enum FsmTimerMark`**（`Named { instance_id, name, generation }`／`StateTimeout { instance_id, generation }`）として `crates/fraktor-actor/src/kernel/actor/fsm_timer_mark.rs` に独立させ、`test_support::FsmControl`（`SetState`／`StartTimer`／`CancelTimer`／`Sentinel`）は引き続き `#[cfg(feature = "test-support")]` の下に閉じ込める。`FsmTimerKind` は `pub(crate)` として kernel 内部で使い、`test-support` 下では既存どおり `test_support::FsmTimerKind` として再公開する。
+
+#### (c) 発火の運搬：案 C（`#200` 型の `Executor` 期限索引＋`Clock`＋`await_envelope` 期限カット）を採る
+
+| 案 | 評価 | 結論 |
+|:---|:---|:---|
+| 旧案 A（kernel に FSM 専用の共有状態登録 `Scheduler` port＋std タイマスレッド） | `#234` 段 6（[Issue #257](https://github.com/j5ik2o/fraktor-ng-rs/issues/257)）の汎用 `Scheduler` port（`schedule_once(delay, task) -> Cancellable`、`docs/design/issue-234-multithread-executor.md:219`）と形・責務が真っ向から衝突する。`#181` の判断にも反し、`terminate` 時のスレッド停止・`set_clock` 整合・PBT 決定論性・`TestFsmRef::drive_timers` との二重発火（Bugbot 指摘）を破綻させる | **却下** |
+| 旧案 B（`#181` の testkit `drive_timers` を汎用化） | 通常の `actor_of` で作る製品 `Fsm` にタイマ発火が無いまま残る | **却下** |
+| **案 C（採用：`#200` 型の `Executor` 期限索引＋`Clock`＋`await_envelope` 期限カット）** | `main`（[PR #283](https://github.com/j5ik2o/fraktor-ng-rs/pull/283)）に既に入っている `ReceiveTimeout` の期限索引（`BTreeMap`＋`Clock`＋`await_envelope` 期限カット）と同じ仕組みに FSM タイマの期限を載せる。`#257` の `Scheduler` port を先取り・二重化せず、`no_std` 完全対応、新スレッド不要で CI 揺れ・スレッドリークなし、`ActorSystem::set_clock` で決定論的 PBT が書ける。`TestFsmRef::drive_timers` スレッドを廃止して単一ドライバに統一できるため二重発火も構造上起きない | **採用** |
+
+案 C の具体設計（`executor_value.rs` への追加）：
+
+- `Executor` に FSM タイマの期限索引（`fsm_timers: BTreeMap<(ActorKey, FsmTimerSlot), FsmScheduledTimer>` と `fsm_timer_index: BTreeMap<(Duration, ActorKey, FsmTimerSlot), (u64, u64)>`、ここで `FsmTimerSlot` は `State` または `Named(String)`）を置く。
+- 登録・置き換え・取り消し・停止のたびに旧行を索引から即時削除し、索引に古い行を残さない（`#200` の `sync_receive_timeout_index` と同じ方針）。
+- 期限の計算は `Executor::now_opt()`（`self.clock` 優先、無ければ `boundary.monotonic_time()`）を使う。時計が無い状態で有限の FSM タイマを張ろうとした場合は、FSM タイマ専用の理由を付けて panic する（`#200` と同じ契約）。`now.checked_add(delay)` が `Duration::MAX` をあふれた場合は「発火しない」として索引に積まず panic しない（`#181`・`#200` と同じ）。
+- `await_envelope` の待ち上限は `min(earliest_receive_timeout_deadline, earliest_fsm_timer_deadline)` で切る。期限検査（`fire_due_timers`）は `#200` と同じ 4 入口（`run_one`/`run_until_idle` 先頭、`Run` 後、`await_envelope` 待ち前後）で実行し、期限が来た行を早い順に消費して `FsmTimerMark` を対象のメールボックスへ送る。
+  - `State`／`Single`：発火時に索引と表から消費する。
+  - `FixedDelay`：発火後に `now.checked_add(delay)` で次期限を索引へ再登録する（原典 `FixedDelayMode`）。
+  - `FixedRate`：発火後に `deadline.checked_add(delay)` で次期限を索引へ再登録する（原典 `FixedRateMode`）。
+- **単一ドライバ化（Cursor Bugbot「Dual timer drivers would double-fire」への対応）**：`TestFsmRef`（`crates/fraktor-testkit/src/test_fsm_ref/test_fsm_ref_value.rs`）の `drive_timers` スレッドを廃止する。`FsmControl::SetState { timeout: Some(d) }` と `FsmControl::StartTimer` も `Fsm::handle_control` から同じ `Executor` 期限索引へ登録する形に統一し、全 FSM（通常機械・`TestFsmRef` 機械）を単一の `Executor` 期限索引が駆動する。`FsmHandle` の既存読み取りメソッド（`is_timer_active`, `is_state_timer_active` 等）は互換のため維持し同期し続ける。
+- **`#234` 段 5・段 6（[Issue #257](https://github.com/j5ik2o/fraktor-ng-rs/issues/257)）への引き継ぎ**：`#200` の転記（`#257` コメント）と同じく、この期限索引は段 3〜4 の `ManualExecutor` に限る。段 5〜6 で複数スレッド dispatcher と汎用 `Scheduler` port が入るときに、`ReceiveTimeout` と FSM タイマをまとめて `Scheduler` port へ差し替える。
+
+#### (d) FSM 関連の公開 API（`fraktor-actor`）
 
 ```rust
-// crates/fraktor-actor/src/kernel/actor/fsm_timeout.rs
-/// 状態タイムアウトの長さ。無限は専用の値で表す（対応表の Duration.Inf の行）。
+// crates/fraktor-actor/src/kernel/actor/fsm_timeout.rs（新規、kernel::actor から pub use）
+/// 遷移ごとの状態タイムアウト上書き。無限は専用の値で表す（対応表 Duration.Inf の行）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FsmTimeout {
   After(Duration),
   Infinite,
 }
 
-// crates/fraktor-actor/src/kernel/actor/fsm.rs への追加
-impl<S, D> Fsm<S, D> {
-  /// 状態タイムアウトつきの状態関数を登録する。原典の `when(state, stateTimeout = …)`。
-  /// `None` はタイムアウトなし（`when` と同じ）。
-  pub fn when_with_state_timeout<F>(&mut self, state: S, timeout: Option<FsmTimeout>, function: F)
-  where F: FnMut(&mut ActorContext<'_>, &FsmView<S>, &Message, &D) -> Option<FsmState<S, D>> + Send + 'static;
+// crates/fraktor-actor/src/kernel/actor/fsm.rs への追加（既存メソッドは変更なし）
+impl<S, D> Fsm<S, D>
+where
+  S: Clone + PartialEq + Send + Sync + 'static,
+  D: Send + 'static,
+{
+  /// 原典 `when(stateName, stateTimeout = ...)`。
+  /// 同一状態への複数回登録は状態関数を `orElse` 合成し、タイムアウトは `timeout.or(existing)`。
+  pub fn when_with_state_timeout<F>(&mut self, state: S, timeout: Option<Duration>, function: F)
+  where
+    F: FnMut(&mut ActorContext<'_>, &FsmView<S>, &Message, &D) -> Option<FsmState<S, D>> + Send + 'static;
+
+  /// 原典 `onTransition` のうち、`FsmView` 経由でタイマ操作を行う形。
+  /// 既存の `on_transition`／`on_transition_with_data` と同じリストへ追加され登録順に走る。
+  pub fn on_transition_with_view<F>(&mut self, handler: F)
+  where
+    F: FnMut(&mut ActorContext<'_>, &FsmView<S>, &S, &S) + Send + 'static;
+
+  /// 未処理イベントの警告で状態名 `S` を `Display` 表示するための登録。
+  /// `Fsm<S, D>` 自体に `Display` 境界を足さないことで既存の `TestFsmRef<S, D>` 等を壊さない。
+  pub fn with_state_display(&mut self)
+  where
+    S: core::fmt::Display;
 }
 
 // crates/fraktor-actor/src/kernel/actor/fsm_state.rs への追加
 impl<S, D> FsmState<S, D> {
-  /// この遷移に限って状態タイムアウトを上書きする。原典の `State.forMax(timeout)`。
+  /// 原典 `State.forMax(timeout)`。
   pub fn for_max(self, timeout: FsmTimeout) -> Self;
+
+  /// 原典の状態関数内からの `whenUnhandled { ... }` 差し替え（§3.2、M2）。
+  pub fn with_unhandled<F>(self, function: F) -> Self
+  where
+    F: FnMut(&mut ActorContext<'_>, &FsmView<S>, &Message, &D) -> Option<FsmState<S, D>> + Send + 'static;
+
+  /// 原典の `whenUnhandled(NullFunction)`。既定（警告＋`stay()`）へ戻す（§3.2、M2）。
+  pub fn clear_unhandled(self) -> Self;
 }
 
-// crates/fraktor-actor/src/kernel/actor/fsm_view.rs への追加（コマンドの面）
+// crates/fraktor-actor/src/kernel/actor/fsm_view.rs への追加
 impl<S> FsmView<S> {
-  /// 原典の `startSingleTimer`。同じ名前で張ると前のタイマを置き換える。
+  /// 原典 `startSingleTimer`。即座にライブ表へ反映し、同一ハンドラ内の `is_timer_active` から見える。
   pub fn start_single_timer(&self, name: &str, message: Message, delay: Duration);
-  /// 原典の `startTimerWithFixedDelay`。
+  /// 原典 `startTimerWithFixedDelay`。
   pub fn start_timer_with_fixed_delay(&self, name: &str, message: Message, delay: Duration);
-  /// 原典の `startTimerAtFixedRate`。本 Spec は使わないが、原典の FSM の面として揃える。
+  /// 原典 `startTimerAtFixedRate`。
   pub fn start_timer_at_fixed_rate(&self, name: &str, message: Message, interval: Duration);
-  /// 原典の `cancelTimer`。無い名前の取り消しは何もしない。
+  /// 原典 `cancelTimer`。無い名前は何もしない。即座にライブ表へ反映する。
   pub fn cancel_timer(&self, name: &str);
-  /// 原典の `isTimerActive`。このイベントの開始時点の表で答える。
+  /// 原典 `isTimerActive`。ライブ表を見て即座に答える。
   pub fn is_timer_active(&self, name: &str) -> bool;
 }
 ```
 
-発火の運搬は、レビューで決める 2 案を置く。どちらの案でも、印の判定（世代が合うときだけ受け付ける）は機械の中にあり、テストの書き方は変わらない。
+no_std の観点：追加する型・表・`FsmTimerMark`・`Executor` 期限索引・`portable_atomic::AtomicU64` はすべて `core` と `alloc` と既存依存（`spin`, `portable-atomic`）だけで書ける。kernel に `std` を一切持ち込まない。
 
-- **案 A（推奨）：kernel に Scheduler の port を足し、std の adaptor が実時間で運ぶ。** `Clock`（`kernel/clock.rs`）と同じ流儀で、期限の登録と取り消しを受ける port を kernel に置き、`ActorSystem` の生成時に adaptor の実装を差す。機械は `pre_start` で自分のタイマの共有状態を port へ登録し、期限が来たら adaptor が印（現行の `FsmControl::TimerMark`／`StateTimeoutMark` と同じ形）を対象の `ActorRef` へ送る。FSMTimingSpec の対象は通常の機械の振る舞いであり、testkit 専用のドライバでは「製品の FSM が時間を守る」ことを確かめたことにならないため、こちらを推奨する。代償は、`ActorSystem` の生成の形と adaptor への追加がこの issue の範囲に入ることである。
-- **案 B：#181 のドライバを testkit の汎用の仕組みへ広げる。** `fraktor-testkit` に、ハンドルつきで機械を起動し `drive_timers` と同じスレッドで運ぶ入口（`TestFSMRef` の汎用化）を足し、FSMTimingSpec の機械をその入口で起動する。範囲は小さいが、確かめる対象が「testkit にぶら下げた機械」になり、通常の `actor_of` で作った機械のタイマは無いまま残る。FSM のタイマを製品の機能として持つかどうか自体が論点になる場合は、こちらが暫定形になる。
+### 3.2 未処理イベントの警告・`Message` と状態 `S` の文字列化・`whenUnhandled` の差し替え
 
-どちらの案でも、期限を過ぎた印が遅れて届くこと、ドライバの起床の粒度（現行の testkit ドライバは 1ms）は、意味論ではなく運搬の性質として扱う。テストの時間の幅は `dilated` で取る（§1.2）。
+#### (a) `Message` と状態 `S` の文字列化（レビュー H2）
 
-no_std の観点：表、世代、`FsmTimeout`、コマンドの記録は `core` と `alloc`（`Vec`、`String`、`Duration` は `core::time`）だけで書ける。実時間の待ちとスレッドは案 A では adaptor（std）に閉じ、案 B では testkit（std）に閉じる。kernel に `std` を持ち込まない。`FsmView` のコマンドの面は、ハンドルなしの機械でもタイマの共有状態を持つため、`Fsm::new` の時点で小さな共有状態を 1 つ確保する。これは既存の利用者へのコストとして §8 に書く。
+- 現行の `Message::new<M: Any + Send + Sync>` と `impl fmt::Debug for Message`（`&'static str` と `i32` 以外は `"<message of an unknown type>"`、`unhandled_notification_spec.rs:132` が検証済み）は**そのまま維持する**。
+- 「`Payload` に既定の実装つきの `fmt_display` を足し、`DisplayPayload<M>` だけ上書きする」形は書けない。今の `Payload` は `impl<T: Any + Send + Sync> Payload for T` の包括の実装（`message_value.rs:43-56`）を持ち、`DisplayPayload<M>` もその `T` に入る。2 つ目の実装は衝突する（stable の Rust に specialization は無い）。そこで包括の実装をやめ、`Payload` を 2 つの非公開の包みにだけ実装する：
+  - `struct PlainPayload<M>(M)`：`Message::new` が使う。`as_any()` は `&self.0`、`type_name()` は `type_name::<M>()`、`fmt_display()` は `None`。
+  - `struct DisplayPayload<M: fmt::Display>(M)`：`Message::with_display` が使う。`as_any()` と `type_name()` は `PlainPayload` と同じ。`fmt_display()` は `Some(fmt::Display::fmt(&self.0, f))`。
+  - どちらも `as_any()` が中の値を返すので、`downcast_ref::<M>()`・`is::<M>()`・`payload_type_id()`・`payload_type_name()` は今と同じに動く。`Message::new` の二重の包み防止（`message_value.rs:82`、`Message` を受けたらそのまま返す）は `PlainPayload(m).as_any()` で同じく判定できる。包括の実装が無くなるので、`message_value.rs:38-42` の doc にある「`Arc<dyn Payload>` に直接メソッドを呼ぶと包括の実装に解決される」という落とし穴も消える。
+- `Message` に次の公開メソッドを足す：
+  ```rust
+  impl Message {
+    /// `fmt::Display` 表示を保持した `Message` を作る。
+    /// `ActorRef::tell(Message::with_display(v), sender)` は既存の `Message::new` の
+    /// 二重ラップ防止（message_value.rs:82-83）によりそのまま運ばれる。
+    pub fn with_display<M: Any + Send + Sync + core::fmt::Display>(payload: M) -> Self;
 
-### 3.2 未処理イベントの警告と、`whenUnhandled` の差し替え
+    /// Pekko の `value.toString` 相当の文字列表現を返す。
+    /// `with_display` で作られた値はその `Display`、既定の `&'static str`/`String`/整数/`bool` は
+    /// 引用符なしの `Display`、それ以外は `payload_type_name()` を返す。
+    pub fn display_text(&self) -> alloc::string::String;
+  }
+  ```
+- 状態名 `S` の表示は `Fsm::with_state_display(&mut self) where S: fmt::Display` で設定する（未設定時は `core::any::type_name::<S>()` にフォールバック）。これにより `Fsm<S, D>` の型境界を変えず、`TestFsmRef<S, D>` を含む既存の全ジェネリック呼び出しを壊さない。
+- Scala の `case class Unhandled(msg: AnyRef)` の `toString` は引用符なしの `Unhandled(test)` である（Rust の `#[derive(Debug)]` だと `Unhandled("test")` になり一致しない）。テスト側の `Tick` と `Unhandled(&'static str)` に `fmt::Display` を実装して `"Tick"`・`"Unhandled(test)"` を出力し、`Message::with_display(...)` で送ることで、原典 `FSMTimingSpec.scala:144-148` の文面 **`"unhandled event Tick in state TestUnhandled"`** と **`"unhandled event Unhandled(test) in state TestUnhandled"`** に文字単位で完全一致させる。
 
-- 警告：状態関数も `whenUnhandled` も答えなかったイベントについて、機械は Pekko の文面「unhandled event {event} in state {state}」の警告を、自分のパスを source として発行する。発行の経路は、実行器が `UnhandledMessage` を event stream へ出す既存の仕組みとは分ける。原典の警告は FSM 自身のログであり、`EventFilter.warning(source = fsm.path)` が見る対象である。イベントの表示は、ケース 10 が使う 2 件（`Tick` と `Unhandled("test")`）について、型名と中身が Pekko の文字列表現と対応する形をテスト側の型の `Debug` で決める。文面の細部はレビューで見てほしい点に挙げる（§9）。
-- 差し替え：`FsmView` のコマンドの面に、未処理ハンドラの差し替えを足す。
+#### (b) 警告の発行経路
 
-```rust
-impl<S> FsmView<S> {
-  /// 原典の、状態関数の中からの `whenUnhandled { … }` の差し替え。
-  pub fn set_unhandled_handler<F>(&self, function: F)
-  where F: FnMut(&mut ActorContext<'_>, &FsmView<S>, &Message, &D) -> Option<FsmState<S, D>> + Send + 'static;
-  /// 原典の `whenUnhandled(NullFunction)`。既定の（警告を出す）扱いに戻す。
-  pub fn clear_unhandled_handler(&self);
-}
-```
+- `ActorContext` に `pub(crate) fn publish_warning(&self, message: &str)` を足し、`Executor::publish_warning(&self, source: &ActorRef, message: &str)` へ委譲する。
+- `Executor::publish_warning` は `Warning::new(source.path().to_string(), ACTOR_LOG_CLASS, message)` を作り、`event_stream`（あれば）と `event_sink`（あれば）へ発行する。これは原典 `FSM.scala:770` の `log.warning("unhandled event " + value + " in state " + stateName)` と 1 対 1 に対応し、`UnhandledMessage` を発行する `publish_unhandled` とは別経路である。
 
-ただし `FsmView<S>` はデータ型 `D` を持たないため、この形のままでは書けない。実装では、コマンドの記録先に型消去したハンドラ（現行の `StateFunction<S, D>` と同じ `Box<dyn FnMut …>`）を持たせるため、`FsmView` に `D` の型引数を足すか、差し替え専用の面を状態関数の第 2 引数とは別に用意するかのどちらかが要る。どちらの形でも状態関数のシグネチャが変わる場合は、[Issue #194](https://github.com/j5ik2o/fraktor-ng-rs/issues/194) と [Issue #181](https://github.com/j5ik2o/fraktor-ng-rs/issues/181) の既存テストの書き換え範囲を第2段の前に数えて報告する。これもレビューで見てほしい点に挙げる（§9）。
+#### (c) `whenUnhandled` の動的差し替え（レビュー M2）
+
+- `FsmView<S>` に型引数 `D` を足す案は既存 9 ファイル 27 箇所を壊すため**採らない**。
+- すでに `S` と `D` の両方を型引数に持つ **`FsmState<S, D>`** に `with_unhandled(function)` と `clear_unhandled()` を載せる（§3.1 のシグネチャ）。既存テストの書き換えは 0 件である。原典（`FSM.scala:688-689`）は状態関数の中で `whenUnhandled` を呼んだその場で `handleEvent` を差し替える。port は、状態関数が返した `FsmState` を適用するときに `self.unhandled_function` を差し替える（`clear_unhandled` なら既定に戻す。原典の `whenUnhandled(NullFunction)` は `NullFunction.orElse(handleEventDefault)` なので既定と同じ）。差し替えた関数が効くのは次のイベントからなので、どちらでも観測できる違いは無い。
 
 ### 3.3 `ActorContext::child`
 
 ```rust
 // crates/fraktor-actor/src/kernel/actor/actor_context.rs への追加
 impl ActorContext<'_> {
-  /// 原典の `ActorContext.child(name)`。自分の生きている子がいれば、その参照を返す。
+  /// 原典 `ActorContext.child(name)`。自分の生きている子がいればその参照を返す。
   pub fn child(&self, name: &str) -> Option<ActorRef>;
 }
 ```
 
-実行器の親ごとの子の表（`ParentEntry.children`）を引くだけであり、新しい状態は足さない。止まった子は表から外れているので `None` になる（原典と同じ）。kernel の中だけで閉じ、`core` と `alloc` で書ける。
+`Executor` がすでに持つ `ParentEntry.children`（`executor_value.rs:255`）から `(self_ref, name)` で引くだけである。停止して `ChildTerminated` を処理済みの子は表から外れているため `None` になる。`core` と `alloc` で完結する。
 
-### 3.4 生成の失敗へのパスの同梱
+### 3.4 `ActorInitializationException` へのパス同梱（レビュー H2）
 
-ケース 2 が要るのは、初期化の失敗の表出に失敗したアクターのパスが入ることである。第2段の最初に、現行の実行器が factory／`pre_start` の失敗をどう記録するか（原因名、文面、パスの有無）を実測する。パスが入っていない場合は、失敗の記録へ対象のパスを足す追加をこの issue の範囲に入れる。公開 API の追加は想定しない（失敗の記録は event stream のログ側の話である）。
+原典で、パスがどこに入るかを先に確かめた。
 
-### 3.5 その他の追加
+- `ActorCell.scala:682-699`：creator か `preStart` が投げると、`ActorInitializationException(self, s"exception during creation, root cause message: [$rootCauseMessage]", x)` を投げる（根の原因に文面が無いときは `"No message available"`）。
+- `Actor.scala:202-204`：`ActorInitializationException` の `getMessage` は `enrichedMessage` で `s"${actor.path}: $message"` になる。
+- `FaultHandling.scala:404-420`：監督の `logFailure` は `Error(cause, child.path.toString, getClass, logMessage)` を出す。`ActorInitializationException` に原因があるとき、`logMessage` は**原因の `getMessage`**（`IllegalStateException("Ur state be b0rked")` なら `"Ur state be b0rked"`）であり、パスは入らない。
+- `TestEventListener.scala:332-338`：`ErrorFilter` は `doMatch(src, msg) || doMatch(src, cause.getMessage)` で照合する。`ActorRefSpec.scala:278` の `pattern = "/user/failingActor:"` が当たるのは、ログの文面ではなく、原因（`ActorInitializationException`）の `getMessage` の方である。
 
-無い。ActorRefSpec の残りのケース（入れ子、`forward`、`ask`、`PoisonPill`、`Kill`、監督、解決）は §2.2 のとおり既存の本体で足りる。ケース 5 の解決は `ActorSystem::resolve_actor_ref` をそのまま使う。
+したがって、パスはログの文面ではなく原因の文面に入れる。レビュー H2 の直し方の「`message` を `format!("{}: {}", path, message)` にする」は採らない。採るとログの文面が原典の `logMessage` と変わるからである。
+
+- `crates/fraktor-actor/src/kernel/executor/executor_value.rs:1631` の `FailureKind::Initialization` を発行するとき（`failure_reason`、`executor_value.rs:3343-3345`）、`Error::with_cause_name` ではなく既存の `pub(crate) Error::with_cause_and_message`（`Logging/error.rs`）を使う：
+  - `cause_name`：`"ActorInitializationException"`（今と同じ）
+  - `cause_message`：`format!("{}: exception during creation, root cause message: [{}]", path, root)`。`root` は panic の文面で、空なら `"No message available"`
+  - `log_source`：`path.to_string()`（今と同じ）
+  - `message`：panic の文面（今と同じ。原典の `logMessage`）
+- `Logging::LogEvent` に `fn cause_message(&self) -> Option<&str> { None }` を既定の実装つきで足し、`Error` は持っている `cause_message` を返す（`Error::cause_message` はすでに `pub` で、同じ値を返す）。既定の実装があるので、既存の `LogEvent` の実装は書き換えない。
+- ログの文面（`message`）は変わらないので、既存のテストに影響は無い。`crates/` で初期化の失敗のログを見ているテスト（`executor_value_test.rs:548` など）は原因の名前と `log_source` しか見ておらず、どれも今のまま通る。
+
+### 3.5 `fraktor-testkit` の `EventFilter` 拡張（既存の `pub` と重ねない、レビュー H2）
+
+今の公開面（`crates/fraktor-testkit/src/event_filter/event_filter_value.rs`、`event_filter.rs`、`event_sink_registry.rs`）：
+
+- `pub enum EventFilter { Error { cause_name, message }, Warning, Info { start } }`。作る口は `error()`、`warning()`、`info()`、`typed(&str)`。照合は `apply(&dyn LogEvent) -> bool`。絞り込みは `with_message(&str)`（`Error` にだけ効く）と `start(&str)`（`Info` にだけ効く）。検査は `intercept(&self, &mut ActorSystem, impl FnOnce() -> R) -> R`。`intercept` は一致がちょうど 1 件であることを固定で確かめる。
+- `pub struct EventSinkRegistry`：`new()`、`arm(EventFilter) -> usize`、`disarm(usize)`、`matched(usize) -> usize`。
+
+**今の不具合（前の担当の気づきを実物で確かめた）**：`EventFilter::Warning` には中身が無い。`with_message` は `if let Self::Error { .. } = self` でしか書き込まないので、`EventFilter::warning().with_message(...)` は引数を黙って捨て、どの文面の警告にも当たる。`crates/fraktor-actor/tests/local_actor_ref_provider_spec.rs:105` と `crates/fraktor-actor/tests/actor_configuration_verification_property_test.rs:143` は `with_message(&format!("unhandled message from {}", dead_letters.path()))` と書いている。ところが実際の文面は `"unhandled message from <path>: \"hello\""`（`executor_value.rs:3381`）である。この 2 本が通っているのは、引数が捨てられているからにすぎない。
+
+原典の `EventFilter.warning(message, source, start, pattern, occurrences)`（`TestEventListener.scala:235-243`）と `doMatch`（`:150-157`）に合わせ、次のように直す。
+
+```rust
+// crates/fraktor-testkit/src/event_filter/event_filter_value.rs
+// variant を外から見せる enum をやめ、中身を隠した struct にする（公開面を減らす。
+// ワークスペースで variant を直接作る・照合する箇所は 0 件を確認済み）。
+#[derive(Clone, Debug)]
+pub struct EventFilter {
+  level: LogLevel,                  // Error / Warning / Info
+  cause_name: Option<String>,       // Error のみ。None は Error.NoCause（何の原因でもよい）
+  source: Option<String>,           // 原典の source：log_source との完全一致
+  text: EventFilterText,            // 下のどれか 1 つ（原典の Either[String, Regex] と complete）
+  occurrences: usize,               // 既定 1（今の intercept と同じ）
+}
+// 非公開の enum：Any（制限なし）／Exact（原典 message、complete = true）／
+// Start（原典 start、complete = false）／Contains（下の contains）
+
+impl EventFilter {
+  // 既存の口はシグネチャを変えない：error(), warning(), info(), typed(&str), apply(&dyn LogEvent) -> bool
+  /// 既存。Error・Warning・Info のすべてで効くようにする（原典 message：完全一致）。
+  pub fn with_message(self, message: &str) -> Self;
+  /// 既存。Error・Warning・Info のすべてで効くようにする（原典 start：前方一致）。
+  pub fn start(self, prefix: &str) -> Self;
+  /// 新規。原典 source：`event.log_source() == source`。
+  pub fn with_source(self, source: &str) -> Self;
+  /// 新規。文面に `fragment` が含まれるかを見る（正規表現ではない。下の注）。
+  pub fn contains(self, fragment: &str) -> Self;
+  /// 新規。原典 occurrences。
+  pub fn with_occurrences(self, occurrences: usize) -> Self;
+}
+
+// crates/fraktor-testkit/src/event_filter.rs
+impl EventFilter {
+  /// 既存。`assert_eq!(matched, self.occurrences)` に変える（既定 1 なので今の動きは変わらない）。
+  pub fn intercept<R>(&self, system: &mut ActorSystem, body: impl FnOnce() -> R) -> R;
+  /// 新規。原典 `filterEvents(filters: EventFilter*)(block)`（testkit `package.scala:25-48`）。
+  /// すべてのフィルタを同時に張り、`body` → `system.run_until_idle()` のあと、
+  /// どのフィルタも一致の数がそれぞれの occurrences と等しいことを確かめて、すべて外す。
+  pub fn filter_events<R>(filters: &[EventFilter], system: &mut ActorSystem, body: impl FnOnce() -> R) -> R;
+}
+```
+
+- **照合の規則**（原典 `doMatch`）：`level` が合うこと、`source` があれば `log_source` と完全一致すること、`text` が `Exact`／`Start`／`Contains` ならそれに合うこと。`Error` はさらに `cause_name` が合うこと。`Error` の文面は、原典 `ErrorFilter.matches`（`TestEventListener.scala:332-338`）と同じく `message()` と `cause_message()`（§3.4）の**どちらかが合えば**当たる。`with_message`・`start`・`contains` は最後に呼んだもの 1 つが効く（原典も `message`／`pattern`／`start` の 1 つしか持たない）。
+- **`pattern` の代わりに `contains` にする理由**：原典の `pattern` は正規表現で、`findFirstIn`（部分一致）で照合する。このテストで要るのは `"/user/failingActor:"` だけで、正規表現の特殊文字を含まない。部分一致の結果は原典と同じになる。正規表現を入れるには、外部の crate（`regex`）を testkit に足す判断が要る。これはこの issue の範囲ではない。正規表現でないものを `with_pattern` と呼ぶと、原典の `pattern` と同じだと読み違えられる。そこで、していることのとおり `contains` と名付ける。正規表現の要る移植（例：`ActorTimeoutSpec.scala:30` の `".*unhandled message from.*hallo"`）が来たときに、別の issue で `pattern` を足す。
+- **`occurrences` の既定**：原典の既定は `Int.MaxValue`（数を確かめない）である。今の port の `intercept` は 1 件を固定で確かめていて、既存のテストはそれに頼っている。既定は 1 のままにする。原典で `occurrences` を書いているケース（このテストではすべて）は `with_occurrences` で同じ数を書く。
+- **一致の数え方**：原典の `TestEventListener.filter`（`TestEventListener.scala:593-597`）は、張った順の新しいものから `exists` で見る。1 つの事象は最初に当たった 1 本のフィルタにしか数えない。今の `EventSinkRegistry::publish` は、当たったフィルタのすべてに数える。この issue で張るフィルタは重ならない（ケース 10 の 2 本は完全一致の文面が違う。ケース 1・2・11 は 1 本だけ）ので、どちらの数え方でも結果は原典と同じになる。数え方を変えると、張ったままにしている `actor_timeout_spec.rs:72` の `EventFilter::warning()` と後から張るフィルタの関係が変わる。そのため、この issue では変えない。別件として上げる（§8）。
+- **`EventSinkRegistry` の中の直し**：`arm` が返す値を、`Vec` の添字から単調に増える ID に変える。`filter_events` で複数を張って外すときや、`intercept` を入れ子にしたときに、`Vec::remove` で添字がずれないようにする。公開のシグネチャは変えない。
+- **既存のテスト 2 本**：`local_actor_ref_provider_spec.rs:105` と `actor_configuration_verification_property_test.rs:143` は、第 2 段で、いま実際に出る文面（`"unhandled message from {dead_letters}: \"hello\""`）の完全一致に書き直す。原典 `LocalActorRefProviderSpec.scala:76, 89, 102` の文面は `s"unhandled message from Actor[$deadLettersPath]: $message"` で、port の文面とは `Actor[...]` の包みと `"hello"` の引用符が違う。この文面の違いは #198 の前からあるもので、`TestEventListener` の写し（#194 系）の持ち物である。この issue では直さず、別件として上げる（§8）。
 
 ## 4. 守る性質（不変条件）
 
 | 番号 | 不変条件 |
-|:---|:---|
-| I1 | 状態タイマの張り直し：普通のメッセージを 1 件受けるたびに、張ってある状態タイマは取り消され（世代が進む）、処理の結果の状態について、その状態のタイムアウトか、この遷移の `forMax` の上書きのどちらか一方が張られる。`forMax(FsmTimeout::Infinite)` と、タイムアウトの無い状態では張られない。`goto` で同じ状態へ移る場合も入り直しとして張り直す。購読・購読解除・リスナーの終了の受信は原典どおり例外であり、取り消さない（現行の `Fsm::receive` の分岐と同じ） |
-| I2 | 世代の分離：名前付きタイマの世代と状態タイマの世代は別々に進む。名前付きタイマを張っても状態タイマの印は無効にならず、状態タイマの取り消しは名前付きタイマの印を無効にしない（[PR #275](https://github.com/j5ik2o/fraktor-ng-rs/pull/275) の決定） |
-| I3 | 名前付きタイマ：同じ名前で張ると置き換わり、古い印は捨てられる。単一タイマは高々 1 回だけ発火し、発火で表から消える。繰り返し（fixed delay）は取り消されるまで続き、取り消しの後に印が届いても捨てられる。無い名前の取り消しは何もしない |
-| I4 | 停止：アクターが止まると、名前付きタイマと状態タイマはすべて消え、その後に期限が来ても何も届かず、DeadLetter にもならない（ケース 3） |
-| I5 | 未処理の警告：状態関数も未処理ハンドラも答えなかったイベントは、警告が 1 回だけ発行され、状態とデータは変わらない。差し替えたハンドラは次のイベントから効き、空に戻すと警告の扱いに戻る |
-| I6 | 子の参照：`child(name)` が `Some` を返すのは、その名前の生きている子が自分の下にいるときだけであり、返る参照は生成時に渡した参照と等しい |
-| I7 | 生成の失敗の後始末：factory の中で失敗した生成は参照を渡さず、失敗した名前は解放され（同じ名前で作り直せる）、系はその後も通常どおり生成できる（原典の「context のスタックが空」の写し）。ケース 1 と 2 で確かめる |
-| I8 | 等価の不変：この issue は `ActorRef` の等価（id と世代）と比較の規則を変えない。ケース 5 の形の変更（§1.3）はこの不変条件の帰結である |
+|:---:|:---|
+| I1 | 状態タイマの選択と張り直し（`FSM.scala:511-513, 755-763, 768-772, 817-914`）：通常メッセージと受理された名前付きタイマ印は、処理前に状態タイマを取り消し `state_generation` を 1 進める。遷移が成立したら、`for_max(Infinite)` なら張らず、`for_max(After(d))` なら `d` で張り、上書き無し（`goto`, `stay()`, 未処理既定の `stay()`）なら遷移先状態の既定タイムアウトがあれば張る（同一状態への `goto` も入り直しとして張り直す）。同一状態への複数回 `when_with_state_timeout` は `timeout.or(existing)` で合成する。`StateTimeout` 印の受信は `state_generation` を進めず、遷移先が新たなタイムアウトを張らない限り `is_state_timer_active` を維持する。購読・購読解除・`ListenerTerminated` は状態タイマを取り消さず世代も進めない |
+| I2 | 世代分離と再起動 `instance_id` 分離：`state_generation` と `named_timer_gen` は別カウンタであり、名前付きタイマの開始・取り消しは状態タイマを無効化しない（[PR #275](https://github.com/j5ik2o/fraktor-ng-rs/pull/275)）。また全印は `Fsm` 個体ごとの一意な `instance_id` を運び、再起動で新個体のローカル世代が 0 から始まっても旧個体の印は決して受理されない |
+| I3 | 名前付きタイマの即時性と一回性：状態関数・`on_transition_with_view` 内の開始・取り消しは即座にライブ表へ反映され、同一ハンドラ内の `is_timer_active` が最新状態を返す。同名の開始は置き換えであり旧印は破棄される。`Single` は高々 1 回だけ発火して表から消え、`FixedDelay`／`FixedRate` は取り消されるまで続く。無い名前の取り消しは何もしない。存在しない状態への `goto` は、状態を変えず、名前付きタイマをすべて取り消す（`FSM.scala:886-888, 933-939`） |
+| I4 | 停止の後始末：アクターが止まると（正常停止・失敗停止・システム終了を問わず）、名前付きタイマ・状態タイマの全期限が `Executor` 期限索引から即時削除され、以降の発火も `DeadLetter` も起きない（ケース 3）。また全 FSM タイマは `Executor` 単一ドライバのみで駆動され、二重発火しない |
+| I5 | 未処理イベントの警告とハンドラ差し替え：状態関数もカスタム `whenUnhandled` も `None` を返したイベントは、`log_source = self.path()` で `"unhandled event {event} in state {state}"` の `Warning` を 1 回だけ発行し、`FsmState::stay()` として `make_transition` を通る（状態・データは不変、既定 `stateTimeout` があれば再張り直し）。`FsmState::with_unhandled`／`clear_unhandled` の変更は次のイベントから効く |
+| I6 | 子の参照：`ActorContext::child(name)` が `Some(ref)` を返すのはその名前の生存中の子がいるときだけであり、返る参照は生成時の参照と等しい。停止完了後は `None` |
+| I7 | 非同期生成の失敗の後始末：factory または `pre_start` の panic は `Create` で捕捉され、`ActorInitializationException` のエラーログ（文面は panic の文面、原因の文面は `"{path}: exception during creation, root cause message: [{reason}]"`）が出て監督が `Stop` する。停止完了（`run_until_idle()`）後に名前が解放されて再利用でき、系は健全なまま後続の生成を受け付ける |
+| I8 | `ActorRef` 等価の不変：本 issue は `ActorRef` の等価性 `(id, generation)` を変えない。ケース 5 で未存在パス解決結果の 4 性質を検証し `==` 比較を行わないのはこの帰結である |
 
-## 5. PBT を足すか
+## 5. PBT（決定論的実行）
 
-足す。原典外であり、台帳の件数には含めない。外部の依存は足さず、既存の移植と同じ固定 seed の SplitMix64 で書く（`proptest` の採否は [Issue #212](https://github.com/j5ik2o/fraktor-ng-rs/issues/212) で決める話であり、この件では触れない）。置き場所は `crates/fraktor-actor/tests/fsm_timing_property_test.rs` と `crates/fraktor-actor/tests/actor_ref_property_test.rs` を想定する。
+外部クレートは足さず、既存の移植（`receive_timeout_property_test.rs` 等）と同じ固定 seed の SplitMix64 で書く。原典外であり台帳の件数には含めない。置き場所は `crates/fraktor-actor/tests/fsm_timing_property_test.rs` と `crates/fraktor-actor/tests/actor_ref_property_test.rs` とする。
 
-| 番号 | 性質 | 確かめる不変条件 |
-|:---|:---|:---|
-| P1 | 名前付きタイマの表のモデル照合：張る・取り消す・張り直す・印を受けるのランダムな列について、イベントとして処理されるのは「表にあり、世代が合い、単一ならまだ発火していない」印だけであり、処理されるメッセージは常に対象の行が持つメッセージである | I2、I3 |
-| P2 | 状態タイムアウトの選択：状態のタイムアウト（なし／`After`／`Infinite` 相当の入り直し）と `forMax` の上書き（なし／`After`／`Infinite`）と遷移の種類（`goto`／`stay`／同じ状態への `goto`）の組み合わせについて、処理の後に張られるのは常に I1 が選ぶ 1 つだけであり、古い印は決して通らない | I1、I2 |
-| P3 | 生成の失敗の後始末：factory が失敗する生成と成功する生成のランダムな列について、失敗した名前は常にもう一度使え、成功した参照はすべて相異なり、失敗は成功した子の集合を変えない | I6、I7 |
+| 番号 | 性質と決定論的実行の仕組み | 確かめる不変条件 |
+|:---:|:---|:---|
+| P1 | 名前付きタイマとキュー滞留印のモデル照合（`fsm_timing_property_test.rs`）：案 C＋`ActorSystem::set_clock`（手動時計）を使い、`receive_timeout_property_test.rs` と同じく決定論的にランダム操作列（開始・置き換え・取り消し・`is_timer_active` 同一ハンドラ内検査・時計進め・通常メッセージ送信・再起動）を流し、Pekko `FSM.scala` の参照モデルと発火イベント列を完全一致比較する。**ケース 7 の代替検証として**「タイマ開始 → `run_until_idle()` → `Cancel` メッセージ送信（未実行） → 時計を期限まで進める → `run_until_idle()`（先頭で期限発火がメールボックス末尾へ印を積み、`Cancel` が先に実行された直後に滞留していた旧印が捨てられる）」の確定的シーケンスと、再起動後に旧 `instance_id` の滞留印が捨てられるシーケンスを明示的に含める | I2、I3、I4 |
+| P2 | 状態タイムアウト選択のモデル照合（`fsm_timing_property_test.rs`）：`ActorSystem::set_clock`（手動時計）の下で、状態の既定タイムアウト（なし／有限／複数回 `when_with_state_timeout` 合成）× `for_max` 上書き（なし／`After`／`Infinite`）× 遷移種別（`goto`／同一状態 `goto`／存在しない状態への `goto`／`stay()`／未処理イベント／`StateTimeout` 受信／名前付きタイマ受信）のランダム列を流し、発火時刻・発火回数・古い印の破棄が Pekko 参照モデルと完全一致することを検証する | I1、I2、I5 |
+| P3 | 初期化失敗の後始末と `child` 一貫性（`actor_ref_property_test.rs`）：factory／`pre_start` で失敗する名前付き生成と成功する名前付き生成・停止のランダムな列について、各生成後に `system.run_until_idle()` で非同期 `Create` → 監督 `Stop` → 終了完了まで進めた後、失敗した名前は必ず再利用でき、成功した生存中の子はすべて相異なる参照を持ち、`context.child(name)` の結果が参照モデル（生存集合）と常に一致することを検証する | I6、I7 |
 
-## 6. 状態遷移と Quint を書くかどうか
+## 6. 状態遷移と Quint（1 ファイル仕様）
 
-**書く。** ただし、タイマの世代の判定そのものは `crates/fraktor-actor/specs/test_fsm_ref.qnt`（[Issue #181](https://github.com/j5ik2o/fraktor-ng-rs/issues/181)）がすでにモデルにしている（印の発行と受信を分け、間に取り消し・張り直し・再起動を挟む形）。重ねて書かない。この issue で新しいのは、状態タイムアウトの**選び方**（状態自身の値、`forMax` の上書き、無限、入り直し）であり、固定のテストでは組み合わせを取りこぼしうる（原典のケースが通るのは、状態の値だけ、上書きだけの 2 組み合わせである）。
+**書く（本設計と同時に作成・検査済み）。** 既存の `crates/fraktor-actor/specs/test_fsm_ref.qnt`（#181）は `TestFsmRef` の外部 `set_state` とハンドル中心であり、通常の `Fsm` の状態タイムアウト選択（既定値・`forMax(Infinite)`・`forMax(After)`・`stay()`・未処理イベント・`StateTimeout` 受信時の再張り直し）と再起動時の `instance_id` 分離を持たない。
 
-仕様は `crates/fraktor-actor/specs/fsm_timing.qnt`（本体）と、負の対照を含むテスト側を想定する。
+`scripts/quint-check-specs.sh` の規約（`crates/*/specs/*.qnt` の各ファイルに `init`/`step`/`val invariant`・`*Test` で終わる `run` が 1 本以上・`quint run --invariant=invariant` で `max > 1`）に従い、本体・不変条件・正のテスト・負の対照を **`crates/fraktor-actor/specs/fsm_timing.qnt` の 1 ファイル** にまとめる（レビュー M3）。
 
-- 状態：現在の状態名、張ってある状態タイマの種類（なし／期限あり／無限で張らない）とその世代、最後に処理した遷移の種類。
-- 遷移：`enter`（入り直しを含む）、`receiveOrdinary`（取り消してから処理し、結果で張り直す）、`stateTimerDue`（印の発行）、`receiveStateMark`（世代で判定する受信）。
-- 不変条件：`armedMatchesSelection`（張ってあるのは I1 の選択と常に一致する）、`staleMarkNeverFires`（世代の合わない印は状態を変えない）、`infiniteNeverArms`（`Infinite` の上書きと、タイムアウトの無い状態では決して張られない）。
-- 負の対照：`bugForMaxIgnored`（上書きを無視する）、`bugStayKeepsOldTimer`（`stay` で古いタイマを残す）、`bugSameStateGotoDoesNotRearm`（同じ状態への `goto` で張り直さない）。それぞれ不変条件が落ちることを確かめる。
-- モデルにしないもの：実時間そのもの（期限が来たかどうかは非決定的に選ぶ。`test_fsm_ref.qnt` と同じ）、名前付きタイマの世代（既存の仕様が担う）、警告の文面。
+- **状態**：`alive`, `curInst`/`nextInst`（`instance_id`）, `state`（既定タイムアウト無しの `SNoTimeout`、既定タイムアウトありの `SWithTimeoutA`/`SWithTimeoutB`、存在しない `SNonExistent`）, `stateGen`, `namedGen`, 状態タイマ枠（`stActive`, `stGen`, `stSid`, `stIssued`）, 名前付きタイマ表 `timers`, 滞留印集合 `namedMarks`/`stateMarks`, 不変条件用ゴースト変数（`liveSid`, `expectedArmed`, `lastOverride`, `deadEids`, `staleStateAccepted`, `staleNamedAccepted`, `acceptedSingle`）。
+- **遷移**：`receiveOrdinary(kind, target, ov)`（`Goto`/`Stay`/`Unhandled` × `NoOverride`/`OverrideAfter`/`OverrideInfinite`）, `startNamedTimer`, `cancelNamedTimer`, `namedTimerDue`, `stateTimerDue`, `receiveNamedMark`, `receiveStateMark`, `restartActor`（ローカル世代を 0 へ戻しつつ `curInst` を進める）, `stopActor`。
+- **不変条件（`val invariant`）**：`armedMatchesSelection`（I1）, `infiniteNeverArms`（I1）, `staleStateNeverFires`（I1/I2/M1）, `staleNamedNeverFires`（I2/I3/M1）, `stoppedNeverArms`（I4）, `singleLeavesTable`（I3）。
+- **正のテスト（11 本）**：`defaultTimeoutOnEnterAndStayTest`, `unhandledRearmsDefaultTimeoutTest`, `forMaxInfiniteDisablesDefaultTimeoutTest`, `forMaxAfterOverridesNoDefaultTest`, `sameStateGotoRearmsTimeoutTest`, `stateTimeoutRearmsWhenTargetHasDefaultTest`, `namedTimerDoesNotInvalidateStateTimerTest`, `namedTimerMarkCancelsStateTimerTest`, `restartInstanceIdDropsOldMarksTest`, `stopClearsAllTimersTest`, `gotoNonExistentClearsTimersTest`（存在しない状態への `goto` は状態を変えず、名前付きタイマを空にし、そのあと届いた古い印を捨てる。`FSM.scala:886-888, 933-939`）。
+- **検査の結果**：`bash scripts/quint-check-specs.sh` が全 spec で通る（`fsm_timing.qnt` は `quint test` 17 本、`quint run --invariant=invariant --max-steps=20 --max-samples=10000` で違反なし、trace の長さの最大 21）。
+- **負の対照（6 本、すべて狙った不変条件の破れを確認）**：
+  1. `bugForMaxIgnoredTest`（`forMax(Infinite)` を無視して既定タイムアウトを張る）
+  2. `bugStayDropsDefaultTimeoutTest`（`stay()` で既定タイムアウトを張り直さない）
+  3. `bugUnhandledDoesNotRearmTest`（未処理イベントで `makeTransition(stay())` を通らず既定タイムアウトを落とす）
+  4. `bugSameStateGotoDoesNotRearmTest`（同一状態 `goto` で張り直さない）
+  5. `bugStayKeepsOldTimerTest`（`stay()` で旧状態タイマをキャンセルせず旧印が通る）
+  6. `bugRestartReusesInstanceIdTest`（再起動時に `instance_id` を変えずローカル世代 0 始まりで旧印が誤一致する）
+- **モデルにしないもの**：実時間そのもの（期限到来は非決定選択）、リスナー通知順（`fsm_transition.qnt` が担当）、警告文字列の内容。
 
 ## 7. 壊しうる入力
 
-| 入力 | 何が起きうるか | 確かめているもの |
+| 入力 | 何が起きうるか | 設計での手当て・確かめ先 |
 |:---|:---|:---|
-| タイマの名前が空文字 | 原典は名前を検証せずキーとして使う。移植も空文字を許し、ほかの名前と区別する | P1（名前の抽選に空文字を含める） |
-| タイマの名前の連続した張り直し（同じ名前を何度も） | 世代が進み続け、古い印が新しい行に通る事故が起きうる | P1、ケース 6、ケース 7 |
-| ワイルドカード的な名前（`*` など） | 移植の表は文字列の完全一致だけであり、パターンの意味は持たない。原典も同じ | P1（名前は不透明な文字列として扱う） |
-| 極端に長い名前、非 ASCII の名前 | 表のキーは `String` であり、長さと符号化に制限を足さない | P1 |
-| 期限が `Duration::ZERO` | 張った直後に期限が来る。処理の順序（コマンドの取り込み位置）で、そのイベント自身の処理中に発火しないことを決める | §3.1 の取り込み位置、単体テストを第2段で足す |
-| 期限が非常に大きい（`Instant` に足せない） | 運搬側で溢れる。現行の testkit ドライバは `checked_add` で「決して発火しない」に倒す。案 A でも同じ扱いにする | 範囲の外としてここに記録する |
-| 境界の時間（期限ちょうどにメッセージが届く） | 実時間の競合であり、勝敗は実行ごとに変わりうる。テストは `dilated` の幅で避け、意味論としては「受信が先なら取り消し、印が先なら発火」のどちらも正しい | ケース 1、2 の時間の幅。Quint は時間を持たないので対象外 |
-| 状態タイムアウトが `Duration::ZERO` の状態 | 入るたびに即座に `StateTimeout` になりうる。無限ループにならないこと（1 回の発火は 1 件のメッセージ処理である） | P2 |
-| `child` へ渡す名前が空文字、存在しない名前、止まった子の名前 | すべて `None`。原典も `None`（`Option` が空）である | ケース 12、P3 |
-| factory の中で panic する生成、panic のペイロードが文字列でない生成 | 初期化の失敗の表出と、名前の解放が崩れうる | ケース 1、2、P3。第2段の最初に現行の扱いを実測する |
-| 再起動をまたぐタイマ | 通常の機械では、再起動で新しい個体が作られ、タイマの表は新しい個体のものになる（`TestFSMRef` のハンドルが再起動をまたぐのは testkit の設計であり、混同しない）。状態タイマは `initialize` の入り直しで張り直される | 範囲の外としてここに記録する。本 Spec に再起動のケースは無い |
+| 同一ハンドラ内で `start_single_timer("x", ...)` の直後に `is_timer_active("x")` や `cancel_timer("x")` | 遅延コマンド表だと `false` を返したり順序が崩れる | `FsmView` がライブ表を即時更新（§3.1(a)、P1） |
+| `on_transition_with_view` からタイマを開始 | 従来の `on_transition` には `&FsmView` が無い | `on_transition_with_view` を新設し、遷移ハンドラ終了直後に `pending_ops` を `Executor` へ反映（ケース 6） |
+| `initialize()` を呼ばない `Fsm` が `when_with_state_timeout` で `stay()` しつつ `context.stop(self)` | `stay()` で状態タイマが張られ、停止時に消し忘れると `DeadLetter` になる | `stay()` は `make_transition` で既定タイムアウトを張り、`post_stop_with_context`＋`Executor::clear_fsm_timers` が即時削除（ケース 3、I4） |
+| 既定 `stateTimeout` ありの状態で未処理イベントを受信 | 現行 `fsm.rs:587-590` のままでは状態タイマが消えて戻らない | 未処理時は警告後に `FsmState::stay()` で `make_transition` を通す（I1、Quint `bugUnhandledDoesNotRearmTest`、P2） |
+| 通常 `Fsm` のタイマ印がメールボックスに残ったまま再起動 | 新個体の世代が 0 から始まり旧印と世代 1 が誤一致する | `Fsm::new()` で一意な `instance_id` を採番し全印に載せる（I2、Quint `bugRestartReusesInstanceIdTest`、P1） |
+| `TestFsmRef` の `drive_timers` と `Executor` 期限索引の両方が動く | 二重発火で `TestFSMRefSpec` や繰り返しタイマが壊れる | `TestFsmRef::drive_timers` を廃止し `Executor` 単一ドライバに統一（§3.1(c)） |
+| タイマ名が空文字、ワイルドカード文字（`*`）、極端に長い文字列、非 ASCII | 名前の誤解釈や拒否が起きうる | 完全一致の `String` キーとしてそのまま扱う（P1） |
+| 期限が `Duration::ZERO`／`Duration::MAX` 近傍、時計なしの境界 | 即時発火の無限ループ、加算あふれ panic、無音無視 | 1 発火＝1 メッセージで処理中再入なし、`checked_add` あふれは発火なし、時計なしは FSM 専用文面で panic（§3.1(c)、P1、P2） |
+| `Props::new` クロージャ内からの `system.actor_of` 呼び出し | `Executor::lend` の二重ロックで再入 panic | アクターの中での入れ子の生成は `pre_start` の `context.actor_of`／`actor_of_with_strategy` を使う（ケース 6・12）。ケース 1 は、テストの本体が先に内側を作り、参照を外側の factory に渡す（§1.3、§1.3.1） |
+| 失敗する外側の子として失敗する内側を生成 | 外側が suspend → stop すると保留中の子失敗（`entry.held`）が破棄され `occurrences = 1` になる | 原典と同じく、外側も内側も `/user` の子としてテストの本体から作る（§1.3、§1.3.1） |
+| `EventFilter::filter_events` で複数フィルタ同時登録・解除 | `EventSinkRegistry::disarm` の `Vec::remove` で添字がずれる | 安定 ID 方式へ変更する（§3.5） |
+| `child` へ空文字・未存在名・停止済みの子名を渡す | 停止済みの子が残ると誤って `Some` を返す | `ParentEntry.children` は停止完了で削除済みのため `None`（ケース 12、P3） |
 
 ## 8. 影響
 
-- **公開 API**：追加は `FsmTimeout`、`Fsm::when_with_state_timeout`、`FsmState::for_max`、`FsmView` のタイマと未処理ハンドラの面、`ActorContext::child` である。既存の型と関数のシグネチャは変えない方針だが、§3.2 の差し替えの面だけは形しだいで `FsmView` の型引数が変わりうる（§9）。
-- **test-support の形**：タイマの表と判定を feature の外へ出すと、`fraktor-testkit` の `TestFSMRef` と green 済みの TestFSMRefSpec が同じ判定を通る。判定の意味は変えない（I2 は [PR #275](https://github.com/j5ik2o/fraktor-ng-rs/pull/275) の決定のまま）。
-- **既存の利用者へのコスト**：`Fsm::new` がタイマの共有状態を 1 つ確保するようになる（案 A／B のどちらでも）。ハンドルなしの機械でも払う小さな確保であり、ほかのコスト（ロックはイベント処理の前後だけ）は §3.1 の取り込み位置で閉じる。
-- **台帳**：第2段で 2 ノードを更新する。FSMTimingSpec は §1.4 の形（total 10、ported 9、passing 9、`verified_against` なし）、ActorRefSpec は §1.5 の提案が承認された場合に total 12、ported 10、passing 10、excluded 2（ケース 3、4）として green にする。提案が承認されない場合は、その判断を受けてから台帳の形を決める。
-- **保存済みのデータ・上流**：無し。
+- **公開 API（`fraktor-actor`）**：
+  - 追加：`FsmTimeout`, `Fsm::when_with_state_timeout`, `Fsm::on_transition_with_view`, `Fsm::with_state_display`, `FsmState::for_max`, `FsmState::with_unhandled`, `FsmState::clear_unhandled`, `FsmView` のタイマ 5 メソッド、`Message::with_display`, `Message::display_text`, `ActorContext::child`、`Logging::LogEvent::cause_message`（既定の実装つきのトレイトのメソッド）。
+  - 既存シグネチャ・トレイト境界への破壊的変更：**0 件**（`FsmView<S>` の型引数変更なし、`Fsm<S, D>` の境界変更なし、`Message::new` と `Debug for Message` 変更なし、`LogEvent` の既存の実装は書き換え不要）。
+- **公開 API（`fraktor-testkit`）**：
+  - 追加：`EventFilter::with_source`, `contains`, `with_occurrences`, `EventFilter::filter_events`。既存の `with_message`・`start` は `Error`／`Warning`／`Info` のすべてで効くようにする。
+  - 形の変更：`EventFilter` を、variant を見せる `pub enum` から中身を隠した `pub struct` に変える。ワークスペースで variant を直接使う箇所は 0 件。作る口と絞り込みの口のシグネチャは変えない。
+  - `TestFsmRef` の公開 API は不変（内部の `drive_timers` スレッドのみ廃止し `Executor` 期限索引へ統一）。
+- **既存テストへの影響**：
+  - `crates/fraktor-actor/tests/unhandled_notification_spec.rs:132`：`Message::new` の `Debug` を変えないため影響なし。
+  - `ActorInitializationException` のパス（§3.4）：パスは原因の文面に入れ、ログの文面は変えないので影響なし。
+  - `crates/fraktor-actor/tests/local_actor_ref_provider_spec.rs:105` と `crates/fraktor-actor/tests/actor_configuration_verification_property_test.rs:143`：`EventFilter::warning().with_message("unhandled message from <path>")` は `Warning` が引数を捨てていたので通っていた。第 2 段で、いま出る文面の完全一致に書き直す（§3.5）。
+- **別件として上げるもの（この issue では直さない）**：
+  - `publish_unhandled` の文面（`executor_value.rs:3381`、`"unhandled message from {path}: {message:?}"`）が、原典 `TestEventListener.scala:583`（`s"unhandled message from $sender: $msg"`。`$sender` は `Actor[path]`、文字列は引用符なし）と違う。
+  - `EventSinkRegistry::publish` は、1 つの事象を当たったフィルタのすべてに数える。原典は新しいフィルタから順に見て、最初の 1 本にだけ数える（§3.5）。
+  - 正規表現の `pattern`（`regex` を testkit に足すかの判断が要る。§3.5）。
+  - 存在しない状態への遷移で、原典はエラーログ `"Next state X does not exist"` を出すが、port は出していない（§3.1(a)）。
+- **`test-support` の形**：発火印を `pub(crate) enum FsmTimerMark` に分離し、`FsmControl`・`FsmHandle` は引き続き `#[cfg(feature = "test-support")]` の下に閉じ込める。第 2 段では `cargo clippy -p fraktor-actor --lib -- -D warnings`（`test-support` 無効）で公開面漏れが無いことを検証する。
+- **`#234` 段 6（[Issue #257](https://github.com/j5ik2o/fraktor-ng-rs/issues/257)）への影響**：`Scheduler` port に衝突しない。段 5〜6 で `ReceiveTimeout` と一緒に `Executor` 期限索引から `Scheduler` port へ一括移行する旨を `#257` へ転記する。
+- **台帳**：第 2 段で更新する。`FSMTimingSpec` は §1.4 のとおり `total: 10, ported: 9, passing: 9, status: unported`（`verified_against` なし、ケース 8 は後続 issue）。ケース 7 を数に入れるかは §1.5 伺い 6 の答えで決める。`ActorRefSpec` は §1.5 の伺いのオーナー承認を受けてから `cases.excluded`／`cases.not_built`（`approved_by`, `approved_at`）を確定して更新する。
+- **保存済みデータ・上流**：影響なし。
 
-## 9. レビューで見てほしい点
+## 9. 変更の記録（独立設計レビュー・Bugbot 指摘への対応）
 
-- **発火の運搬の案 A／案 B（§3.1）**：推奨は案 A（kernel の Scheduler の port と adaptor の実時間の運搬）である。案 A は `ActorSystem` の生成と adaptor に触れるため、この issue の範囲を広げる。その判断がレビューの中心である。
-- **未処理ハンドラの差し替えの形（§3.2）**：`FsmView` へ型引数を足す案と、差し替え専用の面を分ける案とで、既存の移植テストの書き換え範囲が変わる。あわせて、警告の文面（「unhandled event {event} in state {state}」）とイベントの表示の対応づけを妥当と見るか。
-- **作らない・除外の提案 4 件（§1.5）**：決めるのはオーナーである。特にケース 5 を「形を変えて移す」とし、等価のアサーションを落とす扱い（I8 の帰結）を妥当と見るか。
-- **ケース 8 を #234 の段 6 の後に分ける扱い（§1.4）**：台帳を total 10、ported 9 のまま残す形が、[Issue #194](https://github.com/j5ik2o/fraktor-ng-rs/issues/194) の前例と揃うか。
-- **ケース 1 の形（§1.3）**：factory の panic の扱いを第2段の最初に実測してからアサーションを決める進め方と、直接生成の小ケースを作らない提案。
-- **ケース 7 の形の変更（§1.2）**：メールボックスの滞留を処理の中で待つ部分を落とし、捨てられる印の性質は PBT と Quint が担うとする割り切りを妥当と見るか。
+独立設計レビュー `/Users/j5ik2o/.orca/bots/fraktor-ng-rs/memory/pr288-design-review.md`（固定 HEAD `4379e3f73ab4df22792fcd4e6228b3033af690f0`、高 4・中 6・低 4）および PR #288 の Cursor Bugbot 指摘（1 件）に対する判断と反映箇所を記録する。15 件すべてを直した。ただし、レビューの「直し方」のうち 3 つは原典を読み直した結果そのままの形では採らず、原典に合う別の形にした（H2 の「ログの文面にパスを入れる」、H2 の「`pattern`」、H4 の「`pre_start` での入れ子の子の生成」。理由は各行）。表の下に、レビューの外で見つけて直したものも記録する。
+
+| 指摘 | 扱い | 対応内容と反映箇所 |
+|:---:|:---:|:---|
+| H1 | 直す | `Fsm::on_transition_with_view` を追加し、`stay()`・未処理イベント（警告＋`FsmState::stay()`）・`TimeoutMarker`・複数回 `when_with_state_timeout`（`timeout.or(existing)`）の規則を `FSM.scala:511-513, 755-763, 768-772, 817-914` と 1 対 1 で明記した。`FsmView` のタイマ操作はライブ表を即時更新し同一ハンドラ内の `is_timer_active` に即時反映する設計へ改めた（§1.2、§3.1(a)、§4 I1/I3、§6、§7） |
+| H2 | 直す（直し方の 2 つは別の形） | `Message::with_display`／`display_text`（`Debug for Message` と `unhandled_notification_spec.rs` を壊さない。包括の実装をやめて `PlainPayload`／`DisplayPayload` の 2 つの包みにする）、`Fsm::with_state_display`（`Fsm<S, D>` の境界を壊さない）、`ActorContext::publish_warning`（`pub(crate)`）で、原典の文面 `"unhandled event {event} in state {state}"` を作る。`EventFilter` は中身を隠した struct にし、`with_message`／`start` を全 level で効かせ、`with_source`／`contains`／`with_occurrences`／`filter_events` を足し、`Error` は原典どおり文面と原因の文面のどちらかで当てる。`EventSinkRegistry` は安定 ID にする。**採らない形 1**：レビューの「`ActorInitializationException` の `message` を `"{path}: {message}"` にする」。原典では、パスは原因の `getMessage` にあり、`logFailure` のログの文面は根の原因の文面のまま（`ActorCell.scala:682-699`、`Actor.scala:202-204`、`FaultHandling.scala:404-420`）。そこでログの文面は変えず、`Error::with_cause_and_message` で原因の文面 `"{path}: exception during creation, root cause message: [..]"` を持たせ、`LogEvent::cause_message` で読めるようにした。**採らない形 2**：レビューの「`pattern`」。原典は正規表現だが、要るのは特殊文字の無い `"/user/failingActor:"` だけで、正規表現には外部 crate の判断が要る。していることのとおり `contains` と名付け、正規表現は別件にした。既存のテスト 2 本（`local_actor_ref_provider_spec.rs:105`・`actor_configuration_verification_property_test.rs:143`）が引数の黙殺で通っていた事実と、その直し方も記録した（§2.1、§2.2、§3.2、§3.4、§3.5、§8） |
+| H3 | 直す | 旧案 A（FSM 専用 `Scheduler` port＋std スレッド）と旧案 B を却下し、レビュー第一推奨の案 C（`#200` PR #283 と同じ `Executor` の `BTreeMap` 期限索引＋`Clock`＋`await_envelope` 期限カット）を採用した。`#234` 段 6（[Issue #257](https://github.com/j5ik2o/fraktor-ng-rs/issues/257)）の汎用 `Scheduler` port と衝突せず、段 5〜6 で `ReceiveTimeout` と一括移行できる（§2.1、§3.1(c)、§8） |
+| H4 | 直す（直し方の 1 つは別の形） | `executor_value.rs:1249-1325, 1602-1636` の非同期 `Create` を本文に書き、「参照を渡さない」の誤りを消した。ケース 1 の 13 の小ケースを §1.3.1 の表に 1 つずつ書き、「作れない：`ActorCell.contextStack` による直接の `new` の禁止（小ケース 1 と、小ケース 2〜12 の失敗の原因）」と「写せる：外側・内側・両方の失敗の `occurrences` 1・2、根の原因の文面の保持（小ケース 13）、失敗のあとの停止・名前の解放・次の生成」に分けた。`Props` の factory の中から `actor_of` を呼ぶ再入の panic は、テストの本体が先に内側を作って参照を外側の factory に渡す形で避けた。**採らない形**：レビューの「`pre_start` での入れ子の子の生成」。原典では外側も内側も `/user` の兄弟で、内側を外側の子にすると、外側の失敗中に内側の失敗が `entry.held` に保留されて捨てられ、`occurrences = 2` が 1 になるため（§1.3、§1.3.1、§1.5 伺い 4、§4 I7、§7） |
+| M1 | 直す | `Fsm::new()` ごとに `portable_atomic::AtomicU64` から一意の `instance_id` を採番し、`state_generation` と `named_timer_gen` を分離して全印に `instance_id` を載せる設計にした。発火印は `pub(crate) enum FsmTimerMark` へ分離して `FsmControl` を `test-support` に留め、`FsmView` からのタイマ操作も `FsmHandle` へ同期する経路を明記した（§3.1(a)(b)、§4 I2、§6、§8） |
+| M2 | 直す | `FsmView<S>` の破壊的変更を避け、`S` と `D` を既に持つ `FsmState<S, D>` に `with_unhandled`／`clear_unhandled` を置く形に確定した（既存テスト書き換え 0 件）（§3.1(d)、§3.2(c)、§8） |
+| M3 | 直す | 2 ファイル分割案を撤回し、`scripts/quint-check-specs.sh` の規約に合わせて `crates/fraktor-actor/specs/fsm_timing.qnt` の 1 ファイルに本体・`val invariant`・正のテスト 10 本・負の対照 6 本（`bugStayDropsDefaultTimeoutTest`, `bugUnhandledDoesNotRearmTest`, `bugRestartReusesInstanceIdTest` 等を含む）を作成・検査した（§6） |
+| M4 | 直す | `FSMTimingSpec.scala:29-31` の `ignore_msg`、`spec.test_kit_mut().expect_no_message(spec.remaining())`（二重 dilate 回避）、およびケースごとの独立した `FraktorSpec`＋`StateMachine` 起動を明記した（§1.2） |
+| M5 | 直す | ActorRefSpec ケース 5 の `EmptyLocalActorRef` 検証を 4 点（`path` 一致、`is_actor_terminated == true`、`DeadLetter` 発行、`watch` の即時 `Terminated(existence_confirmed = false)`）に強化し、§1.5 に「伺うこと」（ケース 3 の原典 Serialization grep 結果を含む）を正確に整理した（§1.3、§1.5） |
+| M6 | 直す | 案 C 採用により 1ms ポーリングスレッドを廃して CI 揺れを抑え、`StateMachine` の遅延と `WorkerActor` へ `TestKitSettings::dilated` を適用する一方 `StoppingActor` の 200ms は dilate しない原典どおりの区別を明記した（§1.2、§1.3） |
+| L1 | 直す | 基準を `main`（`53014ed`、PR #275・#283 マージ済み）へ更新し、§2 の `Executor` 期限索引、`FraktorSpec::receive_while`、`PoisonPill`/`Kill` の `Executor::invoke` 特別扱い、`TestKit::expect_msg_terminated`／`TestProbe::expect_msg_terminated_within` の事実関係を正確に直した（§2.1、§2.2） |
+| L2 | 直す | ケース 8 の後続 issue 作成前提を明記し、ケース 7 の代替検証として P1 が手動時計 `ActorSystem::set_clock` で「メールボックス滞留印の取り消し破棄」を確定的に再現する手順を具体化した（§1.2、§1.4、§5） |
+| L3 | 直す | ケース 6 の親子関係の違い（`/user` → `a`）、ケース 7 の `ActorRef::forward(&inner, message, context)` 使用、ケース 11 の `EventFilter::typed("ActorKilledException")` ラップを明記した（§1.3） |
+| L4 | 直す | P1・P2 の決定論的実行手段（案 C＋`ActorSystem::set_clock`）と、P3 の非同期生成・停止完了（`run_until_idle()`）後の名前解放前提を明記した（§5） |
+| Bugbot（Dual timer drivers would double-fire） | 直す | 案 C 採用と合わせて `TestFsmRef` の `drive_timers` スレッドを廃止し、通常機械・`TestFsmRef` 機械の双方を `Executor` 期限索引の単一ドライバに統一することで二重発火を構造上排除した（§3.1(c)、§4 I4、§7、§8） |
+
+### 9.1 レビューの外で見つけて直したもの
+
+| 見つけたこと | 直したこと |
+|:---|:---|
+| FSMTimingSpec ケース 4・5・6 の引数なしの `expectNoMessage()` は、既定の 100ms（dilated。`TestKit.scala:733-734`、`reference.conf:26`）を待つ。scope の残りを待つのではない | §1.2 の写し方を `settings.dilated(settings.expect_no_message_default_timeout())` に直した。`remainingOrDefault` を渡すのはケース 1・2・3 だけ |
+| ケース 7 の形の変更（`mailbox.hasMessages` 待ちを落とす）は、Spec の中で滞留した古い印の破棄を通らなくなるので、原典より弱い | 数に入れるかを §1.5 伺い 6 に上げた。代わりの確かめは P1 と Quint |
+| `Payload` の包括の実装があるので、`DisplayPayload` だけ上書きする形はコンパイルできない | §3.2(a) を 2 つの包みの形に直した |
+| 存在しない状態への `goto` で、原典は `terminate` を呼んで名前付きタイマを空にする（`FSM.scala:886-888, 933-939`） | §3.1(a) に足し、Quint にも入れた（`gotoNonExistentClearsTimersTest`）。エラーログを出さないことは別件（§8） |
+| 原典の `filter` は 1 つの事象を最初に当たったフィルタ 1 本にだけ数える。port は当たったすべてに数える | この issue のフィルタは重ならないので結果は同じ。変えると既存テストに響くため、別件にした（§3.5、§8） |
+| 基準の `main` が `53014ed` に進んだ | 取り込み、`executor_value.rs` の行番号を `53014ed` の位置に直した |
