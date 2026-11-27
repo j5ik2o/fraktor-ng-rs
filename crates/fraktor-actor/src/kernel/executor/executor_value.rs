@@ -2432,7 +2432,11 @@ impl Executor {
       return Next::Yield;
     }
     if message == POISON_PILL {
+      let key = cell.key();
+      let timeout_before = self.receive_timeout_before(key, true);
       mailbox.system_enqueue(SystemMessage::Terminate).ok();
+      self.receive_timeout_after(key, true, timeout_before);
+      self.fire_due_receive_timeouts();
       return Next::Continue;
     }
     let key = cell.key();
