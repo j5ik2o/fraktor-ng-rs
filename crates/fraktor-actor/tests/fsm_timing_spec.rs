@@ -199,9 +199,7 @@ fn state_machine(settings: TestKitSettings) -> Fsm<State, i32> {
     State::TestStateTimeout,
     Some(state_timeout),
     move |_context, _view, message, data| {
-      if message.downcast_ref::<StateTimeout>().is_some() {
-        Some(FsmState::goto(State::Initial).using(*data))
-      } else if message.is::<Cancel>() {
+      if message.downcast_ref::<StateTimeout>().is_some() || message.is::<Cancel>() {
         Some(FsmState::goto(State::Initial).using(*data))
       } else {
         Some(FsmState::stay())
@@ -283,7 +281,7 @@ fn stopping_actor() -> Fsm<State, i32> {
 
 /// Starts the `StateMachine` of the original with `settings` as its delays.
 fn machine_props(settings: TestKitSettings) -> Props {
-  Props::new(move || state_machine(settings.clone()))
+  Props::new(move || state_machine(settings))
 }
 
 fn stopping_props() -> Props {
@@ -376,7 +374,7 @@ fn cancels_a_state_timeout_when_the_actor_is_stopped() {
 fn allows_a_state_timeout_override() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let settings = spec.test_kit_settings();
-  let fsm = spec.system_mut().actor_of(Props::new(move || override_state_machine(settings.clone())));
+  let fsm = spec.system_mut().actor_of(Props::new(move || override_state_machine(settings)));
   let test_actor = spec.test_actor();
   fsm.tell(SubscribeTransitionCallBack(test_actor.clone()), test_actor.clone());
   let current: CurrentState<State> = spec.expect_msg_type();

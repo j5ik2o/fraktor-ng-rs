@@ -656,7 +656,7 @@ fn supports_reply_via_sender() {
   let settings = spec.test_kit_settings();
   // The original's `TestLatch(4)`: two rounds, and each round makes both the
   // worker's answer and the sender actor's arrival count one opening.
-  let latch = TestLatch::new(4, settings.clone());
+  let latch = TestLatch::new(4, settings);
   let test_actor = spec.test_actor();
   let reply_slot: Arc<Mutex<Option<ActorRef>>> = Arc::new(Mutex::new(None));
   // The worker answers the sender actor, as `WorkerActor(..., senderActor)`.
@@ -737,7 +737,7 @@ impl Actor for CountdownActor {
 fn restarts_when_killed() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let settings = spec.test_kit_settings();
-  let latch = TestLatch::new(2, settings.clone());
+  let latch = TestLatch::new(2, settings);
   let strategy = SupervisorStrategy::one_for_one_with_window(RestartLimit::new(2), RestartWindow::Within(millis(1000)));
   let supervisor: ActorRef = spec.system_mut().actor_of({
     let latch = latch.clone();
