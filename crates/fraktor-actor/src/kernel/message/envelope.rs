@@ -25,8 +25,7 @@ use crate::kernel::message::message_value::Message;
 /// Mirrors `org.apache.pekko.dispatch.Envelope`, which holds the message and
 /// the sender: an envelope in a mailbox has no recipient, because the mailbox
 /// is the recipient. An envelope that crosses a shard boundary, or that a
-/// mailbox turned away, carries its recipient (design of #234, section
-/// 11.11.1).
+/// mailbox turned away, carries its recipient.
 pub struct Envelope {
   recipient: Option<ActorRef>,
   message: Message,

@@ -31,8 +31,7 @@ mod tests;
 ///
 /// Mirrors `org.apache.pekko.dispatch.MessageQueue`. The queue does not know
 /// whether its mailbox is closed: the mailbox's gate decides that, so that a
-/// queue can be shared by mailboxes that close one by one (design of #234,
-/// section 3.2, "the gate"). The adaptor may pass its own queue through a
+/// queue can be shared by mailboxes that close one by one. The adaptor may pass its own queue through a
 /// [`MessageQueueFactory`](super::MessageQueueFactory).
 ///
 /// Putting an envelope on the queue takes two steps, so that no user code runs

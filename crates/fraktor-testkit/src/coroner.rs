@@ -104,9 +104,9 @@ pub fn print_report(report_title: &str, out: &mut dyn Write) -> io::Result<()> {
 fn report_if_overdue<W: Write>(handle: &WatchHandle, duration: Duration, title: &str, mut out: W) {
   handle.started();
   if handle.expire_unless_cancelled(duration) {
-    let _ = report(duration, title, &mut out);
+    report(duration, title, &mut out).ok();
   }
-  let _ = out.flush();
+  out.flush().ok();
   handle.finished();
 }
 

@@ -23,7 +23,7 @@ mod tests;
 ///
 /// The boundary also owns the signal that wakes a thread waiting for work for
 /// its system: a post raises it, and so do the system's mailboxes and
-/// function references (design of #234, section 11.11.6). The receiving end needs `&self` to poll it,
+/// function references. The receiving end needs `&self` to poll it,
 /// so it sits behind a `Mutex`; a poisoned lock still yields its data, because
 /// a panic while sending must not lose the messages already queued.
 ///
@@ -87,7 +87,7 @@ impl ShardBoundary for ChannelBoundary {
       return;
     }
     self.pending.fetch_add(1, Ordering::AcqRel);
-    let _ = self.sender.send(envelope);
+    self.sender.send(envelope).ok();
     drop(open);
     self.signal.notify();
   }

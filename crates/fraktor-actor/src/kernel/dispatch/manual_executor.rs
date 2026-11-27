@@ -31,7 +31,7 @@ use crate::kernel::sync::LockFactory;
 /// (`run_one`, `run_until_idle`), first in, first out.
 ///
 /// Plays the part of Pekko's `CallingThreadDispatcher` for the hand-driven
-/// system (design of #234, sections 3.5 and 11.11.1): a mailbox that wins its
+/// system: a mailbox that wins its
 /// scheduled bit is put here as a [`ManualTask::Run`], and the caller's thread
 /// takes it out and runs it. A mailbox reaches this only through its `Weak`
 /// back-edge (condition 2 of the ownership model's revision). Once its system

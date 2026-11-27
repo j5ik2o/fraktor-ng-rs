@@ -169,8 +169,7 @@ struct DeferredReply {
 /// generation of its handle.
 type ActorKey = (u64, u32);
 
-/// What one actor of the system is, in one place (design of #234, section
-/// 11.11.3).
+/// What one actor of the system is, in one place.
 ///
 /// The cell itself lives in the mailbox, which a run takes it out of. What
 /// the executor reads and writes while the actor handles a message (the
@@ -188,8 +187,8 @@ struct ActorEntry {
 }
 
 /// A failure that the parent of `child` decides once the run that recorded
-/// it has returned (design of #234, section 11.11.2; Pekko's `Failed`, which
-/// stage 4b makes a system message).
+/// it has returned (Pekko's `Failed`, which is not a system message here
+/// yet).
 ///
 /// It keeps what the decision reads of the child, so a child that a
 /// `Terminate` closed in the same run is still decided for (section 11.12.2,
@@ -383,8 +382,7 @@ pub(crate) fn validate_actor_name(name: &str) -> Result<(), InvalidActorNameExce
 /// Mirrors the role of `org.apache.pekko.actor.ActorCell` together with a
 /// dispatcher a caller drives by hand: every actor has its own mailbox, a
 /// mailbox that has work waits in the [`ManualExecutor`], and a
-/// `ShardBoundary` carries what has no mailbox (design of #234, section
-/// 11.11). The executor alone owns the actors' entries; a caller only holds
+/// `ShardBoundary` carries what has no mailbox. The executor alone owns the actors' entries; a caller only holds
 /// `ActorRef` handles.
 ///
 /// The executor also owns whether the system has been terminated. Keeping that
@@ -573,7 +571,7 @@ impl Executor {
   /// target without one, drops it (section 11.12.3).
   fn send_system(&self, target: &ActorRef, message: SystemMessage) {
     if let Some(entry) = self.entry(target) {
-      let _ = Mailbox::system_send(&entry.mailbox, message);
+      Mailbox::system_send(&entry.mailbox, message).ok();
     }
   }
 
@@ -687,8 +685,7 @@ impl Executor {
   /// from its `enqueue`. The route captures the routing state and the dead
   /// letters handle once, when the actor is spawned, and a routing passes
   /// the handle by reference, so routing one envelope clones no handle of
-  /// the executor's and walks no way back (design of #234, section
-  /// 11.11.7, the refused path of condition 1).
+  /// the executor's and walks no way back.
   fn dead_letter_route(&self) -> Arc<dyn Fn(Envelope) + Send + Sync> {
     let shared = self.dead_letters_shared.clone();
     let dead_letters = self.dead_letters.clone();
@@ -1324,7 +1321,7 @@ impl Executor {
     // Pekko's `Dispatch.init` puts `Create` first on the system queue, and
     // `start` attaches the mailbox: `pre_start` runs in the child's own run
     // (section 11.12.2).
-    let _ = Mailbox::system_send(&mailbox, SystemMessage::Create);
+    Mailbox::system_send(&mailbox, SystemMessage::Create).ok();
     self_ref
   }
 
@@ -1715,7 +1712,7 @@ impl Executor {
     if let Some(record) = entry.parent.clone().and_then(|parent| self.parent_entry_mut(&parent)) {
       record.mark_dying(target);
     }
-    let _ = Mailbox::system_send(&mailbox, SystemMessage::Terminate);
+    Mailbox::system_send(&mailbox, SystemMessage::Terminate).ok();
   }
 
   /// Handles `Terminate` (Pekko's `FaultHandling.terminate`, section
@@ -1764,7 +1761,7 @@ impl Executor {
     match cell.parent() {
       | Some(parent) => match self.entry(&parent) {
         | Some(entry) => {
-          let _ = Mailbox::system_send(&entry.mailbox, SystemMessage::ChildTerminated { child: target.clone() });
+          Mailbox::system_send(&entry.mailbox, SystemMessage::ChildTerminated { child: target.clone() }).ok();
         },
         | None => self.child_ended_under(&parent, &target),
       },
@@ -2019,7 +2016,7 @@ impl Executor {
     // The system messages left (a `Terminate`, a `Resume`, or a `Create`
     // that a stop overtook) mean nothing to a closed mailbox, and the runs
     // that wait for it would find it closed: both are dropped here, outside
-    // every lock (design of #234, section 11.12.3).
+    // every lock.
     let (envelopes, system) = entry.mailbox.close();
     let runs = self.manual.take_runs_of(&entry.mailbox);
     drop(system);
@@ -2352,7 +2349,7 @@ impl Executor {
 
   /// Runs every mailbox that has work, and delivers every envelope that is
   /// waiting at the boundary, until nothing is left. A mailbox runs up to its
-  /// throughput at a time (design of #234, section 3.9).
+  /// throughput at a time.
   pub(crate) fn run_until_idle(&mut self) {
     loop {
       self.fire_due_receive_timeouts();
@@ -2417,11 +2414,10 @@ impl Executor {
     report.delivered > 0
   }
 
-  /// Does what a run left, now that the actor is back in its mailbox
-  /// (design of #234, section 11.11.2): the parent decides for the failure
-  /// the run recorded, the failures that waited for a parent that is no
-  /// longer suspended are decided, and the decider failures that waited for
-  /// the outermost frame are applied.
+  /// Does what a run left, now that the actor is back in its mailbox: the
+  /// parent decides for the failure the run recorded, the failures that
+  /// waited for a parent that is no longer suspended are decided, and the
+  /// decider failures that waited for the outermost frame are applied.
   fn finish_run(&mut self) {
     if let Some(failure) = self.after_run.take() {
       self.decide(failure);
@@ -2459,7 +2455,7 @@ impl Executor {
     }
     if message == POISON_PILL {
       self.clear_receive_timeout(cell.key());
-      let _ = mailbox.system_enqueue(SystemMessage::Terminate);
+      mailbox.system_enqueue(SystemMessage::Terminate).ok();
       return Next::Continue;
     }
     let key = cell.key();
@@ -2662,8 +2658,7 @@ impl Executor {
   }
 
   /// Records that a caller's thread unwound out of the executor: a panic that
-  /// no catcher caught, which Pekko treats as fatal (design of #234, section
-  /// 11.11.2). The frames that were running are forgotten without running
+  /// no catcher caught, which Pekko treats as fatal. The frames that were running are forgotten without running
   /// user code, and the next call into the executor terminates the system.
   fn mark_fatal(&mut self) {
     self.fatal = true;
@@ -2680,7 +2675,7 @@ impl Executor {
   /// first, as Pekko's uncaught exception handler terminates the system on a
   /// fatal error. When `work` unwinds in the middle of a frame, a run, or the
   /// work at the boundary, the executor is marked so that the next call does
-  /// that (design of #234, section 11.11.2). A refusal the executor raises
+  /// that. A refusal the executor raises
   /// before it changes anything, as Pekko throws to the caller, leaves the
   /// system as it was.
   pub(crate) fn lend<R>(executor: &spin::Mutex<Executor>, work: impl FnOnce(&mut Executor) -> R) -> R {
@@ -2888,7 +2883,7 @@ impl Executor {
   }
 
   /// Lets the parent decide for `failure`, or keeps the failure until the
-  /// parent is no longer suspended (design of #234, section 11.12.6).
+  /// parent is no longer suspended.
   ///
   /// A parent stays suspended across runs while it waits for the decision on
   /// its own failure, after its start failed, and while it waits for

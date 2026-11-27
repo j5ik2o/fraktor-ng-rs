@@ -28,8 +28,7 @@ mod tests;
 /// Makes locks on `std::sync::Mutex`, which put a waiting thread to sleep.
 ///
 /// A thread pool with more threads than cores needs a lock like this: a
-/// spinning waiter keeps the holder from running (design of #234, section
-/// 3.2). `std::sync::Mutex` is chosen over `parking_lot` so that no
+/// spinning waiter keeps the holder from running. `std::sync::Mutex` is chosen over `parking_lot` so that no
 /// dependency is added. A section that unwinds poisons the mutex; the lock
 /// ignores the poison, as `ChannelBoundary` does, because a section only
 /// moves values and leaves nothing half done.

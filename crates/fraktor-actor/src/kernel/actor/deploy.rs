@@ -19,7 +19,7 @@
 //!
 //! Mirrors `org.apache.pekko.actor.Deployer` and the values it produces
 //! (`Deploy`, `Scope`). The original reads HOCON; the port takes typed
-//! [`DeploymentSection`] values instead (design of #195).
+//! [`DeploymentSection`] values instead.
 
 mod default_resizer;
 mod deploy_error;

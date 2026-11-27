@@ -23,7 +23,6 @@ pub(crate) struct RunReport<C> {
   /// Whether the mailbox is to run again.
   pub(crate) outcome: RunOutcome<C>,
   /// How many normal messages the run took from the queue. A run that handles
-  /// only system messages, or finds nothing (design of #234, section 3.10),
-  /// takes none.
+  /// only system messages, or finds nothing, takes none.
   pub(crate) delivered: usize,
 }
