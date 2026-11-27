@@ -27,7 +27,7 @@ mod tests;
 
 /// A value guarded by a [`RawLock`], reached only inside [`with`](Self::with).
 ///
-/// No user code runs inside the lock (design of #234, invariant I16): the
+/// No user code runs inside the lock: the
 /// closure gets the `&mut T` and nothing else, so it cannot reach an actor, a
 /// reference or a handler. A closure only moves values in and out; a value
 /// that may run user code when it is dropped, such as an envelope, is moved

@@ -22,8 +22,7 @@ use crate::kernel::sync::RawLock;
 
 /// Makes a [`RawLock`] for each value the kernel guards.
 ///
-/// The adaptor passes one when it builds a system or a dispatcher
-/// (design of #234, section 3.2, rule C2). The kernel's own default is
+/// The adaptor passes one when it builds a system or a dispatcher. The kernel's own default is
 /// [`SpinLockFactory`](super::SpinLockFactory).
 pub trait LockFactory: Send + Sync {
   /// Returns a new lock, not shared with any lock made before.

@@ -25,7 +25,7 @@ use alloc::string::String;
 /// `ConfigException.WrongType`. [`NotANumber`](Self::NotANumber) holds
 /// a value that cannot become an `i32` — a non-numeric string such as
 /// `"boom"` and an out-of-range number alike — for the interpretation
-/// step to refuse with the same error (design of #195, F1).
+/// step to refuse with the same error.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum NumberOfInstances {
   /// A value that fits the original's `getInt`.

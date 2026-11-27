@@ -54,8 +54,7 @@ pub trait ShardBoundary: Send + Sync {
   /// Returns the signal that wakes a caller waiting for work for the system
   /// of this boundary, when the boundary has one. The boundary raises it when
   /// an envelope is posted; the system raises it when a mailbox has work or
-  /// a function reference has handled a message (design of #234, section
-  /// 11.11.6). Without one, a wait polls the boundary.
+  /// a function reference has handled a message. Without one, a wait polls the boundary.
   fn wake_signal(&self) -> Option<Arc<dyn WakeSignal>> {
     None
   }

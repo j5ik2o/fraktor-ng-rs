@@ -249,11 +249,11 @@ impl EventStream {
       let class = candidate.event_class();
       if candidate <= level {
         for logger in loggers {
-          let _ = self.subscribe(Some(logger.clone()), class);
+          self.subscribe(Some(logger.clone()), class).ok();
         }
       } else {
         for logger in loggers {
-          let _ = self.unsubscribe(Some(logger.clone()), class);
+          self.unsubscribe(Some(logger.clone()), class).ok();
         }
       }
     }
@@ -275,12 +275,12 @@ impl EventStream {
       let class = candidate.event_class();
       if previous.is_none_or(|old| candidate > old) && candidate <= level {
         for logger in &loggers {
-          let _ = self.subscribe(Some(logger.clone()), class);
+          self.subscribe(Some(logger.clone()), class).ok();
         }
       }
       if previous.is_some_and(|old| candidate <= old) && candidate > level {
         for logger in &loggers {
-          let _ = self.unsubscribe(Some(logger.clone()), class);
+          self.unsubscribe(Some(logger.clone()), class).ok();
         }
       }
     }
@@ -307,7 +307,7 @@ impl EventStream {
       let text = format!("unhandled message from {}: {:?}", unhandled.sender().path(), unhandled.message());
       bus.publish(Debug::new(source, DEBUG_LOG_CLASS, &text));
     });
-    let _ = self.bus.subscribe(Some(forwarder), EventClass::of::<crate::kernel::actor::UnhandledMessage>());
+    self.bus.subscribe(Some(forwarder), EventClass::of::<crate::kernel::actor::UnhandledMessage>()).ok();
   }
 
   fn activate_unsubscriber(&self, unsubscriber: ActorRef) {

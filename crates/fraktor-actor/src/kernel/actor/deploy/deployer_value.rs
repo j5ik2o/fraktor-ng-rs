@@ -61,7 +61,7 @@ impl Deployer {
   /// `pekko.actor.deployment` and deploys the result. The key
   /// `"default"` is skipped, as the original's constructor branches on
   /// it; a user-supplied default section is not layered over the
-  /// others (design of #195, section 2.2, decision 1). When the same
+  /// others. When the same
   /// key appears twice, the later section replaces the earlier one
   /// whole, which no HOCON input can produce.
   ///

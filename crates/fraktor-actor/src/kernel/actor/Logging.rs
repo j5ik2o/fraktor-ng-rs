@@ -16,6 +16,8 @@
 
 //! The events an actor logs, mirroring `org.apache.pekko.event.Logging`.
 
+/// Mapped Diagnostic Context map carried by log events, mirroring
+/// `org.apache.pekko.event.Logging.MDC`.
 pub type Mdc = alloc::collections::BTreeMap<alloc::string::String, alloc::string::String>;
 
 mod debug;

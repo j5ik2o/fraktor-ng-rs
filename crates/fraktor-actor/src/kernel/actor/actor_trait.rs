@@ -45,9 +45,7 @@ pub trait Actor: Send {
   /// default. The context is lent so an actor may `change_behavior` here, which
   /// is what `context.become` in a Pekko constructor does: the behaviour is
   /// active before the first message arrives.
-  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
-    let _ = context;
-  }
+  fn pre_start(&mut self, _context: &mut ActorContext<'_>) {}
 
   /// Runs after the actor has stopped.
   ///
@@ -65,8 +63,7 @@ pub trait Actor: Send {
   /// keeps working. During a failure stop, the context carries the sender of
   /// the failing message. During an ordinary stop, it carries dead letters.
   /// When the default `pre_restart` calls this hook, it passes its own context.
-  fn post_stop_with_context(&mut self, context: &mut ActorContext<'_>) {
-    let _ = context;
+  fn post_stop_with_context(&mut self, _context: &mut ActorContext<'_>) {
     self.post_stop();
   }
 
@@ -76,8 +73,7 @@ pub trait Actor: Send {
   /// the children and then runs `postStop`. The `reason` is
   /// the cause of the failure that triggered the restart, given as the port's
   /// error event, which an actor can downcast when it needs the cause.
-  fn pre_restart(&mut self, context: &mut ActorContext<'_>, reason: &(dyn Any + Send)) {
-    let _ = reason;
+  fn pre_restart(&mut self, context: &mut ActorContext<'_>, _reason: &(dyn Any + Send)) {
     context.stop_children();
     self.post_stop_with_context(context);
   }

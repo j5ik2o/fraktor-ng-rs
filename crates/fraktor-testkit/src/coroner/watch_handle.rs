@@ -73,7 +73,7 @@ impl WatchHandle {
   /// Waits at most `max` for the watch to be cancelled or to expire, and
   /// returns the handle, as `Await.ready` does.
   pub fn ready(&self, max: Duration) -> &Self {
-    let _ = self.result(max);
+    self.result(max);
     self
   }
 

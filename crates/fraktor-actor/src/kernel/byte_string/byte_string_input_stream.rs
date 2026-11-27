@@ -182,8 +182,7 @@ impl ByteStringInputStream {
   /// `UnsynchronizedByteArrayInputStream` and Java's `ByteArrayInputStream` do,
   /// the stream ignores `read_ahead_limit`: the mark stays valid however many
   /// bytes are read after it.
-  pub fn mark(&mut self, read_ahead_limit: usize) {
-    let _ = read_ahead_limit;
+  pub fn mark(&mut self, _read_ahead_limit: usize) {
     if let Some(marked) = &mut self.marked {
       marked.clone_from(&self.bytes);
     }

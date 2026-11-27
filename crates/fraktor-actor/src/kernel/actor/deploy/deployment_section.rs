@@ -31,7 +31,7 @@ use super::router_selection::RouterSelection;
 /// the original would read, and a section is written by overriding the
 /// fields it sets. The port has no configuration file, so a `default`
 /// section supplied by a user cannot be layered over the others; the
-/// `Deployer` skips that key (design of #195, section 2.2, decision 1).
+/// `Deployer` skips that key.
 #[derive(Clone, PartialEq, Debug)]
 pub struct DeploymentSection {
   /// The `router` of the section.
