@@ -24,9 +24,21 @@
 // setting is `setTimeout`; whether the message influences the timeout
 // does not change the result then, because a changed setting is checked
 // with `reschedule = true` either way.
+//
+// A child's stop reaches the parent as the system message
+// `DeathWatchNotification` (`ActorCell.systemInvoke`, line 531), and the
+// parent's `SupervisorStrategy.handleChildTerminated` runs there, outside
+// `invoke` (`FaultHandling.handleChildTerminated`, lines 327-351). The hook
+// may set the timeout, which only changes the setting and the version
+// (`setReceiveTimeout`); nothing cancels or checks the task until the next
+// message (I5). The `ReceiveTimeout` is sent by `scheduleOnce` with
+// `Actor.noSender` (`ReceiveTimeout.scala` line 76, `Scheduler.scala`
+// lines 355-359), so its sender is none (I6).
 module receive_timeout {
   type Setting = Undefined | Infinite | Finite
   type Task = Empty | Scheduled | Fired
+  // The sender a firing puts on its `ReceiveTimeout`.
+  type Sender = NoSender | SelfSender
 
   var setting: Setting
   var task: Task
@@ -49,6 +61,11 @@ module receive_timeout {
   var lastAction: str
   var prevTask: Task
   var prevEpoch: int
+  // Whether a child-terminated hook changed the setting since the last
+  // check: the task may then still be the one the old setting scheduled.
+  var settingUnchecked: bool
+  // The senders of the `ReceiveTimeout` messages fired so far.
+  var fireSenders: Set[Sender]
 
   // `checkReceiveTimeout(reschedule)`: the task after the check, and how
   // many schedulings it made.
@@ -73,12 +90,22 @@ module receive_timeout {
     lastAction' = "init",
     prevTask' = Empty,
     prevEpoch' = 0,
+    settingUnchecked' = false,
+    fireSenders' = Set(),
   }
 
   action remember(name: str): bool = all {
     lastAction' = name,
     prevTask' = task,
     prevEpoch' = epoch,
+  }
+
+  // Every action but a firing and a child-terminated hook checks the
+  // setting, and none of them fires.
+  action checkedAndRemember(name: str): bool = all {
+    settingUnchecked' = false,
+    fireSenders' = fireSenders,
+    remember(name),
   }
 
   // A handler sets the timeout to `s`: the version changes, so the check
@@ -93,7 +120,7 @@ module receive_timeout {
       firesThisEpoch' = if (after._2 > 0) 0 else firesThisEpoch,
       queued' = queued, delivered' = delivered, dropped' = dropped,
       fires' = fires, alive' = alive, restarts' = restarts,
-      remember("set"),
+      checkedAndRemember("set"),
     }
   }
 
@@ -109,7 +136,7 @@ module receive_timeout {
       setting' = setting,
       queued' = queued, delivered' = delivered, dropped' = dropped,
       fires' = fires, alive' = alive, restarts' = restarts,
-      remember("influencing"),
+      checkedAndRemember("influencing"),
     }
   }
 
@@ -125,13 +152,15 @@ module receive_timeout {
       setting' = setting,
       queued' = queued, delivered' = delivered, dropped' = dropped,
       fires' = fires, alive' = alive, restarts' = restarts,
-      remember("notInfluencing"),
+      checkedAndRemember("notInfluencing"),
     }
   }
 
   // The scheduled deadline is reached: the task fires once, and its
   // `ReceiveTimeout` goes into the mailbox.
-  action deadlineComes: bool = all {
+  action deadlineComes: bool = fireWith(NoSender)
+
+  action fireWith(sender: Sender): bool = all {
     alive,
     task == Scheduled,
     task' = Fired,
@@ -140,7 +169,26 @@ module receive_timeout {
     firesThisEpoch' = firesThisEpoch + 1,
     setting' = setting, epoch' = epoch,
     delivered' = delivered, dropped' = dropped, alive' = alive, restarts' = restarts,
+    settingUnchecked' = settingUnchecked,
+    fireSenders' = fireSenders.union(Set(sender)),
     remember("fire"),
+  }
+
+  // A child's stop runs the parent's child-terminated hook, which may set
+  // the timeout to `s` or leave it (`change = false`). The task, the
+  // deadline, and the mailbox are untouched.
+  action childTerminated(change: bool, s: Setting): bool = {
+    val newSetting = if (change) s else setting
+    all {
+      alive,
+      setting' = newSetting,
+      settingUnchecked' = (settingUnchecked or newSetting != setting),
+      task' = task, epoch' = epoch, firesThisEpoch' = firesThisEpoch,
+      queued' = queued, delivered' = delivered, dropped' = dropped,
+      fires' = fires, alive' = alive, restarts' = restarts,
+      fireSenders' = fireSenders,
+      remember("childTerminated"),
+    }
   }
 
   // A `ReceiveTimeout` in the mailbox is handled: it is delivered as an
@@ -156,7 +204,7 @@ module receive_timeout {
       epoch' = epoch + after._2,
       firesThisEpoch' = if (after._2 > 0) 0 else firesThisEpoch,
       setting' = setting, dropped' = dropped, fires' = fires, alive' = alive, restarts' = restarts,
-      remember("receiveTimeout"),
+      checkedAndRemember("receiveTimeout"),
     }
   }
 
@@ -171,7 +219,7 @@ module receive_timeout {
     dropped' = dropped + queued,
     delivered' = delivered, fires' = fires, epoch' = epoch, firesThisEpoch' = firesThisEpoch,
     restarts' = restarts,
-    remember("stop"),
+    checkedAndRemember("stop"),
   }
 
   // A failing message that influences the timeout, then the restart:
@@ -189,7 +237,7 @@ module receive_timeout {
       restarts' = restarts + 1,
       setting' = setting,
       queued' = queued, delivered' = delivered, dropped' = dropped, fires' = fires, alive' = alive,
-      remember("restart"),
+      checkedAndRemember("restart"),
     }
   }
 
@@ -206,7 +254,7 @@ module receive_timeout {
       epoch' = epoch + after._2,
       firesThisEpoch' = if (after._2 > 0) 0 else firesThisEpoch,
       setting' = setting, dropped' = dropped, fires' = fires, alive' = alive, restarts' = restarts,
-      remember("receiveTimeout"),
+      checkedAndRemember("receiveTimeout"),
     }
   }
 
@@ -220,8 +268,34 @@ module receive_timeout {
     firesThisEpoch' = firesThisEpoch + 1,
     setting' = setting, epoch' = epoch,
     delivered' = delivered, dropped' = dropped, alive' = alive, restarts' = restarts,
+    settingUnchecked' = settingUnchecked,
+    fireSenders' = fireSenders.union(Set(NoSender)),
     remember("fire"),
   }
+
+  // Negative control for I5, after the executor of #283
+  // (`run_child_terminated_hook`): the hook is handled like a message
+  // that influences the timeout, cancelled before and checked after, and
+  // a setting that is not finite cancels the task at once.
+  action childTerminatedBugChecks(change: bool, s: Setting): bool = {
+    val newSetting = if (change) s else setting
+    val after = checked(newSetting, Empty, true)
+    all {
+      alive,
+      setting' = newSetting,
+      task' = after._1,
+      epoch' = epoch + after._2,
+      firesThisEpoch' = if (after._2 > 0) 0 else firesThisEpoch,
+      queued' = queued, delivered' = delivered, dropped' = dropped,
+      fires' = fires, alive' = alive, restarts' = restarts,
+      checkedAndRemember("childTerminated"),
+    }
+  }
+
+  // Negative control for I6, after the executor of #283
+  // (`fire_due_receive_timeouts`): the firing names the actor itself as
+  // the sender.
+  action deadlineComesBugSelfSender: bool = fireWith(SelfSender)
 
   // Negative control for I2: a message that does not influence the
   // timeout cancels and reschedules like one that does.
@@ -235,7 +309,7 @@ module receive_timeout {
       setting' = setting,
       queued' = queued, delivered' = delivered, dropped' = dropped,
       fires' = fires, alive' = alive, restarts' = restarts,
-      remember("notInfluencing"),
+      checkedAndRemember("notInfluencing"),
     }
   }
 
@@ -248,13 +322,18 @@ module receive_timeout {
     processReceiveTimeout,
     stop,
     restart,
+    nondet change = Bool.oneOf()
+    nondet hookSetting = Set(Undefined, Infinite, Finite).oneOf()
+    childTerminated(change, hookSetting),
   }
 
   // I1: a deadline exists only under a finite setting, so a firing
   // enqueues a `ReceiveTimeout` only then; every enqueued one is either
   // delivered or still queued, and is lost only with the mailbox of a
-  // stopped actor. This is conservation, not eventual delivery.
-  val scheduledOnlyWhenFinite = task == Scheduled implies setting == Finite
+  // stopped actor. This is conservation, not eventual delivery. A
+  // child-terminated hook that turned the timeout off leaves the deadline
+  // the finite setting scheduled until the next check (I5).
+  val scheduledOnlyWhenFinite = task == Scheduled implies (setting == Finite or settingUnchecked)
   val firedAreDeliveredOrQueued = delivered + queued + dropped == fires
   val droppedOnlyWhenStopped = alive or queued == 0
   val liveActorDropsNothing = alive implies dropped == 0
@@ -264,11 +343,19 @@ module receive_timeout {
   val oneMessagePerFiring = firesThisEpoch <= 1
   // I2: a message that does not influence the timeout and leaves the
   // setting alone does not move a deadline and does not rearm a fired
-  // task.
+  // task, while the setting is finite. (A setting a child-terminated hook
+  // turned off is cancelled by that message's check.)
   val notInfluencingKeepsDeadline =
-    (lastAction == "notInfluencing" and prevTask != Empty) implies (task == prevTask and epoch == prevEpoch)
+    (lastAction == "notInfluencing" and prevTask != Empty and setting == Finite)
+      implies (task == prevTask and epoch == prevEpoch)
   // A stopped actor has no deadline.
   val stoppedHasNoDeadline = alive or task == Empty
+  // I5: a child's stop does not touch the parent's timeout: the hook
+  // neither cancels, nor schedules, nor fires.
+  val childTerminatedKeepsTask =
+    lastAction == "childTerminated" implies (task == prevTask and epoch == prevEpoch)
+  // I6: every `ReceiveTimeout` is sent without a sender.
+  val receiveTimeoutHasNoSender = fireSenders.subseteq(Set(NoSender))
 
   val invariant = scheduledOnlyWhenFinite
     and firedAreDeliveredOrQueued
@@ -277,6 +364,8 @@ module receive_timeout {
     and oneMessagePerFiring
     and notInfluencingKeepsDeadline
     and stoppedHasNoDeadline
+    and childTerminatedKeepsTask
+    and receiveTimeoutHasNoSender
 
   // Pekko delivers a `ReceiveTimeout` that was enqueued before the timeout
   // was turned off.
@@ -330,6 +419,68 @@ module receive_timeout {
       .expect(task == Empty and invariant)
       .then(deadlineComes)
       .fail()
+
+  // A hook that turns the timeout off leaves the deadline the old setting
+  // scheduled; it fires, its `ReceiveTimeout` is delivered, and the check
+  // after it cancels the timeout.
+  run hookTurnOffStillFiresTest =
+    init
+      .then(setTimeout(Finite))
+      .then(childTerminated(true, Undefined))
+      .expect(task == Scheduled and setting == Undefined and invariant)
+      .then(deadlineComes)
+      .expect(queued == 1 and invariant)
+      .then(processReceiveTimeout)
+      .expect(delivered == 1 and task == Empty and invariant)
+
+  // A hook that sets a finite timeout on an actor without one schedules
+  // nothing; the next message does, even one that does not influence the
+  // timeout, because no task is set.
+  run hookSetIsScheduledByTheNextMessageTest =
+    init
+      .then(childTerminated(true, Finite))
+      .expect(task == Empty and invariant)
+      .then(deadlineComes)
+      .fail()
+
+  run hookSetIsScheduledByANotInfluencingMessageTest =
+    init
+      .then(childTerminated(true, Finite))
+      .then(processNotInfluencing)
+      .expect(task == Scheduled and invariant)
+
+  // A hook that turns the timeout off, then a message that does not
+  // influence it: the check cancels the old deadline.
+  run hookTurnOffIsCancelledByANotInfluencingMessageTest =
+    init
+      .then(setTimeout(Finite))
+      .then(childTerminated(true, Infinite))
+      .then(processNotInfluencing)
+      .expect(task == Empty and invariant)
+
+  // Negative control for I5: the executor of #283 reschedules on a hook
+  // that leaves the setting alone, so the child's stop moves the deadline.
+  run bugHookReschedulesTest =
+    init
+      .then(setTimeout(Finite))
+      .then(childTerminatedBugChecks(false, Finite))
+      .expect(task == Scheduled and not(childTerminatedKeepsTask))
+
+  // Negative control for I5: the executor of #283 cancels at once a
+  // deadline that a hook turned off, so it never fires.
+  run bugHookCancelsTest =
+    init
+      .then(setTimeout(Finite))
+      .then(childTerminatedBugChecks(true, Undefined))
+      .expect(task == Empty and not(childTerminatedKeepsTask))
+
+  // Negative control for I6: the executor of #283 sends the
+  // `ReceiveTimeout` from the actor itself.
+  run bugSelfSenderTest =
+    init
+      .then(setTimeout(Finite))
+      .then(deadlineComesBugSelfSender)
+      .expect(not(receiveTimeoutHasNoSender))
 
   // Negative control for I1.
   run bugDiscardsOnReceiptTest =

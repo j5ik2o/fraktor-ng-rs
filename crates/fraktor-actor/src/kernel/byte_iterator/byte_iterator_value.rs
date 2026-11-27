@@ -19,7 +19,7 @@
 use alloc::{vec, vec::Vec};
 
 use super::ByteOrder;
-use crate::kernel::sync::Arc;
+use crate::kernel::{byte_string::ByteChunk, sync::Arc};
 
 #[cfg(test)]
 #[path = "byte_iterator_value_test.rs"]
@@ -34,9 +34,9 @@ mod tests;
 /// start from the beginning needs a new iterator.
 #[derive(Clone, Debug)]
 pub struct ByteIterator {
-  // Never holds an empty array, so the iterator has a next byte exactly when
+  // Never holds an empty chunk, so the iterator has a next byte exactly when
   // `current` is still in range.
-  arrays: Vec<Arc<[u8]>>,
+  chunks: Vec<ByteChunk>,
   current: usize,
   offset: usize,
 }
@@ -52,13 +52,18 @@ impl ByteIterator {
 
   /// Creates an iterator over the bytes of `arrays`, one array after another.
   pub(crate) fn over_arrays(arrays: Vec<Arc<[u8]>>) -> Self {
-    let arrays = arrays.into_iter().filter(|array| !array.is_empty()).collect();
-    Self { arrays, current: 0, offset: 0 }
+    let chunks = arrays.into_iter().filter(|array| !array.is_empty()).map(ByteChunk::full).collect();
+    Self { chunks, current: 0, offset: 0 }
+  }
+
+  /// Creates an iterator over the bytes of `chunks`, one chunk after another.
+  pub(crate) fn over_chunks(chunks: Vec<ByteChunk>) -> Self {
+    Self { chunks, current: 0, offset: 0 }
   }
 
   /// Returns whether a byte is left to read.
   pub(crate) fn has_next(&self) -> bool {
-    self.current < self.arrays.len()
+    self.current < self.chunks.len()
   }
 
   /// Returns how many bytes are left to read.
@@ -75,7 +80,7 @@ impl ByteIterator {
   /// Stops reading the array lengths once `limit` is reached, so a short read
   /// does not walk every array left.
   pub(crate) fn remaining_up_to(&self, limit: usize) -> usize {
-    let lengths = self.arrays.get(self.current..).unwrap_or_default().iter().map(|array| array.len());
+    let lengths = self.chunks.get(self.current..).unwrap_or_default().iter().map(|chunk| chunk.len());
     remaining_of(lengths, self.offset, limit)
   }
 
@@ -159,9 +164,9 @@ impl ByteIterator {
   pub(crate) fn copy_into(&mut self, buffer: &mut [u8]) -> usize {
     let mut copied = 0;
     while copied < buffer.len() && self.has_next() {
-      let array = &self.arrays[self.current];
-      let count = (array.len() - self.offset).min(buffer.len() - copied);
-      buffer[copied..copied + count].copy_from_slice(&array[self.offset..self.offset + count]);
+      let slice = self.chunks[self.current].as_slice();
+      let count = (slice.len() - self.offset).min(buffer.len() - copied);
+      buffer[copied..copied + count].copy_from_slice(&slice[self.offset..self.offset + count]);
       copied += count;
       self.advance(count);
     }
@@ -172,7 +177,7 @@ impl ByteIterator {
   pub(crate) fn skip_bytes(&mut self, count: usize) -> usize {
     let mut skipped = 0;
     while skipped < count && self.has_next() {
-      let step = (self.arrays[self.current].len() - self.offset).min(count - skipped);
+      let step = (self.chunks[self.current].len() - self.offset).min(count - skipped);
       skipped += step;
       self.advance(step);
     }
@@ -183,7 +188,7 @@ impl ByteIterator {
   // many left, and onto the next array when this one is used up.
   fn advance(&mut self, count: usize) {
     self.offset += count;
-    if self.offset == self.arrays[self.current].len() {
+    if self.offset == self.chunks[self.current].len() {
       self.current += 1;
       self.offset = 0;
     }
@@ -194,7 +199,7 @@ impl Iterator for ByteIterator {
   type Item = u8;
 
   fn next(&mut self) -> Option<u8> {
-    let byte = *self.arrays.get(self.current)?.get(self.offset)?;
+    let byte = *self.chunks.get(self.current)?.as_slice().get(self.offset)?;
     self.advance(1);
     Some(byte)
   }
