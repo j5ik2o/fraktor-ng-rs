@@ -51,7 +51,7 @@
 // `TestKitSettings::dilated`, as design section 1.3 says.
 
 use core::time::Duration;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 
 use fraktor_actor::kernel::{
   actor::{Actor, ActorContext, DeadLetter, Props, Terminated},
@@ -72,7 +72,8 @@ const SPEC_SYSTEM_NAME: &str = "ActorRefSpec";
 // Original `Actor.scala:502-504`: the text the constructor check throws. The
 // port has no such check, so the factory panic carries this text and the error
 // log names the same reason.
-const CONTEXT_STACK_MESSAGE: &str = "You cannot create an instance of [InnerActor] explicitly using the constructor (new). \
+const CONTEXT_STACK_MESSAGE: &str =
+  "You cannot create an instance of [InnerActor] explicitly using the constructor (new). \
    You have to use one of the 'actorOf' factory methods to create a new actor. See the documentation.";
 
 fn millis(value: u64) -> Duration {
@@ -176,8 +177,8 @@ fn pig_dog_props() -> Props {
 // dilated `Thread.sleep(1)`-sized pause.
 struct WorkerActor {
   reply_with: Message,
-  to:         ActorRef,
-  delay:      Duration,
+  to: ActorRef,
+  delay: Duration,
 }
 
 impl Actor for WorkerActor {
@@ -196,8 +197,8 @@ impl Actor for WorkerActor {
 // four latch openings of `TestLatch(4)` (two per round: the worker's and the
 // sender's).
 struct SenderActor {
-  reply_slot:  Arc<Mutex<Option<ActorRef>>>,
-  count_hits:  TestLatch,
+  reply_slot: Arc<Mutex<Option<ActorRef>>>,
+  count_hits: TestLatch,
   rounds_left: usize,
 }
 
@@ -299,8 +300,8 @@ impl Actor for RestartCountingChild {
 // `OneForOneStrategy(maxNrOfRetries = 2, within = 1.second)`.
 struct OneForOneSupervisor {
   strategy: SupervisorStrategy,
-  child:    Option<ActorRef>,
-  latch:    TestLatch,
+  child: Option<ActorRef>,
+  latch: TestLatch,
 }
 
 impl Actor for OneForOneSupervisor {
@@ -352,7 +353,8 @@ fn outer_actor_props(inner: ActorRef) -> Props {
 fn promise_intercept<F, A>(tx: mpsc::Sender<String>, make: F) -> Props
 where
   F: FnOnce() -> A + Send + Sync + 'static,
-  A: Actor + 'static, {
+  A: Actor + 'static,
+{
   let make = std::sync::Mutex::new(Some(make));
   Props::new(move || {
     let make = make.lock().expect("the maker lock").take().expect("the maker runs once");
@@ -419,7 +421,7 @@ struct SmallCase {
   inner_fails: bool,
   outer_fails: bool,
   /// The outer actor's failure text, when small case 13 names one.
-  text:        Option<&'static str>,
+  text: Option<&'static str>,
 }
 
 impl SmallCase {
@@ -670,8 +672,8 @@ fn supports_reply_via_sender() {
     // The original's `Thread.sleep(1)`, dilated.
     Props::new(move || WorkerActor {
       reply_with: Message::new("ToSenderActor"),
-      to:         sender_actor.clone(),
-      delay:      settings.dilated(millis(1)),
+      to: sender_actor.clone(),
+      delay: settings.dilated(millis(1)),
     })
   });
   let reply_actor: ActorRef = spec.system_mut().actor_of({
