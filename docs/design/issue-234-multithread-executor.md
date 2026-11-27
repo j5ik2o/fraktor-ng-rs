@@ -2691,7 +2691,7 @@ decider の panic のあとの子は、親の判断の効果で決まる。親�
    読み書きしない。親の実行は子のセルを読まない（4a の `restart_count` のような操作を置かない）。
 2. この規則の下で、親の表の子の記録を書くのは 4 か所だけ：
    - 親の実行：`Failed` の判断で、判断した子の行の再起動の回数を増やす（`requestRestartPermission`。`actor/FaultHandling.scala:56-62`）。
-     all-for-one は `forall` の短絡（11.13.5）まで
+     all-for-one は `forall` の短絡（最初に断られた子まで。11.13.5 の「`forall` の短絡」）まで
    - 親の実行：`Terminate` を送る判断（`Children.stop` の `shallDie`、`Children.scala:132-145）。**親の側だけ**で、子のセルは
      読まない。止まる子の側の記録は、その子の実行の `handle_terminate` の `mark_dying`（次の行）で揃う
    - 子の実行：**`Mark_dying`**。11.13.6 の手順 2（`post_restart` の失敗）と、子が自分の `Terminate` を処理する時の
@@ -2704,10 +2704,47 @@ decider の panic のあとの子は、親の判断の効果で決まる。親�
 **メールボックスの無い親**：ガーディアンと function ref には `Failed` を積む列が無い。4a の `ChildTerminated` と同じく、失敗した
 子の実行の中で、実行器がその場で 1〜4 を行う。Restart は子の列に `Recreate` を積み、子の実行がこのあとで処理する。decider の
 panic は、4a と同じく publish を 1 回して、インスタンスのある子には `Resume { caused_by_failure: true }` を送り、開始に失敗した
-子はそのまま残す（11.12.18 の「セルの無い親の decider の panic」）。原典のガーディアンはアクターで、user guardian の失敗は
-root guardian の判断（既定は停止）になるが、fraktor のガーディアンはセルを持たないので、この差は残す。4b の再帰の suspend
-により、開始に失敗したまま残された子の子は、suspend されたまま残る（4a では動き続けた）。Quint の `settledMeansResumed` は、この
-子の下を除く（11.13.11）。
+子はそのまま残す（11.12.18 の「セルの無い親の decider の panic」）。
+
+**ガーディアンの子の `Failed` で `Restart` が出たときの効果**（原典の行を引いて決める）：原典で `/user` ガーディアンは
+セルとインスタンスを持つアクターである（`ActorRefProvider.scala:565-591` の `lazy val guardian` が `LocalActorRef` を作り、
+root guardian の子に `initChild` する）。`/user` の失敗は、root guardian の `handleFailure`
+（`dungeon/FaultHandling.scala:305-325`）が処理し、`:314` の `actor.supervisorStrategy.handleFailure(...)` を通る。root guardian の戦略は
+`rootGuardianStrategy`（`ActorRefProvider.scala:525-529`）で、`case ex => ...; SupervisorStrategy.Stop` である。つまり
+**原典は `/user` の失敗を Stop にする**（`OneForOneStrategy` の decider が返す `Stop`）。
+
+そこで `Restart` の効果を考え直す。`DefaultSupervisorStrategy`（`actor/FaultHandling.scala:98-100`）は `defaultStrategy` を返し、
+`guardianStrategy`（`ActorRefProvider.scala:534`）は config の `guardian-supervisor-strategy`（既定 `DefaultSupervisorStrategy`）を
+作る。しかし `guardianStrategy` は `Props(classOf[Guardian], guardianStrategy)`（`:580`）で `/user` 自身の `supervisorStrategy` に
+入る。すなわち、`/user` が**子**の失敗に出す判断は `defaultStrategy`（`Restart` を含む）で、**`/user` 自身**の失敗を判断するのは
+root guardian（`Stop`）。fraktor のガーディアンはセルを持たず、子の `Failed` の判断だけをその場で行う。ガーディアン自身の
+`Failed` を受ける相手（root guardian）が無いので、**ガーディアン自身が `Failed` を受けたときに `Restart` は出ない（出す相手が
+無い）**。
+
+**設計の帰結**：
+
+- **ガーディアンの子（テストのアクター）の `Failed`**：ガーディアンはその場で判断し、`Restart` なら子の列に `Recreate` を積む
+  （原典の `/user` の `defaultStrategy` と同じ）。`Stop` なら子の列に `Terminate` を積む。
+- **ガーディアン自身が `Failed` を受けたとき**（decider の panic でユーザーのアクターの失敗がガーディアンの失敗になった場合など）：
+  判断する相手（root guardian）が無いので、**ガーディアンは何もしない**（`Restart` の効果は無い）。ガーディアンはセルも
+  インスタンスも持たないので、再起動する対象が無い。原典では root guardian の `Stop` で `/user` が止まるので、**差になる**：
+  fraktor ではガーディアンの下のアクターは止まらずに残る。この差は `docs/decisions/pekko-semantics-first.md` が許す範囲
+  （原典のテストが頼りにしていない振る舞い。ガーディアンにセルを与えない。11.13.15 の「ガーディアンをアクターに」の行）の
+  帰結なので、設計には明記する：`Failed` を積む先の無い親（root guardian に当たるもの）には積まず、
+  ガーディアン自身の失敗は「止まらない」で終わる。
+- **子の終了のフックの失敗で、親がガーディアンの下にある場合**（`a_panicking_child_terminated_hook_leaves_the_parent_alive_and_logs_once`、
+  `be_able_to_create_a_similar_kid_in_the_fault_handling_strategy`）：フックの失敗は**親の実行の中で** 1〜4 を行い（動作は 11.13.3 の表。
+  1〜4 の 4 で親の親（ガーディアン）に `Failed` を積む）、ガーディアンが**その場で判断する**（原典 `dungeon/FaultHandling.scala:334-339`
+  と、親のセルの `handleInvokeFailure` が親の親へ `Failed` を送ること）。親はガーディアンの子なので、`Restart` には効果がある：
+  **親は再起動され、`ping`/`pong` に答え続ける**。2 つのテストの期待の書き換えは 11.13.13 の「判断が要る」の 2 と 3 にある。
+
+**どの節に書くか（1 か所にまとめる）**：子の終了のフックの失敗の**動作（publish の 2 回、1〜4 の順、親の列に `Failed` を積む）は
+11.13.3 の表の「子の終了のフックの失敗」の行と、その下の 2 回の publish の表にだけ書く**。11.13.4 は、その失敗を親が受けた
+あとの**判断の経路**（ガーディアンの `Restart` の効果）だけを書く。11.13.12（テストの面）と 11.13.13（洗い出し）は、
+「失敗の動作は 11.13.3、判断は 11.13.4」を指すに留める。
+
+4b の再帰の suspend により、開始に失敗したまま残された子の子は、suspend されたまま残る（4a では動き続けた）。Quint の
+`settledMeansResumed` は、この子の下を除く（11.13.11）。
 
 **親の戦略を読む時点**：判断は親の実行の中で、親のインスタンスがあるときにだけ行う。`Failed` は、親が suspend されている間は
 取っておかれ（11.13.8）、親の列では親の `Create` が先にある。11.12.2 の「親の戦略を読む時点」の前提（手で回す dispatcher が
@@ -2717,9 +2754,21 @@ FIFO で、親が先に予約される）は要らなくなる。Quint の `deci
 
 原典 `AllForOneStrategy.processFailure`（`actor/FaultHandling.scala:554-567`。`:562` の `forall`、`:563` の `restartChild`、`:565` の
 `context.stop`、`:566-567` の `}`）：Restart が許されるのは、親の表の子のすべてで再起動の
-許しが出たとき（`children.forall(requestRestartPermission)`。最初に断られた子で数えるのをやめる。今の `apply_all_for_one` と同じ）。
-許されれば、子のすべてに、失敗した子でなければ `Suspend` を、そのあとで `Recreate` を送る（`restartChild(suspendFirst = crs.child
-!= child)`）。許されなければ、子のすべてに `Terminate` を送る。
+許しが出たとき（`children.forall(_.requestRestartPermission(retriesWindow))`）。許されれば、子のすべてに、失敗した子でなければ
+`Suspend` を、そのあとで `Recreate` を送る（`restartChild(suspendFirst = crs.child != child)`）。許されなければ、子のすべてに
+`Terminate` を送る。
+
+**`forall` の短絡（数え方の肝）**：`forall` は **Scala の `&&` と同じく最初に偽を返した子で止まる**（`actor/FaultHandling.scala:562`）。
+`requestRestartPermission`（`ChildRestartStats`、`:56-62`）は**呼ばれるたびに回数を増やす**（`:59` の `maxNrOfRetriesCount += 1`、
+`:79` の `maxNrOfRetriesCount = retriesDone`、`:82` の `maxNrOfRetriesCount = 1`）ので、短絡は「どの子の回数が増えるか」を決める。
+**規則は「判断のたびに、`forall` が止まった子（最初に断られた子）までの子の回数が 1 ずつ増え、止まったあとの子の回数は据え置き」**で
+ある。順は親の表の子の `stats` の反復の順（`getAllChildStats`。名前の順ではない）で、失敗した子が最初に来るとは限らない。
+したがって、(1) 全員に許しが出れば全員が +1、(2) 途中の子で断られれば、その子までが +1 で、その後ろの子は 0、(3) 最初の子で
+断られれば、ほかの子は 1 も増えない、の 3 通りがある。**この数え方は原典の `forall` と `ChildRestartStats` の行そのもの**で、
+fraktor の実装は短絡する `for` ループで書く（`children.for_each` を全部回してから判定しない）。どの子がどの順で回るかは、
+親の表の子の記録の順（挿入順）で、テストの回数の assert はこの順に依存する（`supervision_all_for_one_regression.rs` の
+`all_siblings_restart_and_only_the_failed_child_inherits_the_message_sender`、`initialization_failure_stops_all_siblings_and_obeys_restart_permission`。
+11.13.13 の「判断が要る」の扱い）。
 
 子のすべては、親の表の子のすべてである（`getAllChildStats`。停止を頼んだ子も、閉じて `ChildTerminated` を待つ子も含む）。兄弟の
 状態で分けず、どの兄弟にも同じものを送る。兄弟の側で起きることは、その兄弟の列の順と状態で決まる。
@@ -3069,6 +3118,18 @@ all-for-one を選ぶ（`afo`）。`runSys` は、処理の前の状態で取っ
 | `aFailedPostRestartStopsBeforeAKeptFailedTest` | c1 が g の `Failed` を取っておいた（状態 1）まま、再起動の `post_restart` に失敗する。c1 はその実行で `Termination` の待ちに入り、`Failed` を判断せずに閉じる。`post_stop` は回らない |
 | `aFailedPostRestartStopsBeforeAKeptRecreateTest` | #254 の 1 の筋書きで、待ちのあとの後半の `post_restart` に失敗する。c1 は子が無いのでその実行で閉じ、取っておいた `Recreate` は回らない。段 4b の仮の振る舞い（原典では取っておいた `Recreate` が戻る。11.13.6） |
 
+**`pre_restart` の panic と `isFailedFatally`（原典の行）**：原典で `FailedFatally` を立てるのは `dungeon/FaultHandling.scala:299`
+（`finishRecreate` の `catch`）の 1 か所だけである。`faultRecreate` の `preRestart` の panic（`:102-108`）は
+`PreRestartException` を publish し、`finally` で `clearActorFields(failedActor, recreate = true)` をする（`:109-111`）。**`FailedFatally` を
+立てない**ので、そのあとの `:114` は普通に `finishRecreate` へ進む。もし、この後にもう 1 回 `Recreate` が来れば、`:104` の
+`if (!isFailedFatally)` は真で、`preRestart` は**もう 1 回走る**（同じく `postRestart` も走る）。一方、`post_restart` の失敗の筋書き
+（`:298-302`）では `:299` で `FailedFatally` を立てるので、`:104` の枝は通り、`preRestart` は走らない。**2 つを混ぜない**：
+11.13.6 の「3 が失敗したとき」の (b) は `post_restart` の失敗の話で、`pre_restart` は飛ぶ。`pre_restart` の panic は `isFailedFatally`
+を立てないので、4b は、`pre_restart` の panic を「段 3 の巻き戻り」（11.13.14 の panic の行）のまま残す（4a と同じ）。
+`pre_restart` が panic したアクターは、GC の `catch` の扱いに従い、次の呼び出しでシステムが終わる。原典との差（原典は
+`preRestart` の panic のあとも再起動を続ける。`:105-108` は publish だけで、`:114` に進む）は、`pre_restart` の panic を 4b でも
+扱わないことで残す。**#301 で原典に寄せるときも、`pre_restart` の panic は `FailedFatally` ではないことを前提に書く**。
+
 `Creation` の待ちの間の取り置き：**正しい形の `run` では、`Creation` の待ちの間に `Recreate` を取っておく筋書きを、
 `actor_termination.qnt` は持たない。この仕様では、その筋書きを作れない**。c1 が `Creation` で待つ間（開始のやり直しで、前の
 試みの g を待つ間）に、c1 から p へ `Failed` が届かず、p が c1 に `Recreate` を送る手が無い（やり直しの `pre_start` は待ちの
@@ -3215,14 +3276,44 @@ red のテストを書くのに使える面。観測の口は 2 種類ある：*
   `["b:pre_start"]` であることを確かめる）。4b では `b` も再起動され、記録に `b` の `post_restart` と 2 回目の `pre_start` が加わる
   見込みである（#254 のコメントの 2。11.13.5）
 - 子の終了のフックの失敗で、`IllegalStateException` の「handleChildTerminated failed」を 1 回と数えるテスト（`supervisor_misc_spec.rs`、
-  `actor_system_value_test.rs`）。2 回目の publish は元の失敗の文になる（11.13.3）ので、数は 1 回のまま通る見込みである。ただし、
-  フックが失敗した親は、4b では親の親の判断（既定は再起動）を受ける。親が停止中なら取っておいた `Recreate` は閉じるときに捨てられ、
-  停止中でなければ親は再起動される（既定の `pre_restart` は子をすべて止める）ので、そのあとの振る舞いを読むテストは目で読む
+  `actor_system_value_test.rs`）。フックの失敗の動作は 11.13.3（2 回の publish の表）、判断の経路は 11.13.4（ガーディアンの
+  `Restart` の効果）にある。この 2 つのテストの期待の書き換えは 11.13.13 の「判断が要る」の 6 件の表（2 と 3）にある
 - 段 3 の `Yield` を確かめた群。`run_one` の戻りを数えるのは `run_one_goes_past_a_run_that_handles_only_system_messages`
   （`run_one` が system message だけの実行で止まらないことを読む）で、判断と再起動が親と子の別の実行になるので、`run_one` の回数と
   戻りが変わりうる（このテストのアクターはガーディアンの下なので、判断はその場で起き、`Recreate` が子の列に積まれる）。
   `a_failed_message_is_followed_by_the_restart_before_the_next_message` は `run_until_idle` だけを使い、記録の順（`boom`、
   `restarted`、`next`）を読む。この順は変わらない見込みである
+
+**洗い出しの「判断が要る」6 件と「意味が弱まる」6 件の設計としての扱い**（段 4b の実装前の洗い出し。`issue-234-stage4b-survey.md` の
+§1 の 2 つの表）。**弱めるのは不可**。意味が変わるテストは、設計の振る舞いに合わせて期待を書き換える（テストは実装の PR では
+編集せず、triage へ差し戻して、テストだけのコミットで直す。11.12.9 の前例）。
+
+「判断が要る」6 件：
+
+| # | テスト | 設計としての扱い |
+|:---|:---|:---|
+| 1 | `executor_value_test.rs` の `a_held_failure_of_a_child_that_has_left_the_table_is_dropped`（`asked == 0`） | **期待を書き換える**。設計は「止まった子の `Failed` も、親が `ChildTerminated` より先に処理すれば判断される」（11.13.4）で、4b では `Recreate` の順で `p` が `Failed(c)` を先に判断しうる。`asked` は「`c` が表に残っていれば 1、外れていれば 0」の両方ありうるので、テストは「`c` が表にあるうちの判断は 1 回まで、外れたあとは 0」を確かめる形にする（原典 `dungeon/FaultHandling.scala:307-324` の UID 照合） |
+| 2 | `actor_system_value_test.rs` の `a_panicking_child_terminated_hook_leaves_the_parent_alive_and_logs_once` | **期待を書き換える**。フックの失敗は親の失敗になり（11.13.3）、親の親（ガーディアン）が `Restart` を出す（親はガーディアンの子なので効果がある。11.13.4）。親は再起動され、`ping`/`pong` に答え続ける。`EventFilter` の 1 回はそのまま。親の再起動のフックの回数を記録に足す |
+| 3 | `crates/fraktor-actor/tests/supervisor_misc_spec.rs` の `be_able_to_create_a_similar_kid_in_the_fault_handling_strategy` | **期待を書き換える**。2 と同じ（停止中の親でフックが子を作ろうとした失敗が、親の失敗になり、親が再起動する）。親が再起動されたあとに `Robert` の作り直しが起きること（または、`pre_restart` の上書きで子を残すなら、その子の扱い）を確かめる形にする |
+| 4 | `actor_system_value_test.rs` の `a_child_whose_post_restart_fails_runs_post_stop_once`、`a_child_whose_factory_fails_on_restart_runs_post_stop_once` | **期待は変えない（読むだけ）**。設計の「`suppress_post_stop` で回さない」（11.13.6 の手順 1）は**2 度目**の `post_stop` を抑える意味で、既定の `pre_restart` が回す 1 回目は回る。テストの「`post_stop` は 1 回」と同じ。red の工程で確認する |
+| 5 | `crates/fraktor-actor/tests/supervision_all_for_one_regression.rs` の `all_siblings_restart_and_only_the_failed_child_inherits_the_message_sender`、`initialization_failure_stops_all_siblings_and_obeys_restart_permission` | **期待を書き換える**。設計は「`forall` の短絡で、最初に断られた子までの回数が増え、そのあとの子は据え置き」（11.13.5）。兄弟の許しの回数は、この短絡で決まる値を期待する。`all_for_one(2)` で 2 人とも 2 世代目になるテストは、許しが 2 回出る限り通る（回数を別途記録して確かめるなら、短絡の値を書く） |
+| 6 | `crates/fraktor-actor/tests/uid_clash_test.rs` の `the_terminated_message_for_an_old_child_stopped_in_pre_restart_does_not_arrive_after_restart` | **期待は変えない（順だけ実装で決める）**。設計は、失敗の `Suspend` を子に送るのは判断の前（11.13.3 の 3）で、`pre_restart` で親が止めた子は `Termination` で止まる（`Suspend` を処理してから `Terminate`）。`Terminated` は来ない・`old` は止まっている、はそのまま。`Suspend` と `Terminate` の列の順は実装で決め、どちらでもテストの期待は変えない |
+
+「意味が弱まる」6 件（落ちない見込み。**弱めたままにしない**。確かめる対象を設計の振る舞いに置き換える）：
+
+| # | テスト | 設計としての扱い |
+|:---|:---|:---|
+| 1 | `actor_system_value_test.rs` の `a_child_follows_the_strategy_of_its_restarted_parent` | **確かめる対象を置き換える**。4b は親の `pre_restart` が子を止めるので、子への `boom` が dead letters に行き、新しい戦略が子に効くことを確かめられない。期待を「親の再起動の後に同じ名前で子を作り直し、`boom` で新しい親の戦略（`Stop`）が子を止める」に変える（子を作り直せば、新しい戦略が効くことを確かめられる） |
+| 2 | `crates/fraktor-actor/tests/supervisor_misc_spec.rs` の `be_able_to_create_named_children_in_its_constructor` | **確かめる対象を置き換える**。4b は親の後半が `bob` にも `Recreate` を送るので、`bob` の `pre_start` が 2 回目に回る。`pre_start` の回数だけを読む形から、`bob` の再起動を記録で確かめる形（`bob` の `pre_restart`/`post_restart`）に変える |
+| 3 | `crates/fraktor-actor/tests/receive_timeout_review_followup3_test.rs` の `hook_timeout_set_while_parent_stops_does_not_reach_dead_letters` | **期待は変えない（読むだけ）**。`Termination` で待つ親の状態が 4b では状態 2 になり、`Failed` を取っておくが、タイムアウトの配達の条件は変わらない（11.13.8 の `Termination` の状態）。red の工程で、取っておく `Failed` が無いことを確かめる |
+| 4 | `crates/fraktor-actor/tests/restart_strategy_spec.rs` の `stops_and_notifies_parent_with_only_time_range` | **期待は変えない（読むだけ）**。監視する親は `pre_restart` を上書きしないので子は残らない。4b で親に届くのは `Failed`（system message）で、`Terminated` の数は 1 のまま（11.13.2、11.13.4） |
+| 5 | `crates/fraktor-actor/tests/supervisor_tree_spec.rs` の `be_able_to_kill_the_middle_actor_and_see_itself_and_its_child_restarted` | **確かめる対象を置き換える**。4b は `last` が `Suspend` を先に受け、`middle` の後半の `Recreate` で再起動される。2 秒の `expect_no_message` は「`last` が suspend されたまま動かない」でも通ってしまうので、`last` の `pre_restart`/`post_restart` が記録に載ることを足す（suspend のまま残ったことを見逃さない） |
+| 6 | `crates/fraktor-actor/tests/g0f_review_a_no_duplicate_failure_delivery.rs` の `g0f_review_a_failure_reaches_the_stream_exactly_once` | **期待は変えない（読むだけ）**。4b でも `Kill` ごとに 1 回 publish し、`Failed` は publish しない（11.13.4 の 2 の `publish_child_failure` が 1 回）。回数が 2 にならないことを確かめる形のまま |
+
+**テストの直し方の決まり**：上で「期待を書き換える」「確かめる対象を置き換える」としたものは、テスト担当が設計の振る舞いに合わせて
+直す（実装の PR ではテストを編集せず、triage へ差し戻し、テストだけのコミットにする）。**弱めるのは不可**：確かめる対象を
+置き換えるときは、元のテストが確かめていた性質（新しい戦略が子に効く、子が作り直される、子が止まる）を、4b の振る舞いの中で
+確かめられる形に移す。「落ちないからそのまま」で残すのは、「期待は変えない（読むだけ）」の 4 件だけである。
 
 #### 11.13.14 壊しうる入力と影響
 
@@ -3242,7 +3333,7 @@ red のテストを書くのに使える面。観測の口は 2 種類ある：*
 | 再起動 | 子の `Failed` を取っておいたまま、または子を待つ間に `Recreate` を取っておいたまま、`post_restart` が失敗する | その実行の中で止まる。取っておいた `Failed` は判断されず、`Recreate` は回らず、閉じるときに捨てられる（11.13.6） |
 | 停止 | 子を待つ間に `Terminate` が届く | 理由が `Termination` になり、取っておいた `Recreate` などは閉じるときに捨てられる |
 | 回復の深さ | #251 の 2 件 | 深さ 1（11.13.10） |
-| panic | catcher の無い decider の panic、`pre_restart` の panic | 段 3 の巻き戻り。次の呼び出しでシステムが終わる（今と同じ） |
+| panic | catcher の無い decider の panic、`pre_restart` の panic | 段 3 の巻き戻り。次の呼び出しでシステムが終わる（今と同じ）。`pre_restart` の panic は原典で `FailedFatally` を立てない（原典は `PreRestartException` を publish して再起動を続ける。`dungeon/FaultHandling.scala:105-111`、`:114`）ので、11.13.15 の (b)（`post_restart` の失敗）と混ぜない。4b も 4a と同じく扱う（11.13.15 の「`pre_restart` の panic と `isFailedFatally`」） |
 | 速さ | 1 件ごとの送受信 | 経路は変わらない。失敗の無い実行では、`invoke` が `after_run` と `pending_decider_failures` を見なくなり、実行のあとの取り置きの見回りの比較も無くなる。§7.5 の S1〜S4 を測って報告する。止める基準ではない |
 
 #### 11.13.15 選ばなかった形
@@ -3257,8 +3348,8 @@ red のテストを書くのに使える面。観測の口は 2 種類ある：*
 - **`post_restart` の失敗を原典どおり親の判断にする**（`PostRestartException` で `handleInvokeFailure`、`setFailedFatally`）：
   既定の decider の答え（Stop）は今と同じである。**ただし、既定の decider のままでも、原典との違いは 3 つある**（11.13.6 の
   「原典で 3 が失敗したときに起きること」）。(a) all-for-one なら兄弟も止まる（`actor/FaultHandling.scala:561-566`）、
-  (b) 状態 2 で取っておいた `Recreate` が `ActorCell.scala:545-548` で戻り、`preRestart` を飛ばした再起動で 3 つ目のインスタンスと
-  フックがもう 1 回走る（`:104`、`:114`）、(c) その 3 つ目のインスタンスの `postStop` が回る（`newActor` が `_actor` を替えている。
+  (b) 状態 2 で取っておいた `Recreate` が `ActorCell.scala:545-548` で戻り、`preRestart` を飛ばした再起動で 3 つ目のインスタンスが
+  作られ、`postRestart` がもう 1 回走る（`:104`、`:114`）、(c) その 3 つ目のインスタンスの `postStop` が回る（`newActor` が `_actor` を替えている。
   `ActorCell.scala:641-653`、`FaultHandling.scala:247-257`）。既定のままで違いが出ないのは「止まること」だけで、止まり方と
   止まるまでに何が走るかは違う。`FailureKind` に種類を足すと公開 API が変わり、`isFailedFatally` の扱い（次の `Resume` を
   `Recreate` に変える。`FaultHandling.scala:141-144`）も要る。#254 の範囲の外として残す。段 4b の間は、今と同じく止めるが、列の
