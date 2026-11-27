@@ -27,8 +27,7 @@ use crate::kernel::actor::PoolKind;
 /// `Deployer.createRouterConfig`: `NoRouter`, a pool, or a group. The
 /// existing [`RouterConfig`](crate::kernel::actor::RouterConfig) of
 /// #194 is a narrower shape kept for verification and is not changed;
-/// the two are unified by a later issue, as the design of #195
-/// records.
+/// the two are left to be unified in a later issue.
 #[derive(Clone, PartialEq, Debug)]
 pub enum DeployedRouter {
   /// `router = from-code`. Mirrors `NoRouter`.

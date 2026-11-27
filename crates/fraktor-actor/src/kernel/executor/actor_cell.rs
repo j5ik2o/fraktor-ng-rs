@@ -54,7 +54,7 @@ pub(crate) struct ActorCell {
 }
 
 /// What the cell keeps of a start that failed, until a `Create` starts it
-/// again (design of #234, section 11.12.2).
+/// again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StartFailure {
   /// The parent has not decided for the failure yet.

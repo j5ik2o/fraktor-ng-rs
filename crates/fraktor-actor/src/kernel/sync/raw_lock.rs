@@ -22,8 +22,7 @@
 /// [`LockFactory`](super::LockFactory) makes one for each value. A thread pool
 /// passes a lock that puts a waiting thread to sleep, an embedded target passes
 /// a lock built on a critical section, and a system that one thread drives can
-/// spin
-/// (design of #234, section 3.2, rule C2). The lock is called through `dyn`,
+/// spin. The lock is called through `dyn`,
 /// so its type never reaches the kernel's public types.
 ///
 /// # Safety

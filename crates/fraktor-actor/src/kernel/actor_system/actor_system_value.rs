@@ -357,8 +357,7 @@ impl ActorSystem {
   /// never registered fails, a creation that failed returns its kept
   /// failure, and a creation still in progress returns an in-progress
   /// error.
-  pub fn extension<E: ExtensionId>(&self, id: &E) -> Result<Arc<E::Ext>, ExtensionError> {
-    let _ = id;
+  pub fn extension<E: ExtensionId>(&self, _id: &E) -> Result<Arc<E::Ext>, ExtensionError> {
     match self.extensions.get(&TypeId::of::<E>()) {
       | Some(ExtensionEntry::Created(erased)) => Ok(Self::downcast_extension::<E>(erased)),
       | Some(ExtensionEntry::Failed(error)) => Err(error.clone()),
@@ -374,8 +373,7 @@ impl ActorSystem {
   /// documentation: an id whose creation failed answers `false` here,
   /// where Pekko's `hasExtension` rethrows the kept failure. Use
   /// [`extension`](Self::extension) to see the failure itself.
-  pub fn has_extension<E: ExtensionId>(&self, id: &E) -> bool {
-    let _ = id;
+  pub fn has_extension<E: ExtensionId>(&self, _id: &E) -> bool {
     matches!(self.extensions.get(&TypeId::of::<E>()), Some(ExtensionEntry::Created(_)))
   }
 
@@ -526,9 +524,9 @@ impl ActorSystem {
     let limit = settings.limit();
     let listener = Executor::lend(&self.executor, |executor| executor.start_dead_letter_listener(settings));
     if limit != DeadLetterLogLimit::Off {
-      let _ = self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<DeadLetter>());
-      let _ = self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<Dropped>());
-      let _ = self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<UnhandledMessage>());
+      self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<DeadLetter>()).ok();
+      self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<Dropped>()).ok();
+      self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<UnhandledMessage>()).ok();
     }
     listener
   }

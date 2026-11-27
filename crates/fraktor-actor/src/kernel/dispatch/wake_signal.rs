@@ -24,7 +24,7 @@ use core::time::Duration;
 /// send to the actors. The kernel cannot block a thread, so the adaptor gives
 /// it this port: whatever may bring work [`notify`](Self::notify)s, and
 /// `await_envelope` [`wait`](Self::wait)s. A shard boundary hands it out
-/// through `ShardBoundary::wake_signal` (design of #234, section 11.11.6).
+/// through `ShardBoundary::wake_signal`.
 pub trait WakeSignal: Send + Sync {
   /// Raises the signal and wakes a caller that waits on it. A raise that
   /// comes before the wait is not lost: the next wait returns at once.

@@ -111,7 +111,7 @@ impl ActorRef {
   /// hands it to dead letters on this (the sender's) thread, as Pekko's
   /// dead letter mailbox does (issue #286). A mailbox with no route
   /// installed hands it to the dispatcher instead, which routes it when it
-  /// gets to it (design of #234, section 11.11.1).
+  /// gets to it.
   pub(crate) fn send_message(&self, message: Message, sender: ActorRef) {
     match &self.endpoint {
       | Endpoint::Mailbox(mailbox) => {
