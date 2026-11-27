@@ -29,6 +29,7 @@ use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::actor_system::ActorSystem;
 use fraktor_actor::kernel::message::Message;
 
+use crate::event_filter::EventFilter;
 use crate::event_filter::EventSinkRegistry;
 use crate::fraktorspec::fraktor_spec_hooks::FraktorSpecHooks;
 use crate::test_kit::expected_messages::ClassOf;
@@ -272,6 +273,73 @@ impl FraktorSpec {
       assert!(elapsed <= max_diff, "block took {elapsed:?}, exceeding {max_diff:?}");
     }
     value
+  }
+
+  /// Runs `body` while muting the events `filter` matches, then checks
+  /// that the number published is the filter's occurrences.
+  ///
+  /// The `FraktorSpec` form of [`EventFilter::intercept`]: the body
+  /// receives this spec, so it can call `within`, `expect_msg`, and
+  /// `actor_of` while the filter is armed, which the
+  /// `&mut ActorSystem` form cannot offer without a borrow conflict.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the spec's system has no event sink, or when the
+  /// number of matching events after the body differs from the
+  /// filter's occurrences.
+  pub fn intercept<R>(&mut self, filter: &EventFilter, body: impl FnOnce(&mut Self) -> R) -> R {
+    let registry = self.event_registry();
+    let id = registry.arm(filter.clone());
+    let outcome = body(self);
+    self.system_mut().run_until_idle();
+    let matched = registry.matched(id);
+    registry.disarm(id);
+    assert_eq!(
+      matched,
+      filter.occurrences(),
+      "expected {} event(s) matching {filter:?} but found {matched}",
+      filter.occurrences()
+    );
+    outcome
+  }
+
+  /// Runs `body` while muting the events every filter in `filters`
+  /// matches, then checks that each filter matched its occurrences.
+  ///
+  /// Mirrors Pekko's `filterEvents(filters)(block)`: every filter is
+  /// armed at once, the body runs on this spec, the system is driven
+  /// to idle, and each filter's count is compared with its own
+  /// occurrences before all of them are disarmed.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the spec's system has no event sink, or when any
+  /// filter's count after the body differs from its occurrences.
+  pub fn filter_events<R>(&mut self, filters: &[EventFilter], body: impl FnOnce(&mut Self) -> R) -> R {
+    let registry = self.event_registry();
+    let ids: Vec<usize> = filters.iter().map(|filter| registry.arm(filter.clone())).collect();
+    let outcome = body(self);
+    self.system_mut().run_until_idle();
+    let matched: Vec<usize> = ids.iter().map(|id| registry.matched(*id)).collect();
+    for id in &ids {
+      registry.disarm(*id);
+    }
+    for (filter, count) in filters.iter().zip(matched.iter()) {
+      assert_eq!(
+        *count,
+        filter.occurrences(),
+        "expected {} event(s) matching {filter:?} but found {count}",
+        filter.occurrences()
+      );
+    }
+    outcome
+  }
+
+  /// Returns the event sink registry this spec's system publishes to.
+  fn event_registry(&self) -> Arc<EventSinkRegistry> {
+    let sink = self.system().event_sink().expect("the spec system has an event sink");
+    sink.into_any().downcast::<EventSinkRegistry>().expect("the spec uses an EventSinkRegistry")
   }
 
   /// Returns the time left in the innermost `within` scope.

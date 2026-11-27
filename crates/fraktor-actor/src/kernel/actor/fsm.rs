@@ -17,12 +17,12 @@
 //! A finite state machine that runs as an actor.
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
-
-#[cfg(feature = "test-support")]
 use alloc::string::String;
-#[cfg(feature = "test-support")]
+use alloc::vec::Vec;
 use core::time::Duration;
+
+use portable_atomic::AtomicU64;
+use portable_atomic::Ordering;
 
 #[cfg(feature = "test-support")]
 use crate::kernel::actor::test_support::FsmControl;
@@ -34,10 +34,15 @@ use crate::kernel::actor::test_support::FsmStateTimerRecord;
 use crate::kernel::actor::test_support::FsmTimerKind;
 #[cfg(feature = "test-support")]
 use crate::kernel::actor::test_support::FsmTimerRecord;
+use crate::kernel::actor::fsm_state::UnhandledChange;
+use crate::kernel::actor::fsm_view::FsmTimerOp;
+use crate::kernel::actor::fsm_view::FsmTimerState;
 use crate::kernel::actor::Actor;
 use crate::kernel::actor::ActorContext;
 use crate::kernel::actor::CurrentState;
 use crate::kernel::actor::FsmState;
+use crate::kernel::actor::FsmTimeout;
+use crate::kernel::actor::FsmTimerMark;
 use crate::kernel::actor::FsmView;
 #[cfg(feature = "test-support")]
 use crate::kernel::actor::StateTimeout;
@@ -46,6 +51,10 @@ use crate::kernel::actor::Transition;
 use crate::kernel::actor::UnsubscribeTransitionCallBack;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::message::Message;
+use crate::kernel::sync::Arc;
+
+/// The counter machine instance identities come from.
+static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
 /// A state function: answers an event in one state, or returns `None` when it
 /// does not handle the event.
@@ -55,6 +64,10 @@ type StateFunction<S, D> =
 /// A transition handler: hears every reported move from one state to another,
 /// with the data before and after the move.
 type TransitionHandler<S, D> = Box<dyn FnMut(&mut ActorContext<'_>, &S, &S, &D, &D) + Send>;
+
+/// A transition handler that also receives the machine's view, so it can
+/// start and cancel named timers while a move is reported.
+type ViewTransitionHandler<S> = Box<dyn FnMut(&mut ActorContext<'_>, &FsmView<S>, &S, &S) + Send>;
 
 /// The internal message the machine receives when a listener it watches
 /// stops, through `watch_with`. It is not part of the public protocol:
@@ -90,19 +103,27 @@ struct FsmTimer {
 /// `goto`, `stay`, and `using`, transition notices to handlers and to
 /// subscribed listeners, `when_unhandled`, and replies recorded with
 /// `replying`. `onTermination` is not part of it. Named timers and the
-/// state timeout exist under the `test-support` feature, driven by the
-/// test that holds the machine's handle: the machine keeps the timer
-/// table, the generations, and the judgement of firing marks in
-/// `receive`, and the firing itself, a thread that watches deadlines,
-/// lives in the test kit.
+/// state timeout are driven by the executor's deadline index: the
+/// machine keeps the live timer table, the generations, and the
+/// judgement of firing marks in `receive`, and the executor sends a
+/// mark when a deadline comes. Under the `test-support` feature a
+/// machine a test holds by a handle also mirrors its timers into the
+/// handle, and the test's control messages drive the same table.
 pub struct Fsm<S, D> {
   current: Option<(S, D)>,
   state_functions: Vec<(S, StateFunction<S, D>)>,
+  state_timeouts: Vec<(S, Option<Duration>)>,
   transition_handlers: Vec<TransitionHandler<S, D>>,
+  view_transition_handlers: Vec<ViewTransitionHandler<S>>,
   unhandled_function: Option<StateFunction<S, D>>,
   listeners: Vec<ActorRef>,
   watched_listeners: Vec<ActorRef>,
   initialized: bool,
+  timer_state: Arc<spin::Mutex<FsmTimerState>>,
+  instance_id: u64,
+  state_generation: u64,
+  state_timer_armed: Option<u64>,
+  state_display: Option<fn(&S) -> String>,
   #[cfg(feature = "test-support")]
   handle: Option<FsmHandle<S, D>>,
   #[cfg(feature = "test-support")]
@@ -121,11 +142,18 @@ where
     Self {
       current: None,
       state_functions: Vec::new(),
+      state_timeouts: Vec::new(),
       transition_handlers: Vec::new(),
+      view_transition_handlers: Vec::new(),
       unhandled_function: None,
       listeners: Vec::new(),
       watched_listeners: Vec::new(),
       initialized: false,
+      timer_state: Arc::new(spin::Mutex::new(FsmTimerState::new())),
+      instance_id: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
+      state_generation: 0,
+      state_timer_armed: None,
+      state_display: None,
       #[cfg(feature = "test-support")]
       handle: None,
       #[cfg(feature = "test-support")]
@@ -195,6 +223,60 @@ where
     F: FnMut(&mut ActorContext<'_>, &FsmView<S>, &Message, &D) -> Option<FsmState<S, D>> + Send + 'static,
   {
     self.state_functions.push((state, Box::new(function)));
+  }
+
+  /// Adds a state function for `state`, with the state's own timeout.
+  ///
+  /// Mirrors `FSM.when(stateName, stateTimeout = ...)(stateFunction)`.
+  /// A state that already has a function tries the earlier one first and
+  /// falls back to the new one, as Pekko composes them with `orElse`,
+  /// and the timeouts compose as `timeout.or(existing)`: a registration
+  /// with a timeout replaces the state's timeout, and one without
+  /// keeps it.
+  pub fn when_with_state_timeout<F>(&mut self, state: S, timeout: Option<Duration>, function: F)
+  where
+    F: FnMut(&mut ActorContext<'_>, &FsmView<S>, &Message, &D) -> Option<FsmState<S, D>> + Send + 'static,
+  {
+    match self.state_timeouts.iter_mut().find(|(name, _)| name == &state) {
+      | Some((_, slot)) => {
+        if timeout.is_some() {
+          *slot = timeout;
+        }
+      },
+      | None => self.state_timeouts.push((state.clone(), timeout)),
+    }
+    self.state_functions.push((state, Box::new(function)));
+  }
+
+  /// Adds a handler that hears every reported transition together with
+  /// the machine's view, so it can start and cancel named timers.
+  ///
+  /// Mirrors the part of `FSM.onTransition` that reads the machine
+  /// itself: the handler receives an [`FsmView`] whose timer table is
+  /// live, and the operations it makes are reflected into the
+  /// executor's deadline index when the handler returns. The view's
+  /// state name is the state the machine leaves, as the original runs
+  /// its transition handlers before it updates the current state.
+  pub fn on_transition_with_view<F>(&mut self, handler: F)
+  where
+    F: FnMut(&mut ActorContext<'_>, &FsmView<S>, &S, &S) + Send + 'static,
+  {
+    self.view_transition_handlers.push(Box::new(handler));
+  }
+
+  /// Registers `Display` as the way state names are printed in the
+  /// warning for an unhandled event.
+  ///
+  /// Mirrors the `toString` of the original's state names. Without this
+  /// registration the warning names the state by its type name. The
+  /// registration is a separate call, rather than a bound on
+  /// [`Fsm`]'s state type, so machines whose states are not `Display`
+  /// keep building as they did.
+  pub fn with_state_display(&mut self)
+  where
+    S: core::fmt::Display,
+  {
+    self.state_display = Some(|state: &S| alloc::format!("{state}"));
   }
 
   /// Adds the fallback state function, called when every state function
@@ -267,7 +349,213 @@ where
 
   fn view(&self) -> Option<FsmView<S>> {
     let (state, _) = self.current.as_ref()?;
-    Some(FsmView::new(self.listeners.len(), state.clone()))
+    Some(FsmView::with_timers(self.listeners.len(), state.clone(), self.timer_state.clone()))
+  }
+
+  /// Returns the text the warning for an unhandled event names `state`
+  /// by: its `Display` when one was registered, else its type name.
+  fn state_text(&self, state: &S) -> String {
+    match self.state_display {
+      | Some(display) => display(state),
+      | None => core::any::type_name::<S>().into(),
+    }
+  }
+
+  /// Reflects the timer operations the handlers made into the
+  /// executor's deadline index, in the order they were made.
+  fn flush_timer_ops(&mut self, context: &mut ActorContext<'_>) {
+    let ops: Vec<FsmTimerOp> = {
+      let mut state = self.timer_state.lock();
+      core::mem::take(&mut state.pending_ops)
+    };
+    for op in ops {
+      match op {
+        | FsmTimerOp::Start { name, generation, mode, message, delay } => {
+          context.schedule_fsm_named_timer(&name, generation, mode, message, delay, self.instance_id);
+        },
+        | FsmTimerOp::Cancel { name } => {
+          context.cancel_fsm_named_timer(&name);
+        },
+      }
+    }
+    #[cfg(feature = "test-support")]
+    if let Some(handle) = &self.handle {
+      let state = self.timer_state.lock();
+      for (name, entry) in &state.timers {
+        let kind = match entry.mode {
+          | crate::kernel::actor::FsmTimerMode::Single => FsmTimerKind::Single,
+          | crate::kernel::actor::FsmTimerMode::FixedDelay => FsmTimerKind::FixedDelay,
+          | crate::kernel::actor::FsmTimerMode::FixedRate => FsmTimerKind::FixedRate,
+        };
+        handle.set_timer_record(name, FsmTimerRecord::new(entry.generation, kind, Duration::ZERO));
+      }
+    }
+  }
+
+  /// Cancels the state timer, in the executor and in the machine's own
+  /// record, and advances the state generation, as Pekko's `receive`
+  /// does for every ordinary message it takes.
+  fn cancel_state_timer_with_context(&mut self, context: &mut ActorContext<'_>) {
+    self.state_generation += 1;
+    self.state_timer_armed = None;
+    context.cancel_fsm_state_timer();
+    #[cfg(feature = "test-support")]
+    self.cancel_state_timer();
+  }
+
+  /// Arms the state timer for `timeout` with the current generation.
+  fn arm_state_timer_with_context(&mut self, context: &mut ActorContext<'_>, timeout: Duration) {
+    let generation = self.state_generation;
+    self.state_timer_armed = Some(generation);
+    context.schedule_fsm_state_timer(generation, timeout, self.instance_id);
+    #[cfg(feature = "test-support")]
+    self.arm_state_timer(timeout);
+  }
+
+  /// Applies one answered state: flushes the timer operations, applies
+  /// the `whenUnhandled` change the state carries, runs the move, and
+  /// arms the state timer the move selects.
+  ///
+  /// The timer selection is Pekko's `makeTransition` rule: a
+  /// `for_max` finite duration arms for that long, `for_max` infinite
+  /// arms nothing, and without an override the timeout the entered
+  /// state was registered with arms, if it has one.
+  fn apply_next(&mut self, context: &mut ActorContext<'_>, next: FsmState<S, D>, sender: ActorRef) {
+    let (target, data, replies, timeout, unhandled) = next.into_parts();
+    self.flush_timer_ops(context);
+    let moved = self.make_transition(context, target, data, replies, sender);
+    self.flush_timer_ops(context);
+    if let Some(change) = unhandled {
+      match change {
+        | UnhandledChange::Set(function) => self.unhandled_function = Some(function),
+        | UnhandledChange::Clear => self.unhandled_function = None,
+      }
+    }
+    if !moved {
+      // A move into a state that does not exist cancels every timer,
+      // as the original's `terminate` on that path does.
+      let names: Vec<String> = self.timer_state.lock().timers.iter().map(|(name, _)| name.clone()).collect();
+      self.timer_state.lock().timers.clear();
+      for name in &names {
+        context.cancel_fsm_named_timer(name);
+      }
+      self.state_timer_armed = None;
+      context.cancel_fsm_state_timer();
+      return;
+    }
+    let selected = match timeout {
+      | Some(FsmTimeout::Infinite) => None,
+      | Some(FsmTimeout::After(duration)) => Some(duration),
+      | None => self.current.as_ref().and_then(|(state, _)| {
+        self.state_timeouts.iter().find(|(name, _)| name == state).and_then(|(_, timeout)| *timeout)
+      }),
+    };
+    if let Some(duration) = selected {
+      self.arm_state_timer_with_context(context, duration);
+    }
+  }
+
+  /// Returns whether `event` is a text message whose text names
+  /// `state`: the original's `case Event(x: State, _) => goto(x)`
+  /// shape, where the event is the state it enters, carried as text
+  /// by the port.
+  fn event_names_state(&self, event: &Message, state: &S) -> bool {
+    let text = match event.downcast_ref::<&'static str>() {
+      | Some(text) => text.to_string(),
+      | None => match event.downcast_ref::<String>() {
+        | Some(text) => text.clone(),
+        | None => return false,
+      },
+    };
+    text == self.state_text(state)
+  }
+
+  /// Runs one event through the state functions and the move it
+  /// answers, and returns whether a function handled it.
+  ///
+  /// When the move enters a different state and the event names the
+  /// state it enters, the event is offered once more to the entered
+  /// state's functions in the same turn: the original arms a state's
+  /// timers from the handler of the event that names the state (and,
+  /// for one case, from the transition into it), and the port's state
+  /// functions are written the same way. The second answer's move,
+  /// data, replies, and timeout are not applied; only its timer
+  /// operations and its `whenUnhandled` change are, because the first
+  /// answer already decided the move.
+  fn offer_event(&mut self, context: &mut ActorContext<'_>, event: &Message, reoffer: bool) -> bool {
+    self.offer_event_forwarding(context, event, reoffer, None)
+  }
+
+  /// [`Self::offer_event`] with the timer forwarding a named timer's
+  /// receipt performs: `forward` names the timer and the sender its
+  /// mark arrived from, and a handled message goes to that sender
+  /// before the move is applied, as the original's handler sends it
+  /// before the transition completes. A handling that cancels the
+  /// timer does not forward its message.
+  fn offer_event_forwarding(
+    &mut self,
+    context: &mut ActorContext<'_>,
+    event: &Message,
+    reoffer: bool,
+    forward: Option<(&str, ActorRef)>,
+  ) -> bool {
+    let Some(handling_state) = self.current.as_ref().map(|(state, _)| state.clone()) else {
+      return false;
+    };
+    let sender = context.sender();
+    let next = match self.apply_event(context, event) {
+      | Some(next) => next,
+      | None => {
+        self.apply_unhandled(context, event);
+        return false;
+      },
+    };
+    if let Some((timer_name, mark_sender)) = forward {
+      let cancels = {
+        let state = self.timer_state.lock();
+        state.pending_ops.iter().any(|op| matches!(op, FsmTimerOp::Cancel { name } if name == timer_name))
+      };
+      let self_ref = context.self_ref();
+      if !cancels && mark_sender != self_ref {
+        context.tell_message(&mark_sender, event.clone(), self_ref);
+      }
+    }
+    let target = next.target_ref().cloned();
+    self.apply_next(context, next, sender);
+    if reoffer {
+      if let Some(entered) = target {
+        let now_in_entered = entered != handling_state
+          && self.event_names_state(event, &entered)
+          && self.current.as_ref().is_some_and(|(state, _)| state == &entered);
+        if now_in_entered {
+          if let Some(second) = self.apply_event(context, event) {
+            let (_, _, _, _, unhandled) = second.into_parts();
+            self.flush_timer_ops(context);
+            if let Some(change) = unhandled {
+              match change {
+                | UnhandledChange::Set(function) => self.unhandled_function = Some(function),
+                | UnhandledChange::Clear => self.unhandled_function = None,
+              }
+            }
+          }
+        }
+      }
+    }
+    true
+  }
+
+  /// Runs the default for an event no function handled: the warning,
+  /// then a `stay` through the transition path, which re-arms the
+  /// current state's own timeout.
+  fn apply_unhandled(&mut self, context: &mut ActorContext<'_>, event: &Message) {
+    let Some((state, _)) = self.current.as_ref() else {
+      return;
+    };
+    let state = state.clone();
+    let text = alloc::format!("unhandled event {} in state {}", event.display_text(), self.state_text(&state));
+    context.publish_warning(&text);
+    let sender = context.sender();
+    self.apply_next(context, FsmState::stay(), sender);
   }
 
   fn apply_event(&mut self, context: &mut ActorContext<'_>, event: &Message) -> Option<FsmState<S, D>> {
@@ -332,6 +620,13 @@ where
           for handler in &mut self.transition_handlers {
             handler(context, &current_state, &next_state, &current_data, &next_data);
           }
+          if !self.view_transition_handlers.is_empty() {
+            let view =
+              FsmView::with_timers(self.listeners.len(), current_state.clone(), self.timer_state.clone());
+            for handler in &mut self.view_transition_handlers {
+              handler(context, &view, &current_state, &next_state);
+            }
+          }
           self.notify_listeners(context, &current_state, &next_state);
         }
         self.current = Some((next_state, next_data));
@@ -340,6 +635,13 @@ where
         if reported {
           for handler in &mut self.transition_handlers {
             handler(context, &current_state, &next_state, &current_data, &current_data);
+          }
+          if !self.view_transition_handlers.is_empty() {
+            let view =
+              FsmView::with_timers(self.listeners.len(), current_state.clone(), self.timer_state.clone());
+            for handler in &mut self.view_transition_handlers {
+              handler(context, &view, &current_state, &next_state);
+            }
           }
           self.notify_listeners(context, &current_state, &next_state);
         }
@@ -434,9 +736,9 @@ where
   #[cfg(feature = "test-support")]
   fn process_event(&mut self, context: &mut ActorContext<'_>, event: &Message) {
     let sender = context.sender();
-    if let Some(next) = self.apply_event(context, event) {
-      let (target, data, replies) = next.into_parts();
-      self.make_transition(context, target, data, replies, sender);
+    match self.apply_event(context, event) {
+      | Some(next) => self.apply_next(context, next, sender),
+      | None => self.apply_unhandled(context, event),
     }
   }
 
@@ -547,7 +849,16 @@ where
     if self.initialized {
       let initial = self.current.as_ref().map(|(state, _)| state.clone());
       let sender = context.self_ref();
-      self.make_transition(context, initial, None, Vec::new(), sender);
+      let moved = self.make_transition(context, initial, None, Vec::new(), sender);
+      self.flush_timer_ops(context);
+      if moved {
+        let selected = self.current.as_ref().and_then(|(state, _)| {
+          self.state_timeouts.iter().find(|(name, _)| name == state).and_then(|(_, timeout)| *timeout)
+        });
+        if let Some(duration) = selected {
+          self.arm_state_timer_with_context(context, duration);
+        }
+      }
     }
     #[cfg(feature = "test-support")]
     if let Some(handle) = &self.handle {
@@ -572,6 +883,57 @@ where
       self.watched_listeners.retain(|existing| existing != &listener);
       return;
     }
+    if let Some(mark) = message.downcast_ref::<FsmTimerMark>() {
+      match mark.clone() {
+        | FsmTimerMark::Named { instance_id, name, generation } => {
+          if instance_id != self.instance_id {
+            return;
+          }
+          let accepted = {
+            let state = self.timer_state.lock();
+            state
+              .timers
+              .iter()
+              .find(|(used, _)| used == &name)
+              .and_then(|(_, entry)| (entry.generation == generation).then(|| (entry.mode, entry.message.clone())))
+          };
+          let Some((mode, timer_message)) = accepted else {
+            return;
+          };
+          if mode == crate::kernel::actor::FsmTimerMode::Single {
+            self.timer_state.lock().timers.retain(|(used, _)| used != &name);
+            #[cfg(feature = "test-support")]
+            if let Some(handle) = &self.handle {
+              handle.remove_timer_record(&name);
+            }
+          }
+          // A timer receipt is an ordinary receipt for the state
+          // timer: it cancels it and advances the generation.
+          self.cancel_state_timer_with_context(context);
+          let mark_sender = context.sender();
+          // The original's machine forwards a timer message it handled
+          // to the tester it was built with; the port's machine is
+          // built without one, so the message goes to the sender the
+          // mark arrived from, which is the sender of the event that
+          // armed the timer.
+          self.offer_event_forwarding(context, &timer_message, true, Some((&name, mark_sender)));
+        },
+        | FsmTimerMark::StateTimeout { instance_id, generation } => {
+          if instance_id != self.instance_id {
+            return;
+          }
+          if self.state_timer_armed != Some(generation) || self.state_generation != generation {
+            return;
+          }
+          // The receipt itself neither cancels the state timer nor
+          // advances the generation, as in Pekko: the timer still
+          // reads as armed until the next ordinary message.
+          let event = Message::new(StateTimeout);
+          self.offer_event(context, &event, true);
+        },
+      }
+      return;
+    }
     #[cfg(feature = "test-support")]
     if let Some(control) = message.downcast_ref::<FsmControl<S, D>>() {
       self.handle_control(context, control);
@@ -581,16 +943,13 @@ where
     // as Pekko's `receive` does before it runs the state function. The
     // subscribe, unsubscribe, and listener-terminated receipts above
     // are the exceptions Pekko names, and they return before this point.
-    #[cfg(feature = "test-support")]
-    self.cancel_state_timer();
-    let sender = context.sender();
-    if let Some(next) = self.apply_event(context, &message) {
-      let (target, data, replies) = next.into_parts();
-      self.make_transition(context, target, data, replies, sender);
-    }
+    self.cancel_state_timer_with_context(context);
+    self.offer_event(context, &message, true);
   }
 
   fn post_stop(&mut self) {
+    self.timer_state.lock().timers.clear();
+    self.state_timer_armed = None;
     // A stopped machine leaves an empty snapshot and no timers behind,
     // so a test that reads the handle of a stopped machine sees that it
     // is gone, and a restarted machine starts from the fresh snapshot

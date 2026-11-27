@@ -361,6 +361,59 @@ impl<'a> ActorContext<'a> {
     self.executor.spawn_named_child(&parent, props, name)
   }
 
+  /// Returns the handle of this actor's live child named `name`, if any.
+  ///
+  /// Mirrors `ActorContext.child(name)`. A child that has stopped and
+  /// whose end this actor has handled is no longer in the table, so the
+  /// answer is `None` for it, as it is for a name no child ever held.
+  pub fn child(&self, name: &str) -> Option<ActorRef> {
+    self.executor.child_of(self.self_ref, name)
+  }
+
+  /// Publishes a warning that names this actor as its source.
+  ///
+  /// Mirrors `log.warning(...)` of an FSM subclass: the executor builds
+  /// a `Warning` whose source is this actor's path and offers it to the
+  /// event stream and the event sink.
+  pub(crate) fn publish_warning(&self, message: &str) {
+    let source = self.self_ref();
+    self.executor.publish_warning(&source, message);
+  }
+
+  /// Registers a named FSM timer of this actor with the executor.
+  pub(crate) fn schedule_fsm_named_timer(
+    &mut self,
+    name: &str,
+    generation: u64,
+    mode: crate::kernel::actor::FsmTimerMode,
+    message: Message,
+    delay: core::time::Duration,
+    instance_id: u64,
+  ) {
+    let key = self.self_ref.key();
+    let sender = self.sender();
+    let request = crate::kernel::executor::FsmTimerRequest { mode, message, delay, instance_id, generation, sender: Some(sender) };
+    self.executor.schedule_fsm_named_timer(key, name, request);
+  }
+
+  /// Registers the state timer of this actor with the executor.
+  pub(crate) fn schedule_fsm_state_timer(&mut self, generation: u64, delay: core::time::Duration, instance_id: u64) {
+    let key = self.self_ref.key();
+    self.executor.schedule_fsm_state_timer(key, generation, delay, instance_id);
+  }
+
+  /// Cancels a named FSM timer of this actor in the executor.
+  pub(crate) fn cancel_fsm_named_timer(&mut self, name: &str) {
+    let key = self.self_ref.key();
+    self.executor.cancel_fsm_named_timer(key, name);
+  }
+
+  /// Cancels the state timer of this actor in the executor.
+  pub(crate) fn cancel_fsm_state_timer(&mut self) {
+    let key = self.self_ref.key();
+    self.executor.cancel_fsm_state_timer(key);
+  }
+
   /// Registers this actor as a watcher of `target` and returns `target`'s
   /// handle.
   ///

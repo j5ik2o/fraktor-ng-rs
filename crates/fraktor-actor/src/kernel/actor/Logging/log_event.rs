@@ -44,4 +44,15 @@ pub trait LogEvent {
 
   /// Returns the name of the cause, or `None` when the event has no cause.
   fn cause_name(&self) -> Option<&str>;
+
+  /// Returns the message of the cause, or `None` when the event carries
+  /// none.
+  ///
+  /// Mirrors `LogEventWithCause.cause.getMessage`, which Pekko's
+  /// `ErrorFilter` matches a filter's text against as well as the
+  /// event's own message. The default is `None`, so an event kind that
+  /// carries no cause message answers as it did before.
+  fn cause_message(&self) -> Option<&str> {
+    None
+  }
 }
