@@ -412,6 +412,15 @@ impl<C: MailboxCell> Mailbox<C> {
     self.status.is_suspended()
   }
 
+  /// Returns how many times the mailbox has been suspended without a resume.
+  ///
+  /// Stage 4b (design of #234, section 11.13.8) makes this a production read
+  /// next to `is_suspended`; this accessor stands in for it until then, so the
+  /// stage 4b unit tests can read the count.
+  pub(crate) fn suspend_count(&self) -> usize {
+    self.status.suspend_count()
+  }
+
   /// Returns whether the queue of normal messages holds a message. For a
   /// shared queue, the messages may be for any member of the team.
   pub(crate) fn has_messages(&self) -> bool {

@@ -643,6 +643,17 @@ impl Executor {
   pub(crate) fn parent_entry_count(&self) -> usize {
     self.actors.values().filter(|entry| entry.supervision.is_some()).count() + self.ref_parents.len()
   }
+
+  /// Returns the suspend count of `target`'s mailbox, or `None` when the actor
+  /// has stopped.
+  ///
+  /// Stage 4b (design of #234, section 11.13.8) makes `suspend_count` a
+  /// production read entry on `Mailbox`; this accessor stands in for it until
+  /// then, so the stage 4b unit tests can read the count without the executor
+  /// exposing its entries.
+  pub(crate) fn suspend_count_of(&self, target: &ActorRef) -> Option<usize> {
+    self.entry(target).map(|entry| entry.mailbox.suspend_count())
+  }
 }
 
 #[cfg(test)]

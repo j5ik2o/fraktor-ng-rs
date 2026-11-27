@@ -260,4 +260,13 @@ impl MailboxStatus {
   pub(crate) fn is_suspended(&self) -> bool {
     self.load() >= super::SUSPEND_UNIT
   }
+
+  /// Returns how many times the mailbox has been suspended without a resume.
+  ///
+  /// Stage 4b (design of #234, section 11.13.8) makes this a production read;
+  /// this accessor stands in for it until then, so the stage 4b unit tests can
+  /// read the count.
+  pub(crate) fn suspend_count(&self) -> usize {
+    self.load() as usize / super::SUSPEND_UNIT as usize
+  }
 }

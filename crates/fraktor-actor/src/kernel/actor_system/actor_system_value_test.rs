@@ -39,6 +39,21 @@ use crate::kernel::setup::Setup;
 use super::ActorSystem;
 use crate::adaptor::ChannelBoundary;
 
+/// The stage 4b red unit tests (design of #234, section 11.13.12).
+///
+/// They sit beside the tests of `ActorSystem` for one reason: the one
+/// crate-internal read they use (the suspend count, which stage 4b makes a
+/// production entry, 11.13.8) reaches the executor through the private
+/// `executor` field, which only this module may read.
+fn stage4b_suspend_counts(system: &mut ActorSystem, targets: &[&ActorRef]) -> Vec<Option<usize>> {
+  let executor = crate::kernel::sync::lock(&system.executor);
+  targets.iter().map(|target| executor.suspend_count_of(target)).collect()
+}
+
+#[cfg(test)]
+#[path = "../executor/executor_stage4b_test.rs"]
+mod stage4b_tests;
+
 struct QueueBoundary {
   queue: Mutex<VecDeque<Envelope>>,
 }
