@@ -23,12 +23,16 @@
 //! without handing out the actor itself. Without the feature, none of this
 //! surface exists and a machine costs exactly what it cost before.
 
+mod actor_control;
+mod actor_handle;
 mod fsm_control;
 mod fsm_handle;
 mod fsm_state_timer_record;
 mod fsm_timer_kind;
 mod fsm_timer_record;
 
+pub(crate) use actor_control::ActorControl;
+pub use actor_handle::ActorHandle;
 pub use fsm_control::FsmControl;
 pub use fsm_handle::FsmDataCloner;
 pub use fsm_handle::FsmHandle;

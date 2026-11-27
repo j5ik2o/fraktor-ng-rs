@@ -19,6 +19,8 @@
 use alloc::boxed::Box;
 use core::any::Any;
 
+#[cfg(feature = "test-support")]
+use crate::kernel::actor::test_support::ActorHandle;
 use crate::kernel::actor::Actor;
 use crate::kernel::actor::ActorContext;
 use crate::kernel::actor::BehaviorStack;
@@ -51,6 +53,8 @@ pub(crate) struct ActorCell {
   post_stop_suppressed: bool,
   start_failure: Option<StartFailure>,
   failed_sender: Option<ActorRef>,
+  #[cfg(feature = "test-support")]
+  handle: Option<ActorHandle>,
 }
 
 /// What the cell keeps of a start that failed, until a `Create` starts it
@@ -86,7 +90,31 @@ impl ActorCell {
       post_stop_suppressed: false,
       start_failure: None,
       failed_sender: None,
+      #[cfg(feature = "test-support")]
+      handle: None,
     }
+  }
+
+  /// Attaches the handle a test started this actor through, which the
+  /// executor's test-support face writes into as the actor starts,
+  /// restarts, and stops.
+  #[cfg(feature = "test-support")]
+  pub(crate) fn set_handle(&mut self, handle: ActorHandle) {
+    self.handle = Some(handle);
+  }
+
+  /// Returns the handle a test started this actor through, when one is
+  /// attached.
+  #[cfg(feature = "test-support")]
+  pub(crate) fn handle(&self) -> Option<&ActorHandle> {
+    self.handle.as_ref()
+  }
+
+  /// Takes the snapshot the current instance publishes for a test's
+  /// probe, or `None` when it publishes none.
+  #[cfg(feature = "test-support")]
+  pub(crate) fn probe_snapshot(&self) -> Option<Box<dyn Any + Send + Sync>> {
+    self.behavior.as_ref().and_then(|behavior| behavior.underlying_snapshot())
   }
 
   /// Returns the key of the actor's entry in the executor.
@@ -172,6 +200,10 @@ impl ActorCell {
     context.register_parent_strategy(behavior.supervisor_strategy());
     behavior.pre_start(context);
     self.behavior = Some(behavior);
+    #[cfg(feature = "test-support")]
+    if let Some(handle) = &self.handle {
+      handle.mark_started();
+    }
   }
 
   /// Hands one message from `sender` to the current behaviour, under
@@ -232,6 +264,10 @@ impl ActorCell {
     context.register_parent_strategy(behavior.supervisor_strategy());
     behavior.post_restart(context);
     self.behavior = Some(behavior);
+    #[cfg(feature = "test-support")]
+    if let Some(handle) = &self.handle {
+      handle.note_restart();
+    }
   }
 
   /// Runs the context-carrying stop hook on the behaviour, if the actor was

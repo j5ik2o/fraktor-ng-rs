@@ -36,6 +36,10 @@ use portable_atomic::Ordering;
 
 use crate::kernel::actor::dispatch_settings::CapacityLimit;
 use crate::kernel::actor::dispatch_settings::DispatchSettings;
+#[cfg(feature = "test-support")]
+use crate::kernel::actor::test_support::ActorControl;
+#[cfg(feature = "test-support")]
+use crate::kernel::actor::test_support::ActorHandle;
 use crate::kernel::actor::ActorContext;
 use crate::kernel::actor::ActorCreationError;
 use crate::kernel::actor::ActorSelection;
@@ -430,6 +434,7 @@ pub(crate) struct Executor {
   watch_messages: Vec<(ActorRef, ActorRef, Message)>,
   user_children: BTreeMap<String, ActorRef>,
   not_influence_receive_timeout: BTreeSet<core::any::TypeId>,
+  self_handle: Option<Weak<spin::Mutex<Executor>>>,
   receive_timeouts: BTreeMap<ActorKey, ReceiveTimeoutState>,
   receive_timeout_index: BTreeMap<(Duration, ActorKey), u32>,
   receive_timeout_indexed: BTreeMap<ActorKey, Duration>,
@@ -493,6 +498,7 @@ impl Executor {
       watch_messages: Vec::new(),
       user_children: BTreeMap::new(),
       not_influence_receive_timeout: BTreeSet::new(),
+      self_handle: None,
       receive_timeouts: BTreeMap::new(),
       receive_timeout_index: BTreeMap::new(),
       receive_timeout_indexed: BTreeMap::new(),
@@ -671,6 +677,24 @@ impl Executor {
     self.dead_letters.clone()
   }
 
+  /// Records the weak handle of the system this executor runs, which
+  /// the system hands in once it has built the executor's shared cell.
+  pub(crate) fn set_self_handle(&mut self, handle: Weak<spin::Mutex<Executor>>) {
+    self.self_handle = Some(handle);
+  }
+
+  /// Returns a non-owning handle to the system this executor runs.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the system never handed its handle in, which no
+  /// system built through `ActorSystem` does.
+  #[cfg(feature = "test-support")]
+  pub(crate) fn weak_system(&self) -> crate::kernel::actor_system::WeakActorSystem {
+    let handle = self.self_handle.clone().expect("the actor system handed its handle to its executor");
+    crate::kernel::actor_system::WeakActorSystem::new(self.root.root().name().to_string(), handle)
+  }
+
   fn create_dead_letters(root: &ActorPath, shared: Arc<DeadLettersShared>) -> ActorRef {
     let path = root.with_child("deadLetters");
     // The handler routes through the shared state, which the executor fills
@@ -720,6 +744,10 @@ impl Executor {
         return;
       }
       let (recipient, message, sender) = envelope.into_parts();
+      #[cfg(feature = "test-support")]
+      if message.is::<ActorControl>() {
+        return;
+      }
       if let Some(recipient) = recipient {
         shared.route_undeliverable(message, sender, recipient, &dead_letters);
       }
@@ -729,6 +757,10 @@ impl Executor {
   /// Routes `message` to dead letters through the shared rules, with the
   /// executor's dead letters handle as the destination of the routing.
   fn route_undeliverable(&self, message: Message, sender: ActorRef, recipient: ActorRef) {
+    #[cfg(feature = "test-support")]
+    if message.is::<ActorControl>() {
+      return;
+    }
     self.dead_letters_shared.route_undeliverable(message, sender, recipient, &self.dead_letters);
   }
 
@@ -1209,6 +1241,14 @@ impl Executor {
   /// hands the message to the dead letters handle, as Pekko's mailbox
   /// clean-up both publishes and delivers.
   fn publish_dead_letter(&mut self, message: Message, sender: ActorRef, recipient: &ActorRef) {
+    #[cfg(feature = "test-support")]
+    if message.is::<ActorControl>() {
+      // A test's probe is an internal message: it is dropped here
+      // instead of being published as a dead letter, so a test that
+      // watches dead letters is not disturbed by a probe that arrived
+      // after its actor stopped, or that its mailbox still held then.
+      return;
+    }
     // The dead letters handle publishes the wrapped event as it is, as
     // Pekko's mailbox clean-up paths do.
     let wrapped = DeadLetter::from_message(message, sender.clone(), recipient.clone());
@@ -1523,6 +1563,190 @@ impl Executor {
     Ok(child)
   }
 
+  /// Starts an actor a test wraps, attaching `handle` to its cell.
+  ///
+  /// The checks are the ones a top-level creation and
+  /// [`try_spawn_child_from_weak`](Self::try_spawn_child_from_weak) run,
+  /// in the same order: the name, that the system and the parent still
+  /// take children, that the name is free, then the configuration. The
+  /// strategy the child is placed under follows the kind of the
+  /// supervisor: the user guardian's child takes the default strategy,
+  /// a started actor's child inherits the strategy the parent applies
+  /// now, and a function reference's child inherits the strategy
+  /// registered for it, or takes the default when none is registered.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the supervisor is an actor that has not started yet,
+  /// with the cause Pekko's `TestActorRef` throws for that case.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ActorCreationError`] when the name, the parent's state,
+  /// or the configuration is refused.
+  #[cfg(feature = "test-support")]
+  pub(crate) fn try_spawn_test_actor(
+    &mut self,
+    supervisor: Option<&ActorRef>,
+    props: Props,
+    name: Option<&str>,
+    handle: ActorHandle,
+  ) -> Result<ActorRef, ActorCreationError> {
+    if let Some(name) = name {
+      validate_actor_name(name)?;
+    }
+    if self.is_terminated() {
+      return Err(InvalidActorNameException::terminating().into());
+    }
+    let parent = supervisor.cloned().unwrap_or_else(|| self.user_guardian.clone());
+    // The dispatcher kind the test reads is the kind the registry
+    // resolved for the name the recipe carries (or the default name),
+    // taken before the recipe moves into the cell.
+    let dispatcher_name = props.dispatcher().unwrap_or(DEFAULT_DISPATCHER_ID).to_string();
+    let dispatcher_kind = self.dispatchers.kind_of(&dispatcher_name);
+    if parent == self.user_guardian {
+      let label = match name {
+        | Some(name) => name.to_string(),
+        | None => alloc::format!("${}", next_spawn_name()),
+      };
+      let path = self.root.with_child("user").with_child(&label);
+      if name.is_some() && self.user_children.contains_key(&label) {
+        return Err(InvalidActorNameException::name_taken(&label).into());
+      }
+      self.verify_configuration(&props, &path)?;
+      handle.set_dispatcher_kind(dispatcher_kind);
+      handle.set_dead_letters(self.dead_letters());
+      let child = self.spawn_at(props, path, None, SupervisorStrategy::default_strategy(), false);
+      self.attach_test_handle(&child, handle);
+      return Ok(child);
+    }
+    if let Some(entry) = self.parent_entry(&parent) {
+      if entry.is_terminating() {
+        return Err(InvalidActorNameException::terminating().into());
+      }
+      if let Some(name) = name {
+        if entry.children.iter().any(|(used, _)| used == name) {
+          return Err(InvalidActorNameException::name_taken(name).into());
+        }
+      }
+    } else if !self.is_live(&parent) && !self.is_guardian(&parent) {
+      return Err(InvalidActorNameException::terminating().into());
+    }
+    if self.is_terminating(&parent) {
+      return Err(InvalidActorNameException::terminating().into());
+    }
+    let is_function_ref = self.function_refs.contains(&parent);
+    let (strategy, inherited) = if is_function_ref {
+      match self.parent_entry(&parent) {
+        | Some(entry) => (entry.strategy.clone(), true),
+        | None => (SupervisorStrategy::default_strategy(), false),
+      }
+    } else {
+      // An actor supervisor must have started: a cell that is still in
+      // its mailbox without an instance, and that is not running a
+      // frame of its own start, has not.
+      if let Some(created) = self.with_cell(&parent, ActorCell::is_created) {
+        if !created && !self.is_running(&parent) {
+          panic!(
+            "cannot attach a TestActor to an unstarted top-level actor, ensure that it is started by sending a message and observing the reply"
+          );
+        }
+      }
+      let strategy = match self.parent_entry(&parent) {
+        | Some(entry) => entry.strategy.clone(),
+        | None => {
+          self.with_cell(&parent, |cell| cell.strategy().clone()).unwrap_or_else(SupervisorStrategy::default_strategy)
+        },
+      };
+      (strategy, true)
+    };
+    let path = match name {
+      | Some(name) => parent.path().with_child(name),
+      | None => parent.path().with_child("$generated"),
+    };
+    self.verify_configuration(&props, &path)?;
+    handle.set_dispatcher_kind(dispatcher_kind);
+    handle.set_dead_letters(self.dead_letters());
+    let label = match name {
+      | Some(name) => name.to_string(),
+      | None => alloc::format!("${}", next_spawn_name()),
+    };
+    let path = parent.path().with_child(&label);
+    let child = self.spawn_at(props, path, Some(parent.clone()), strategy, inherited);
+    self.attach_test_handle(&child, handle);
+    Ok(child)
+  }
+
+  /// Attaches `handle` to the cell of `child`, which `spawn_at` has
+  /// just put into its mailbox.
+  #[cfg(feature = "test-support")]
+  fn attach_test_handle(&self, child: &ActorRef, handle: ActorHandle) {
+    self.with_cell_mut(child, |cell| cell.set_handle(handle));
+  }
+
+  /// Runs `target`'s behaviour once with `message`, outside its
+  /// mailbox.
+  ///
+  /// Mirrors `TestActorRef.receive`: the behaviour runs with `sender`
+  /// in its context, the mailbox's queue is not touched, and a failure
+  /// is returned as [`RunOutcome::Failed`] instead of reaching the
+  /// supervisor, so the actor is not restarted for it. When the
+  /// actor's dispatcher is of the calling-thread kind, the system
+  /// messages this call queued for the actor itself (a stop it asked
+  /// for) are handled before the call returns, as Pekko's
+  /// calling-thread dispatcher handles a `systemDispatch` on the
+  /// sender's thread.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the actor has stopped, with the cause Pekko's
+  /// `receive` raises for a cell whose actor is gone.
+  #[cfg(feature = "test-support")]
+  pub(crate) fn receive_directly(&mut self, target: &ActorRef, message: Message, sender: ActorRef) -> RunOutcome {
+    if self.is_actor_terminated(target) {
+      panic!("underlying actor is terminated");
+    }
+    let mailbox = self.entry(target).map(|entry| Arc::clone(&entry.mailbox));
+    let mut cell = self.take_cell(target).expect("the actor that receives directly is in its mailbox");
+    if !cell.is_created() {
+      // An actor built a moment ago from inside another actor (the
+      // nested creation `in_context` performs) may not have run its
+      // `Create` yet: its cell holds no behaviour, and a receive now
+      // would drop the message and report success. Start it first, as
+      // a creation on the test thread has already started when a test
+      // receives on it.
+      if let Some(mailbox) = &mailbox {
+        self.handle_create(&mut cell, mailbox);
+      }
+      if !cell.is_created() {
+        if self.actors.contains_key(&target.key()) && self.entry(target).is_some_and(|entry| !entry.mailbox.has_cell())
+        {
+          self.put_cell(cell);
+        }
+        self.finish_run();
+        return RunOutcome::Failed { message: "the actor failed to start".to_string() };
+      }
+    }
+    let catcher = self.catcher.clone();
+    self.enter_frame(target);
+    let (outcome, _sender) = cell.receive(self, message, sender, catcher.as_deref());
+    self.exit_frame();
+    let kind = cell.handle().and_then(|handle| handle.dispatcher_kind());
+    if kind == Some(DispatcherKind::CallingThread) {
+      if let Some(mailbox) = &mailbox {
+        mailbox.process_all_system_messages(&mut cell, self);
+      }
+    }
+    if self.actors.contains_key(&target.key()) && self.entry(target).is_some_and(|entry| !entry.mailbox.has_cell()) {
+      // The entry still stands and its mailbox slot is empty: the
+      // actor lives on. A stop handled above removes the entry, and
+      // then the cell is dropped with this call instead.
+      self.put_cell(cell);
+    }
+    self.finish_run();
+    outcome
+  }
+
   /// Marks the start of one actor execution frame.
   fn enter_frame(&mut self, target: &ActorRef) {
     self.running.push(target.key());
@@ -1785,6 +2009,12 @@ impl Executor {
     let child_path = target.path();
     if self.user_children.get(child_path.name()) == Some(&target) {
       self.user_children.remove(child_path.name());
+    }
+    #[cfg(feature = "test-support")]
+    if let Some(handle) = cell.handle() {
+      // The handle learns of the stop before any watcher is told, so
+      // a test that reads the actor as it stops answers at once.
+      handle.mark_terminated();
     }
     self.notify_watchers(&target, true, false);
     self.run_termination_callbacks(&target);
@@ -2473,6 +2703,42 @@ impl Executor {
       | None => message,
     };
     cell.set_failed_sender(None);
+    #[cfg(feature = "test-support")]
+    if let Some(control) = message.downcast_ref::<ActorControl>() {
+      // A test's probe is answered here, before the behaviour can see
+      // it, as Pekko's cell answers `InternalGetActor` in
+      // `autoReceiveMessage`: a behaviour installed with
+      // `change_behavior` and a message held in the stash cannot hide
+      // the actor from the test. The probe is an ordinary message for
+      // the receive timeout, so the deadline is re-armed around it as
+      // around any other delivery.
+      let sequence = control.sequence;
+      let key = cell.key();
+      let influences = !self.is_not_influence_receive_timeout(&message);
+      let timeout_before = self.receive_timeout_before(key, influences);
+      if let Some(handle) = cell.handle().cloned() {
+        // A snapshot hook that panics fails only this probe: the
+        // catcher turns it into no snapshot, which the test reads as
+        // the failure, instead of the panic unwinding out of the run
+        // and being recorded as the executor's fatal failure, which
+        // would stop every actor in the system.
+        let snapshot = match self.catcher.clone() {
+          | Some(catcher) => {
+            let mut taken = None;
+            match catcher.run(&mut || taken = cell.probe_snapshot()) {
+              | RunOutcome::Completed => taken,
+              | RunOutcome::Failed { .. } => None,
+            }
+          },
+          | None => cell.probe_snapshot(),
+        };
+        let setting = self.receive_timeout_setting(key);
+        handle.note_probe(sequence, snapshot, setting);
+      }
+      self.receive_timeout_after(key, influences, timeout_before);
+      self.fire_due_receive_timeouts();
+      return Next::Continue;
+    }
     if message == KILL {
       let key = cell.key();
       let timeout_before = self.receive_timeout_before(key, true);
@@ -2744,9 +3010,35 @@ impl Executor {
       guard.stop_all();
     }
     let mut lent = Lent { executor: &mut guard, returned: false };
+    #[cfg(feature = "test-support")]
+    let _registration = crate::adaptor::LentRegistration::register(executor, lent.executor);
     let result = work(lent.executor);
     lent.returned = true;
     result
+  }
+
+  /// Runs `work` on the executor behind `executor`, as [`lend`](Self::lend)
+  /// does, except that a call made from inside a lend of the same executor
+  /// on the same thread reuses that lend instead of locking again.
+  ///
+  /// A test's entry reached from inside an actor — a `TestActorRef`
+  /// built from `context.system()` while the actor runs — arrives while
+  /// the executor is already lent to the run that is handling the
+  /// actor, and the lock would refuse the re-entry as a concurrent use.
+  /// The reuse is sound because the registered pointer names the
+  /// executor of the lend this call stack is inside: it stays alive,
+  /// unmoved, and exclusively borrowed by this thread until that lend
+  /// returns, and the registration is removed when it does.
+  #[cfg(feature = "test-support")]
+  pub(crate) fn lend_or_reuse<R>(executor: &spin::Mutex<Executor>, work: impl FnOnce(&mut Executor) -> R) -> R {
+    if let Some(pointer) = crate::adaptor::active_lent_executor(executor) {
+      // SAFETY: the pointer was registered by the lend of this same
+      // mutex that is active on this thread, so the executor it
+      // names is exclusively borrowed by this call stack and
+      // outlives the call.
+      return work(unsafe { &mut *pointer });
+    }
+    Self::lend(executor, work)
   }
 
   /// Returns whether the system has been terminated.

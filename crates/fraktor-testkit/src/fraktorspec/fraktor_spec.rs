@@ -28,10 +28,13 @@ use fraktor_actor::adaptor::SenderThreadTrampoline;
 use fraktor_actor::adaptor::UnwindCatcher;
 use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::actor_system::ActorSystem;
+use fraktor_actor::kernel::dispatch::{DispatcherConfig, DispatcherKind, Dispatchers};
 use fraktor_actor::kernel::message::Message;
+use fraktor_actor::kernel::setup::ActorSystemSetup;
 
 use crate::event_filter::EventSinkRegistry;
 use crate::fraktorspec::fraktor_spec_hooks::FraktorSpecHooks;
+use crate::test_actor_ref::CALLING_THREAD_DISPATCHER_ID;
 use crate::test_kit::expected_messages::ClassOf;
 use crate::test_kit::AutoPilot;
 use crate::test_kit::ReceiveWhile;
@@ -79,13 +82,50 @@ impl FraktorSpec {
     Self::with_hooks_and_settings(system_name, Box::new(NoHooks), Some(factor))
   }
 
+  /// Creates the spec with `configs` as the system's dispatcher
+  /// definitions, in addition to the calling-thread dispatcher every
+  /// spec's system knows.
+  ///
+  /// Mirrors a `PekkoSpec` built from a configuration text that defines
+  /// a dispatcher, as the original's `"disp1.type=Dispatcher"` does:
+  /// a definition in `configs` whose id is the calling-thread
+  /// dispatcher's own id is the one the system uses, because the
+  /// caller's definitions are placed before the testkit's.
+  pub fn with_dispatchers(system_name: &str, configs: Vec<DispatcherConfig>) -> Self {
+    let mut spec = Self::with_hooks_and_dispatchers(system_name, Box::new(NoHooks), None, configs);
+    spec.hooks.at_startup(&mut spec.test_kit);
+    spec
+  }
+
   fn with_hooks_and_settings(
     system_name: &str,
     hooks: Box<dyn FraktorSpecHooks>,
     factor: Option<TestTimeFactor>,
   ) -> Self {
-    let system =
-      ActorSystem::with_failure_catcher(system_name, Arc::new(ChannelBoundary::new()), Arc::new(UnwindCatcher));
+    Self::with_hooks_and_dispatchers(system_name, hooks, factor, Vec::new())
+  }
+
+  fn with_hooks_and_dispatchers(
+    system_name: &str,
+    hooks: Box<dyn FraktorSpecHooks>,
+    factor: Option<TestTimeFactor>,
+    configs: Vec<DispatcherConfig>,
+  ) -> Self {
+    // Every spec's system knows the calling-thread dispatcher, as
+    // Pekko's testkit `reference.conf` defines
+    // `pekko.test.calling-thread-dispatcher` for every system built
+    // with the testkit on the classpath. The caller's definitions go
+    // first, so one of them wins over the testkit's for the same id.
+    let mut definitions = configs;
+    definitions
+      .push(DispatcherConfig { id: CALLING_THREAD_DISPATCHER_ID.to_string(), kind: DispatcherKind::CallingThread });
+    let setup = ActorSystemSetup::empty().and(Dispatchers::new(definitions));
+    let system = ActorSystem::with_setup_and_failure_catcher(
+      system_name,
+      Arc::new(ChannelBoundary::new()),
+      setup,
+      Arc::new(UnwindCatcher),
+    );
     system.set_dead_letter_trampoline(Arc::new(SenderThreadTrampoline::new()));
     let registry = Arc::new(EventSinkRegistry::new());
     system.set_event_sink(registry);
