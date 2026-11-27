@@ -41,16 +41,15 @@
 //
 //   (i) a stage that uses only the public surface that exists today
 //       (`ActorSystem::new`, `function_ref`, the event stream, `ActorRef::tell`).
-//       It compiles today and does not finish: 1000 resends overflow the
-//       thread's stack and the process aborts with
-//       `fatal runtime error: stack overflow, aborting` (a process crash, not
-//       an assertion). That is the red for the fix.
+//       Before the fix, 1000 resends overflowed the thread's stack and the
+//       process aborted with `fatal runtime error: stack overflow, aborting`
+//       (a process crash, not an assertion); that was the red for the fix.
 //
 //   (ii) the stage that drives the trampoline explicitly, through
 //        `ActorSystem::with_dead_letter_trampoline` and
-//        `SenderThreadTrampoline`, which #296 adds. It is left commented out
-//        below with the reason and the asserts it will make, so this file keeps
-//        compiling until the API exists. Turn it on with the API.
+//        `SenderThreadTrampoline`, which #296 adds, so the std adaptor's
+//        thread-local marker, queue, and `try_with` are exercised even though
+//        the observation matches the default `SharedTrampoline` on one thread.
 
 use std::string::String;
 use std::sync::Arc;
