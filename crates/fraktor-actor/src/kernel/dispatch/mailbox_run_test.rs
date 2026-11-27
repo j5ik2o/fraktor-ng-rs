@@ -415,7 +415,20 @@ mod unwind {
       let executor = Arc::new(ManualExecutor::new(0, None, &SpinLockFactory));
       let queue = Arc::new(UnboundedQueue::new(&SpinLockFactory));
       let limits = RunLimits::new(Throughput::new(5));
-      let mailbox = Arc::new(Mailbox::for_actor(queue, limits, &SpinLockFactory, Arc::downgrade(&executor)));
+      // The refused route every mailbox now requires: it records the
+      // envelope the mailbox turns away (nothing is refused in this fixture,
+      // so the list stays empty). Issue #296 makes the route a required
+      // argument of `for_actor` (design section 4.1).
+      let refused: Arc<Mutex<Vec<crate::kernel::message::Envelope>>> = Arc::new(Mutex::new(Vec::new()));
+      let mailbox = Arc::new(Mailbox::for_actor(
+        queue,
+        limits,
+        &SpinLockFactory,
+        Arc::downgrade(&executor),
+        Arc::new(move |envelope: crate::kernel::message::Envelope| {
+          refused.lock().unwrap().push(envelope);
+        }),
+      ));
       let seen = Arc::new(Mutex::new(Vec::new()));
       mailbox.put_back_cell(std::boxed::Box::new(Fragile { seen: Arc::clone(&seen) }));
       Self { executor, mailbox, seen }

@@ -36,6 +36,7 @@ use crate::kernel::actor::DeadLetter;
 use crate::kernel::actor::DeadLetterLogLimit;
 use crate::kernel::actor::DeadLetterSettings;
 use crate::kernel::actor::DeadLetterSuppression;
+use crate::kernel::actor::DeadLetterTrampoline;
 use crate::kernel::actor::Dropped;
 use crate::kernel::actor::FunctionRef;
 use crate::kernel::actor::NotInfluenceReceiveTimeout;
@@ -159,6 +160,29 @@ impl ActorSystem {
     let system = Self::new(name, boundary);
     Executor::lend(&system.executor, |executor| executor.set_failure_catcher(catcher));
     system
+  }
+
+  /// Creates a running actor system whose dead letter publications run
+  /// through `trampoline` instead of the kernel's own trampoline.
+  pub fn with_dead_letter_trampoline(
+    name: &str,
+    boundary: Arc<dyn ShardBoundary>,
+    trampoline: Arc<dyn DeadLetterTrampoline>,
+  ) -> Self {
+    let system = Self::new(name, boundary);
+    system.set_dead_letter_trampoline(trampoline);
+    system
+  }
+
+  /// Installs the trampoline the system's dead letter publications run
+  /// through, replacing the one installed before.
+  ///
+  /// A system created with [`new`](Self::new) publishes through the
+  /// kernel's own trampoline, which keeps one queue per system. The
+  /// standard-library trampoline keeps its queue on the sender's thread
+  /// instead, shared by every system on that thread that installed it.
+  pub fn set_dead_letter_trampoline(&self, trampoline: Arc<dyn DeadLetterTrampoline>) {
+    Executor::lend(&self.executor, |executor| executor.set_dead_letter_trampoline(trampoline));
   }
 
   /// Installs `sink`, which receives the log events the system raises.
