@@ -488,7 +488,7 @@ where
   /// by the port.
   fn event_names_state(&self, event: &Message, state: &S) -> bool {
     let text = match event.downcast_ref::<&'static str>() {
-      | Some(text) => (*text).to_owned(),
+      | Some(text) => String::from(*text),
       | None => match event.downcast_ref::<String>() {
         | Some(text) => text.clone(),
         | None => return false,
