@@ -16,7 +16,7 @@
 
 //! An immutable sequence of bytes, kept as one or more shared byte arrays.
 
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 
 use super::{ByteStringBuilder, ByteStringInputStream};
 use crate::kernel::byte_iterator::ByteIterator;
@@ -145,6 +145,290 @@ impl ByteString {
   #[must_use]
   pub fn as_input_stream(&self) -> ByteStringInputStream {
     ByteStringInputStream::new(self.iterator(), self.arrays.len() <= 1)
+  }
+}
+
+impl ByteString {
+  /// Creates a byte string that holds `bytes` itself, without copying them.
+  ///
+  /// Corresponds to Pekko's `ByteString.fromArrayUnsafe(array)`, which wraps
+  /// the array as a `ByteString1C`. An empty array gives an empty byte string.
+  #[must_use]
+  pub fn from_shared(_bytes: Arc<[u8]>) -> Self {
+    todo!("ByteString::from_shared is not implemented yet")
+  }
+
+  /// Creates a byte string that holds up to `length` bytes of `bytes`,
+  /// starting at `offset`, without copying them.
+  ///
+  /// Corresponds to Pekko's `ByteString.fromArrayUnsafe(array, offset,
+  /// length)`, which wraps the range as a `ByteString1`. The range stops at
+  /// the end of the array, as in [`from_array`](Self::from_array); an empty
+  /// range gives an empty byte string.
+  #[must_use]
+  pub fn from_shared_range(_bytes: Arc<[u8]>, _offset: usize, _length: usize) -> Self {
+    todo!("ByteString::from_shared_range is not implemented yet")
+  }
+
+  /// Creates a compact byte string from the bytes of `iter`, going over it
+  /// once.
+  ///
+  /// Corresponds to Pekko's `ByteString(iterableOnce)`.
+  #[must_use]
+  pub fn from_iterator(_iter: impl IntoIterator<Item = u8>) -> Self {
+    todo!("ByteString::from_iterator is not implemented yet")
+  }
+
+  /// Returns the number of bytes.
+  ///
+  /// Corresponds to Pekko's `length` and `size`.
+  #[must_use]
+  pub fn len(&self) -> usize {
+    todo!("ByteString::len is not implemented yet")
+  }
+
+  /// Returns whether the byte string has no bytes.
+  ///
+  /// Corresponds to Pekko's `isEmpty`.
+  #[must_use]
+  pub fn is_empty(&self) -> bool {
+    todo!("ByteString::is_empty is not implemented yet")
+  }
+
+  /// Returns the byte at `index`, or `None` when `index` is not less than the
+  /// length.
+  ///
+  /// Corresponds to Pekko's `apply(index)`.
+  #[must_use]
+  pub fn get(&self, _index: usize) -> Option<u8> {
+    todo!("ByteString::get is not implemented yet")
+  }
+
+  /// Returns the first byte, or `None` when the byte string is empty.
+  ///
+  /// Corresponds to Pekko's `head`.
+  #[must_use]
+  pub fn head(&self) -> Option<u8> {
+    todo!("ByteString::head is not implemented yet")
+  }
+
+  /// Returns the last byte, or `None` when the byte string is empty.
+  ///
+  /// Corresponds to Pekko's `last`.
+  #[must_use]
+  pub fn last(&self) -> Option<u8> {
+    todo!("ByteString::last is not implemented yet")
+  }
+
+  /// Returns all bytes but the first; empty for an empty byte string.
+  ///
+  /// Corresponds to Pekko's `tail`, which is `drop(1)`.
+  #[must_use]
+  pub fn tail(&self) -> Self {
+    todo!("ByteString::tail is not implemented yet")
+  }
+
+  /// Returns all bytes but the last; empty for an empty byte string.
+  ///
+  /// Corresponds to Pekko's `init`, which is `dropRight(1)`.
+  #[must_use]
+  pub fn init(&self) -> Self {
+    todo!("ByteString::init is not implemented yet")
+  }
+
+  /// Returns the first `n` bytes, or all of them when there are fewer.
+  ///
+  /// Corresponds to Pekko's `take(n)`.
+  #[must_use]
+  pub fn take(&self, _n: usize) -> Self {
+    todo!("ByteString::take is not implemented yet")
+  }
+
+  /// Returns the bytes after the first `n`, or none when there are fewer.
+  ///
+  /// Corresponds to Pekko's `drop(n)`.
+  #[must_use]
+  pub fn drop(&self, _n: usize) -> Self {
+    todo!("ByteString::drop is not implemented yet")
+  }
+
+  /// Returns the last `n` bytes, or all of them when there are fewer.
+  ///
+  /// Corresponds to Pekko's `takeRight(n)`.
+  #[must_use]
+  pub fn take_right(&self, _n: usize) -> Self {
+    todo!("ByteString::take_right is not implemented yet")
+  }
+
+  /// Returns the bytes before the last `n`, or none when there are fewer.
+  ///
+  /// Corresponds to Pekko's `dropRight(n)`.
+  #[must_use]
+  pub fn drop_right(&self, _n: usize) -> Self {
+    todo!("ByteString::drop_right is not implemented yet")
+  }
+
+  /// Returns the bytes from index `from` up to, not including, index `until`.
+  ///
+  /// Corresponds to Pekko's `slice(from, until)`.
+  #[must_use]
+  pub fn slice(&self, _from: usize, _until: usize) -> Self {
+    todo!("ByteString::slice is not implemented yet")
+  }
+
+  /// Returns the first `at` bytes and the rest.
+  ///
+  /// Corresponds to Pekko's `splitAt(n)`.
+  #[must_use]
+  pub fn split_at(&self, _at: usize) -> (Self, Self) {
+    todo!("ByteString::split_at is not implemented yet")
+  }
+
+  /// Returns the longest prefix whose bytes satisfy `pred`, and the rest.
+  ///
+  /// Corresponds to Pekko's `span(p)`.
+  #[must_use]
+  pub fn span(&self, _pred: impl FnMut(u8) -> bool) -> (Self, Self) {
+    todo!("ByteString::span is not implemented yet")
+  }
+
+  /// Returns the longest prefix whose bytes satisfy `pred`.
+  ///
+  /// Corresponds to Pekko's `takeWhile(p)`.
+  #[must_use]
+  pub fn take_while(&self, _pred: impl FnMut(u8) -> bool) -> Self {
+    todo!("ByteString::take_while is not implemented yet")
+  }
+
+  /// Returns the bytes after the longest prefix whose bytes satisfy `pred`.
+  ///
+  /// Corresponds to Pekko's `dropWhile(p)`.
+  #[must_use]
+  pub fn drop_while(&self, _pred: impl FnMut(u8) -> bool) -> Self {
+    todo!("ByteString::drop_while is not implemented yet")
+  }
+
+  /// Returns the index of the first byte that satisfies `pred`.
+  ///
+  /// Corresponds to Pekko's `indexWhere(p)`, with `None` for its `-1`.
+  #[must_use]
+  pub fn index_where(&self, _pred: impl FnMut(u8) -> bool) -> Option<usize> {
+    todo!("ByteString::index_where is not implemented yet")
+  }
+
+  /// Returns the index of the first byte at or after `from` that satisfies
+  /// `pred`.
+  ///
+  /// Corresponds to Pekko's `indexWhere(p, from)`, with `None` for its `-1`.
+  #[must_use]
+  pub fn index_where_from(&self, _pred: impl FnMut(u8) -> bool, _from: usize) -> Option<usize> {
+    todo!("ByteString::index_where_from is not implemented yet")
+  }
+
+  /// Returns the index of the first byte equal to `elem`.
+  ///
+  /// Corresponds to Pekko's `indexOf(elem)`, with `None` for its `-1`.
+  #[must_use]
+  pub fn index_of(&self, _elem: u8) -> Option<usize> {
+    todo!("ByteString::index_of is not implemented yet")
+  }
+
+  /// Returns the index of the first byte at or after `from` equal to `elem`.
+  ///
+  /// Corresponds to Pekko's `indexOf(elem, from)`, with `None` for its `-1`.
+  #[must_use]
+  pub fn index_of_from(&self, _elem: u8, _from: usize) -> Option<usize> {
+    todo!("ByteString::index_of_from is not implemented yet")
+  }
+
+  /// Returns a copy of the bytes, in order.
+  ///
+  /// Corresponds to Pekko's `toArray`.
+  #[must_use]
+  pub fn to_vec(&self) -> Vec<u8> {
+    todo!("ByteString::to_vec is not implemented yet")
+  }
+
+  /// Copies up to `len` bytes into `dest` from index `start` on, and returns
+  /// how many it copied.
+  ///
+  /// Corresponds to Pekko's `copyToArray(dest, start, len)`.
+  pub fn copy_to_array(&self, _dest: &mut [u8], _start: usize, _len: usize) -> usize {
+    todo!("ByteString::copy_to_array is not implemented yet")
+  }
+
+  /// Returns the bytes in groups of `size`; the last group may be shorter.
+  ///
+  /// Corresponds to Pekko's `grouped(size)`.
+  ///
+  /// # Panics
+  ///
+  /// Panics when `size` is zero, where Pekko throws an
+  /// `IllegalArgumentException`.
+  pub fn grouped(&self, _size: usize) -> impl Iterator<Item = ByteString> {
+    core::iter::from_fn(|| todo!("ByteString::grouped is not implemented yet"))
+  }
+
+  /// Returns whether the bytes fill one whole array.
+  ///
+  /// Corresponds to Pekko's `isCompact`.
+  #[must_use]
+  pub fn is_compact(&self) -> bool {
+    todo!("ByteString::is_compact is not implemented yet")
+  }
+
+  /// Returns a byte string with the same bytes in one whole array.
+  ///
+  /// Corresponds to Pekko's `compact`.
+  #[must_use]
+  pub fn compact(&self) -> Self {
+    todo!("ByteString::compact is not implemented yet")
+  }
+
+  /// Decodes the bytes as UTF-8, replacing malformed sequences with U+FFFD.
+  ///
+  /// Corresponds to Pekko's `decodeString(StandardCharsets.UTF_8)`.
+  #[must_use]
+  pub fn decode_string(&self) -> String {
+    todo!("ByteString::decode_string is not implemented yet")
+  }
+
+  /// Encodes the bytes as padded RFC 4648 Base64.
+  ///
+  /// Corresponds to Pekko's `encodeBase64`.
+  #[must_use]
+  pub fn encode_base64(&self) -> Self {
+    todo!("ByteString::encode_base64 is not implemented yet")
+  }
+
+  /// Decodes the bytes as RFC 4648 Base64, or returns `None` when they are not
+  /// valid Base64.
+  ///
+  /// Corresponds to Pekko's `decodeBase64`.
+  #[must_use]
+  pub fn decode_base64(&self) -> Option<Self> {
+    todo!("ByteString::decode_base64 is not implemented yet")
+  }
+
+  /// Returns the bytes as slices of the shared arrays, at least one.
+  ///
+  /// Corresponds to Pekko's `asByteBuffers`.
+  pub fn as_byte_slices(&self) -> impl Iterator<Item = &[u8]> {
+    core::iter::from_fn(|| todo!("ByteString::as_byte_slices is not implemented yet"))
+  }
+
+  /// Returns the non-empty slices of the shared arrays, none for an empty byte
+  /// string.
+  ///
+  /// Corresponds to Pekko's `asByteBuffersUnsafe`.
+  pub fn as_non_empty_byte_slices(&self) -> impl Iterator<Item = &[u8]> {
+    core::iter::from_fn(|| todo!("ByteString::as_non_empty_byte_slices is not implemented yet"))
+  }
+}
+
+impl core::fmt::Display for ByteString {
+  fn fmt(&self, _f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    todo!("Display for ByteString is not implemented yet")
   }
 }
 
