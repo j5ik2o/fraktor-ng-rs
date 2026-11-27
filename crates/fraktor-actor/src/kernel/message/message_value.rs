@@ -17,6 +17,7 @@
 //! A type-erased message sent to an actor.
 
 use alloc::boxed::Box;
+use alloc::string::ToString;
 use core::any::Any;
 use core::any::TypeId;
 use core::fmt;
@@ -135,14 +136,14 @@ impl Message {
   ///
   /// Mirrors sending a Pekko message whose `toString` a log line can
   /// print: [`display_text`](Self::display_text) answers with the
-  /// value's `Display`. A `Message` given to this function is returned
-  /// unchanged, as [`Message::new`] does.
+  /// value's `Display`. A `Message` cannot be given to this function,
+  /// because a `Message` has no `Display` of its own; forwarding a
+  /// message that already carries a text goes through
+  /// [`Message::new`], which returns a `Message` unchanged and so
+  /// keeps the text it was wrapped with.
   pub fn with_display<M: Any + Send + Sync + fmt::Display>(payload: M) -> Self {
     let boxed: Box<dyn Payload> = Box::new(DisplayPayload(payload));
-    match (*boxed).as_any().downcast_ref::<Message>() {
-      | Some(inner) => inner.clone(),
-      | None => Self { payload: Arc::from(boxed) },
-    }
+    Self { payload: Arc::from(boxed) }
   }
 
   /// Returns the text Pekko's `value.toString` would print for the
@@ -153,7 +154,6 @@ impl Message {
   /// answers with its own text, without quotes; anything else answers
   /// with the name of its type.
   pub fn display_text(&self) -> alloc::string::String {
-    use alloc::string::ToString;
     if (*self.payload).has_display() {
       return alloc::format!("{}", DisplayAdapter(&*self.payload));
     }
@@ -173,6 +173,27 @@ impl Message {
       return value.to_string();
     }
     if let Some(value) = self.downcast_ref::<u64>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<i8>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<i16>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<u8>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<u16>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<i128>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<u128>() {
+      return value.to_string();
+    }
+    if let Some(value) = self.downcast_ref::<isize>() {
       return value.to_string();
     }
     if let Some(value) = self.downcast_ref::<usize>() {

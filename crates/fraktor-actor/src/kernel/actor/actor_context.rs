@@ -414,6 +414,14 @@ impl<'a> ActorContext<'a> {
     self.executor.cancel_fsm_state_timer(key);
   }
 
+  /// Drops every FSM timer of this actor from the executor's deadline
+  /// index, as the original's `terminate` cancels every timer of the
+  /// machine it ends.
+  pub(crate) fn clear_fsm_timers(&mut self) {
+    let key = self.self_ref.key();
+    self.executor.clear_fsm_timers(key);
+  }
+
   /// Registers this actor as a watcher of `target` and returns `target`'s
   /// handle.
   ///

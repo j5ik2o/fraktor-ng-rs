@@ -63,11 +63,23 @@ type StateFunction<S, D> =
 
 /// A transition handler: hears every reported move from one state to another,
 /// with the data before and after the move.
-type TransitionHandler<S, D> = Box<dyn FnMut(&mut ActorContext<'_>, &S, &S, &D, &D) + Send>;
+type PlainTransitionHandler<S, D> = Box<dyn FnMut(&mut ActorContext<'_>, &S, &S, &D, &D) + Send>;
 
 /// A transition handler that also receives the machine's view, so it can
 /// start and cancel named timers while a move is reported.
 type ViewTransitionHandler<S> = Box<dyn FnMut(&mut ActorContext<'_>, &FsmView<S>, &S, &S) + Send>;
+
+/// One registered transition handler, kept in the order it was added.
+///
+/// The plain form hears the move with the data before and after it;
+/// the view form also receives the machine's view. The two forms
+/// share this one list, so handlers of either form run in the order
+/// they were added, as the original's single `onTransition` chain
+/// does.
+enum TransitionHandler<S, D> {
+  Plain(PlainTransitionHandler<S, D>),
+  WithView(ViewTransitionHandler<S>),
+}
 
 /// The internal message the machine receives when a listener it watches
 /// stops, through `watch_with`. It is not part of the public protocol:
@@ -114,7 +126,6 @@ pub struct Fsm<S, D> {
   state_functions: Vec<(S, StateFunction<S, D>)>,
   state_timeouts: Vec<(S, Option<Duration>)>,
   transition_handlers: Vec<TransitionHandler<S, D>>,
-  view_transition_handlers: Vec<ViewTransitionHandler<S>>,
   unhandled_function: Option<StateFunction<S, D>>,
   listeners: Vec<ActorRef>,
   watched_listeners: Vec<ActorRef>,
@@ -144,7 +155,6 @@ where
       state_functions: Vec::new(),
       state_timeouts: Vec::new(),
       transition_handlers: Vec::new(),
-      view_transition_handlers: Vec::new(),
       unhandled_function: None,
       listeners: Vec::new(),
       watched_listeners: Vec::new(),
@@ -261,7 +271,7 @@ where
   where
     F: FnMut(&mut ActorContext<'_>, &FsmView<S>, &S, &S) + Send + 'static,
   {
-    self.view_transition_handlers.push(Box::new(handler));
+    self.transition_handlers.push(TransitionHandler::WithView(Box::new(handler)));
   }
 
   /// Registers `Display` as the way state names are printed in the
@@ -305,9 +315,9 @@ where
     F: FnMut(&mut ActorContext<'_>, &S, &S) + Send + 'static,
   {
     let mut handler = handler;
-    self.transition_handlers.push(Box::new(move |context, from, to, _previous, _next| {
+    self.transition_handlers.push(TransitionHandler::Plain(Box::new(move |context, from, to, _previous, _next| {
       handler(context, from, to);
-    }));
+    })));
   }
 
   /// Adds a handler that hears every reported transition together with
@@ -322,7 +332,7 @@ where
   where
     F: FnMut(&mut ActorContext<'_>, &S, &S, &D, &D) + Send + 'static,
   {
-    self.transition_handlers.push(Box::new(handler));
+    self.transition_handlers.push(TransitionHandler::Plain(Box::new(handler)));
   }
 
   /// Makes the machine report its move into the initial state once the actor
@@ -375,6 +385,10 @@ where
         },
         | FsmTimerOp::Cancel { name } => {
           context.cancel_fsm_named_timer(&name);
+          #[cfg(feature = "test-support")]
+          if let Some(handle) = &self.handle {
+            handle.remove_timer_record(&name);
+          }
         },
       }
     }
@@ -412,25 +426,28 @@ where
     self.arm_state_timer(timeout);
   }
 
-  /// Applies one answered state: flushes the timer operations, applies
-  /// the `whenUnhandled` change the state carries, runs the move, and
-  /// arms the state timer the move selects.
+  /// Applies one answered state: flushes the timer operations, runs
+  /// the move, and arms the state timer the move selects. Returns the
+  /// `whenUnhandled` change the state carries; the caller applies it
+  /// with [`apply_unhandled_change`](Self::apply_unhandled_change), so
+  /// a caller that offers the event once more can hold the change
+  /// back until the second offer has run, as a change takes effect
+  /// from the next event.
   ///
   /// The timer selection is Pekko's `makeTransition` rule: a
   /// `for_max` finite duration arms for that long, `for_max` infinite
   /// arms nothing, and without an override the timeout the entered
   /// state was registered with arms, if it has one.
-  fn apply_next(&mut self, context: &mut ActorContext<'_>, next: FsmState<S, D>, sender: ActorRef) {
+  fn apply_next(
+    &mut self,
+    context: &mut ActorContext<'_>,
+    next: FsmState<S, D>,
+    sender: ActorRef,
+  ) -> Option<UnhandledChange<S, D>> {
     let (target, data, replies, timeout, unhandled) = next.into_parts();
     self.flush_timer_ops(context);
     let moved = self.make_transition(context, target, data, replies, sender);
     self.flush_timer_ops(context);
-    if let Some(change) = unhandled {
-      match change {
-        | UnhandledChange::Set(function) => self.unhandled_function = Some(function),
-        | UnhandledChange::Clear => self.unhandled_function = None,
-      }
-    }
     if !moved {
       // A move into a state that does not exist cancels every timer,
       // as the original's `terminate` on that path does.
@@ -441,7 +458,7 @@ where
       }
       self.state_timer_armed = None;
       context.cancel_fsm_state_timer();
-      return;
+      return unhandled;
     }
     let selected = match timeout {
       | Some(FsmTimeout::Infinite) => None,
@@ -452,6 +469,17 @@ where
     };
     if let Some(duration) = selected {
       self.arm_state_timer_with_context(context, duration);
+    }
+    unhandled
+  }
+
+  /// Applies a `whenUnhandled` change an answered state carried.
+  fn apply_unhandled_change(&mut self, change: Option<UnhandledChange<S, D>>) {
+    if let Some(change) = change {
+      match change {
+        | UnhandledChange::Set(function) => self.unhandled_function = Some(function),
+        | UnhandledChange::Clear => self.unhandled_function = None,
+      }
     }
   }
 
@@ -521,26 +549,31 @@ where
       }
     }
     let target = next.target_ref().cloned();
-    self.apply_next(context, next, sender);
+    let mut final_change = self.apply_next(context, next, sender);
     if reoffer {
       if let Some(entered) = target {
         let now_in_entered = entered != handling_state
           && self.event_names_state(event, &entered)
           && self.current.as_ref().is_some_and(|(state, _)| state == &entered);
         if now_in_entered {
+          // The first answer's `whenUnhandled` change is still held
+          // back here: a change takes effect from the next event, so
+          // the second offer of this event reads the fallback that
+          // stood when the event arrived. The timer operations the
+          // second offer makes are flushed whether it answers or
+          // not, and a change the second answer carries replaces the
+          // first answer's as the one that takes effect.
           if let Some(second) = self.apply_event(context, event) {
             let (_, _, _, _, unhandled) = second.into_parts();
-            self.flush_timer_ops(context);
-            if let Some(change) = unhandled {
-              match change {
-                | UnhandledChange::Set(function) => self.unhandled_function = Some(function),
-                | UnhandledChange::Clear => self.unhandled_function = None,
-              }
+            if unhandled.is_some() {
+              final_change = unhandled;
             }
           }
+          self.flush_timer_ops(context);
         }
       }
     }
+    self.apply_unhandled_change(final_change);
     true
   }
 
@@ -555,7 +588,8 @@ where
     let text = alloc::format!("unhandled event {} in state {}", event.display_text(), self.state_text(&state));
     context.publish_warning(&text);
     let sender = context.sender();
-    self.apply_next(context, FsmState::stay(), sender);
+    let change = self.apply_next(context, FsmState::stay(), sender);
+    self.apply_unhandled_change(change);
   }
 
   fn apply_event(&mut self, context: &mut ActorContext<'_>, event: &Message) -> Option<FsmState<S, D>> {
@@ -618,13 +652,14 @@ where
       | Some(next_data) => {
         if reported {
           for handler in &mut self.transition_handlers {
-            handler(context, &current_state, &next_state, &current_data, &next_data);
-          }
-          if !self.view_transition_handlers.is_empty() {
-            let view =
-              FsmView::with_timers(self.listeners.len(), current_state.clone(), self.timer_state.clone());
-            for handler in &mut self.view_transition_handlers {
-              handler(context, &view, &current_state, &next_state);
+            match handler {
+              | TransitionHandler::Plain(handler) => {
+                handler(context, &current_state, &next_state, &current_data, &next_data);
+              },
+              | TransitionHandler::WithView(handler) => {
+                let view = FsmView::with_timers(self.listeners.len(), current_state.clone(), self.timer_state.clone());
+                handler(context, &view, &current_state, &next_state);
+              },
             }
           }
           self.notify_listeners(context, &current_state, &next_state);
@@ -634,13 +669,14 @@ where
       | None => {
         if reported {
           for handler in &mut self.transition_handlers {
-            handler(context, &current_state, &next_state, &current_data, &current_data);
-          }
-          if !self.view_transition_handlers.is_empty() {
-            let view =
-              FsmView::with_timers(self.listeners.len(), current_state.clone(), self.timer_state.clone());
-            for handler in &mut self.view_transition_handlers {
-              handler(context, &view, &current_state, &next_state);
+            match handler {
+              | TransitionHandler::Plain(handler) => {
+                handler(context, &current_state, &next_state, &current_data, &current_data);
+              },
+              | TransitionHandler::WithView(handler) => {
+                let view = FsmView::with_timers(self.listeners.len(), current_state.clone(), self.timer_state.clone());
+                handler(context, &view, &current_state, &next_state);
+              },
             }
           }
           self.notify_listeners(context, &current_state, &next_state);
@@ -737,7 +773,10 @@ where
   fn process_event(&mut self, context: &mut ActorContext<'_>, event: &Message) {
     let sender = context.sender();
     match self.apply_event(context, event) {
-      | Some(next) => self.apply_next(context, next, sender),
+      | Some(next) => {
+        let change = self.apply_next(context, next, sender);
+        self.apply_unhandled_change(change);
+      },
       | None => self.apply_unhandled(context, event),
     }
   }
@@ -945,6 +984,17 @@ where
     // are the exceptions Pekko names, and they return before this point.
     self.cancel_state_timer_with_context(context);
     self.offer_event(context, &message, true);
+  }
+
+  fn post_stop_with_context(&mut self, context: &mut ActorContext<'_>) {
+    // The executor's deadlines belong to this instance: a restart
+    // builds a new instance under the same reference, and a repeating
+    // timer the old instance armed must not keep firing at it, as the
+    // original's `terminate` cancels every timer of the machine it
+    // ends. The plain `post_stop` cleanup runs as well, so a stop
+    // through either hook leaves the same state behind.
+    context.clear_fsm_timers();
+    self.post_stop();
   }
 
   fn post_stop(&mut self) {

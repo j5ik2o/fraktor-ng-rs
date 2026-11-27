@@ -275,8 +275,14 @@ impl FraktorSpec {
     value
   }
 
-  /// Runs `body` while muting the events `filter` matches, then checks
-  /// that the number published is the filter's occurrences.
+  /// Runs `body` while the spec's sink counts the events `filter`
+  /// matches, then checks that the number published is the filter's
+  /// occurrences.
+  ///
+  /// Counting is all the sink does with a match: the executor offers
+  /// an event to the event stream and to the sink separately, so a
+  /// matching event still reaches the stream's subscribers. The
+  /// intercept verifies the count; it does not suppress delivery.
   ///
   /// The `FraktorSpec` form of [`EventFilter::intercept`]: the body
   /// receives this spec, so it can call `within`, `expect_msg`, and
@@ -291,10 +297,10 @@ impl FraktorSpec {
   pub fn intercept<R>(&mut self, filter: &EventFilter, body: impl FnOnce(&mut Self) -> R) -> R {
     let registry = self.event_registry();
     let id = registry.arm(filter.clone());
+    let _guard = ArmedGuard { registry: registry.clone(), ids: vec![id] };
     let outcome = body(self);
     self.system_mut().run_until_idle();
     let matched = registry.matched(id);
-    registry.disarm(id);
     assert_eq!(
       matched,
       filter.occurrences(),
@@ -304,8 +310,11 @@ impl FraktorSpec {
     outcome
   }
 
-  /// Runs `body` while muting the events every filter in `filters`
-  /// matches, then checks that each filter matched its occurrences.
+  /// Runs `body` while the spec's sink counts the events every
+  /// filter in `filters` matches, then checks that each filter matched
+  /// its occurrences. As with [`intercept`](Self::intercept), a match
+  /// is only counted; the event still reaches the event stream's
+  /// subscribers.
   ///
   /// Mirrors Pekko's `filterEvents(filters)(block)`: every filter is
   /// armed at once, the body runs on this spec, the system is driven
@@ -319,12 +328,10 @@ impl FraktorSpec {
   pub fn filter_events<R>(&mut self, filters: &[EventFilter], body: impl FnOnce(&mut Self) -> R) -> R {
     let registry = self.event_registry();
     let ids: Vec<usize> = filters.iter().map(|filter| registry.arm(filter.clone())).collect();
+    let _guard = ArmedGuard { registry: registry.clone(), ids: ids.clone() };
     let outcome = body(self);
     self.system_mut().run_until_idle();
-    let matched: Vec<usize> = ids.iter().map(|id| registry.matched(*id)).collect();
-    for id in &ids {
-      registry.disarm(*id);
-    }
+    let matched: Vec<usize> = registry.matched_all(&ids);
     for (filter, count) in filters.iter().zip(matched.iter()) {
       assert_eq!(
         *count,
@@ -383,5 +390,21 @@ struct ScopeReset {
 impl Drop for ScopeReset {
   fn drop(&mut self) {
     *self.scope.borrow_mut() = self.previous;
+  }
+}
+
+/// Disarms the filters an `intercept` or a `filter_events` armed when
+/// the scope ends, so a body that panics leaves no filter behind on
+/// the registry to match the events of a later intercept.
+struct ArmedGuard {
+  registry: Arc<EventSinkRegistry>,
+  ids: Vec<usize>,
+}
+
+impl Drop for ArmedGuard {
+  fn drop(&mut self) {
+    for id in &self.ids {
+      self.registry.disarm(*id);
+    }
   }
 }

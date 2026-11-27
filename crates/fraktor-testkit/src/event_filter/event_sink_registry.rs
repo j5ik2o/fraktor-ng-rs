@@ -82,6 +82,16 @@ impl EventSinkRegistry {
     self.lock().iter().find(|armed| armed.id == id).map(|armed| armed.matched).unwrap_or(0)
   }
 
+  /// Returns how many events each filter armed with `ids` has matched.
+  ///
+  /// Every count is read under one lock, so a publish cannot land
+  /// between two reads and hand back counts that never stood at the
+  /// same time.
+  pub(crate) fn matched_all(&self, ids: &[usize]) -> Vec<usize> {
+    let armed = self.lock();
+    ids.iter().map(|id| armed.iter().find(|entry| entry.id == *id).map(|entry| entry.matched).unwrap_or(0)).collect()
+  }
+
   fn lock(&self) -> MutexGuard<'_, Vec<ArmedFilter>> {
     self.armed.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
   }

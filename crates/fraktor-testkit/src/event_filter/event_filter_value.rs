@@ -159,18 +159,11 @@ impl EventFilter {
   ///
   /// Mirrors `EventFilter.withMessage(message)`, which a test uses to mute only
   /// the expected failure. Pekko compares the message as a string, and so does
-  /// the port, for errors and for info events. For a warning the port
-  /// keeps the comparison at the start of the message: the warning
-  /// texts the ported tests name with this call are the beginnings of
-  /// the lines the executor prints, whose whole text carries a quoted
-  /// message after the prefix, as the design of the FSM timing port
-  /// records for its existing warning call sites.
+  /// the port, at every level. A filter that names only the beginning
+  /// of a line uses [`start`](Self::start) instead, as the design of
+  /// the FSM timing port records for its existing warning call sites.
   pub fn with_message(mut self, message: &str) -> Self {
-    self.text = if self.level == LogLevel::Warning {
-      EventFilterText::Start(message.to_string())
-    } else {
-      EventFilterText::Exact(message.to_string())
-    };
+    self.text = EventFilterText::Exact(message.to_string());
     self
   }
 
