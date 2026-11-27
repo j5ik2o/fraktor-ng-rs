@@ -569,7 +569,32 @@ impl ByteString {
   /// Corresponds to Pekko's `decodeString(StandardCharsets.UTF_8)`.
   #[must_use]
   pub fn decode_string(&self) -> String {
-    String::from_utf8_lossy(&self.to_vec()).into_owned()
+    // The JDK replaces a UTF-8 encoded surrogate as one malformed unit:
+    // `0xED`, the byte after it in `0xA0..=0xBF`, and one more continuation
+    // byte when one follows, become a single U+FFFD. Every other malformed
+    // unit follows the maximal subpart rule, which `from_utf8_lossy` already
+    // implements, so the bytes are decoded in segments around those units.
+    // The bytes are flattened first, so a unit that spans two chunks is
+    // treated the same as one inside a chunk.
+    let bytes = self.to_vec();
+    let mut out = String::new();
+    let mut start = 0_usize;
+    let mut index = 0_usize;
+    while index < bytes.len() {
+      if bytes[index] == 0xED && bytes.get(index + 1).is_some_and(|byte| (0xA0..=0xBF).contains(byte)) {
+        out.push_str(&String::from_utf8_lossy(&bytes[start..index]));
+        out.push('\u{FFFD}');
+        index += 2;
+        if bytes.get(index).is_some_and(|byte| (0x80..=0xBF).contains(byte)) {
+          index += 1;
+        }
+        start = index;
+      } else {
+        index += 1;
+      }
+    }
+    out.push_str(&String::from_utf8_lossy(&bytes[start..]));
+    out
   }
 
   /// Encodes the bytes as padded RFC 4648 Base64.
