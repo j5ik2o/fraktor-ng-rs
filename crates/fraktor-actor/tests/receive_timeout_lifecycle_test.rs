@@ -1028,3 +1028,56 @@ fn terminated_handled_after_the_watch_was_removed_restarts_the_timeout() {
   assert_eq!(delivered(&deliveries), vec![Duration::from_secs(1)], "the timeout fires at 11.5s");
   spec.terminate();
 }
+
+// An actor whose `receive` records the `ReceiveTimeout` it gets.
+struct PoisonPillTarget {
+  deliveries: Deliveries,
+}
+
+impl Actor for PoisonPillTarget {
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    context.set_receive_timeout(finite(Duration::ZERO));
+  }
+
+  fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
+    record(&self.deliveries, &message);
+  }
+}
+
+// `PoisonPill` is an auto-received message that influences the timeout, so
+// `ActorCell.invoke` (lines 568-585) runs its three calls around it like any
+// other: `cancelReceiveTimeoutIfNeeded`, `autoReceiveMessage` (which puts the
+// `Terminate` on the system queue) and, in the `finally`,
+// `checkReceiveTimeout`. A zero timeout is sent at once and cannot be
+// cancelled (`LightArrayRevolverScheduler.schedule`, lines 223-227), so the
+// `ReceiveTimeout(0)` is addressed to the actor that is stopping and reaches
+// it only after `FaultHandling.terminate` has closed the mailbox: it goes to
+// dead letters, exactly once. The `PoisonPill` waits in the new mailbox
+// before the actor's first run, so it is the first message `invoke` handles
+// and `receive` never sees it; no run is left to loop on the timeout the
+// check schedules again.
+#[test]
+fn poison_pill_fires_the_due_receive_timeout_into_dead_letters() {
+  let (mut spec, _clock) = spec_with_clock();
+  let mut dead_listener = dead_letter_listener(&mut spec);
+  let deliveries = new_deliveries();
+  let actor = spec.system_mut().actor_of(Props::new({
+    let deliveries = Arc::clone(&deliveries);
+    move || PoisonPillTarget { deliveries: Arc::clone(&deliveries) }
+  }));
+  let no_sender = spec.system().dead_letters();
+  actor.tell("PoisonPill", no_sender);
+  spec.system_mut().run_until_idle();
+  assert!(spec.system().is_actor_terminated(&actor), "the PoisonPill stopped the actor");
+  let dead = dead_listener.expect_msg_type::<DeadLetter>();
+  assert_eq!(
+    dead.message().downcast_ref::<ReceiveTimeout>().map(ReceiveTimeout::timeout),
+    Some(Duration::ZERO),
+    "the dead letter is the ReceiveTimeout(0) the check after the PoisonPill scheduled"
+  );
+  assert!(*dead.recipient() == actor, "it was addressed to the stopping actor");
+  assert!(*dead.sender() == spec.system().dead_letters(), "it has no sender");
+  dead_listener.expect_no_message(millis(300));
+  assert!(delivered(&deliveries).is_empty(), "the actor handed neither the PoisonPill nor the ReceiveTimeout to receive");
+  spec.terminate();
+}
