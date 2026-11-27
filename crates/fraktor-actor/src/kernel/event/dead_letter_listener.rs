@@ -16,6 +16,10 @@
 
 //! The state machine that logs dead letters up to a limit, then suspends.
 
+#[cfg(test)]
+#[path = "dead_letter_listener_test.rs"]
+mod tests;
+
 use alloc::format;
 use alloc::string::String;
 use core::time::Duration;

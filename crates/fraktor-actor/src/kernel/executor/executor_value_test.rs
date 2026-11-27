@@ -2815,3 +2815,357 @@ mod stage4a {
     assert!(system.is_actor_terminated(&child));
   }
 }
+
+// Issue #297 (design `docs/design/issue-296-297-dead-letters-followup.md`,
+// section 7.2): a system message that reaches a closed mailbox goes to dead
+// letters, as Pekko's harmless dead letter mailbox does
+// (`dispatch/Mailboxes.scala`, the `systemEnqueue` of the dead letter
+// mailbox). `Terminate` and `ChildTerminated` are suppressed, as Pekko's
+// `DeadLetterSuppression` marks them and as the commander decided for the
+// port's own `ChildTerminated` (design section 6, decision 5); every other
+// kind is a plain `DeadLetter` whose sender and recipient are both the owner
+// of the closed mailbox.
+//
+// The recorder here reads the payload of a report as a `SystemMessage`,
+// which `record_dead_letters` cannot do because it reads a `&'static str`.
+// `SystemMessage` is `pub(crate)`, so these tests live in the kernel.
+//
+// The reports are observed through the executor's event stream, because the
+// design routes a system message of a closed mailbox through
+// `DeadLettersShared`, which publishes to the bus (design section 5.4). Each
+// test reaches the closed mailbox through the entry points the design fixes
+// for #297 (`send_system`, `stop`, `finish_terminate`, `queued_to_dead_letters`)
+// rather than calling `route_closed_system_message` itself, so that the
+// entry points, not only the route, are pinned. Today a closed mailbox drops
+// the system message (`.ok()`), so each test fails on its assertion: that is
+// the intended red.
+mod closed_mailbox_system_messages {
+  use core::time::Duration;
+  use std::sync::Mutex;
+  use std::vec::Vec;
+
+  use crate::adaptor::ChannelBoundary;
+  use crate::kernel::actor::Actor;
+  use crate::kernel::actor::DeadLetter;
+  use crate::kernel::actor::DeadLetterSettings;
+  use crate::kernel::actor::Props;
+  use crate::kernel::actor::SuppressedDeadLetter;
+  use crate::kernel::actor_path::ActorPath;
+  use crate::kernel::actor_ref::ActorRef;
+  use crate::kernel::dispatch::SystemMessage;
+  use crate::kernel::event::DeadLetterListener;
+  use crate::kernel::event::EventClass;
+  use crate::kernel::event::EventStreamBus;
+  use crate::kernel::executor::Executor;
+  use crate::kernel::message::Message;
+  use crate::kernel::sync::Arc;
+
+  /// The kind of a system message, without the handles inside it, so the
+  /// comparisons below do not need `SystemMessage: PartialEq`.
+  #[derive(Clone, Debug, PartialEq, Eq)]
+  enum Kind {
+    Create,
+    Resume,
+    Terminate,
+    ChildTerminated,
+  }
+
+  fn kind_of(message: &SystemMessage) -> Kind {
+    match message {
+      | SystemMessage::Create => Kind::Create,
+      | SystemMessage::Resume => Kind::Resume,
+      | SystemMessage::Terminate => Kind::Terminate,
+      | SystemMessage::ChildTerminated { .. } => Kind::ChildTerminated,
+    }
+  }
+
+  /// One report that reached dead letters, read back as what it carries.
+  #[derive(Clone, Debug, PartialEq)]
+  enum Routed {
+    /// A `DeadLetter` whose payload is a system message, with the sender and
+    /// the recipient it names.
+    Dead(Kind, ActorRef, ActorRef),
+    /// A `SuppressedDeadLetter` whose payload is a system message, with the
+    /// sender and the reference that processed it.
+    Suppressed(Kind, ActorRef, ActorRef),
+  }
+
+  /// What dead letters received: the routed reports in order.
+  type Reports = Arc<Mutex<Vec<Routed>>>;
+
+  fn read_report(message: &Message) -> Option<Routed> {
+    if let Some(dead) = message.downcast_ref::<DeadLetter>() {
+      return dead
+        .message()
+        .downcast_ref::<SystemMessage>()
+        .map(|carried| Routed::Dead(kind_of(carried), dead.sender().clone(), dead.recipient().clone()));
+    }
+    if let Some(dead) = message.downcast_ref::<SuppressedDeadLetter>() {
+      return dead
+        .message()
+        .downcast_ref::<SystemMessage>()
+        .map(|carried| Routed::Suppressed(kind_of(carried), dead.sender().clone(), dead.recipient().clone()));
+    }
+    None
+  }
+
+  /// Records the line the dead letter listener would write for a report, if
+  /// it logs it at all.
+  fn message_for(report: &Routed) -> SystemMessage {
+    match report {
+      | Routed::Dead(kind, _, _) | Routed::Suppressed(kind, _, _) => match kind {
+        | Kind::Create => SystemMessage::Create,
+        | Kind::Resume => SystemMessage::Resume,
+        | Kind::Terminate => SystemMessage::Terminate,
+        | Kind::ChildTerminated => SystemMessage::Create,
+      },
+    }
+  }
+
+  fn listener_line(report: &Routed, dead_letters: &ActorRef) -> Option<alloc::string::String> {
+    let mut listener = DeadLetterListener::new(DeadLetterSettings::defaults(), dead_letters.clone());
+    let is_suppressed = |_: &Message| false;
+    match report {
+      | Routed::Dead(_, sender, recipient) => {
+        let dead = DeadLetter::from_message(Message::new(message_for(report)), sender.clone(), recipient.clone());
+        listener.on_event(&crate::kernel::actor::AnyDeadLetter::DeadLetter(&dead), Duration::ZERO, &is_suppressed)
+      },
+      | Routed::Suppressed(_, sender, recipient) => {
+        let dead =
+          SuppressedDeadLetter::from_message(Message::new(message_for(report)), sender.clone(), recipient.clone());
+        listener.on_event(&crate::kernel::actor::AnyDeadLetter::Suppressed(&dead), Duration::ZERO, &is_suppressed)
+      },
+    }
+  }
+
+  /// Builds an executor whose dead letters publish to a bus of its own, and
+  /// subscribes a function reference to every class of that bus so each
+  /// report is recorded as the system message it carries.
+  fn executor_with_reports() -> (Executor, EventStreamBus, Reports) {
+    let address = crate::kernel::address::Address::new("pekko", "ClosedSystemMessages");
+    let root = crate::kernel::actor_path::RootActorPath::new(address);
+    let mut executor = Executor::new(ActorPath::from_root(root), Arc::new(ChannelBoundary::new()));
+    let bus = EventStreamBus::new();
+    executor.set_dead_letter_bus(bus.downgrade());
+    let delivered: Reports = Arc::new(Mutex::new(Vec::new()));
+    let inbox = delivered.clone();
+    let collector = executor.function_ref("systemMessageCollector", move |_: &ActorRef, message: Message| {
+      if let Some(report) = read_report(&message) {
+        inbox.lock().unwrap().push(report);
+      }
+    });
+    bus.subscribe(Some(collector.clone()), EventClass::of::<DeadLetter>()).expect("the collector");
+    bus.subscribe(Some(collector), EventClass::of::<SuppressedDeadLetter>()).expect("the collector");
+    (executor, bus, delivered)
+  }
+
+  struct Sink;
+
+  impl Actor for Sink {
+    fn receive(&mut self, _context: &mut crate::kernel::actor::ActorContext<'_>, _message: Message) {}
+  }
+
+  /// Starts an actor and closes its mailbox without taking it out of the
+  /// table, so a system message sent to it meets a closed mailbox exactly as
+  /// a stop overtaking a `Resume` does. Returns the handle and any system
+  /// message the mailbox held when it closed.
+  fn actor_with_a_closed_mailbox(executor: &mut Executor) -> (ActorRef, Vec<SystemMessage>) {
+    let target = executor.try_spawn_user(Props::new(|| Sink), None).unwrap();
+    executor.run_until_idle();
+    let held = {
+      let entry = executor.entry(&target).expect("the actor is in the table");
+      entry.mailbox.close().1
+    };
+    (target, held)
+  }
+
+  // Issue #297, design section 7.2, first case: a `Resume` for a closed
+  // mailbox is `DeadLetter(Resume, target, target)`, and the listener writes
+  // one `Message [..Resume]` line.
+  //
+  // The `Resume` is sent through `send_system`, the entry the design fixes
+  // for a child of a restart or a resume (design section 5.4). After #297 the
+  // `Err` of `Mailbox::system_send` goes to `route_closed_system_message`.
+  #[test]
+  fn a_resume_for_a_closed_mailbox_is_a_dead_letter_and_the_listener_logs_it() {
+    let (mut executor, _bus, reports) = executor_with_reports();
+    let (target, _held) = actor_with_a_closed_mailbox(&mut executor);
+
+    executor.send_system(&target, SystemMessage::Resume);
+
+    let seen = reports.lock().unwrap().clone();
+    assert_eq!(
+      seen,
+      std::vec![Routed::Dead(Kind::Resume, target.clone(), target.clone())],
+      "a Resume to a closed mailbox goes to dead letters naming the target on both ends"
+    );
+    let line = listener_line(&seen[0], &executor.dead_letters()).expect("the listener writes the Resume");
+    assert!(
+      line.contains("[fraktor_actor::kernel::dispatch::system_message::Resume]"),
+      "the class name is the kind of the system message, not `SystemMessage`: {line}"
+    );
+  }
+
+  // Issue #297: `Create` for a closed mailbox is a plain
+  // `DeadLetter(Create, target, target)`.
+  #[test]
+  fn a_create_for_a_closed_mailbox_is_a_dead_letter() {
+    let (mut executor, _bus, reports) = executor_with_reports();
+    let (target, _held) = actor_with_a_closed_mailbox(&mut executor);
+
+    executor.send_system(&target, SystemMessage::Create);
+
+    assert_eq!(
+      *reports.lock().unwrap(),
+      std::vec![Routed::Dead(Kind::Create, target.clone(), target)],
+      "a Create to a closed mailbox goes to dead letters naming the target on both ends"
+    );
+  }
+
+  // Issue #297: `Terminate` and `ChildTerminated` for a closed mailbox are
+  // suppressed, and the dead letter listener does not count them.
+  //
+  // `ChildTerminated` is the port's own kind, and the commander decided it is
+  // suppressed too (design section 6, decision 5).
+  #[test]
+  fn terminate_and_child_terminated_for_a_closed_mailbox_are_suppressed() {
+    let (mut executor, _bus, reports) = executor_with_reports();
+    let (target, _held) = actor_with_a_closed_mailbox(&mut executor);
+    let (child, _held) = actor_with_a_closed_mailbox(&mut executor);
+    let dead_letters = executor.dead_letters();
+
+    executor.send_system(&target, SystemMessage::Terminate);
+    executor.send_system(&target, SystemMessage::ChildTerminated { child: child.clone() });
+
+    let seen = reports.lock().unwrap().clone();
+    assert_eq!(
+      seen,
+      std::vec![
+        Routed::Suppressed(Kind::Terminate, target.clone(), dead_letters.clone()),
+        Routed::Suppressed(Kind::ChildTerminated, target, dead_letters.clone()),
+      ],
+      "a Terminate and a ChildTerminated to a closed mailbox are suppressed, naming the dead letters handle"
+    );
+    for report in &seen {
+      assert!(listener_line(report, &dead_letters).is_none(), "a suppressed report is not logged: {report:?}");
+    }
+  }
+
+  /// What the stop-time clean-up routed, in the order it reached dead
+  /// letters: a normal message by its text, a system message by its kind.
+  #[derive(Clone, Debug, PartialEq, Eq)]
+  enum Step {
+    Text(&'static str),
+    System(Kind),
+  }
+
+  /// Builds an executor whose dead letters publish to a bus of its own and
+  /// records every report there, normal or system, in order.
+  fn executor_with_steps() -> (Executor, EventStreamBus, Arc<Mutex<Vec<Step>>>) {
+    let address = crate::kernel::address::Address::new("pekko", "ClosedSystemMessagesOrder");
+    let root = crate::kernel::actor_path::RootActorPath::new(address);
+    let mut executor = Executor::new(ActorPath::from_root(root), Arc::new(ChannelBoundary::new()));
+    let bus = EventStreamBus::new();
+    executor.set_dead_letter_bus(bus.downgrade());
+    let steps: Arc<Mutex<Vec<Step>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = steps.clone();
+    let collector = executor.function_ref("stopOrderCollector", move |_: &ActorRef, message: Message| {
+      let carried = message
+        .downcast_ref::<DeadLetter>()
+        .map(DeadLetter::message)
+        .or_else(|| message.downcast_ref::<SuppressedDeadLetter>().map(SuppressedDeadLetter::message));
+      let Some(carried) = carried else {
+        return;
+      };
+      if let Some(text) = carried.downcast_ref::<&'static str>() {
+        sink.lock().unwrap().push(Step::Text(text));
+      } else if let Some(system) = carried.downcast_ref::<SystemMessage>() {
+        sink.lock().unwrap().push(Step::System(kind_of(system)));
+      }
+    });
+    bus.subscribe(Some(collector.clone()), EventClass::of::<DeadLetter>()).expect("the collector");
+    bus.subscribe(Some(collector), EventClass::of::<SuppressedDeadLetter>()).expect("the collector");
+    (executor, bus, steps)
+  }
+
+  /// Stashes every message, so a stop has a stash to route.
+  struct StashEverything;
+
+  impl Actor for StashEverything {
+    fn receive(&mut self, context: &mut crate::kernel::actor::ActorContext<'_>, _message: Message) {
+      context.stash();
+    }
+  }
+
+  // Issue #297, design section 7.2, fourth case, and section 5.1 with
+  // decision 6: the stop-time clean-up routes what is left in the order
+  // "overflow -> system messages -> stash -> queued envelopes".
+  //
+  // The actor has a mailbox of capacity 3, stashes three messages (the
+  // overflow is routed first), holds a `Resume` on its system queue, and has
+  // two more envelopes queued. On stop, the overflow goes first, then the
+  // `Resume`, then the stash, then the queued envelopes.
+  #[test]
+  fn stopping_routes_the_overflow_then_system_messages_then_stash_then_envelopes() {
+    use crate::kernel::actor::dispatch_settings::DispatchSettings;
+    use crate::kernel::actor::dispatch_settings::MailboxDefinition;
+
+    let (mut executor, _bus, steps) = executor_with_steps();
+    let mut settings = DispatchSettings::new();
+    settings.define_dispatcher("bounded3", MailboxDefinition::bounded(3, 20));
+    executor.set_dispatch_settings(settings);
+    let owner = executor.try_spawn_user(Props::new(|| StashEverything).with_dispatcher("bounded3"), None).unwrap();
+    let sender = executor.try_spawn_user(Props::new(|| Sink), None).unwrap();
+    for text in ["a", "b", "c"] {
+      owner.tell(text, sender.clone());
+    }
+    executor.run_until_idle();
+    // Two more envelopes stay in the queue while the stop runs.
+    owner.tell("late1", sender.clone());
+    owner.tell("late2", sender.clone());
+    // A `Resume` waits on the system queue when the stop overtakes it.
+    {
+      let entry = executor.entry(&owner).expect("the actor is in the table");
+      let mailbox = entry.mailbox.clone();
+      crate::kernel::dispatch::Mailbox::system_send(&mailbox, SystemMessage::Resume).ok();
+    }
+
+    executor.stop(&owner);
+    executor.run_until_idle();
+
+    assert_eq!(
+      *steps.lock().unwrap(),
+      std::vec![
+        Step::System(Kind::Resume),
+        Step::Text("b"),
+        Step::Text("a"),
+        Step::Text("c"),
+        Step::Text("late1"),
+        Step::Text("late2"),
+      ],
+      "overflow, then system messages, then the stash, then the queued envelopes"
+    );
+  }
+
+  // Issue #297, design section 7.2, fifth case: the `Terminate` that `stop`
+  // sends directly (the `system_send` the design calls out) to a mailbox that
+  // is already closed is suppressed, not dropped.
+  #[test]
+  fn a_terminate_that_stop_sends_to_a_closed_mailbox_is_suppressed() {
+    let (mut executor, _bus, reports) = executor_with_reports();
+    let (target, _held) = actor_with_a_closed_mailbox(&mut executor);
+    let dead_letters = executor.dead_letters();
+
+    executor.stop(&target);
+
+    let seen = reports.lock().unwrap().clone();
+    assert!(
+      seen.iter().any(|report| matches!(
+        report,
+        Routed::Suppressed(Kind::Terminate, recipient, handle)
+          if recipient == &target && handle == &dead_letters
+      )),
+      "stop routed the Terminate of a closed mailbox as a suppressed dead letter: {seen:?}"
+    );
+  }
+}
