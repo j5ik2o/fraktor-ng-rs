@@ -54,13 +54,17 @@ use core::time::Duration;
 use std::{
   any::Any,
   sync::{
-    Arc, mpsc,
     atomic::{AtomicUsize, Ordering},
+    mpsc, Arc,
   },
 };
 
 use fraktor_actor::kernel::{
-  actor::{Actor, ActorContext, DeadLetter, Logging::{Error, LogEvent}, Props, Terminated},
+  actor::{
+    Actor, ActorContext, DeadLetter,
+    Logging::{Error, LogEvent},
+    Props, Terminated,
+  },
   actor_path::ActorPath,
   actor_ref::ActorRef,
   event::EventClass,
@@ -209,7 +213,7 @@ impl Actor for OuterActor {
 // `PigDog` cannot be named from the test body, as in the original, where the
 // class is not public. The factory is the only way to create it.
 mod pigdog {
-  use super::{Actor, ActorContext, Message, Props, reply_to};
+  use super::{reply_to, Actor, ActorContext, Message, Props};
 
   struct PigDog;
 
@@ -424,10 +428,8 @@ impl Actor for OneForOneSupervisor {
   fn pre_start(&mut self, context: &mut ActorContext<'_>) {
     let pre_restarts = Arc::clone(&self.pre_restarts);
     let post_restarts = Arc::clone(&self.post_restarts);
-    let child = context.actor_of_with_strategy(
-      restart_counting_child_props(pre_restarts, post_restarts),
-      self.strategy.clone(),
-    );
+    let child =
+      context.actor_of_with_strategy(restart_counting_child_props(pre_restarts, post_restarts), self.strategy.clone());
     self.child = Some(child);
   }
 
@@ -596,11 +598,7 @@ fn run_initialization_case(spec: &mut FraktorSpec, case: SmallCase) {
   // same side, so the test actor also reads the `Error` events themselves and
   // the count is taken per actor path below.
   let test_actor = spec.test_actor();
-  spec
-    .system()
-    .event_stream()
-    .subscribe(Some(test_actor), EventClass::of::<Error>())
-    .expect("subscribe to Error");
+  spec.system().event_stream().subscribe(Some(test_actor), EventClass::of::<Error>()).expect("subscribe to Error");
   // Both sides exist in every case: a one-sided failure still leaves the other
   // actor running, which is what design section 1.3.1 checks (`FailingOuterActor`
   // wraps a normal inner in small cases 3 and 5, `OuterActor` wraps a failing
@@ -688,7 +686,8 @@ fn run_initialization_case(spec: &mut FraktorSpec, case: SmallCase) {
   // actor, through the test kit's child API, and recreates with that same API.
   for actor in &created {
     let name = actor.path().name().to_string();
-    let replacement = spec.test_kit_mut().child_actor_of(reply_actor_props(), Some(&name), SupervisorStrategy::default_strategy());
+    let replacement =
+      spec.test_kit_mut().child_actor_of(reply_actor_props(), Some(&name), SupervisorStrategy::default_strategy());
     assert_eq!(
       replacement.path().parent(),
       actor.path().parent(),
@@ -769,11 +768,7 @@ fn inserts_its_path_in_an_actor_initialization_exception() {
   // The original reads the path off the logged exception. The port reads it off
   // the `Error` event's own `cause_message()`, not off a filter that happens to
   // match: the cause text itself has to name the failed path.
-  spec
-    .system()
-    .event_stream()
-    .subscribe(Some(test_actor), EventClass::of::<Error>())
-    .expect("subscribe to Error");
+  spec.system().event_stream().subscribe(Some(test_actor), EventClass::of::<Error>()).expect("subscribe to Error");
   let (tx, rx) = promise_pair();
   // `throw new IllegalStateException` (`:282`): no message, so the text that
   // reaches the caller is empty.
@@ -806,10 +801,7 @@ fn inserts_its_path_in_an_actor_initialization_exception() {
     cause.starts_with(&expected_prefix),
     "the cause message itself starts with the failed path {expected_prefix:?}, got {cause:?}"
   );
-  assert!(
-    cause.contains("/user/failingActor:"),
-    "the cause message itself names `/user/failingActor:`, got {cause:?}"
-  );
+  assert!(cause.contains("/user/failingActor:"), "the cause message itself names `/user/failingActor:`, got {cause:?}");
   assert!(spec.system().is_actor_terminated(&created), "the supervisor stopped the failed actor");
   spec.terminate();
 }
@@ -935,7 +927,11 @@ fn supports_reply_via_sender() {
     let latch = latch.clone();
     let reply_actor = reply_actor.clone();
     let test_actor = test_actor.clone();
-    Props::new(move || SenderActor { reply_actor: reply_actor.clone(), test_actor: test_actor.clone(), latch: latch.clone() })
+    Props::new(move || SenderActor {
+      reply_actor: reply_actor.clone(),
+      test_actor: test_actor.clone(),
+      latch: latch.clone(),
+    })
   });
   // Round 1: the original's `complex`, `simple`, `simple`, `simple`. Each request
   // goes through the sender actor to the reply actor.
@@ -1087,10 +1083,8 @@ fn restarts_when_killed() {
   EventFilter::intercept(&filter, spec.system_mut(), || {
     target.tell("Kill", from.clone());
   });
-  spec.await_cond(
-    || pre_restarts.load(Ordering::SeqCst) == 1 && post_restarts.load(Ordering::SeqCst) == 1,
-    millis(5000),
-  );
+  spec
+    .await_cond(|| pre_restarts.load(Ordering::SeqCst) == 1 && post_restarts.load(Ordering::SeqCst) == 1, millis(5000));
   assert_eq!(pre_restarts.load(Ordering::SeqCst), 1, "one `Kill` runs `pre_restart` exactly once");
   assert_eq!(post_restarts.load(Ordering::SeqCst), 1, "one `Kill` runs `post_restart` exactly once");
   spec.system_mut().stop(&supervisor);
