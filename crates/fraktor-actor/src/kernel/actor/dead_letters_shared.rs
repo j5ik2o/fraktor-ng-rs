@@ -212,11 +212,7 @@ impl DeadLettersShared {
   ) {
     match message {
       | SystemMessage::Terminate | SystemMessage::ChildTerminated { .. } => {
-        self.publish(SuppressedDeadLetter::from_message(
-          Message::new(message),
-          recipient,
-          dead_letters.clone(),
-        ));
+        self.publish(SuppressedDeadLetter::from_message(Message::new(message), recipient, dead_letters.clone()));
       },
       | _ => {
         self.publish(DeadLetter::from_message(Message::new(message), recipient.clone(), recipient));

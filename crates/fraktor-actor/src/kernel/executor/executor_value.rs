@@ -47,7 +47,6 @@ use crate::kernel::actor::DeadLetter;
 use crate::kernel::actor::DeadLetterSettings;
 use crate::kernel::actor::DeadLetterTrampoline;
 use crate::kernel::actor::DeadLettersShared;
-use crate::kernel::actor::SharedTrampoline;
 use crate::kernel::actor::FunctionRef;
 use crate::kernel::actor::Identify;
 use crate::kernel::actor::InvalidActorNameException;
@@ -59,6 +58,7 @@ use crate::kernel::actor::Props;
 use crate::kernel::actor::ReceiveTimeout;
 use crate::kernel::actor::ReceiveTimeoutSetting;
 use crate::kernel::actor::ReceiveTimeoutState;
+use crate::kernel::actor::SharedTrampoline;
 use crate::kernel::actor::StashOverflowException;
 use crate::kernel::actor::Terminated;
 use crate::kernel::actor::UnhandledMessage;
@@ -1312,7 +1312,8 @@ impl Executor {
     };
     let queue = Arc::new(UnboundedQueue::new(&SpinLockFactory));
     let limits = RunLimits::new(Throughput::new(MANUAL_THROUGHPUT));
-    let mailbox = Mailbox::for_actor(queue, limits, &SpinLockFactory, Arc::downgrade(&self.manual), self.dead_letter_route());
+    let mailbox =
+      Mailbox::for_actor(queue, limits, &SpinLockFactory, Arc::downgrade(&self.manual), self.dead_letter_route());
     let mailbox = Arc::new(mailbox);
     let label = path.name().to_string();
     let self_ref = ActorRef::for_mailbox(next_actor_id(), Arc::new(path), Arc::clone(&mailbox));
