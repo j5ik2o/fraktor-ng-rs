@@ -425,7 +425,10 @@ fn stops_when_sent_a_poison_pill() {
   filter.intercept_any(spec.system_mut(), || {
     a.tell("PoisonPill", test_actor);
   });
-  spec.expect_msg_type::<WrappedTerminated>();
+  // Original: `case WrappedTerminated(Terminated(`a`)) => true`, which checks
+  // the wrapped `Terminated` names the actor the case stopped.
+  let WrappedTerminated(terminated) = spec.expect_msg_type::<WrappedTerminated>();
+  assert_eq!(terminated.target(), &target, "the Terminated must name the actor the poison pill stopped");
   assert!(a.is_terminated(), "the actor must be terminated after the poison pill");
   assert_thread(&cell.other_thread, test_thread);
   spec.terminate();
