@@ -2494,13 +2494,20 @@ B/A は 7 場面とも 1 を下回ったが、A/A の組の比の揺れ（0.81�
 
 段 4b の前提（この節に入れると前提の一覧）：
 
-1. **`Kill` を積む列**：通常のメッセージの列（対象のメールボックス）。system message の列には積まない（原典 `ActorCell.scala:573-574`、
-   `:594`）。11.13.1 の表と 11.13.3 の `Kill` の行
+1. **`Kill` を積む列**：通常のメッセージの列（対象のメールボックス）。system message の列には積まない。送り手の側は、`Kill` が普通の
+   メッセージなので `ActorRef.tell`（`ActorRef.scala:139` の `tell` → `!`）から `Dispatch.sendMessage`（`dungeon/Dispatch.scala:172-179`
+   の `dispatcher.dispatch(this, msgToDispatch)`）で対象のメールボックスに積まれる（system message の `sendSystemMessage` は
+   `:226-228` で別の口である）。受け手の側は `invoke` が `AutoReceivedMessage` として `autoReceiveMessage` に渡し
+   （`ActorCell.scala:573-574`）、`:594` の `case Kill => throw ActorKilledException("Kill")` で失敗になる。11.13.1 の表と
+   11.13.3 の `Kill` の行
 2. **`Escalate` は panic で表す**：`Directive` に `Escalate` を足さず、decider の panic を `handleInvokeFailure` に渡す。
    `Resume` の判断も足さない。公開 API（`Directive`）は変えない（11.13.4）
 3. **`Mark_dying` は子の実行から書く**：親の表の子の記録の行を「停止を頼んだ子」にするのは、止まる子自身の実行（自分の
    `Terminate` の処理、`post_restart` の失敗の手順 2）。親の実行から子のセルを読まない（11.13.4 の「どの実行からどの表を書くか」、
-   11.13.6 の手順 2）
+   11.13.6 の手順 2）。**この前提は Quint では表さない**:`actor_termination.qnt` は 1 手で 1 アクターの 1 通を処理し、親の表の
+   `toDie` を親の実行の 1 手で一度に書く（`handleTerminate` の `toDie: y.children`）。`mark_dying` に当たる語は無い。段 5 の
+   実行の重なりの問題なので、単体テストで確かめる（11.13.12）。Quint の `toDie` は「親が子に `Terminate` を送った」を表す
+   集合として読み、どの実行が書くかは区別しない
 4. **失敗の sender を子のセルへ移す時点**：失敗を起こした実行の中で、11.13.3 の 1 の直後に 1 回だけ書く。`receive` の失敗、
    `Kill`、開始の失敗の 3 つが書く。decider の panic では書かない（11.13.2）。`ActorContext::sender` の公開 doc は意味を変えない
    （失敗した実行の `receive` の中と、`pre_restart`／`post_stop` の側で読む値は同じで、持ち主だけが子のセルに移る）
@@ -2549,7 +2556,7 @@ B の半分）では成り立たない。子を suspend して、残した子を
 | 項目 | 今（段 4a、main `174052c`） | 段 4b |
 |:---|:---|:---|
 | 失敗の記録 | `after_run` の 1 枠に記録し、実行が返ってから実行器が判断する（`finish_run` の `decide`） | 失敗した実行の中で、原典の `handleInvokeFailure` を行う。自分を suspend し、子に `Suspend` を送り、親の列に `Failed` を積む（11.13.3）。`after_run` は消える |
-| `Kill` を積む列 | 通常のメッセージとして対象のメールボックスに積み、実行器が `handle_kill` で判断する | 通常のメッセージの列に積む（原典 `ActorCell.scala:573-574`、`:594` の `autoReceiveMessage` の `throw ActorKilledException("Kill")`）。対象の `invoke` が失敗として扱い、親の system message の列に `Failed` を積む（11.13.3） |
+| `Kill` を積む列 | 通常のメッセージとして対象のメールボックスに積み、実行器が `handle_kill` で判断する | 送り手は通常のメッセージの列に積む（`ActorRef.tell` → `Dispatch.sendMessage`、`dungeon/Dispatch.scala:172-179`。system message の `sendSystemMessage` は `:226-228` で別の口）。受け手は `AutoReceivedMessage` として `autoReceiveMessage` が `throw ActorKilledException("Kill")` で失敗にする（`ActorCell.scala:573-574`、`:594`）。対象の失敗は親の system message の列に `Failed` を積む（11.13.3） |
 | 判断 | 実行器が行う。親が suspend されていれば `ParentEntry.held` に取っておき、`release_held_failures` が見回って解く | 親の実行が `Failed` を処理するときに行う（原典 `handleFailure`。11.13.4）。取り置きは、親の system message の取り置き（11.13.8） |
 | 再起動 | 実行器が `restart_cell` で前半を回し、子を待てば後半を親の実行で回す | 子の列の `Recreate` を子の実行が処理する（原典 `faultRecreate`、`finishRecreate`。11.13.6） |
 | 開始のやり直し | `Create` を送る（判断の済んだ印と、まだの印で 2 通目を捨てる） | `Recreate` を送る。インスタンスが無ければ `faultCreate` に落ちる。`Create` は生成の 1 通だけになる |
@@ -2613,7 +2620,7 @@ B の半分）では成り立たない。子を suspend して、残した子を
 | 失敗 | 場所 | 今との違い |
 |:---|:---|:---|
 | `receive` の失敗（catcher の下） | `invoke` | `after_run` に記録して `Yield` を返す代わりに、上の 1〜4 を行い、`Continue` を返す。suspend されたメールボックスは、次の通常のメッセージを取らない（I4、`mailbox_scheduling.qnt` の `noInvokeWhileSuspended`） |
-| `Kill` | `invoke`（対象の通常のメッセージの列） | 同じ。`FailureKind::Killed`（原典の `Kill` は通常のメッセージで、送り手が対象のメールボックスに積み、`invoke` の `autoReceiveMessage` が `ActorKilledException` を投げる。`ActorCell.scala:573-574`、`:594`。`Suspend`、`Resume`、`Recreate`、`Failed` と違って system message ではないので、取り置き（11.13.8）の対象にもならない。通常のメッセージの列に積むのは、送り手（`ActorRef::tell` の `Kill`）と、`stop_and_reply` の対象の `self` だけで、親は積まない。対象が `Kill` を処理して失敗を起こし、親の列に `Failed` を積む） |
+| `Kill` | `invoke`（対象の通常のメッセージの列） | 同じ。`FailureKind::Killed`。原典の `Kill` は通常のメッセージで、送り手の `ActorRef.tell`（`ActorRef.scala:139`）が `Dispatch.sendMessage`（`dungeon/Dispatch.scala:172-179`）で対象のメールボックスに積み、受け手の `invoke` の `autoReceiveMessage` が `ActorKilledException` を投げる（`ActorCell.scala:573-574`、`:594`）。`Suspend`、`Resume`、`Recreate`、`Failed` と違って system message ではない（`sendSystemMessage` は `dungeon/Dispatch.scala:226-228` の別の口）ので、取り置き（11.13.8）の対象にもならない。通常のメッセージの列に積むのは、送り手（`ActorRef::tell` の `Kill`）と、`stop_and_reply` の対象の `self` だけで、親は積まない。対象が `Kill` を処理して失敗を起こし、親の列に `Failed` を積む |
 | 開始の失敗（`Create` と、やり直しの `create`） | `create_now` | 同じ。`FailureKind::Initialization`。「開始に失敗した」の印は残す（インスタンスが無いことの印。判断が済んだかの区別は消す） |
 | decider の panic | 親の実行の `Failed` の処理 | 親の 1〜4。張本人はその子（11.13.4） |
 | 子の終了のフックの失敗 | 親の実行の `ChildTerminated` の処理 | 今は publish だけ（11.12.4 の 2）。原典どおり、publish のあとに 1〜4 を行う（`FaultHandling.scala:327-339` の `handleInvokeFailure(Nil, e)`。`FailureKind::MessageHandling`）。停止中の親での子の生成の拒否も同じ。publish は 2 回になり、2 つは原因の文が違う（下） |
@@ -2655,7 +2662,8 @@ B の半分）では成り立たない。子を suspend して、残した子を
 `handleFailure`（`dungeon/FaultHandling.scala:305-325`）の `:314` の `if (!handleFailure(...)) throw f.cause` で親を失敗させる
 （`actor/FaultHandling.scala:385-387` の `Escalate` の `processFailure` が偽を返す）。fraktor の `Directive`（`supervision/directive.rs`）は
 `Restart` と `Stop` だけで、`Resume` と `Escalate` は持たない。段 4b は、**`Escalate`（と `Resume` の判断）を `Directive` に足さず、
-decider が panic したことを `Escalate` の代わりにする**。`decide_catching`（`executor_value.rs:3120-3128`）が panic を捕まえ、
+decider が panic したことを `Escalate` の代わりにする**。`decide_catching`（`executor_value.rs:3116-3135`。panic を捕まえるのは `:3127` の `catcher.run`、`RunOutcome::Failed` を
+`Err(message)` にするのは `:3132`）が panic を捕まえ、
 親の `handleInvokeFailure`（11.13.3 の 1〜4）に張本人を子として渡す。これは原典の `throw f.cause` が `systemInvoke` の catcher
 （`ActorCell.scala:542-544`）で捕まり、親の `handleInvokeFailure` に届くのと同じ形である。`Resume` の判断が無いので、
 `Resume` を送るのは、セルの無い親（ガーディアン、function ref）の decider の panic の後だけである（11.13.7）。`Directive` に
@@ -2687,7 +2695,8 @@ decider の panic のあとの子は、親の判断の効果で決まる。親�
    - 親の実行：`Terminate` を送る判断（`Children.stop` の `shallDie`、`Children.scala:132-145）。**親の側だけ**で、子のセルは
      読まない。止まる子の側の記録は、その子の実行の `handle_terminate` の `mark_dying`（次の行）で揃う
    - 子の実行：**`Mark_dying`**。11.13.6 の手順 2（`post_restart` の失敗）と、子が自分の `Terminate` を処理する時の
-     `mark_dying`。**子自身の行だけ**を「停止を頼んだ子」にする（`toDie` に自分の `ActorRef` を入れるのと同じ）
+     `mark_dying`。**子自身の行だけ**を「停止を頼んだ子」にする（`toDie` に自分の `ActorRef` を入れるのと同じ）。**Quint では
+     表さない**（`actor_termination.qnt` の `toDie` は親の実行の 1 手で書く。前提 3）。単体テストで確かめる（11.13.12）
    - 子の実行：自分の `ChildTerminated` を受けたときの、その子の行の削除（`removeChild`。11.12.4）
 
    親の表のほかの子の行の読み書きが要る操作（4a の「子の `Failed` を判断するときに兄弟の表を読む」など）は段 4b に置かない。
@@ -3063,32 +3072,48 @@ all-for-one を選ぶ（`afo`）。`runSys` は、処理の前の状態で取っ
 `Creation` の待ちの間の取り置き：**正しい形の `run` では、`Creation` の待ちの間に `Recreate` を取っておく筋書きを、
 `actor_termination.qnt` は持たない。この仕様では、その筋書きを作れない**。c1 が `Creation` で待つ間（開始のやり直しで、前の
 試みの g を待つ間）に、c1 から p へ `Failed` が届かず、p が c1 に `Recreate` を送る手が無い（やり直しの `pre_start` は待ちの
-あとに走る。`receive` はインスタンスが無いので走らない。g の失敗は c1 の `Failed` になり、p から `Recreate` が c1 に届くが、
-`Creation` の待ちは c1 の失敗の側で、`run` はその前に g を止めて待ちを作る。11.13.16 の計測でも、この状態の `run` は通るが、
-取り置きそのものは起きない）。`Recreate` を送れるのは p だけだが、モデルに外から
-p に `Recreate` を届かせる手が無い（`send`、`stop`、`spawn`、`runSys` のどれも、p の `Failed` の判断からしか `Recreate` を
-作らない）。そのため、`Creation` の待ちの間の取り置きそのものは、**Quint では検査しない**（11.13.12 の単体テストで確かめる。
-11.13.16）。取っておく筋書きの型は、`Recreation` の待ち（`aRecreateWhileWaitingForChildrenRunsAfterTheWaitTest`。#254 の 1）と、
-`suspend` された状態の `Failed`（11.13.8）で固定する。
+あとに走る。`receive` はインスタンスが無いので走らない）。`Recreate` を送れるのは p だけだが、モデルに外から p に `Recreate` を
+届かせる手が無い（`send`、`stop`、`spawn`、`runSys` のどれも、p の `Failed` の判断からしか `Recreate` を作らない）。原典では、
+`Creation` も `WaitingForChildren` なので `Recreate` は `SuspendedWaitForChildrenState` で取っておかれる（`ChildrenContainer.scala:58-59`、
+`ActorCell.scala:515-520`）。そのため、`Creation` の待ちの間の取り置きそのものは、**Quint でも単体テストでも段 4b では確かめない**
+（外から `Recreate` を届かせる口が今のコードに無い。11.13.12）。**段 4c に回す**。取っておく筋書きの型は、`Recreation` の待ち
+（`aRecreateWhileWaitingForChildrenRunsAfterTheWaitTest`。#254 の 1）と、`suspend` された状態の `Failed`（11.13.8）で固定する。
 
 待ちの間の扱いの誤りは、負の対照 `HandleRecreateUnderCreation`（待ちの `Recreate` を、`Creation` を含むどの待ちでも取って
 おかない）で表す。この仕様では、この誤りが `Creation` の待ちで動く筋書きを作れないので、動くのは `Recreation` の待ちだけで
 ある（`NoStashWhileWaiting` と同じ）。正しい形の `run`（`aRecreateWhileWaitingInCreationIsKeptTest`）は、c1 が `Creation` で
 待ち、g がまだ子として残ることを固定する。このモードの `run`（`handleRecreateUnderCreationRunsInsideTheWaitTest`）は、同じ並びで
-c1 が `Creation` で待ち、g がまだ子として残ることを固定する。**この 2 つの `run` の差は、`Creation` の待ちでの取り置きとその場
-での処理ではなく、筋書きの作り方（`initWith` のモード）だけである**（`Creation` の待ちの間に `Recreate` が来る筋書きを作れない
-ので、どちらの `run` もその状態を通らない。11.13.16）。
+c1 が `Creation` で待ち、g がまだ子として残ることを固定する。この 2 つの `run` は、モード（`initWith` の引数）と、最後に
+`sysStep("g", false)` を 1 手足して第 2 の `expect` を見る点が違う。**その差は `Creation` の待ちでの取り置きとその場での処理の差
+ではない**（`Creation` の待ちの間に `Recreate` が来る筋書きを作れないので、どちらの `run` もその状態を通らない。11.13.16）。
 
 `run` は全部で 44 本である（正しい形 19 本、負の対照 25 本。正しい形は、`Creation` の待ちを固定する `aRecreateWhileWaitingInCreationIsKeptTest` を足した 19 本。負の対照は 4a の 11 本と 4b の 14 本で、`StopAtTheTail` が 2 本）。各 `run` の名前は `Test` で終わる（`scripts/quint-check-specs.sh` が確かめる）。
 
 **探索の届く深さと、決まった筋書きの `run`**：CI の `quint run`（20 手・1 万本）は、筋書きの長い状態に届かないことがある。
-**24 本の負の対照の検出率は、42 本の版では測っていない**（段 4a の 31 本の版の計測のまま残っていた）。44 本の版で測り直した
-結果は 11.13.16 の表にある。20 手・1 万本では、`DropRecreateWhileWaiting`、`NoChildCheck`、`ResumeWithoutCause`、
-`HandleRecreateUnderCreation` の 4 本が 3 回とも見つからず、`IgnoreUndecidedRecreate` は 3 回中 1 回、`SuspendThePerpetrator` は
-3 回中 1 回だけ見つかった。ほかの 17 本は 3 回とも見つかった。この 6 本は、40 手・5 万本では 2 回とも見つかる（11.13.16）。その
-ため、これらの状態と誤りは、決まった筋書きの `run`（上の表と負の対照の表）で固定し、`scripts/quint-check-specs.sh` の `quint test`
-が毎回確かめる。乱数の探索は、それ以外の筋書きを広く当たるためのもので、深い状態の回帰を探索だけに任せない。この段落の
-「見つからない」は探索の実測であって、`run` が落ちることを意味しない（`run` は 44 本とも通る）。
+**24 本の負の対照の検出率は、42 本の版では測っていない**（段 4a の 31 本の版の計測のまま残っていた）。44 本の版では測ったが、
+**20 手・1 万本では、検出する本数（およそ 18/24）は同じでも、どのモードが落ちるかは実行ごとに違う**。seed は実行ごとに
+ランダムなので、1 回の 3 連の計測で「そのモードが必ず見つかる／見つからない」を決めることはできない。次が、同じ `.qnt` に対する
+3 組の独立した計測（各 3〜5 回）の実測である（11.13.16）。
+
+| モード（20 手・1 万本） | 設計の前の計測（3 回） | 答え合わせの計測（3 回） | この版の計測（5 回 × 2 組） |
+|:---|:---|:---|:---|
+| `DropRecreateWhileWaiting` | 0/3 | 0/3 | 0/5・0/5 |
+| `NoChildCheck` | 0/3 | 0/3 | 0/5・0/5 |
+| `ResumeWithoutCause` | 0/3 | 0/3 | 0/5・0/5 |
+| `IgnoreUndecidedRecreate` | 1/3 | 0/3 | 0/5・0/5 |
+| `SuspendThePerpetrator` | 1/3 | 0/3 | 1/5・4/5 |
+| `HandleRecreateUnderCreation` | 0/3 | 3/3 | 5/5・5/5 |
+| `NoSuspendFirst` | 3/3 | 0/3 | 5/5・5/5 |
+| ほかの 17 本 | 3/3 | 17 本のうち 16 本が 3/3 | 5/5・5/5 |
+
+つまり、**「必ず見つかる」と言えるのは `DropRecreateWhileWaiting`、`NoChildCheck`、`ResumeWithoutCause` の 3 本が必ず
+見つからない側で、あとは seed 次第**である（`HandleRecreateUnderCreation` と `NoSuspendFirst` は、前の 2 つの計測の片方ずつで
+0/3 と出たが、この版の 10 回の計測では全部見つかった）。どの実行でも 18〜19/24 が 3 回中に少なくとも 1 回見つかる。24 本のうち
+`DropRecreateWhileWaiting`、`IgnoreUndecidedRecreate`、`NoChildCheck`、`ResumeWithoutCause`、`SuspendThePerpetrator` は、
+40 手・5 万本では 2 回とも見つかる（11.13.16）。そのため、これらの状態と誤りは、決まった筋書きの `run`（上の表と負の対照の表）
+で固定し、`scripts/quint-check-specs.sh` の `quint test` が毎回確かめる。乱数の探索は、それ以外の筋書きを広く当たるためのもので、
+深い状態の回帰を探索だけに任せない。この段落の「見つからない」は探索の実測であって、`run` が落ちることを意味しない（`run` は
+44 本とも通る）。
 
 仕様の単純化（4a の 11.12.11 の一覧に足すもの、変わるもの）：
 
@@ -3109,13 +3134,17 @@ c1 が `Creation` で待ち、g がまだ子として残ることを固定する
 
 #### 11.13.12 テスト（テストの担当に渡す面）
 
-red のテストを書くのに使える面（どれも、今の公開 API か testkit から観測できる）：
+red のテストを書くのに使える面。観測の口は 2 種類ある：**今の公開 API か testkit**（`ActorRef::tell`、`ActorContext::stop`、
+`ActorSystem::run_one`／`run_until_idle`、`SupervisorStrategy`、`EventSink`／`EventFilter`、`TestProbe`、`is_actor_terminated`）で
+読めるか、**`pub(crate)` の読み口をテストから読む**かである。`pub(crate)` でしか読めないのは、次の表の `suspend` の行（`Mailbox` の
+`is_suspended` と `suspend_count`）だけで、これは testkit ではなく `crates/fraktor-actor` の `#[cfg(test)]` の単体テストで読む
+（11.13.8 の表で `pub(crate)` にそろえる）。ほかの面は公開 API か testkit で読める：
 
 | 面 | 何を読むか |
 |:---|:---|
 | フックの回数と順 | `pre_start`、`pre_restart`、`post_restart`、`post_stop` の各回数と順（テストのアクターが共有の記録に積む） |
 | 再起動の回数 | 再起動の許しの上限（`SupervisorStrategy::one_for_one(max_retries)`、`all_for_one(max_retries, RestartWindow)`）に達した回で、Restart が停止に変わること（`is_actor_terminated`、`post_restart` の回数）。decider（`Decider = dyn Fn(&ActorRef, FailureKind) -> Directive`）は回数を受け取らないので、decider の引数では読めない |
-| suspend | 子が通常のメッセージを処理しないこと（親の失敗のあと、判断の前に子へ送ったメッセージが、判断の効果のあとまで `receive` に届かない）。単体テストでは `Mailbox` の `is_suspended` と `suspend_count`（4b で本番の読み口になる。11.13.8） |
+| suspend | 子が通常のメッセージを処理しないこと（公開 API で読める。親の失敗のあと、判断の前に子へ送ったメッセージが、判断の効果のあとまで `receive` に届かない）。整合のための中を読む場合は、`pub(crate)` の `Mailbox` の `is_suspended` と `suspend_count`（4b で本番の読み口になる。11.13.8）を、`crates/fraktor-actor` の `#[cfg(test)]` の単体テストから読む。testkit からは読めない |
 | 失敗の publish | イベントの受け手（`EventSink`）が受ける失敗の数と、その子の path |
 | 1 手ずつの順 | `run_one` は、通常のメッセージを 1 件渡すまで、system message だけの実行を続けて回す（`run_one_goes_past_a_run_that_handles_only_system_messages`）。そのため、親の `Failed` の処理と子の `Recreate` の処理（どちらも system message だけの実行）は、`run_one` の 1 回では分かれない。開始の失敗（`Create`）も同じ。分けて読むには、次のどちらかを使う。(1) 子の失敗を渡した `run_one` のあとで、親に通常のメッセージを 1 件送る。次の `run_one` は、親の実行が `Failed` を処理してからその通常のメッセージを渡した時点で返るので、そこで子の `pre_restart` がまだ記録されていないことを読む。(2) decider、親の `receive`、子の `pre_restart` が共有の記録に積む順を読む。どちらも、親はメールボックスを持つアクターにする（ガーディアンの下の子は、その場で判断される。11.13.4） |
 | 停止と名前 | `is_actor_terminated`、同じ名前で作れるか |
@@ -3135,9 +3164,19 @@ red のテストを書くのに使える面（どれも、今の公開 API か t
 - 子を待つ間の `Recreate`：自分の再起動で子を待つアクターに届いた `Recreate` は、後半のあとにもう 1 回の再起動になる（`post_restart`
   が 2 回）。`Creation` の待ちの間に届いた `Recreate` は、取っておかれ、作れたあとで再起動になる（`Recreate` はインスタンスが
   できたあとに届くので `faultCreate` に落ちない。作るのがまた失敗していればインスタンスが無く、`faultCreate` に落ちる）。
-  **この筋書きは Quint では作れない**（`actor_termination.qnt` に外から `Recreate` を届かせる手が無い。11.13.11）ので、
-  ここが唯一の確かめ口である。unit test では、`Recreate` を送る親か、`context.stop` の直後に `Recreate` を積む外の口
-  （`WeakActorSystem` の system message の送り口）を使う
+  **この筋書きは Quint では作れない**（`actor_termination.qnt` に外から `Recreate` を届かせる手が無い。11.13.11）。単体テストでも
+  作れない：`Creation` の待ちの間に外から `Recreate` を届かせる口は、今のコードに無い（`WeakActorSystem` の口は `spawn_child`、
+  `try_spawn_child`、`stop`、`run_until_idle`、`run_one`、`is_actor_terminated` だけで、`Recreate` を送るのは実行器の
+  `finish_recreate` の `send_system`（`executor_value.rs:3319` の `Create`、`:3328` の `Resume`）だけである。`send_system`（`:572`）は
+  `Executor` の私的なメソッドで、外から呼ぶ口は無い。`TestProbe::send`（`test_probe.rs:88`）は通常のメッセージだけである）。
+  **そのため、この筋書きは段 4b の確かめ口から外し、段 4c に回す**。段 4c は閉じたメールボックスの system message を dead
+  letters にする仕事（11.12.3）で、system message を外から積む口（`ActorRef::send_system_message` 相当）を入れる。その口と一緒に、
+  この筋書きを単体テストで固定する。`Recreation` の待ちの間の取り置き（#254 の 1）は、今の口（`run_one` と `stop` の繰り返しと、
+  共有の記録）で観測できるので、段 4b のままでよい
+- `Mark_dying` を子の実行から書く（前提 3）：止まる子の実行が自分の `Terminate` を処理するときに親の表の自分の行を
+  「停止を頼んだ子」にし、親が同じ行を別の実行（親の実行）で書かないこと。観測は、子を `stop` したあとで親の `pre_restart` が
+  走るまでの間に、親の子の表（`ChildrenContainer`）がまだ `NormalChildrenContainer` のままであること（親の `shallDie` だけで
+  `TerminatingChildrenContainer` にならないこと）で読む。**Quint では表さない**（`.qnt` の `toDie` は親の実行の 1 手で書く。11.13）
 - 生き残り（D4b-1 の A）：`pre_restart` で子を残した親が再起動すると、子も再起動される（`Kill` 以外の失敗でも）
 - 生成（`Children.scala:340`）：親の失敗の判断の前に、親の `pre_restart`、子の終了のフック、`WeakActorSystem::spawn_child` で
   作った子は、親の判断の効果まで通常のメッセージを処理しない。親が再起動すれば、その子も再起動される（`post_restart` が 1 回）。
@@ -3235,8 +3274,8 @@ red のテストを書くのに使える面（どれも、今の公開 API か t
 | 検査 | 結果 |
 |:---|:---|
 | `scripts/quint-check-specs.sh`（CI と同じ。typecheck、各仕様の `run`、`quint run` 20 手・1 万本。`npm ci` のあと、`quint 0.32.0`） | exit 0。`actor_termination.qnt` は 44 passing（正しい形 19 本、負の対照 25 本。`StopAtTheTail` が 2 本）。探索は違反なし（trace の長さの最大 21）。ほかの仕様は変えていない |
-| 44 本の版で、24 の誤りのモードから始める `quint run`（20 手・1 万本、モードごとに 3 回。`init` の `initWith(Fixed, afo)` を `initWith(<モード>, afo)` に書き換えた写し） | 24 本のうち 18 本は 3 回とも違反を見つけた。`IgnoreUndecidedRecreate` は 3 回中 1 回、`SuspendThePerpetrator` は 3 回中 1 回だけ見つけた。`DropRecreateWhileWaiting`、`NoChildCheck`、`ResumeWithoutCause`、`HandleRecreateUnderCreation` は 3 回とも見つけなかった。この 6 本は、40 手・5 万本で 2 回とも見つけた。決まった筋書きの `run` が毎回確かめる（11.13.11） |
-| 同（40 手・5 万本、2 回。20 手・1 万本で見つからなかった 5 モード。`HandleRecreateUnderCreation` は `Creation` の待ちで誤りが動く筋書きが無いので、`NoStashWhileWaiting` と同じ） | 5 モードとも 2 回とも違反を見つけた |
+| 44 本の版で、24 の誤りのモードから始める `quint run`（20 手・1 万本。`init` の `initWith(Fixed, afo)` を `initWith(<モード>, afo)` に書き換えた写し）。モードごとに 5 回を 2 組、および前の 2 つの計測（3 回ずつ） | **検出する本数はおよそ 18〜19/24 で同じだが、どのモードが落ちるかは実行ごとに違う**。3 組の実測は 11.13.11 の表にある。`DropRecreateWhileWaiting`、`NoChildCheck`、`ResumeWithoutCause` はどの計測でも 0/3〜0/5（必ず見つからない）。`IgnoreUndecidedRecreate` は 0/5・0/5・1/3・0/3。`SuspendThePerpetrator` は 1/5・4/5・1/3・0/3。`HandleRecreateUnderCreation` は 5/5・5/5・0/3・3/3。`NoSuspendFirst` は 5/5・5/5・3/3・0/3。ほかの 17 本は 3 組とも全部見つかった。決まった筋書きの `run` が毎回確かめる（11.13.11）。seed は実行ごとにランダムなので、1 回の計測で「必ず見つかる／見つからない」を決めない |
+| 同（40 手・5 万本、2 回。20 手・1 万本で 0/3 だった 5 モード: `DropRecreateWhileWaiting`、`NoChildCheck`、`ResumeWithoutCause`、`IgnoreUndecidedRecreate`、`SuspendThePerpetrator`） | 5 モードとも 2 回とも違反を見つけた |
 | 探索が届く状態（正しい形、20 手・1 万本。その状態を否定した式を不変条件にして流す） | アクターが `Creation` で待つ状態、`Recreation` で待つ状態、取り置きの列が空でない状態は、20 手・1 万本でも見つけた（前の版の「`Creation` の待ちの間に取っておいている」は、その待ちそのものであり、`Creation` の待ちの間に `Recreate` を取っておく状態ではなかった）。**`Creation` で待つアクターが `Recreate` を取っておいた状態は、20 手・1 万本では見つからない**。この仕様は、外から p に `Recreate` を届かせる手を持たないので、探索でも `run` でもこの状態を作れない（11.13.11）。 |
 | `actor_termination.qnt` の `quint run --invariant=invariant`（正しい形、rust の backend、20 手・1 万本、3 回） | 3 回とも違反なし（最大 21、平均 20.99〜21.00） |
 | 同（30 手・2 万本、1 回） | 違反なし（`--seed=0xfbfb888e247fbd91`） |
@@ -3244,6 +3283,7 @@ red のテストを書くのに使える面（どれも、今の公開 API か t
 | 44 本の版の同（40 手・5 万本、1 回） | 違反なし（最大 41、平均 33.95、43 秒。`--seed=0x4ec783fa5bfcb0c1`） |
 | 4b で足した誤りのモードから始める `quint run`（20 手・1 万本。`init` を `initWith(<モード>, afo)` に書き換えた写し） | 31 本の版の計測（`NoSuspendInheritance`、`NoSuspendFirst`、`StopAtTheTail` は 3 回とも、`SuspendThePerpetrator` は 3 回中 1 回、`ResumeWithoutCause` は 3 回とも見つけなかった）。44 本の版の計測は上の 24 本の行にある |
 | 新しい負の対照の `run` を正しい形で流す（モードの `initWith` を `Fixed` に書き換えた写しで `quint test`） | この版では測っていない（前の版の行の「6 本とも落ちる」は `PROBE_RESULT` のまま）。測るときは、`run` の途中の手が起きない（誤りが無いと、`Recreate` を待つ子が通常のメッセージを取らない）か、`expect` が偽になることを確かめる |
+| `Creation` の待ちの間に `Recreate` を取っておく状態（設計の前の 9 状態の計測の 1 つ。31 本の版） | 31 本の版の計測が「`Creation` の待ちの間に取っておいている」を見つけた、と記録していた。この版で測り直したところ、見つけたのは**その待ちそのもの**（`Creation` で待つ状態）で、`Creation` の待ちの間に `Recreate` を取っておいた状態ではなかった（前の計測の解釈の誤り）。**この状態は、今の仕様では探索でも `run` でも作れない**（外から p に `Recreate` を届かせる手が無い）。確かめは段 4c に回す（11.13.12） |
 | 以下の 5 行 | 生成の引き継ぎ（11.13.7）と `post_restart` の失敗（11.13.6）を仕様に入れる前の版で測った。`actor_termination.qnt` は 31 本（正しい形 13 本、負の対照 18 本） |
 | `actor_termination.qnt` の `quint run --invariant=invariant`（正しい形、rust の backend、20 手・1 万本、5 回） | 5 回とも違反なし（trace の長さの最大 21、平均 20.7〜20.8） |
 | 同（40 手・5 万本、3 回） | 3 回とも違反なし（最大 41、平均 31.9〜32.0） |
