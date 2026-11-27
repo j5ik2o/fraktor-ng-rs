@@ -25,6 +25,7 @@ mod mark_not_supported_error;
 
 pub use byte_string_builder::ByteStringBuilder;
 pub use byte_string_input_stream::ByteStringInputStream;
+pub(crate) use byte_string_value::ByteChunk;
 pub use byte_string_value::ByteString;
 pub use end_of_stream_error::EndOfStreamError;
 pub use index_out_of_bounds_error::IndexOutOfBoundsError;

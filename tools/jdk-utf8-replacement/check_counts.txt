@@ -1,0 +1,54 @@
+# #190: the counts of tools/jdk-utf8-replacement/check_counts.py
+
+The run behind the numbers in docs/design/issue-190-bytestring.md, section 8.2.
+Every input is decoded three ways: `decode_string` as the crate has it (copied
+unchanged but for the indentation into `counts_decode.rs`), `String::from_utf8_lossy`
+(`counts_lossy.rs`), and `new String(bytes, StandardCharsets.UTF_8)` (the JDK,
+`JdkUtf8Table.java`). "0 differ from the JDK" means every input agreed. The
+crate's own function is pinned by `decode_string_matches_the_pinned_jdk_table`
+in `crates/fraktor-actor/tests/byte_string_spec.rs`.
+
+```
+$ java -version
+openjdk version "26.0.2.1" 2026-08-18
+OpenJDK Runtime Environment Temurin-26.0.2.1+1 (build 26.0.2.1+1)
+OpenJDK 64-Bit Server VM Temurin-26.0.2.1+1 (build 26.0.2.1+1, mixed mode, sharing)
+
+$ rustc --version
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+
+$ python3 tools/jdk-utf8-replacement/check_counts.py
+lead-high: 2113664 inputs, sha256 70757a1019d1ee69fe08688a5959cf528dfd2413a4e0274a108e7fdcdc8e0e7e, 0 differ from the JDK, 8224 differ from from_utf8_lossy
+all-bytes: 16777216 inputs, sha256 eb1ab5393d8e2615d8fa26b821cbe0cc26c0bd909bd139a3ec5c89409b6e8fdf, 0 differ from the JDK, 16384 differ from from_utf8_lossy
+targeted: 200734 inputs, sha256 e113084ee20c7f289efa0fd42fd6ab533726cf645cfbbf11bfcf06f61c9f8ee8, 0 differ from the JDK, 27100 differ from from_utf8_lossy
+random uniform: 100000 inputs, sha256 bd43ffb0254520082e025eb59699139f76d1fc5fc2c7930b19f617abcdad2b9d, 0 differ from the JDK, 1425 differ from from_utf8_lossy
+random aimed: 100000 inputs, sha256 9c03a684a2b39132b841358fad510580c41d108333cdf8144979e3719664cfb4, 0 differ from the JDK, 37214 differ from from_utf8_lossy
+```
+
+The families, all of them listed by the script:
+
+- `lead-high`: every input whose first byte is `0x80..=0xFF` and whose length is
+  1 to 3 (128 + 16,384 + 2,097,152 = 2,113,664), all of them.
+- `all-bytes`: every input of three bytes (256**3 = 16,777,216), all of them.
+  This is the whole of the 8,421,504 the review of the design quoted, and more.
+- `targeted`: the 94 rows of `crates/fraktor-actor/tests/byte_string_jdk_table.tsv`,
+  `0xED` with every second and third byte in rows of three and four bytes
+  (196,608), and those units between a prefix and a suffix of every kind (4,032);
+  200,734 in all.
+- `random uniform`: 100,000 rows of length 0 to 64 from SplitMix64 with the
+  seed `0x1905B17E57A1BCEF ^ (i * 0xD1B54A32D192ED03)`, every byte uniform.
+- `random aimed`: 100,000 rows of length 0 to 64 from the same generator shape
+  with `0x1905ED5A7C6A1101`, half of the bytes drawn from `0xED`, `0x80..=0xBF`,
+  `0xC0..=0xFF` and the ASCII letters, so that the rule fires often.
+
+What the counts show: on every input of the first four families the crate's
+function and the JDK agree. The last column counts the inputs on which the
+exception of section 8.2 changes the answer, so the exception is exercised, not
+only absent. `all-bytes` holds every three-byte input, so every lead byte with
+anything before and after it is covered; the families do not cover every input
+of four bytes or more (those are the `targeted` and `random` rows), so the
+design claims only these families, not the whole space.
+
+The counts are program output, so they repeat on the same three programs; the
+SHA-256 of each family's inputs is printed to make the input set itself
+checkable without rerunning the comparisons.
