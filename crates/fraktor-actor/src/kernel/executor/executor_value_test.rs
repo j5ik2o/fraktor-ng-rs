@@ -3123,22 +3123,32 @@ mod closed_mailbox_system_messages {
     // Two more envelopes stay in the queue while the stop runs.
     owner.tell("late1", sender.clone());
     owner.tell("late2", sender.clone());
-    // A `Resume` waits on the system queue when the stop overtakes it.
+    // Ask for the stop first, which queues `Terminate`. Then put a `Resume`
+    // behind it on the same system queue, so the run takes `Terminate`,
+    // closes the mailbox, and leaves the `Resume` for the close to return:
+    // that is the `Resume` a stop overtook, and it reaches dead letters as
+    // `DeadLetter(Resume)` (design section 5.1, the stop-time clean-up).
+    executor.stop(&owner);
     {
       let entry = executor.entry(&owner).expect("the actor is in the table");
       let mailbox = entry.mailbox.clone();
       crate::kernel::dispatch::Mailbox::system_send(&mailbox, SystemMessage::Resume).ok();
     }
 
-    executor.stop(&owner);
     executor.run_until_idle();
 
+    // Design section 5.1: the overflow from `postStop`'s `unstashAll` goes
+    // first (b, a: the oldest excess, newest victim first), then the system
+    // messages left when the mailbox closed (the `Resume`), then the rest of
+    // the stash (c), then the queued envelopes (late1, late2). The same
+    // direction as `bounded_stash_stop_counts_the_queued_backlog_against_the_mailbox_capacity`
+    // (hello2, hello1, hello3, late1, late2).
     assert_eq!(
       *steps.lock().unwrap(),
       std::vec![
-        Step::System(Kind::Resume),
         Step::Text("b"),
         Step::Text("a"),
+        Step::System(Kind::Resume),
         Step::Text("c"),
         Step::Text("late1"),
         Step::Text("late2"),
