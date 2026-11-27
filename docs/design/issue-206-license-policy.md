@@ -712,11 +712,18 @@ Pekko 由来ファイル（`Apache-2.0` のみ）と自作ファイル（`MIT OR
 | `portable-atomic` | 1.15.0（段 0 で確定する） | 段 0 | Apache-2.0 OR MIT | kernel の原子操作（C1） |
 | `portable-atomic-util` | 0.2.8（段 0 で確定する） | 段 0 | Apache-2.0 OR MIT | CAS の無い target での `Arc`（C3） |
 | `critical-section` | 1.2.0 | 段 0 | MIT OR Apache-2.0 | 推移的な依存。直接には依存せず、`portable-atomic` の `critical-section` の機能を通して入る。CAS の無い target で原子操作を critical section で代わりに行うための土台になる（C1） |
+| `hdrhistogram` | 7.6.0 | #183 | MIT/Apache-2.0 | `fraktor-testkit` の metrics の値の分布の記録。Gil Tene の HdrHistogram の Rust 移植であり、原典が使う Java 版と記録・件数・最小・最大・百分位の意味論が対応する。既定の機能は外す（`default-features = false`） |
+| `libc` | 0.2.191 | #183 | MIT OR Apache-2.0 | `fraktor-testkit` の metrics で、unix でのファイルディスクリプタの上限（`getrlimit(RLIMIT_NOFILE)`）を取るために使う。unix 限定の依存である |
+| `byteorder` | 1.5.0 | #183 | Unlicense OR MIT | 推移的な依存。直接には依存せず、`hdrhistogram` を通して入る。`hdrhistogram` がヒストグラムの直列化でバイト順の変換を行うための土台になる |
+| `num-traits` | 0.2.19 | #183 | MIT OR Apache-2.0 | 推移的な依存。直接には依存せず、`hdrhistogram` を通して入る。`hdrhistogram` が数値型を一般的に扱うためのトレイトになる |
+| `autocfg` | 1.5.1 | #183 | Apache-2.0 OR MIT | 推移的な依存。直接には依存せず、`hdrhistogram` が依存する `num-traits` の build 依存として入る。`num-traits` の build 時にコンパイラの機能を検出するための土台になる |
 
 - ライセンスは、どちらも crates.io に公開された crate の `Cargo.toml` の `license` の欄で確かめた（`portable-atomic` 1.15.0、`portable-atomic-util` 0.2.8。どちらも `license = "Apache-2.0 OR MIT"`）。
 - 版は、#234 の設計の §7.4 に書かれていなかったため、この記録を書いた時点の最新の安定版を書いた。実際に使う版は段 0 で確定する。段 0 のプルリクエストでは、`cargo metadata` でライセンスを確かめ直し、使う版がこの記録と違う場合は、この節も合わせて直す。
 - `critical-section` は、段 0 の担当が `cargo metadata` で確かめた推移的な依存である。`portable-atomic` の `critical-section` の機能を有効にすると入る（`portable-atomic` 1.15.0 の `Cargo.toml` では `critical-section = { version = "1", optional = true }` で、その機能がこの依存を有効にする）。入る版は 1.2.0 で、ライセンスは `MIT OR Apache-2.0` である（crates.io に公開された `critical-section` 1.2.0 の `Cargo.toml` の `license` の欄でも確かめた）。
 - `portable-atomic` 1.15.0 と `portable-atomic-util` 0.2.8 の版とライセンスは、段 0 の担当が `cargo metadata` で確かめ、この記録と一致している。
+- `hdrhistogram` 7.6.0 と `libc` 0.2.191 の版とライセンスは、#183 の担当が `cargo metadata` で確かめた（`hdrhistogram` は `license = "MIT/Apache-2.0"`、`libc` は `license = "MIT OR Apache-2.0"`）。どちらも #183 で追加した直接依存は `fraktor-testkit` のみであり、`fraktor-actor` の no_std には触らない（`libc` については、Linux の既定構成では `fraktor-actor` も `getrandom` 経由で推移的に依存する。ここで言うのは #183 が追加した直接依存の範囲である）。
+- `byteorder` 1.5.0、`num-traits` 0.2.19、`autocfg` 1.5.1 の版とライセンスは、#299 の担当が `cargo metadata` で確かめた（`byteorder` は `license = "Unlicense OR MIT"`、`num-traits` は `license = "MIT OR Apache-2.0"`、`autocfg` は `license = "Apache-2.0 OR MIT"`）。いずれも `hdrhistogram` の推移的な依存であり（`byteorder` と `num-traits` は `hdrhistogram` の直接の依存、`autocfg` は `num-traits` の build 依存）、このリポジトリからは直接には依存しない。
 
 ---
 

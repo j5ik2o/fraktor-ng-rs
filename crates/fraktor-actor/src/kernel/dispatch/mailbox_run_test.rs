@@ -51,9 +51,9 @@ use crate::kernel::Clock;
 
 type Hook = Box<dyn FnMut(&Mailbox<Recorder>, u32) + Send>;
 
-// Records what it handles. A Suspend suspends the mailbox, a Resume resumes
-// it and a Terminate closes it, as the actor cell does. `on_message` runs
-// inside `invoke`, as `receive` would.
+// Records what it handles. A Resume resumes the mailbox and a Terminate
+// closes it, as the actor cell does. `on_message` runs inside `invoke`, as
+// `receive` would, and may suspend the mailbox, as a failure does.
 struct Recorder {
   log: Arc<Mutex<Vec<String>>>,
   on_message: Hook,
@@ -71,10 +71,6 @@ impl MailboxCell for Recorder {
 
   fn system_invoke(&mut self, _env: &mut (), mailbox: &Mailbox<Self>, message: SystemMessage) {
     let entry = match message {
-      | SystemMessage::Suspend => {
-        mailbox.suspend();
-        String::from("suspend")
-      },
       | SystemMessage::Resume => {
         mailbox.resume();
         String::from("resume")
@@ -207,12 +203,19 @@ fn a_system_message_sent_during_receive_goes_before_the_next_message() {
 
 #[test]
 fn a_suspended_mailbox_handles_only_system_messages_until_resumed() {
-  let fixture = Fixture::new(RunLimits::new(Throughput::new(5)));
-  fixture.send_system(SystemMessage::Suspend);
+  let fixture = Fixture::with_hook(
+    RunLimits::new(Throughput::new(5)),
+    Box::new(|mailbox, value| {
+      if value == 0 {
+        mailbox.suspend();
+      }
+    }),
+  );
+  fixture.send(0);
   fixture.send(1);
 
   fixture.drive();
-  assert_eq!(fixture.log(), ["suspend"]);
+  assert_eq!(fixture.log(), ["m0"]);
   assert!(fixture.mailbox.is_suspended());
   // Suspended with only a normal message, the mailbox has no work to run for.
   assert!(Mailbox::try_schedule(&fixture.mailbox).is_none());
@@ -375,7 +378,7 @@ mod unwind {
   use crate::kernel::sync::Arc;
   use crate::kernel::sync::SpinLockFactory;
 
-  // Panics on the message 13 and on a Suspend, and records the rest.
+  // Panics on the message 13 and on a Create, and records the rest.
   struct Fragile {
     seen: Arc<Mutex<Vec<u32>>>,
   }
@@ -391,7 +394,7 @@ mod unwind {
     }
 
     fn system_invoke(&mut self, _env: &mut (), _mailbox: &Mailbox<Self>, message: SystemMessage) {
-      assert!(!matches!(message, SystemMessage::Suspend), "a system message fails");
+      assert!(!matches!(message, SystemMessage::Create), "a system message fails");
     }
   }
 
@@ -476,7 +479,7 @@ mod unwind {
   #[test]
   fn a_panic_among_system_messages_raises_the_flag_again() {
     let fixture = Fixture::new();
-    assert!(Mailbox::system_send(&fixture.mailbox, SystemMessage::Suspend).is_ok());
+    assert!(Mailbox::system_send(&fixture.mailbox, SystemMessage::Create).is_ok());
     assert!(fixture.mailbox.system_enqueue(SystemMessage::Resume).is_ok());
 
     fixture.run_unwinding();

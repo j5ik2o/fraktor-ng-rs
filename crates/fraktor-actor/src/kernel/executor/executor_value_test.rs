@@ -250,6 +250,8 @@ fn a_detached_watch_survives_an_old_reference_termination_with_the_same_uid() {
   let old = executor.try_spawn_user(Props::new(|| Guardian), None).unwrap();
   let watcher = executor.try_spawn_user(Props::new(|| Guardian), None).unwrap();
   executor.stop(&old);
+  // The actor stops in its own run (Pekko's `Terminate`).
+  executor.run_until_idle();
   let detached = executor.stopped_noop_ref(&old);
   assert_eq!(detached, old);
   executor.watch(&watcher, &detached);
@@ -828,14 +830,20 @@ mod uid_clash_restart {
     let restarted = spawn_restarted_parent(&mut system, &guardian, &observations, Some(sibling.clone()));
 
     // The failing child requests both stops in pre_restart. Its own child's
-    // stop completes before post_restart, while the sibling's stays pending.
+    // stop completes before post_restart; the restart waits for no other.
     restarted.tell("fail", guardian.clone());
     system.run_until_idle();
 
     let observed = observations.lock().unwrap();
     assert_eq!(observed.steps, alloc::vec!["grandchild started", "pre_restart", "post_restart"]);
     assert_eq!(observed.grandchild_stopped_before_post_restart, Some(true));
-    assert_eq!(observed.sibling_alive_in_post_restart, Some(true));
+    // Whether the sibling is still alive in `post_restart` is not checked:
+    // Pekko leaves it unordered. A stop of an actor that is not one's own
+    // child marks nothing to wait for (Children.scala:132-133, `shallDie`
+    // only for a child in `childrenRefs`), and the restart waits only for its
+    // own dying children (FaultHandling.scala:114,
+    // `setChildrenTerminationReason(Recreation(cause))`), while the sibling
+    // handles its `Terminate` in its own run.
     assert!(system.is_actor_terminated(&sibling));
     assert_eq!(*received.lock().unwrap(), alloc::vec![sibling]);
   }
@@ -931,10 +939,11 @@ fn a_stash_returned_by_the_stop_hook_reaches_dead_letters_and_other_actors_keep_
   executor.send(sender.clone(), &other, Message::new("x"));
 
   executor.stop(&stasher);
+  // The stasher stops in its own run (Pekko's `Terminate`); the other
+  // actor's message stays in its own mailbox and reaches it.
+  executor.run_until_idle();
 
   assert_eq!(*delivered.lock().unwrap(), alloc::vec![(sender.clone(), "a"), (sender, "b")]);
-  assert!(received.lock().unwrap().is_empty());
-  executor.run_until_idle();
   assert_eq!(*received.lock().unwrap(), alloc::vec!["x"]);
   assert_eq!(delivered.lock().unwrap().len(), 2);
 }
@@ -1014,6 +1023,7 @@ mod stage3 {
   use crate::kernel::actor::Props;
   use crate::kernel::actor_ref::ActorRef;
   use crate::kernel::actor_system::ActorSystem;
+  use crate::kernel::dispatch::ManualTask;
   use crate::kernel::event::EventClass;
   use crate::kernel::executor::Executor;
   use crate::kernel::message::Message;
@@ -1107,6 +1117,8 @@ mod stage3 {
   fn sends_that_do_not_win_the_reservation_clone_only_the_sender() {
     let mut system = system("ConditionOneS1");
     let target = system.actor_of(Props::new(|| Sink));
+    // The actor starts in its own run (Pekko's `Create`), before the count.
+    system.run_until_idle();
     let sender = system.dead_letters();
     let strong_before = target.mailbox_strong_count();
 
@@ -1176,6 +1188,8 @@ mod stage3 {
   fn a_send_that_wins_the_reservation_clones_the_run_once() {
     let mut system = system("ConditionOneTestkit");
     let target = system.actor_of(Props::new(|| Sink));
+    // The actor starts in its own run (Pekko's `Create`), before the count.
+    system.run_until_idle();
     let sender = system.dead_letters();
     let strong_before = target.mailbox_strong_count();
 
@@ -1219,6 +1233,8 @@ mod stage3 {
     let a = system.actor_of(Props::new(move || Bouncer { peer: Arc::clone(&peer), left: Arc::clone(&count) }));
     let (peer, count) = (Arc::clone(&to_a), Arc::clone(&left));
     let b = system.actor_of(Props::new(move || Bouncer { peer: Arc::clone(&peer), left: Arc::clone(&count) }));
+    // Both actors start in their own runs (Pekko's `Create`), before the count.
+    system.run_until_idle();
     *to_b.lock().unwrap() = Some(b.clone());
     *to_a.lock().unwrap() = Some(a.clone());
     let strong_before = (a.mailbox_strong_count(), b.mailbox_strong_count());
@@ -1540,7 +1556,7 @@ mod stage3 {
   }
 
   #[test]
-  fn a_stop_asked_for_in_receive_ends_the_run_and_takes_effect_before_the_next_message() {
+  fn a_stop_asked_for_in_receive_takes_effect_in_the_run_of_the_target() {
     let mut system = system("YieldOnBoundaryWork");
     let log = new_log();
     let target = system.actor_of(Props::new(|| Sink));
@@ -1555,19 +1571,21 @@ mod stage3 {
 
     system.run_until_idle();
 
-    // The run of x yields after "stop", so the other actor's run comes
-    // between; the remaining four go on in the run after it.
+    // `context.stop` puts a `Terminate` on the target's system queue
+    // (Pekko's `ActorCell.stop`): the run of x goes on up to the
+    // throughput, and the target stops in its own run, after x's.
     assert_eq!(
       entries(&log),
       [
         "x:stop",
-        "other:b",
-        "x:check, stopped true",
-        "x:check, stopped true",
-        "x:check, stopped true",
-        "x:check, stopped true"
+        "x:check, stopped false",
+        "x:check, stopped false",
+        "x:check, stopped false",
+        "x:check, stopped false",
+        "other:b"
       ]
     );
+    assert!(system.is_actor_terminated(&target));
   }
 
   #[test]
@@ -1678,26 +1696,40 @@ mod stage3 {
   fn a_panic_in_pre_start_without_a_catcher_terminates_on_the_next_call() {
     let mut system = system("FatalPreStart");
 
-    let unwound = panic::catch_unwind(panic::AssertUnwindSafe(|| system.actor_of(Props::new(|| PanicsInPreStart))));
+    // The actor starts in its own run (Pekko's `Create`), so the panic comes
+    // out of the call that runs it, not out of `actor_of`.
+    system.actor_of(Props::new(|| PanicsInPreStart));
+    assert!(!system.is_terminated());
+    let unwound = panic::catch_unwind(panic::AssertUnwindSafe(|| system.run_until_idle()));
 
     assert!(unwound.is_err());
     assert!(system.is_terminated());
   }
 
-  // ----- a stop takes the run that waits for the mailbox
+  // ----- a stop is handled by the run that waits for the mailbox
 
   #[test]
-  fn stopping_an_actor_takes_the_run_that_waits_for_it() {
+  fn a_stop_is_handled_by_the_run_that_waits_for_the_mailbox() {
     let mut system = system("StopTakesTheRun");
+    let dead = dead_letters_of(&mut system);
     let actor = system.actor_of(Props::new(|| Sink));
-    actor.tell(1_u32, actor.clone());
+    system.run_until_idle();
+    actor.tell("queued", actor.clone());
     let waiting = Executor::lend(system.executor_for_test(), |executor| !executor.manual.is_empty());
     assert!(waiting, "the send left no run");
 
     system.stop(&actor);
 
+    // The `Terminate` joins the run that waits (Pekko's `systemDispatch`
+    // finds the mailbox scheduled): that run handles it before the message,
+    // and the message goes to dead letters as the mailbox closes.
+    let run = Executor::lend(system.executor_for_test(), |executor| executor.manual.pop());
+    let Some(ManualTask::Run(run)) = run else { panic!("the run of the actor no longer waits") };
     let waiting = Executor::lend(system.executor_for_test(), |executor| !executor.manual.is_empty());
-    assert!(!waiting, "the run of the stopped actor still waits");
+    assert!(!waiting, "the stop left a second run");
+    Executor::lend(system.executor_for_test(), |executor| executor.run_mailbox(run, None));
+    assert!(system.is_actor_terminated(&actor));
+    assert_eq!(entries(&dead), ["queued"]);
   }
 
   // ----- review of PR #284
@@ -1904,5 +1936,882 @@ mod stage3 {
     );
 
     assert!(again.is_err(), "a second top-level actor named x started");
+  }
+}
+
+// Stage 4a of #234 (design, section 11.12.12): the start and the stop of an
+// actor are its own `Create` and `Terminate`, a parent learns of a child's
+// end from its `ChildTerminated`, a restart waits for the children it
+// stopped, and the decision for a child's failure waits while its parent is
+// suspended.
+mod stage4a {
+  use std::string::String;
+  use std::sync::atomic::AtomicUsize;
+  use std::sync::atomic::Ordering;
+  use std::sync::Mutex;
+  use std::vec::Vec;
+
+  use crate::adaptor::ChannelBoundary;
+  use crate::adaptor::UnwindCatcher;
+  use crate::kernel::actor::Actor;
+  use crate::kernel::actor::ActorContext;
+  use crate::kernel::actor::DeadLetter;
+  use crate::kernel::actor::Props;
+  use crate::kernel::actor::SuppressedDeadLetter;
+  use crate::kernel::actor::Terminated;
+  use crate::kernel::actor_ref::ActorRef;
+  use crate::kernel::actor_system::ActorSystem;
+  use crate::kernel::event::EventClass;
+  use crate::kernel::message::Message;
+  use crate::kernel::supervision::Directive;
+  use crate::kernel::supervision::RestartWindow;
+  use crate::kernel::supervision::SupervisorStrategy;
+  use crate::kernel::sync::Arc;
+
+  type Log = Arc<Mutex<Vec<String>>>;
+  type Hook = Arc<dyn Fn(&mut ActorContext<'_>) + Send + Sync>;
+
+  fn with_catcher(name: &str) -> ActorSystem {
+    ActorSystem::with_failure_catcher(name, Arc::new(ChannelBoundary::new()), Arc::new(UnwindCatcher))
+  }
+
+  fn new_log() -> Log {
+    Arc::new(Mutex::new(Vec::new()))
+  }
+
+  fn entries(log: &Log) -> Vec<String> {
+    log.lock().unwrap().clone()
+  }
+
+  fn position(log: &[String], entry: &str) -> usize {
+    log.iter().position(|held| held == entry).unwrap_or_else(|| panic!("{entry} is not in {log:?}"))
+  }
+
+  // Records its life and every `&str` it receives as `label:what`. It fails
+  // `receive` on `fail_on`, and `pre_restart` runs `on_pre_restart` in place
+  // of the default (stop the children, then `post_stop`).
+  #[derive(Clone)]
+  struct Node {
+    label: &'static str,
+    log: Log,
+    fail_on: Option<&'static str>,
+    on_pre_restart: Option<Hook>,
+  }
+
+  impl Node {
+    fn new(label: &'static str, log: &Log) -> Self {
+      Self { label, log: Arc::clone(log), fail_on: None, on_pre_restart: None }
+    }
+
+    fn failing_on(mut self, text: &'static str) -> Self {
+      self.fail_on = Some(text);
+      self
+    }
+
+    fn on_pre_restart(mut self, hook: impl Fn(&mut ActorContext<'_>) + Send + Sync + 'static) -> Self {
+      self.on_pre_restart = Some(Arc::new(hook));
+      self
+    }
+
+    fn props(&self) -> Props {
+      let node = self.clone();
+      Props::new(move || node.clone())
+    }
+
+    fn record(&self, what: &str) {
+      self.log.lock().unwrap().push(std::format!("{}:{what}", self.label));
+    }
+  }
+
+  impl Actor for Node {
+    fn pre_start(&mut self, _context: &mut ActorContext<'_>) {
+      self.record("pre_start");
+    }
+
+    fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
+      if let Some(text) = message.downcast_ref::<&'static str>() {
+        if Some(*text) == self.fail_on {
+          panic!("{} fails on {text}", self.label);
+        }
+        self.record(text);
+      }
+    }
+
+    fn post_stop(&mut self) {
+      self.record("post_stop");
+    }
+
+    fn pre_restart(&mut self, context: &mut ActorContext<'_>, _reason: &(dyn core::any::Any + Send)) {
+      self.record("pre_restart");
+      match self.on_pre_restart.clone() {
+        | Some(hook) => hook(context),
+        | None => {
+          context.stop_children();
+          self.post_stop_with_context(context);
+        },
+      }
+    }
+
+    fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
+      self.record("post_restart");
+    }
+  }
+
+  // Collects the `&str` payloads, and the `Terminated` notices (a dead
+  // letter suppression, as in Pekko), that reach dead letters.
+  fn dead_letters_of(system: &mut ActorSystem) -> Log {
+    let collected = new_log();
+    let sink = Arc::clone(&collected);
+    let collector = system.function_ref("dead-letter-collector", move |_: &ActorRef, message: Message| {
+      let letter = match (message.downcast_ref::<DeadLetter>(), message.downcast_ref::<SuppressedDeadLetter>()) {
+        | (Some(letter), _) => letter.message().clone(),
+        | (None, Some(letter)) => letter.message().clone(),
+        | (None, None) => return,
+      };
+      if let Some(text) = letter.downcast_ref::<&'static str>() {
+        sink.lock().unwrap().push(String::from(*text));
+      }
+      if letter.downcast_ref::<Terminated>().is_some() {
+        sink.lock().unwrap().push(String::from("Terminated"));
+      }
+    });
+    let stream = system.event_stream();
+    stream.subscribe(Some(collector.clone()), EventClass::of::<DeadLetter>()).expect("a collector");
+    stream.subscribe(Some(collector), EventClass::of::<SuppressedDeadLetter>()).expect("a collector");
+    collected
+  }
+
+  fn spawn(system: &ActorSystem, parent: &ActorRef, node: &Node, strategy: SupervisorStrategy) -> ActorRef {
+    system.downgrade().spawn_child(parent, node.props(), Some(node.label), strategy)
+  }
+
+  // A strategy whose decider panics, and counts how often it was asked.
+  fn panicking_decider(asked: &Arc<AtomicUsize>) -> SupervisorStrategy {
+    let asked = Arc::clone(asked);
+    SupervisorStrategy::one_for_one(10).with_decider(move |_, _| {
+      asked.fetch_add(1, Ordering::SeqCst);
+      panic!("the decider fails");
+    })
+  }
+
+  // ----- the start
+
+  #[test]
+  fn actor_of_returns_before_pre_start_runs() {
+    let mut system = with_catcher("Stage4aCreate");
+    let log = new_log();
+    let actor = system.actor_of(Node::new("a", &log).props());
+
+    assert!(entries(&log).is_empty(), "pre_start ran inside actor_of");
+    assert!(!system.is_actor_terminated(&actor), "a child that has not started yet is alive");
+    system.run_until_idle();
+    assert_eq!(entries(&log), ["a:pre_start"]);
+  }
+
+  #[test]
+  fn a_name_is_taken_when_the_child_is_created() {
+    let mut system = with_catcher("Stage4aName");
+    let log = new_log();
+    let parent = system.actor_of(Node::new("p", &log).props());
+    let first =
+      system.downgrade().try_spawn_child(&parent, Props::empty(), Some("kid"), SupervisorStrategy::default_strategy());
+    let second =
+      system.downgrade().try_spawn_child(&parent, Props::empty(), Some("kid"), SupervisorStrategy::default_strategy());
+
+    assert!(first.is_ok());
+    assert!(second.is_err(), "the name of a child that has not started yet was free");
+  }
+
+  #[test]
+  fn a_child_stopped_right_after_its_creation_starts_and_then_stops() {
+    let mut system = with_catcher("Stage4aCreateThenStop");
+    let log = new_log();
+    let actor = system.actor_of(Node::new("a", &log).props());
+    system.stop(&actor);
+    actor.tell("hello", actor.clone());
+    system.run_until_idle();
+
+    assert_eq!(entries(&log), ["a:pre_start", "a:post_stop"]);
+    assert!(system.is_actor_terminated(&actor));
+  }
+
+  // ----- the stop (T1 to T5)
+
+  // Tells its parent a message from its `post_stop`, and records whether the
+  // parent had stopped then.
+  struct TellsTheParentWhenItStops {
+    parent: ActorRef,
+    log: Log,
+  }
+
+  impl Actor for TellsTheParentWhenItStops {
+    fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+
+    fn post_stop_with_context(&mut self, context: &mut ActorContext<'_>) {
+      let stopped = context.is_terminated(&self.parent);
+      self.log.lock().unwrap().push(std::format!("child:post_stop, parent stopped {stopped}"));
+      context.tell(&self.parent, "late");
+    }
+  }
+
+  #[test]
+  fn a_parent_waits_suspended_for_its_children_and_stops_after_them() {
+    let mut system = with_catcher("Stage4aT1T2");
+    let dead = dead_letters_of(&mut system);
+    let log = new_log();
+    let parent = system.actor_of(Node::new("parent", &log).props());
+    let (to, child_log) = (parent.clone(), Arc::clone(&log));
+    let child = system.downgrade().spawn_child(
+      &parent,
+      Props::new(move || TellsTheParentWhenItStops { parent: to.clone(), log: Arc::clone(&child_log) }),
+      Some("child"),
+      SupervisorStrategy::default_strategy(),
+    );
+    system.run_until_idle();
+
+    system.stop(&parent);
+    parent.tell("during", parent.clone());
+    system.run_until_idle();
+
+    // T1: the parent is still open while its child stops, and takes no
+    // normal message while it waits. T2: its `post_stop` runs after the
+    // child's.
+    assert_eq!(entries(&log), ["parent:pre_start", "child:post_stop, parent stopped false", "parent:post_stop"]);
+    assert_eq!(entries(&dead), ["during", "late"]);
+    assert!(system.is_actor_terminated(&parent));
+    assert!(system.is_actor_terminated(&child));
+  }
+
+  // Records, when a `Terminated` reaches it, whether the watched actor is
+  // already gone, and whether the name the watched child held is free again.
+  struct WatchingParent {
+    log: Log,
+  }
+
+  impl Actor for WatchingParent {
+    fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+      let child = context.actor_of(Props::empty(), "kid").expect("the name is free");
+      context.watch(&child);
+    }
+
+    fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+      if let Some(notice) = message.downcast_ref::<Terminated>() {
+        let gone = context.is_terminated(notice.target());
+        let reused = context.actor_of(Props::empty(), "kid").is_ok();
+        self.log.lock().unwrap().push(std::format!("terminated, gone {gone}, name free {reused}"));
+      } else if message == "stop kid" {
+        context.stop_children();
+      }
+    }
+  }
+
+  #[test]
+  fn a_watching_parent_learns_of_its_childs_end_before_the_terminated() {
+    let mut system = with_catcher("Stage4aT3T4");
+    let log = new_log();
+    let observed = Arc::clone(&log);
+    let parent = system.actor_of(Props::new(move || WatchingParent { log: Arc::clone(&observed) }));
+    system.run_until_idle();
+
+    parent.tell("stop kid", parent.clone());
+    system.run_until_idle();
+
+    // T3: the watched child has closed when the notice comes. T4: its
+    // parent has handled its `ChildTerminated` before the `Terminated`, so
+    // the name is free again.
+    assert_eq!(entries(&log), ["terminated, gone true, name free true"]);
+  }
+
+  // Asks to stop after a reply on its first message.
+  struct RepliesWhenItStops {
+    reply_to: ActorRef,
+  }
+
+  impl Actor for RepliesWhenItStops {
+    fn receive(&mut self, context: &mut ActorContext<'_>, _message: Message) {
+      context.stop_and_reply_after_termination(self.reply_to.clone(), "reply");
+    }
+  }
+
+  #[test]
+  fn the_termination_callbacks_and_the_reply_come_after_the_notices() {
+    let mut system = with_catcher("Stage4aT5");
+    let log = new_log();
+    let (watch_log, reply_log, callback_log) = (Arc::clone(&log), Arc::clone(&log), Arc::clone(&log));
+    let watcher = system.function_ref("watcher", move |_: &ActorRef, message: Message| {
+      if message.downcast_ref::<Terminated>().is_some() {
+        watch_log.lock().unwrap().push(String::from("terminated"));
+      }
+    });
+    let reply_to = system.function_ref("reply-to", move |_: &ActorRef, message: Message| {
+      if message == "reply" {
+        reply_log.lock().unwrap().push(String::from("reply"));
+      }
+    });
+    let to = reply_to.clone();
+    let actor = system.actor_of(Props::new(move || RepliesWhenItStops { reply_to: to.clone() }));
+    let watched = actor.clone();
+    system.downgrade().on_termination(move |stopped| {
+      if *stopped == watched {
+        callback_log.lock().unwrap().push(String::from("callback"));
+      }
+    });
+    system.watch(&watcher, &actor);
+
+    actor.tell("go", actor.clone());
+    system.run_until_idle();
+
+    assert_eq!(entries(&log), ["terminated", "callback", "reply"]);
+  }
+
+  #[test]
+  fn a_stopping_actor_gets_no_terminated_of_an_actor_it_watched() {
+    let mut system = with_catcher("Stage4aUnwatch");
+    let dead = dead_letters_of(&mut system);
+    let log = new_log();
+    let watched = system.actor_of(Node::new("watched", &log).props());
+    let parent = system.actor_of(Node::new("parent", &log).props());
+    spawn(&system, &parent, &Node::new("child", &log), SupervisorStrategy::default_strategy());
+    system.watch(&parent, &watched);
+    system.run_until_idle();
+
+    // The parent waits for its child, and the watched actor stops in the
+    // meantime: the parent's `Terminate` has removed its watch (T1).
+    system.stop(&parent);
+    system.stop(&watched);
+    system.run_until_idle();
+
+    assert!(system.is_actor_terminated(&parent));
+    assert!(system.is_actor_terminated(&watched));
+    assert!(entries(&dead).is_empty(), "a notice reached the stopping parent: {:?}", entries(&dead));
+  }
+
+  // Sends a message to `peer` when the instance is dropped.
+  struct SendsWhenDropped {
+    peer: ActorRef,
+  }
+
+  impl Actor for SendsWhenDropped {
+    fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+  }
+
+  impl Drop for SendsWhenDropped {
+    fn drop(&mut self) {
+      self.peer.tell("dropped", self.peer.clone());
+    }
+  }
+
+  #[test]
+  fn the_run_that_closes_an_actor_drops_it_after_the_stop() {
+    let mut system = with_catcher("Stage4aDrop");
+    let log = new_log();
+    let peer = system.actor_of(Node::new("peer", &log).props());
+    let to = peer.clone();
+    let actor = system.actor_of(Props::new(move || SendsWhenDropped { peer: to.clone() }));
+    system.run_until_idle();
+
+    system.stop(&actor);
+    system.run_until_idle();
+
+    // The cell is dropped by the run that handled the `Terminate`, outside
+    // the mailbox's lock (design of #234, section 11.6, L3): its `Drop`
+    // reaches another actor.
+    assert!(system.is_actor_terminated(&actor));
+    assert_eq!(entries(&log), ["peer:pre_start", "peer:dropped"]);
+  }
+
+  #[test]
+  fn a_second_stop_does_nothing() {
+    let mut system = with_catcher("Stage4aStopTwice");
+    let dead = dead_letters_of(&mut system);
+    let log = new_log();
+    let notices = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&notices);
+    let watcher = system.function_ref("watcher", move |_: &ActorRef, message: Message| {
+      if message.downcast_ref::<Terminated>().is_some() {
+        counted.fetch_add(1, Ordering::SeqCst);
+      }
+    });
+    let actor = system.actor_of(Node::new("a", &log).props());
+    system.watch(&watcher, &actor);
+    system.stop(&actor);
+    system.stop(&actor);
+    system.run_until_idle();
+    system.stop(&actor);
+    system.run_until_idle();
+
+    assert_eq!(entries(&log), ["a:pre_start", "a:post_stop"]);
+    assert_eq!(notices.load(Ordering::SeqCst), 1);
+    assert!(entries(&dead).is_empty());
+  }
+
+  // ----- the restart waits for the children it stopped
+
+  #[test]
+  fn a_restart_takes_no_message_until_the_children_it_stopped_have_gone() {
+    let mut system = with_catcher("Stage4aRecreation");
+    let log = new_log();
+    let guardian = system.actor_of(Props::empty());
+    let parent =
+      spawn(&system, &guardian, &Node::new("parent", &log).failing_on("boom"), SupervisorStrategy::default_strategy());
+    let child = spawn(&system, &parent, &Node::new("child", &log), SupervisorStrategy::default_strategy());
+    system.run_until_idle();
+
+    parent.tell("boom", parent.clone());
+    parent.tell("after", parent.clone());
+    system.run_until_idle();
+
+    let log = entries(&log);
+    assert!(position(&log, "child:post_stop") < position(&log, "parent:post_restart"), "{log:?}");
+    assert!(position(&log, "parent:post_restart") < position(&log, "parent:after"), "{log:?}");
+    assert!(system.is_actor_terminated(&child));
+    assert!(!system.is_actor_terminated(&parent));
+  }
+
+  #[test]
+  fn an_all_for_one_sibling_takes_no_message_while_its_restart_waits() {
+    let mut system = with_catcher("Stage4aAllForOne");
+    let log = new_log();
+    let guardian = system.actor_of(Props::empty());
+    let all_for_one = SupervisorStrategy::all_for_one(3, RestartWindow::Unbounded);
+    let failing = spawn(&system, &guardian, &Node::new("a", &log).failing_on("boom"), all_for_one.clone());
+    let sibling = spawn(&system, &guardian, &Node::new("b", &log), all_for_one);
+    spawn(&system, &sibling, &Node::new("b-child", &log), SupervisorStrategy::default_strategy());
+    system.run_until_idle();
+
+    failing.tell("boom", failing.clone());
+    sibling.tell("m", sibling.clone());
+    system.run_until_idle();
+
+    let log = entries(&log);
+    assert!(position(&log, "b-child:post_stop") < position(&log, "b:post_restart"), "{log:?}");
+    assert!(position(&log, "b:post_restart") < position(&log, "b:m"), "{log:?}");
+    assert!(log.contains(&String::from("a:post_restart")), "{log:?}");
+  }
+
+  // ----- one suspend per failure, undone once (section 11.12.6)
+
+  #[test]
+  fn a_restarted_actor_takes_the_next_message_with_its_new_instance() {
+    let mut system = with_catcher("Stage4aResumeOnRestart");
+    let log = new_log();
+    let actor = system.actor_of(Node::new("a", &log).failing_on("boom").props());
+    actor.tell("boom", actor.clone());
+    actor.tell("after", actor.clone());
+    system.run_until_idle();
+
+    assert_eq!(entries(&log), ["a:pre_start", "a:pre_restart", "a:post_stop", "a:post_restart", "a:after"]);
+  }
+
+  #[test]
+  fn a_stopped_actor_hands_the_messages_behind_its_failure_to_dead_letters() {
+    let mut system = with_catcher("Stage4aStopOnFailure");
+    let dead = dead_letters_of(&mut system);
+    let log = new_log();
+    let guardian = system.actor_of(Props::empty());
+    let actor =
+      spawn(&system, &guardian, &Node::new("a", &log).failing_on("boom"), SupervisorStrategy::stopping_strategy());
+    system.run_until_idle();
+    actor.tell("boom", actor.clone());
+    actor.tell("after", actor.clone());
+    system.run_until_idle();
+
+    assert_eq!(entries(&log), ["a:pre_start", "a:post_stop"]);
+    assert_eq!(entries(&dead), ["after"]);
+  }
+
+  #[test]
+  fn a_panicking_decider_resumes_the_child_only_when_its_parent_restarts() {
+    for (parent_directive, child_resumed) in [(Directive::Restart, true), (Directive::Stop, false)] {
+      let mut system = with_catcher("Stage4aDeciderPanic");
+      let dead = dead_letters_of(&mut system);
+      let log = new_log();
+      let asked = Arc::new(AtomicUsize::new(0));
+      let guardian = system.actor_of(Props::empty());
+      let decides_parent = SupervisorStrategy::one_for_one(3).with_decider(move |_, _| parent_directive);
+      // The parent keeps its children across its restart.
+      let parent = spawn(&system, &guardian, &Node::new("parent", &log).on_pre_restart(|_| {}), decides_parent);
+      let child = spawn(&system, &parent, &Node::new("child", &log).failing_on("boom"), panicking_decider(&asked));
+      system.run_until_idle();
+
+      child.tell("boom", child.clone());
+      child.tell("after", child.clone());
+      system.run_until_idle();
+
+      assert_eq!(asked.load(Ordering::SeqCst), 1);
+      let log = entries(&log);
+      assert_eq!(log.contains(&String::from("child:after")), child_resumed, "{parent_directive:?}: {log:?}");
+      assert_eq!(entries(&dead) == ["after"], !child_resumed, "{parent_directive:?}: {:?}", entries(&dead));
+      assert_eq!(system.is_actor_terminated(&child), !child_resumed);
+    }
+  }
+
+  // Fails its `pre_start` on the first `failures` attempts.
+  struct FailsToStart {
+    attempts: Arc<AtomicUsize>,
+    failures: usize,
+    log: Log,
+  }
+
+  impl Actor for FailsToStart {
+    fn pre_start(&mut self, _context: &mut ActorContext<'_>) {
+      let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+      assert!(attempt > self.failures, "the start fails");
+    }
+
+    fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
+      if let Some(text) = message.downcast_ref::<&'static str>() {
+        self.log.lock().unwrap().push(String::from(*text));
+      }
+    }
+
+    fn post_stop(&mut self) {
+      self.log.lock().unwrap().push(String::from("post_stop"));
+    }
+  }
+
+  fn fails_to_start(attempts: &Arc<AtomicUsize>, failures: usize, log: &Log) -> Props {
+    let (attempts, log) = (Arc::clone(attempts), Arc::clone(log));
+    Props::new(move || FailsToStart { attempts: Arc::clone(&attempts), failures, log: Arc::clone(&log) })
+  }
+
+  #[test]
+  fn a_failed_start_that_is_stopped_runs_no_post_stop_and_frees_its_name() {
+    let mut system = with_catcher("Stage4aStartStop");
+    let dead = dead_letters_of(&mut system);
+    let log = new_log();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let guardian = system.actor_of(Props::empty());
+    let child = system.downgrade().spawn_child(
+      &guardian,
+      fails_to_start(&attempts, 1, &log),
+      Some("kid"),
+      SupervisorStrategy::stopping_strategy(),
+    );
+    child.tell("hello", child.clone());
+    system.run_until_idle();
+
+    assert!(system.is_actor_terminated(&child));
+    assert!(entries(&log).is_empty(), "the child without an instance ran post_stop or receive: {:?}", entries(&log));
+    assert_eq!(entries(&dead), ["hello"]);
+    let again = system.downgrade().try_spawn_child(
+      &guardian,
+      Props::empty(),
+      Some("kid"),
+      SupervisorStrategy::default_strategy(),
+    );
+    assert!(again.is_ok(), "the name of the stopped child is still taken");
+  }
+
+  #[test]
+  fn a_failed_start_of_a_child_that_also_stopped_is_still_decided() {
+    let mut system = with_catcher("Stage4aStartFailedAndStopped");
+    let log = new_log();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let asked = Arc::new(AtomicUsize::new(0));
+    let guardian = system.actor_of(Props::empty());
+    let parent = spawn(&system, &guardian, &Node::new("parent", &log), SupervisorStrategy::default_strategy());
+    system.run_until_idle();
+    let child = system.downgrade().spawn_child(
+      &parent,
+      fails_to_start(&attempts, 1, &log),
+      Some("kid"),
+      panicking_decider(&asked),
+    );
+    // The `Terminate` waits behind the `Create`: the child fails to start and
+    // closes in one run, and its parent decides afterwards.
+    system.stop(&child);
+    system.run_until_idle();
+
+    assert!(system.is_actor_terminated(&child));
+    assert_eq!(asked.load(Ordering::SeqCst), 1, "the failed start of the stopped child was not decided");
+    let log = entries(&log);
+    assert!(log.contains(&String::from("parent:post_restart")), "the decider panic did not fail the parent: {log:?}");
+  }
+
+  // Starts two children in `pre_start`: `c1` fails its first three starts and
+  // is restarted, `c2` fails its first start and its decider panics, which
+  // restarts the parent while the retry of `c1` is still queued.
+  struct StartsTwoFailingChildren {
+    c1_attempts: Arc<AtomicUsize>,
+    c2_attempts: Arc<AtomicUsize>,
+    c1_decisions: Arc<AtomicUsize>,
+    restarts: Arc<AtomicUsize>,
+    log: Log,
+  }
+
+  impl Actor for StartsTwoFailingChildren {
+    fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+      context.actor_of(fails_to_start(&self.c1_attempts, 3, &self.log), "c1").expect("c1 is free");
+      context.actor_of(fails_to_start(&self.c2_attempts, 1, &self.log), "c2").expect("c2 is free");
+    }
+
+    fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+
+    fn pre_restart(&mut self, _context: &mut ActorContext<'_>, _reason: &(dyn core::any::Any + Send)) {}
+
+    fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
+      self.restarts.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn supervisor_strategy(&self) -> SupervisorStrategy {
+      let decisions = Arc::clone(&self.c1_decisions);
+      SupervisorStrategy::one_for_one(10).with_decider(move |child, _| {
+        if child.path().name() == "c1" {
+          decisions.fetch_add(1, Ordering::SeqCst);
+          Directive::Restart
+        } else {
+          panic!("the decider fails for c2");
+        }
+      })
+    }
+  }
+
+  #[test]
+  fn two_queued_creates_retry_a_failed_start_once_per_decision() {
+    let mut system = with_catcher("Stage4aTwoCreates");
+    let log = new_log();
+    let (c1_attempts, c2_attempts) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (c1_decisions, restarts) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let parent = system.actor_of(Props::new({
+      let (c1_attempts, c2_attempts) = (Arc::clone(&c1_attempts), Arc::clone(&c2_attempts));
+      let (c1_decisions, restarts, log) = (Arc::clone(&c1_decisions), Arc::clone(&restarts), Arc::clone(&log));
+      move || StartsTwoFailingChildren {
+        c1_attempts: Arc::clone(&c1_attempts),
+        c2_attempts: Arc::clone(&c2_attempts),
+        c1_decisions: Arc::clone(&c1_decisions),
+        restarts: Arc::clone(&restarts),
+        log: Arc::clone(&log),
+      }
+    }));
+    system.run_until_idle();
+
+    // c1: the first failure is restarted and its `Create` queued; the
+    // parent's restart queues a second. The first fails again; the second
+    // does nothing, and the second failure gets a decision of its own. One
+    // decision gives one retry, so every failure is decided and the child
+    // ends up resumed.
+    assert_eq!(restarts.load(Ordering::SeqCst), 1);
+    assert_eq!(c1_attempts.load(Ordering::SeqCst), 4);
+    assert_eq!(c1_decisions.load(Ordering::SeqCst), 3);
+    assert_eq!(c2_attempts.load(Ordering::SeqCst), 2);
+    assert!(!system.is_actor_terminated(&parent));
+    let c1 = system.resolve_actor_ref(&parent.path().with_child("c1"));
+    c1.tell("hello", c1.clone());
+    system.run_until_idle();
+    assert_eq!(entries(&log), ["hello"], "the retried child is still suspended");
+  }
+
+  // ----- the decision waits while the parent is suspended
+
+  #[test]
+  fn a_childs_failure_while_its_parent_waits_is_decided_after_the_restart() {
+    let mut system = with_catcher("Stage4aHeldDecision");
+    let log = new_log();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let guardian = system.actor_of(Props::empty());
+    let slow = Arc::new(Mutex::new(None::<ActorRef>));
+    let to_stop = Arc::clone(&slow);
+    let parent_node = Node::new("parent", &log).failing_on("boom").on_pre_restart(move |context| {
+      if let Some(child) = to_stop.lock().unwrap().clone() {
+        context.stop(&child);
+      }
+    });
+    let parent = spawn(&system, &guardian, &parent_node, SupervisorStrategy::one_for_one(5));
+    let a = spawn(&system, &parent, &Node::new("a", &log), SupervisorStrategy::default_strategy());
+    *slow.lock().unwrap() = Some(a);
+    let b = spawn(&system, &parent, &Node::new("b", &log).failing_on("boom"), panicking_decider(&asked));
+    system.run_until_idle();
+
+    // The parent's restart waits for `a`; `b` fails meanwhile, and its
+    // decision waits for the restart to finish.
+    parent.tell("boom", parent.clone());
+    b.tell("boom", b.clone());
+    b.tell("after", b.clone());
+    system.run_until_idle();
+
+    let log = entries(&log);
+    let restarts: Vec<&String> = log.iter().filter(|entry| entry.starts_with("parent:p")).collect();
+    assert_eq!(
+      restarts,
+      ["parent:pre_start", "parent:pre_restart", "parent:post_restart", "parent:pre_restart", "parent:post_restart"],
+      "a restart of the parent ran inside another: {log:?}"
+    );
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+    assert!(log.contains(&String::from("b:after")), "the parent's restart did not resume b: {log:?}");
+  }
+
+  // ----- a restart and a stop of the same actor
+
+  // Asks to stop itself on "stop and fail", then fails the same message.
+  struct StopsItselfThenFails {
+    log: Log,
+  }
+
+  impl Actor for StopsItselfThenFails {
+    fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+      context.actor_of(Props::empty(), "kid").expect("the name is free");
+    }
+
+    fn receive(&mut self, context: &mut ActorContext<'_>, _message: Message) {
+      let me = context.self_ref();
+      context.stop(&me);
+      panic!("fails after asking to stop");
+    }
+
+    fn post_stop(&mut self) {
+      self.log.lock().unwrap().push(String::from("post_stop"));
+    }
+
+    fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
+      self.log.lock().unwrap().push(String::from("post_restart"));
+    }
+  }
+
+  #[test]
+  fn a_stopping_actor_that_fails_is_not_restarted() {
+    let mut system = with_catcher("Stage4aStopThenFail");
+    let log = new_log();
+    let observed = Arc::clone(&log);
+    let actor = system.actor_of(Props::new(move || StopsItselfThenFails { log: Arc::clone(&observed) }));
+    system.run_until_idle();
+
+    actor.tell("stop and fail", actor.clone());
+    system.run_until_idle();
+
+    // Pekko's `faultRecreate` restarts only an actor that is not terminating
+    // (`isNormal`): the stop goes on and finishes.
+    assert_eq!(entries(&log), ["post_stop"]);
+    assert!(system.is_actor_terminated(&actor));
+  }
+
+  #[test]
+  fn an_all_for_one_restart_leaves_a_stopping_sibling_to_its_stop() {
+    let mut system = with_catcher("Stage4aAllForOneStopping");
+    let log = new_log();
+    let guardian = system.actor_of(Props::empty());
+    let all_for_one = SupervisorStrategy::all_for_one(3, RestartWindow::Unbounded);
+    let failing = spawn(&system, &guardian, &Node::new("a", &log).failing_on("boom"), all_for_one.clone());
+    let stopping = spawn(&system, &guardian, &Node::new("b", &log), all_for_one);
+    spawn(&system, &stopping, &Node::new("b-child", &log), SupervisorStrategy::default_strategy());
+    system.run_until_idle();
+
+    // `b` waits for its child to stop when `a` fails.
+    system.stop(&stopping);
+    failing.tell("boom", failing.clone());
+    system.run_until_idle();
+
+    let log = entries(&log);
+    assert!(log.contains(&String::from("a:post_restart")), "{log:?}");
+    assert!(!log.contains(&String::from("b:post_restart")), "the stopping sibling was restarted: {log:?}");
+    assert!(system.is_actor_terminated(&stopping));
+  }
+
+  #[test]
+  fn an_all_for_one_restart_leaves_a_sibling_that_has_not_started_to_its_create() {
+    let mut system = with_catcher("Stage4aAllForOneUnborn");
+    let log = new_log();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let guardian = system.actor_of(Props::empty());
+    system.run_until_idle();
+    let all_for_one =
+      SupervisorStrategy::all_for_one(3, RestartWindow::Unbounded).with_decider(|_, _| Directive::Restart);
+    // `a` fails its first start, and its parent decides before `b` has
+    // handled its `Create`.
+    system.downgrade().spawn_child(&guardian, fails_to_start(&attempts, 1, &log), Some("a"), all_for_one.clone());
+    let unborn = spawn(&system, &guardian, &Node::new("b", &log), all_for_one);
+    system.run_until_idle();
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(entries(&log), ["b:pre_start"], "the sibling that had not started was restarted");
+    assert!(!system.is_actor_terminated(&unborn));
+  }
+
+  // ----- a function reference as a parent
+
+  #[test]
+  fn watching_a_function_reference_that_waits_for_its_child_gives_one_notice() {
+    let mut system = with_catcher("Stage4aFunctionRefWatch");
+    let notices = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&notices);
+    let watcher = system.function_ref("watcher", move |_: &ActorRef, message: Message| {
+      if message.downcast_ref::<Terminated>().is_some() {
+        counted.fetch_add(1, Ordering::SeqCst);
+      }
+    });
+    let parent = system.function_ref("parent", |_: &ActorRef, _: Message| {});
+    system.downgrade().spawn_child(&parent, Props::empty(), Some("kid"), SupervisorStrategy::default_strategy());
+    system.run_until_idle();
+    system.watch(&watcher, &parent);
+
+    // The function reference waits for its child: a watch now is the same
+    // watch, and the end of the last child tells it once.
+    system.stop(&parent);
+    system.watch(&watcher, &parent);
+    system.run_until_idle();
+
+    assert_eq!(notices.load(Ordering::SeqCst), 1);
+    assert!(system.is_actor_terminated(&parent));
+  }
+
+  #[test]
+  fn a_child_of_a_function_reference_whose_decider_panics_is_resumed() {
+    let mut system = with_catcher("Stage4aFunctionRefDecider");
+    let log = new_log();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let parent = system.function_ref("parent", |_: &ActorRef, _: Message| {});
+    let child = system.downgrade().spawn_child(
+      &parent,
+      Node::new("c", &log).failing_on("boom").props(),
+      Some("c"),
+      panicking_decider(&asked),
+    );
+    system.run_until_idle();
+
+    child.tell("boom", child.clone());
+    child.tell("ping", child.clone());
+    system.run_until_idle();
+
+    // A function reference cannot fail in its turn, so nothing restarts it
+    // to resume the child: the child is resumed at once, as in stage 3.
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+    assert_eq!(entries(&log), ["c:pre_start", "c:ping"]);
+    assert!(!system.is_actor_terminated(&child));
+  }
+
+  #[test]
+  fn a_held_failure_of_a_child_that_has_left_the_table_is_dropped() {
+    let mut system = with_catcher("Stage4aDroppedDecision");
+    let log = new_log();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let slow = Arc::new(Mutex::new(None::<ActorRef>));
+    let to_stop = Arc::clone(&slow);
+    let grandparent_node = Node::new("g", &log).failing_on("boom").on_pre_restart(move |context| {
+      if let Some(child) = to_stop.lock().unwrap().clone() {
+        context.stop(&child);
+      }
+    });
+    let grandparent = system.actor_of(grandparent_node.props());
+    let x = spawn(&system, &grandparent, &Node::new("x", &log), SupervisorStrategy::default_strategy());
+    *slow.lock().unwrap() = Some(x);
+    let parent =
+      spawn(&system, &grandparent, &Node::new("p", &log).failing_on("boom"), SupervisorStrategy::one_for_one(5));
+    let child = spawn(&system, &parent, &Node::new("c", &log).failing_on("boom"), panicking_decider(&asked));
+    system.run_until_idle();
+
+    // `g` waits for `x` in its restart, so the decision for `p` waits; `p`
+    // is suspended, so the decision for `c` waits. Once `g` has restarted,
+    // `p` restarts, and its default `pre_restart` stops `c`, which leaves
+    // `p`'s table. The decision for `c` is then dropped.
+    grandparent.tell("boom", grandparent.clone());
+    parent.tell("boom", parent.clone());
+    child.tell("boom", child.clone());
+    system.run_until_idle();
+
+    assert_eq!(asked.load(Ordering::SeqCst), 0, "the decider was asked about a child that had left the table");
+    let log = entries(&log);
+    assert_eq!(log.iter().filter(|entry| *entry == "p:post_restart").count(), 1, "{log:?}");
+    assert!(!system.is_actor_terminated(&parent));
+    assert!(system.is_actor_terminated(&child));
   }
 }

@@ -25,8 +25,8 @@ use crate::kernel::message::Envelope;
 ///
 /// Mirrors the two entry points of `org.apache.pekko.actor.ActorCell` that
 /// `Mailbox.run` calls: `invoke` and `systemInvoke`. A run takes the cell out
-/// of its mailbox, calls these outside every lock, and puts the cell back
-/// (design of #234, section 3.2, invariant I16). The cell changes the mailbox
+/// of its mailbox, calls these outside every lock, and puts the cell back.
+/// The cell changes the mailbox
 /// through the `&Mailbox` it is given: it suspends and resumes it, and closes
 /// it when the actor stops.
 ///

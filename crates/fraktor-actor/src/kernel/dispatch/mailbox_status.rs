@@ -35,7 +35,7 @@ const SHOULD_NOT_PROCESS: u32 = !(SCHEDULED | HAS_SYSTEM_MESSAGES);
 /// Mirrors the `status` of `org.apache.pekko.dispatch.Mailbox`
 /// (`Mailbox.scala:47-55`, `:160-230`): bit 0 is closed and bit 1 is scheduled.
 /// Bit 2 is the "has system messages" flag, which Pekko does not have, and the
-/// suspend count lives from bit 3 up (design of #234, section 3.8, idea 5).
+/// suspend count lives from bit 3 up.
 /// Closed never clears; once it is set, the other bits mean nothing.
 ///
 /// The operations are the status part of `specs/mailbox_scheduling.qnt`.
@@ -62,6 +62,12 @@ impl MailboxStatus {
   /// Returns whether the "has system messages" flag is up.
   pub(crate) fn has_system_messages(&self) -> bool {
     self.load() & HAS_SYSTEM_MESSAGES != 0
+  }
+
+  /// Returns whether the suspend count is above zero in an open mailbox.
+  pub(crate) fn is_open_and_suspended(&self) -> bool {
+    let status = self.load();
+    status & CLOSED == 0 && status >= SUSPEND_UNIT
   }
 
   /// Returns whether a run may take a normal message: open and not suspended

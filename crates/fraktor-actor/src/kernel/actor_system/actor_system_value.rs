@@ -38,6 +38,7 @@ use crate::kernel::actor::DeadLetterSettings;
 use crate::kernel::actor::DeadLetterSuppression;
 use crate::kernel::actor::Dropped;
 use crate::kernel::actor::FunctionRef;
+use crate::kernel::actor::NotInfluenceReceiveTimeout;
 use crate::kernel::actor::Props;
 use crate::kernel::actor::SuppressedDeadLetter;
 use crate::kernel::actor::UnhandledMessage;
@@ -205,7 +206,9 @@ impl ActorSystem {
   /// Each call hands out a handle with a fresh identifier and generation zero,
   /// so handles of different actors compare unequal. The actor is started below
   /// `/user`, with the default supervisor strategy, as the guardian does for a
-  /// top-level actor.
+  /// top-level actor. The call returns before `pre_start` runs: the actor
+  /// starts in its own run, once the dispatcher has run it, as Pekko's
+  /// `actorOf` returns once it has enqueued `Create`.
   ///
   /// Panics once the system has been terminated, with the same cause as Pekko,
   /// which throws `IllegalStateException` from `attachChild` when a defunct
@@ -354,8 +357,7 @@ impl ActorSystem {
   /// never registered fails, a creation that failed returns its kept
   /// failure, and a creation still in progress returns an in-progress
   /// error.
-  pub fn extension<E: ExtensionId>(&self, id: &E) -> Result<Arc<E::Ext>, ExtensionError> {
-    let _ = id;
+  pub fn extension<E: ExtensionId>(&self, _id: &E) -> Result<Arc<E::Ext>, ExtensionError> {
     match self.extensions.get(&TypeId::of::<E>()) {
       | Some(ExtensionEntry::Created(erased)) => Ok(Self::downcast_extension::<E>(erased)),
       | Some(ExtensionEntry::Failed(error)) => Err(error.clone()),
@@ -371,8 +373,7 @@ impl ActorSystem {
   /// documentation: an id whose creation failed answers `false` here,
   /// where Pekko's `hasExtension` rethrows the kept failure. Use
   /// [`extension`](Self::extension) to see the failure itself.
-  pub fn has_extension<E: ExtensionId>(&self, id: &E) -> bool {
-    let _ = id;
+  pub fn has_extension<E: ExtensionId>(&self, _id: &E) -> bool {
     matches!(self.extensions.get(&TypeId::of::<E>()), Some(ExtensionEntry::Created(_)))
   }
 
@@ -383,12 +384,13 @@ impl ActorSystem {
     erased.clone().downcast::<E::Ext>().expect("the registry stores the type the id created")
   }
 
-  /// Stops `target`, telling its watchers that it is gone.
+  /// Asks `target` to stop. Its watchers are told once it has stopped.
   ///
-  /// Mirrors `org.apache.pekko.actor.ActorSystem.stop`, which asks the
-  /// guardian to stop the actor.
+  /// Mirrors `org.apache.pekko.actor.ActorSystem.stop`, which is
+  /// asynchronous: the target gets a `Terminate` and stops in its own run,
+  /// so the stop takes effect once the dispatcher has run it.
   pub fn stop(&mut self, target: &ActorRef) {
-    Executor::lend(&self.executor, |executor| executor.stop_at_boundary(target));
+    Executor::lend(&self.executor, |executor| executor.stop(target));
   }
 
   /// Registers `watcher` to receive the `Terminated` notice of `target`.
@@ -483,6 +485,26 @@ impl ActorSystem {
     Executor::lend(&self.executor, |executor| executor.register_dead_letter_suppression(core::any::TypeId::of::<T>()));
   }
 
+  /// Registers `T` as a message type that does not influence the receive
+  /// timeout.
+  ///
+  /// Mirrors the marker trait `NotInfluenceReceiveTimeout` in Pekko. Call
+  /// before the first message is delivered in this system.
+  pub fn register_not_influence_receive_timeout<T: core::any::Any + NotInfluenceReceiveTimeout>(&self) {
+    Executor::lend(&self.executor, |executor| {
+      executor.register_not_influence_receive_timeout(core::any::TypeId::of::<T>())
+    });
+  }
+
+  /// Returns whether `message` does not influence the receive timeout.
+  ///
+  /// Test-only view of the classification, mirroring the `private[pekko]`
+  /// `ReceiveTimeoutCompat`. Not a public API promise.
+  #[cfg(feature = "test-support")]
+  pub fn is_not_influence_receive_timeout(&self, message: &crate::kernel::message::Message) -> bool {
+    Executor::lend(&self.executor, |executor| executor.is_not_influence_receive_timeout(message))
+  }
+
   /// Starts the dead letter listener with `settings` and returns its
   /// handle.
   ///
@@ -502,9 +524,9 @@ impl ActorSystem {
     let limit = settings.limit();
     let listener = Executor::lend(&self.executor, |executor| executor.start_dead_letter_listener(settings));
     if limit != DeadLetterLogLimit::Off {
-      let _ = self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<DeadLetter>());
-      let _ = self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<Dropped>());
-      let _ = self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<UnhandledMessage>());
+      self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<DeadLetter>()).ok();
+      self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<Dropped>()).ok();
+      self.event_stream.subscribe(Some(listener.clone()), EventClass::of::<UnhandledMessage>()).ok();
     }
     listener
   }

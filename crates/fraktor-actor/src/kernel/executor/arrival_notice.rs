@@ -28,7 +28,7 @@ use crate::kernel::sync::Arc;
 /// A test actor is a function reference: a message reaches it on the
 /// sender's thread, and the test waits for it in `await_envelope`. The count
 /// tells that wait a message has arrived apart from a signal raised for work
-/// that is already done (design of #234, section 11.11.6).
+/// that is already done.
 pub(crate) struct ArrivalNotice {
   signal: Arc<dyn WakeSignal>,
   count: AtomicU64,

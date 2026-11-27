@@ -27,6 +27,7 @@ use crate::kernel::actor::BehaviorStack;
 use crate::kernel::actor::FunctionRef;
 use crate::kernel::actor::InvalidActorNameException;
 use crate::kernel::actor::Props;
+use crate::kernel::actor::ReceiveTimeoutSetting;
 use crate::kernel::actor::Running;
 use crate::kernel::actor::StashOverflowException;
 use crate::kernel::actor_ref::ActorRef;
@@ -336,7 +337,9 @@ impl<'a> ActorContext<'a> {
   /// strategy that this actor reports through
   /// `Actor::supervisor_strategy`. A name that a live child of this actor
   /// already uses is refused with [`InvalidActorNameException`], and a name is
-  /// reusable once the child that held it has stopped. The name is checked as
+  /// reusable once the child that held it has stopped and this actor has
+  /// learned of it. The child's `pre_start` runs in the child's own run, after
+  /// this call has returned. The name is checked as
   /// given; the port does not treat any prefix specially, so a caller that
   /// wants a generated name must generate one, as Pekko's
   /// `context.actorOf(props)` does.
@@ -448,13 +451,34 @@ impl<'a> ActorContext<'a> {
   /// target keeps running until the message that asked for the stop returns,
   /// so a child stopped here is still alive for the rest of the current
   /// delivery and a new child of the same name is refused until the stop has
-  /// finished. The port records the request and the executor carries it out
-  /// after the actor returns.
+  /// finished. The port puts a `Terminate` on the target's system queue, and
+  /// the target's own run handles it.
   pub fn stop(&mut self, target: &ActorRef) {
-    self.executor.request_stop(target.clone());
+    self.executor.stop(target);
   }
 
-  /// Completes child stops before the default restart hook runs `post_stop`.
+  /// Sets the receive timeout of this actor.
+  ///
+  /// Mirrors `ActorContext.setReceiveTimeout`. Callable from `pre_start`,
+  /// `post_restart`, and `receive`, as in Pekko.
+  pub fn set_receive_timeout(&mut self, timeout: ReceiveTimeoutSetting) {
+    if matches!(timeout, ReceiveTimeoutSetting::Finite(_)) {
+      self.executor.require_receive_timeout_clock();
+    }
+    let key = self.self_ref.key();
+    self.executor.set_receive_timeout(key, timeout);
+  }
+
+  /// Returns the receive timeout this actor set last.
+  ///
+  /// Mirrors `ActorContext.receiveTimeout`.
+  pub fn receive_timeout(&self) -> ReceiveTimeoutSetting {
+    self.executor.receive_timeout_setting(self.self_ref.key())
+  }
+
+  /// Asks every child to stop, as the default restart hook does before it
+  /// runs `post_stop`. The children stop later, in their own runs, and a
+  /// restart runs `post_restart` once they have gone.
   pub(crate) fn stop_children(&mut self) {
     self.executor.stop_children_of(self.self_ref);
   }

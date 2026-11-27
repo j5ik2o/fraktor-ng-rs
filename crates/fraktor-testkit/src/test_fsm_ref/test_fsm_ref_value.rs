@@ -190,11 +190,19 @@ where
     };
     // Pekko's `TestFSMRef` builds the actor on a calling-thread
     // dispatcher, so a machine that fails to start throws at creation
-    // and no reference is handed out. Creation here is synchronous
-    // too, so the same contract is a check: a machine the supervisor
-    // stopped during its start is already terminated at this point,
-    // and the constructor fails instead of handing out a reference
-    // whose reads would keep answering with the starting state.
+    // and no reference is handed out. Here the machine starts in its own
+    // run, so the dispatcher is run
+    // until the machine has started or stopped; work queued before it
+    // runs too. The contract is then a check: a machine the supervisor
+    // stopped during its start is terminated at this point, and the
+    // constructor fails instead of handing out a reference whose reads
+    // would keep answering with the starting state. Stage 7b's
+    // calling-thread dispatcher replaces this loop.
+    while !handle.has_started() && !system.is_actor_terminated(&actor_ref) {
+      if !system.run_one() {
+        break;
+      }
+    }
     if system.is_actor_terminated(&actor_ref) {
       panic!("the machine at {} failed to start", actor_ref.path());
     }

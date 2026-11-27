@@ -508,7 +508,7 @@ impl TestKitBase {
   /// Waits at most `max` for a message at the boundary and delivers one.
   fn await_one(&self, max: Duration) {
     if self.system.await_envelope(max) {
-      let _ = self.system.run_one();
+      self.system.run_one();
     }
   }
 

@@ -15,8 +15,7 @@
 // This file has been modified from the Apache Pekko original.
 
 //! What a test counts on its own thread: the clones of handles and of
-//! mailbox runs, the walks of a mailbox's way back, and the locks taken
-//! (design of #234, section 11.11.7, "counting condition 1").
+//! mailbox runs, the walks of a mailbox's way back, and the locks taken.
 //!
 //! The kernel's `Arc` cannot count its own clones, so the few places that
 //! clone a handle or a mailbox count here. Each thread keeps its own counts,

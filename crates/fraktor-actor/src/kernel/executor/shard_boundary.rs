@@ -35,6 +35,14 @@ pub trait ShardBoundary: Send + Sync {
   ///
   /// A system using a custom boundary without a clock can install one before
   /// starting actors whose supervisor counts restarts in a finite window.
+  ///
+  /// When this returns `Some`, the value is a platform monotonic clock: it
+  /// increases monotonically and advances with real time, never going back
+  /// and never standing still while real time passes. Callers bound
+  /// real-time waits by this clock, so a clock that only moves when a test
+  /// moves it does not belong here: a boundary that cannot report platform
+  /// time returns `None`, and a hand-driven clock is installed on the
+  /// system instead.
   fn monotonic_time(&self) -> Option<Duration> {
     None
   }
@@ -54,8 +62,7 @@ pub trait ShardBoundary: Send + Sync {
   /// Returns the signal that wakes a caller waiting for work for the system
   /// of this boundary, when the boundary has one. The boundary raises it when
   /// an envelope is posted; the system raises it when a mailbox has work or
-  /// a function reference has handled a message (design of #234, section
-  /// 11.11.6). Without one, a wait polls the boundary.
+  /// a function reference has handled a message. Without one, a wait polls the boundary.
   fn wake_signal(&self) -> Option<Arc<dyn WakeSignal>> {
     None
   }

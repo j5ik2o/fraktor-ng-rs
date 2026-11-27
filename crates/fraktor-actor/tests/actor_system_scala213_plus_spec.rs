@@ -59,6 +59,8 @@ fn leaving_scope_terminates_the_actor_system() {
     let mut system = ActorSystem::new("ActorSystemScala213PlusSpec", Arc::clone(&boundary) as Arc<_>);
     let released_by_actor = Arc::clone(&released);
     let actor = system.actor_of(Props::new(move || TrackedActor { released: Arc::clone(&released_by_actor) }));
+    // The actor is built in its own run (Pekko's `Create`).
+    system.run_until_idle();
     let without_mailbox = system.resolve_actor_ref(&actor.path().parent().with_child("no-actor-here"));
     actor.tell((), actor.clone());
     without_mailbox.tell((), actor.clone());
