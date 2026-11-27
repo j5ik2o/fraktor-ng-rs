@@ -82,7 +82,14 @@ impl DeadLettersShared {
   /// first installation runs where it was raised, as publications did
   /// before the trampoline existed.
   pub(crate) fn set_dead_letter_trampoline(&self, trampoline: Arc<dyn DeadLetterTrampoline>) {
-    *self.trampoline.lock() = Some(trampoline);
+    // The replaced trampoline is taken out and dropped after the lock is
+    // released: dropping it while the lock is held could publish a dead
+    // letter from its drop, which would take the same lock again.
+    let replaced = {
+      let mut slot = self.trampoline.lock();
+      slot.replace(trampoline)
+    };
+    drop(replaced);
   }
 
   /// Records the subscription table the routing rules publish to.
