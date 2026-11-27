@@ -31,8 +31,7 @@ mod tests;
 ///
 /// Mirrors `org.apache.pekko.dispatch.MessageQueue`. The queue does not know
 /// whether its mailbox is closed: the mailbox's gate decides that, so that a
-/// queue can be shared by mailboxes that close one by one (design of #234,
-/// section 3.2, "the gate"). The adaptor may pass its own queue through a
+/// queue can be shared by mailboxes that close one by one. The adaptor may pass its own queue through a
 /// [`MessageQueueFactory`](super::MessageQueueFactory).
 ///
 /// Putting an envelope on the queue takes two steps, so that no user code runs
@@ -79,4 +78,15 @@ pub trait MessageQueue: Send + Sync {
   /// A mailbox with a queue of its own calls this when it closes and sends
   /// what it gets to dead letters (Pekko's `cleanUp`).
   fn drain(&self) -> Vec<Envelope>;
+
+  /// Puts `envelopes` at the front of the queue, keeping their order, ahead
+  /// of everything already queued (Pekko's `DequeBasedMessageQueue.enqueueFirst`,
+  /// which `unstashAll` uses). The default cannot, and hands them back.
+  ///
+  /// # Errors
+  ///
+  /// Returns the envelopes when the queue cannot put them first.
+  fn enqueue_first(&self, envelopes: Vec<Envelope>) -> Result<(), Vec<Envelope>> {
+    Err(envelopes)
+  }
 }

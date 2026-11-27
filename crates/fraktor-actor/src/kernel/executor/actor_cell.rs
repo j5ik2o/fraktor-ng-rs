@@ -24,8 +24,11 @@ use crate::kernel::actor::ActorContext;
 use crate::kernel::actor::BehaviorStack;
 use crate::kernel::actor::Props;
 use crate::kernel::actor_ref::ActorRef;
+use crate::kernel::executor::Executor;
 use crate::kernel::message::Message;
+use crate::kernel::supervision::FailureCatcher;
 use crate::kernel::supervision::RestartHistory;
+use crate::kernel::supervision::RunOutcome;
 use crate::kernel::supervision::SupervisorStrategy;
 
 /// An actor that the executor owns and drives.
@@ -46,6 +49,19 @@ pub(crate) struct ActorCell {
   strategy_inherited: bool,
   restart_history: RestartHistory,
   post_stop_suppressed: bool,
+  start_failure: Option<StartFailure>,
+  failed_sender: Option<ActorRef>,
+}
+
+/// What the cell keeps of a start that failed, until a `Create` starts it
+/// again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StartFailure {
+  /// The parent has not decided for the failure yet.
+  Undecided,
+  /// The parent has decided for the failure (Pekko's `Failed` has reached
+  /// the parent and been handled).
+  Decided,
 }
 
 impl ActorCell {
@@ -68,26 +84,19 @@ impl ActorCell {
       strategy_inherited,
       restart_history: RestartHistory::new(),
       post_stop_suppressed: false,
+      start_failure: None,
+      failed_sender: None,
     }
   }
 
-  /// Returns whether this cell is the actor that `recipient` addresses.
-  pub(crate) fn accepts(&self, recipient: &ActorRef) -> bool {
-    &self.self_ref == recipient
+  /// Returns the key of the actor's entry in the executor.
+  pub(crate) fn key(&self) -> (u64, u32) {
+    self.self_ref.key()
   }
 
   /// Returns the handle of the actor that this cell runs.
   pub(crate) fn self_ref(&self) -> ActorRef {
     self.self_ref.clone()
-  }
-
-  /// Returns whether this cell was started by `parent`.
-  ///
-  /// A child is told apart by the handle of its parent, not by the shape of its
-  /// path: two different parents may give a child the same name, and a path
-  /// prefix would then match the wrong actor.
-  pub(crate) fn is_child_of(&self, parent: &ActorRef) -> bool {
-    self.parent.as_ref() == Some(parent)
   }
 
   /// Returns the handle of the actor that started this actor, when it has one.
@@ -165,11 +174,37 @@ impl ActorCell {
     self.behavior = Some(behavior);
   }
 
-  /// Hands one message to the current behaviour.
-  pub(crate) fn deliver(&mut self, context: &mut ActorContext<'_>, message: Message) {
-    if let Some(behavior) = self.behavior.as_mut() {
-      context.run_behavior(behavior.as_mut(), message);
-    }
+  /// Hands one message from `sender` to the current behaviour, under
+  /// `catcher` when there is one, and returns how it ended with the sender.
+  ///
+  /// The context borrows the cell's own handle and behaviour stack, so the
+  /// delivery copies neither, and a panic that unwinds out of it leaves the
+  /// stack in the cell.
+  pub(crate) fn receive(
+    &mut self,
+    executor: &mut Executor,
+    message: Message,
+    sender: ActorRef,
+    catcher: Option<&dyn FailureCatcher>,
+  ) -> (RunOutcome, ActorRef) {
+    let Self { behavior, stack, self_ref, .. } = self;
+    let mut context = ActorContext::new(self_ref, sender, executor, stack);
+    let outcome = match (behavior.as_mut(), catcher) {
+      | (Some(behavior), Some(catcher)) => {
+        let mut message = Some(message);
+        catcher.run(&mut || {
+          if let Some(message) = message.take() {
+            context.run_behavior(behavior.as_mut(), message);
+          }
+        })
+      },
+      | (Some(behavior), None) => {
+        context.run_behavior(behavior.as_mut(), message);
+        RunOutcome::Completed
+      },
+      | (None, _) => RunOutcome::Completed,
+    };
+    (outcome, context.into_sender())
   }
 
   /// Runs `pre_restart` on the current behaviour.
@@ -226,5 +261,40 @@ impl ActorCell {
   /// Returns whether the stop path must skip this instance's `post_stop`.
   pub(crate) fn post_stop_suppressed(&self) -> bool {
     self.post_stop_suppressed
+  }
+
+  /// Returns what the cell keeps of a start that failed, if one did.
+  pub(crate) fn start_failure(&self) -> Option<StartFailure> {
+    self.start_failure
+  }
+
+  /// Records that the start failed and the parent has not decided yet.
+  pub(crate) fn record_start_failure(&mut self) {
+    self.start_failure = Some(StartFailure::Undecided);
+  }
+
+  /// Records that the parent has decided for the failed start.
+  pub(crate) fn mark_start_failure_decided(&mut self) {
+    if self.start_failure.is_some() {
+      self.start_failure = Some(StartFailure::Decided);
+    }
+  }
+
+  /// Forgets the failed start, as a `Create` that starts the actor again
+  /// does, and returns whether there was one.
+  pub(crate) fn take_start_failure(&mut self) -> bool {
+    self.start_failure.take().is_some()
+  }
+
+  /// Returns the sender of the message whose handling failed, which
+  /// `post_stop` and `pre_restart` see as `sender()` (Pekko's
+  /// `currentMessage`, which a failure leaves on the failed envelope).
+  pub(crate) fn failed_sender(&self) -> Option<ActorRef> {
+    self.failed_sender.clone()
+  }
+
+  /// Records or clears the sender of the failed message.
+  pub(crate) fn set_failed_sender(&mut self, sender: Option<ActorRef>) {
+    self.failed_sender = sender;
   }
 }

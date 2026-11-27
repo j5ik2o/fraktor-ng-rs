@@ -17,6 +17,7 @@
 //! What a mailbox runs: the actor's side of a run.
 
 use crate::kernel::dispatch::Mailbox;
+use crate::kernel::dispatch::Next;
 use crate::kernel::dispatch::SystemMessage;
 use crate::kernel::message::Envelope;
 
@@ -24,14 +25,21 @@ use crate::kernel::message::Envelope;
 ///
 /// Mirrors the two entry points of `org.apache.pekko.actor.ActorCell` that
 /// `Mailbox.run` calls: `invoke` and `systemInvoke`. A run takes the cell out
-/// of its mailbox, calls these outside every lock, and puts the cell back
-/// (design of #234, section 3.2, invariant I16). The cell changes the mailbox
+/// of its mailbox, calls these outside every lock, and puts the cell back.
+/// The cell changes the mailbox
 /// through the `&Mailbox` it is given: it suspends and resumes it, and closes
 /// it when the actor stops.
-pub trait MailboxCell: Send + Sized {
-  /// Handles one normal message.
-  fn invoke(&mut self, mailbox: &Mailbox<Self>, envelope: Envelope);
+///
+/// A run lends the cell what it needs to handle a message, as `env`: the
+/// executor of the actor system, while one lock still guards it (design of
+/// #234, section 11.11.2).
+pub(crate) trait MailboxCell: Send + Sized {
+  /// What a run lends the cell while it handles messages.
+  type Env: ?Sized;
+
+  /// Handles one normal message and says whether the run may take the next.
+  fn invoke(&mut self, env: &mut Self::Env, mailbox: &Mailbox<Self>, envelope: Envelope) -> Next;
 
   /// Handles one system message.
-  fn system_invoke(&mut self, mailbox: &Mailbox<Self>, message: SystemMessage);
+  fn system_invoke(&mut self, env: &mut Self::Env, mailbox: &Mailbox<Self>, message: SystemMessage);
 }

@@ -5,23 +5,24 @@ use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
 
-use crate::kernel::actor::Actor;
-use crate::kernel::actor::ActorContext;
-use crate::kernel::actor::Props;
+use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::actor_system::ActorSystem;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Message;
 
 use super::ChannelBoundary;
 
-struct Sink;
-
-impl Actor for Sink {
-  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
-}
-
 fn system_on(boundary: &Arc<ChannelBoundary>) -> ActorSystem {
   ActorSystem::new("ChannelBoundarySpec", Arc::clone(boundary) as Arc<_>)
+}
+
+// A handle without a mailbox: a path that no actor has, which resolves as
+// Pekko's `EmptyLocalActorRef` does. Its messages go through the shard
+// boundary, so a test of the boundary posts with it. A tell to an actor goes
+// onto the actor's mailbox and never reaches the boundary.
+fn without_mailbox(system: &ActorSystem) -> ActorRef {
+  let root = system.dead_letters().path().parent();
+  system.resolve_actor_ref(&root.with_child("user").with_child("no-actor-here"))
 }
 
 #[test]
@@ -41,8 +42,8 @@ fn polling_within_returns_none_when_nothing_arrives() {
 #[test]
 fn polling_finds_a_message_that_tell_posted() {
   let boundary = Arc::new(ChannelBoundary::new());
-  let mut system = system_on(&boundary);
-  let recipient = system.actor_of(Props::new(|| Sink));
+  let system = system_on(&boundary);
+  let recipient = without_mailbox(&system);
 
   recipient.tell(Message::new("hello"), recipient.clone());
 
@@ -52,8 +53,8 @@ fn polling_finds_a_message_that_tell_posted() {
 #[test]
 fn polling_within_finds_a_message_that_tell_posted() {
   let boundary = Arc::new(ChannelBoundary::new());
-  let mut system = system_on(&boundary);
-  let recipient = system.actor_of(Props::new(|| Sink));
+  let system = system_on(&boundary);
+  let recipient = without_mailbox(&system);
 
   recipient.tell(Message::new("hello"), recipient.clone());
 
@@ -63,8 +64,8 @@ fn polling_within_finds_a_message_that_tell_posted() {
 #[test]
 fn posting_after_close_is_discarded() {
   let boundary = Arc::new(ChannelBoundary::new());
-  let mut system = system_on(&boundary);
-  let recipient = system.actor_of(Props::new(|| Sink));
+  let system = system_on(&boundary);
+  let recipient = without_mailbox(&system);
 
   boundary.close();
   recipient.tell(Message::new("hello"), recipient.clone());
@@ -80,8 +81,8 @@ fn a_post_racing_close_leaves_nothing_after_the_drain() {
 
   for _ in 0..ROUNDS {
     let boundary = Arc::new(ChannelBoundary::new());
-    let mut system = system_on(&boundary);
-    let recipient = system.actor_of(Props::new(|| Sink));
+    let system = system_on(&boundary);
+    let recipient = without_mailbox(&system);
     let barrier = Arc::new(Barrier::new(POSTERS + 1));
 
     let mut posters = Vec::with_capacity(POSTERS);
@@ -111,8 +112,8 @@ fn a_post_racing_close_leaves_nothing_after_the_drain() {
 #[test]
 fn has_pending_reports_a_posted_envelope_until_it_is_taken() {
   let boundary = Arc::new(ChannelBoundary::new());
-  let mut system = system_on(&boundary);
-  let recipient = system.actor_of(Props::new(|| Sink));
+  let system = system_on(&boundary);
+  let recipient = without_mailbox(&system);
 
   assert!(!boundary.has_pending());
   recipient.tell(Message::new("hello"), recipient.clone());
@@ -125,8 +126,8 @@ fn has_pending_reports_a_posted_envelope_until_it_is_taken() {
 #[test]
 fn has_pending_ignores_a_post_that_close_rejected() {
   let boundary = Arc::new(ChannelBoundary::new());
-  let mut system = system_on(&boundary);
-  let recipient = system.actor_of(Props::new(|| Sink));
+  let system = system_on(&boundary);
+  let recipient = without_mailbox(&system);
 
   boundary.close();
   recipient.tell(Message::new("hello"), recipient.clone());

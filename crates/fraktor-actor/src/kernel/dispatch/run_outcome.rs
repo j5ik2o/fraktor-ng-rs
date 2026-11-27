@@ -19,14 +19,14 @@
 use crate::kernel::dispatch::MailboxRun;
 
 /// The end of one [`MailboxRun::run`].
-pub enum RunOutcome<C> {
+pub(crate) enum RunOutcome<C> {
   /// The run reserved the mailbox again and still holds its scheduled bit.
   /// The adaptor hands this run back to the pool as it is, without touching
   /// the bit: reserving again would lose to its own bit and drop the work
   /// (Devin's review on PR #236).
   ///
   /// When the pool refuses it, the adaptor treats it as any refused
-  /// submission (design of #234, section 3.5): it tries once more, and if
+  /// submission: it tries once more, and if
   /// that is refused too, clears the bit and reports the error. Clearing the
   /// bit comes with the pool (stage 5, invariant I15).
   Again(MailboxRun<C>),

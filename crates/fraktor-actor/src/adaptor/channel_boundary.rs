@@ -4,9 +4,12 @@ use core::time::Duration;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::sync::Mutex;
 
+use crate::adaptor::CondvarSignal;
 use crate::adaptor::SystemClock;
+use crate::kernel::dispatch::WakeSignal;
 use crate::kernel::executor::ShardBoundary;
 use crate::kernel::message::Envelope;
 use crate::kernel::Clock;
@@ -15,10 +18,12 @@ use crate::kernel::Clock;
 #[path = "channel_boundary_test.rs"]
 mod tests;
 
-/// Carries messages between shards over a standard-library channel.
+/// Carries the messages that have no mailbox to go to over a
+/// standard-library channel.
 ///
-/// The temporary policy of G0b puts a channel only at the edge of a shard, and
-/// this is its one implementation. The receiving end needs `&self` to poll it,
+/// The boundary also owns the signal that wakes a thread waiting for work for
+/// its system: a post raises it, and so do the system's mailboxes and
+/// function references. The receiving end needs `&self` to poll it,
 /// so it sits behind a `Mutex`; a poisoned lock still yields its data, because
 /// a panic while sending must not lose the messages already queued.
 ///
@@ -32,6 +37,7 @@ pub struct ChannelBoundary {
   open: Mutex<bool>,
   pending: AtomicUsize,
   clock: SystemClock,
+  signal: Arc<CondvarSignal>,
 }
 
 impl ChannelBoundary {
@@ -44,6 +50,7 @@ impl ChannelBoundary {
       open: Mutex::new(true),
       pending: AtomicUsize::new(0),
       clock: SystemClock::new(),
+      signal: Arc::new(CondvarSignal::new()),
     }
   }
 
@@ -80,7 +87,9 @@ impl ShardBoundary for ChannelBoundary {
       return;
     }
     self.pending.fetch_add(1, Ordering::AcqRel);
-    let _ = self.sender.send(envelope);
+    self.sender.send(envelope).ok();
+    drop(open);
+    self.signal.notify();
   }
 
   fn poll(&self) -> Option<Envelope> {
@@ -95,6 +104,11 @@ impl ShardBoundary for ChannelBoundary {
 
   fn has_pending(&self) -> bool {
     self.pending.load(Ordering::Acquire) > 0
+  }
+
+  fn wake_signal(&self) -> Option<Arc<dyn WakeSignal>> {
+    let signal: Arc<dyn WakeSignal> = self.signal.clone();
+    Some(signal)
   }
 
   fn close(&self) {

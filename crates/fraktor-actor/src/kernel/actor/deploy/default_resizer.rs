@@ -44,8 +44,8 @@ impl DefaultResizer {
   /// the rates must not be negative, the backoff threshold must be at
   /// most 1.0, and the messages per resize must be positive. The
   /// non-negativity of the bounds is not checked: the fields are
-  /// unsigned, so a negative bound cannot be written (a narrowing by
-  /// the input types, recorded in the design of #195). The pressure
+  /// unsigned, so a negative bound cannot be written (narrowed by
+  /// the input types). The pressure
   /// threshold is signed and unchecked, as in the original, whose
   /// pressure test treats every value below one by the same branch.
   /// `NaN` rates pass, as in the original.

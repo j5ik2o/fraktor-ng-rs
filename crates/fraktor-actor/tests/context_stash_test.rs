@@ -468,6 +468,8 @@ fn a_stash_returned_by_the_stop_hook_is_released_by_the_stop() {
   assert_eq!(released.load(Ordering::SeqCst), 0, "the payload is held by the stash");
 
   spec.system_mut().stop(&stasher);
+  // The stasher stops in its own run (Pekko's `Terminate`).
+  spec.system_mut().run_until_idle();
 
   assert_eq!(released.load(Ordering::SeqCst), 1, "the stop released the stash the hook returned");
   spec.terminate();

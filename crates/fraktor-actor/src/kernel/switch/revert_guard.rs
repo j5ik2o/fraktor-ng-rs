@@ -47,7 +47,7 @@ impl<'a> RevertGuard<'a> {
 impl Drop for RevertGuard<'_> {
   fn drop(&mut self) {
     if self.armed {
-      let _ = self.on.compare_exchange(!self.from, self.from, Ordering::SeqCst, Ordering::SeqCst);
+      self.on.compare_exchange(!self.from, self.from, Ordering::SeqCst, Ordering::SeqCst).ok();
     }
   }
 }

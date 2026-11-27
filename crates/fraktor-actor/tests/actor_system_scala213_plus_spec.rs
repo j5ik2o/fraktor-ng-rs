@@ -52,19 +52,27 @@ impl Drop for TrackedActor {
 fn leaving_scope_terminates_the_actor_system() {
   let boundary = Arc::new(ChannelBoundary::new());
   let released = Arc::new(AtomicBool::new(false));
-  let actor = {
+  // A tell to the actor goes onto its mailbox; the handle of a path that no
+  // actor has (Pekko's `EmptyLocalActorRef`) posts to the boundary, so the
+  // boundary's state is read through it.
+  let (actor, without_mailbox) = {
     let mut system = ActorSystem::new("ActorSystemScala213PlusSpec", Arc::clone(&boundary) as Arc<_>);
     let released_by_actor = Arc::clone(&released);
     let actor = system.actor_of(Props::new(move || TrackedActor { released: Arc::clone(&released_by_actor) }));
+    // The actor is built in its own run (Pekko's `Create`).
+    system.run_until_idle();
+    let without_mailbox = system.resolve_actor_ref(&actor.path().parent().with_child("no-actor-here"));
     actor.tell((), actor.clone());
+    without_mailbox.tell((), actor.clone());
     assert!(boundary.has_pending(), "the running system accepts messages");
     assert!(!released.load(Ordering::Relaxed), "the actor is still owned inside the scope");
-    actor
+    (actor, without_mailbox)
   };
 
   assert!(released.load(Ordering::Relaxed), "leaving the scope releases the actor");
   // The boundary outlives the system, so the pending state is observable as soon as Drop returns.
   assert!(!boundary.has_pending(), "leaving the scope drains the system's boundary");
   actor.tell((), actor.clone());
+  without_mailbox.tell((), actor.clone());
   assert!(!boundary.has_pending(), "the terminated system's boundary rejects new messages");
 }
