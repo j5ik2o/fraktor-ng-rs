@@ -73,9 +73,7 @@ impl MetricsKitShared {
   /// Metrics registered after the take stay registered.
   fn take_metrics(&self) -> BTreeMap<String, Metric> {
     let mut registry = self.registry.lock().expect("registry lock");
-    let snapshot = registry.clone();
-    registry.retain(|key, _| !snapshot.contains_key(key));
-    snapshot
+    std::mem::take(&mut registry)
   }
 
   /// Puts back metrics taken out by [`Self::take_metrics`], except keys
