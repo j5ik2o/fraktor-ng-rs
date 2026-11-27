@@ -22,7 +22,11 @@
 
 //! The view an actor gets while it handles one message.
 
+#[cfg(feature = "test-support")]
+use crate::kernel::actor::test_support::ActorHandle;
 use crate::kernel::actor::Actor;
+#[cfg(feature = "test-support")]
+use crate::kernel::actor::ActorCreationError;
 use crate::kernel::actor::BehaviorStack;
 use crate::kernel::actor::FunctionRef;
 use crate::kernel::actor::InvalidActorNameException;
@@ -31,6 +35,8 @@ use crate::kernel::actor::ReceiveTimeoutSetting;
 use crate::kernel::actor::Running;
 use crate::kernel::actor::StashOverflowException;
 use crate::kernel::actor_ref::ActorRef;
+#[cfg(feature = "test-support")]
+use crate::kernel::actor_system::WeakActorSystem;
 use crate::kernel::executor::Executor;
 use crate::kernel::message::Message;
 use crate::kernel::supervision::SupervisorStrategy;
@@ -118,6 +124,44 @@ impl<'a> ActorContext<'a> {
   /// which is the port's convention for a report with no real sender.
   pub fn dead_letters(&self) -> ActorRef {
     self.executor.dead_letters()
+  }
+
+  /// Returns the system this actor runs in, as a non-owning handle.
+  ///
+  /// Mirrors `ActorContext.system`. An actor that builds a
+  /// `TestActorRef` while it runs hands the handle to that reference,
+  /// which a test reads from its own thread afterwards.
+  #[cfg(feature = "test-support")]
+  pub fn system(&self) -> WeakActorSystem {
+    self.executor.weak_system()
+  }
+
+  /// Starts an actor a test wraps, attaching `handle` to its cell.
+  ///
+  /// Mirrors the creation `TestActorRef` performs from inside an
+  /// actor: the call goes through the same executor entry as the one a
+  /// test thread reaches through a non-owning handle, so the checks
+  /// and the choice of strategy do not depend on the entry. A
+  /// supervisor that is omitted places the actor below the user
+  /// guardian, not below this actor.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ActorCreationError`] when the name, the parent's state,
+  /// or the configuration is refused.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the supervisor is an actor that has not started yet.
+  #[cfg(feature = "test-support")]
+  pub fn try_spawn_test_actor(
+    &mut self,
+    supervisor: Option<&ActorRef>,
+    props: Props,
+    name: Option<&str>,
+    handle: ActorHandle,
+  ) -> Result<ActorRef, ActorCreationError> {
+    self.executor.try_spawn_test_actor(supervisor, props, name, handle)
   }
 
   /// Publishes `event` on the event stream of the system.
