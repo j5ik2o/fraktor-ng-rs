@@ -2816,29 +2816,6 @@ mod stage4a {
   }
 }
 
-// Issue #297 (design `docs/design/issue-296-297-dead-letters-followup.md`,
-// section 7.2): a system message that reaches a closed mailbox goes to dead
-// letters, as Pekko's harmless dead letter mailbox does
-// (`dispatch/Mailboxes.scala`, the `systemEnqueue` of the dead letter
-// mailbox). `Terminate` and `ChildTerminated` are suppressed, as Pekko's
-// `DeadLetterSuppression` marks them and as the commander decided for the
-// port's own `ChildTerminated` (design section 6, decision 5); every other
-// kind is a plain `DeadLetter` whose sender and recipient are both the owner
-// of the closed mailbox.
-//
-// The recorder here reads the payload of a report as a `SystemMessage`,
-// which `record_dead_letters` cannot do because it reads a `&'static str`.
-// `SystemMessage` is `pub(crate)`, so these tests live in the kernel.
-//
-// The reports are observed through the executor's event stream, because the
-// design routes a system message of a closed mailbox through
-// `DeadLettersShared`, which publishes to the bus (design section 5.4). Each
-// test reaches the closed mailbox through the entry points the design fixes
-// for #297 (`send_system`, `stop`, `finish_terminate`, `queued_to_dead_letters`)
-// rather than calling `route_closed_system_message` itself, so that the
-// entry points, not only the route, are pinned. Today a closed mailbox drops
-// the system message (`.ok()`), so each test fails on its assertion: that is
-// the intended red.
 mod closed_mailbox_system_messages {
   use core::time::Duration;
   use std::sync::Mutex;
