@@ -3,7 +3,7 @@
 //! Signature formatting for extracted public API items.
 
 use quote::ToTokens;
-use syn::{Fields, Generics, ImplItem, Item, ReturnType, Signature, TraitItem, Type, Variant};
+use syn::{Fields, Generics, ImplItem, Item, ItemTrait, ReturnType, Signature, TraitItem, Type, Variant};
 
 use super::{MemberSignature, PubItem, has_cfg_test, is_public};
 
@@ -12,19 +12,19 @@ pub(crate) fn extract_pub_item(item: &Item) -> Option<PubItem> {
     | Item::Struct(s) if is_public(&s.vis) => Some(PubItem {
       name: s.ident.to_string(),
       kind_prefix: "pub struct".to_string(),
-      suffix: compact_generics(&s.generics),
+      suffix: generics_and_where(&s.generics),
       members: extract_pub_fields(&s.fields),
     }),
     | Item::Enum(e) if is_public(&e.vis) => Some(PubItem {
       name: e.ident.to_string(),
       kind_prefix: "pub enum".to_string(),
-      suffix: compact_generics(&e.generics),
+      suffix: generics_and_where(&e.generics),
       members: e.variants.iter().filter(|variant| !has_cfg_test(&variant.attrs)).map(format_variant).collect(),
     }),
     | Item::Union(u) if is_public(&u.vis) => Some(PubItem {
       name: u.ident.to_string(),
       kind_prefix: "pub union".to_string(),
-      suffix: compact_generics(&u.generics),
+      suffix: generics_and_where(&u.generics),
       members: u
         .fields
         .named
@@ -45,7 +45,7 @@ pub(crate) fn extract_pub_item(item: &Item) -> Option<PubItem> {
       Some(PubItem {
         name: t.ident.to_string(),
         kind_prefix: kind_prefix.to_string(),
-        suffix: compact_generics(&t.generics),
+        suffix: trait_suffix(t),
         members: t.items.iter().filter_map(extract_trait_item).collect(),
       })
     },
@@ -202,7 +202,35 @@ fn fn_suffix(sig: &Signature) -> String {
     | ReturnType::Default => String::new(),
     | ReturnType::Type(_, ty) => format!(" -> {}", compact_tokens(ty)),
   };
-  format!("{generics}({}){ret}", inputs.join(", "))
+  format!("{generics}({}){ret}{}", inputs.join(", "), where_suffix(&sig.generics))
+}
+
+fn generics_and_where(generics: &Generics) -> String {
+  format!("{}{}", compact_generics(generics), where_suffix(generics))
+}
+
+/// The generics, the supertraits, and the where clause of a trait, as in
+/// `<T>: Clone + Send where T: Copy`.
+fn trait_suffix(item: &ItemTrait) -> String {
+  let supertraits = if item.supertraits.is_empty() {
+    String::new()
+  } else {
+    let bounds: Vec<String> = item.supertraits.iter().map(compact_tokens).collect();
+    format!(": {}", bounds.join(" + "))
+  };
+  format!("{}{supertraits}{}", compact_generics(&item.generics), where_suffix(&item.generics))
+}
+
+/// ` where A: B, ..` when the generics have a where clause, so that a change
+/// of the bounds changes the line.
+fn where_suffix(generics: &Generics) -> String {
+  match &generics.where_clause {
+    | Some(clause) if !clause.predicates.is_empty() => {
+      let predicates: Vec<String> = clause.predicates.iter().map(compact_tokens).collect();
+      format!(" where {}", predicates.join(", "))
+    },
+    | _ => String::new(),
+  }
 }
 
 fn compact_generics(generics: &Generics) -> String {
@@ -237,6 +265,10 @@ fn normalize_rust_tokens(raw: &str) -> String {
     .replace("-> & ", "-> &")
     .replace("(& ", "(&")
     .replace(", & ", ", &")
-    .replace("<& ", "<&");
+    .replace("<& ", "<&")
+    .replace("FnOnce (", "FnOnce(")
+    .replace("FnMut (", "FnMut(")
+    .replace("Fn (", "Fn(")
+    .replace("? ", "?");
   if let Some(rest) = s.strip_prefix("& ") { format!("&{rest}") } else { s }
 }

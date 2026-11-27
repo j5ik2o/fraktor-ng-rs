@@ -95,6 +95,9 @@ jobs:
         run: |
           rustup target add thumbv7em-none-eabihf
           cargo check -p fraktor-actor --no-default-features --target thumbv7em-none-eabihf
+      # The checker's own tests, the public API lister's among them (#279).
+      - name: syn-check tests
+        run: cargo test --quiet --locked --manifest-path tools/syn-check/Cargo.toml
       - name: syn checker
         id: syn_checker
         run: |

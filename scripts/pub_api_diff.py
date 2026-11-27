@@ -74,12 +74,18 @@ def export_crates_at_ref(root: Path, ref: str, dest: Path) -> Path:
     """Exports `crates/` at `ref` into `dest` using `git archive`, returning `dest/crates`."""
     dest.mkdir(parents=True, exist_ok=True)
     crates_dest = dest / "crates"
-    check_tree = run_git(root, ["rev-parse", "--verify", "--quiet", f"{ref}:crates"])
+    # A ref that names no commit is an error: read as an empty tree, it would
+    # report every item of the other side as added or removed.
+    resolved = run_git(root, ["rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}"])
+    if resolved.returncode != 0:
+        raise RuntimeError(f"not a commit: {ref}")
+    commit = resolved.stdout.decode("utf-8").strip()
+    check_tree = run_git(root, ["rev-parse", "--verify", "--quiet", f"{commit}:crates"])
     if check_tree.returncode != 0:
         crates_dest.mkdir(parents=True, exist_ok=True)
         return crates_dest
 
-    archive = run_git(root, ["archive", "--format=tar", ref, "crates"])
+    archive = run_git(root, ["archive", "--format=tar", commit, "crates"])
     if archive.returncode != 0:
         stderr = archive.stderr.decode("utf-8", errors="replace").strip()
         raise RuntimeError(f"git archive failed for {ref}: {stderr}")

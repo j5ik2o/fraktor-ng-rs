@@ -9,12 +9,13 @@ Usage:
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from pub_api_diff import CrateDiff, compute_diffs, item_path, render_markdown  # noqa: E402
+from pub_api_diff import CrateDiff, compute_diffs, export_crates_at_ref, item_path, render_markdown  # noqa: E402
 
 
 class ItemPathTest(unittest.TestCase):
@@ -28,6 +29,13 @@ class ItemPathTest(unittest.TestCase):
         }
         for line, path in cases.items():
             self.assertEqual(item_path(line), path, line)
+
+
+class ExportTest(unittest.TestCase):
+    def test_a_ref_that_names_no_commit_is_an_error(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(RuntimeError, "not a commit"):
+            export_crates_at_ref(root, "no-such-ref-279", Path(tmp))
 
 
 class ComputeDiffsTest(unittest.TestCase):

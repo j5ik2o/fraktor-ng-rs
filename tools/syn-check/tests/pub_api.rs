@@ -101,3 +101,56 @@ fn cyclic_pub_use_does_not_recurse_infinitely() {
   assert!(items.contains(&"pub mod cyc::a".to_string()), "{items:#?}");
   assert!(items.contains(&"pub mod cyc::b".to_string()), "{items:#?}");
 }
+
+#[test]
+fn methods_in_an_impl_in_another_module_belong_to_the_type() {
+  let tmp = TempCrate::new("cross-impl");
+  tmp.write("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+  tmp.write("src/lib.rs", "pub mod kernel;\npub mod adaptor;\n");
+  tmp.write("src/kernel.rs", "mod handle_value;\npub use handle_value::Handle;\npub struct Twin;\n");
+  tmp.write("src/kernel/handle_value.rs", "pub struct Handle;\nimpl Handle { pub fn tell(&self) {} }\n");
+  tmp.write(
+    "src/adaptor.rs",
+    "use crate::kernel::Handle;\nimpl Handle { pub fn ask(&self) {} }\nstruct Twin;\nimpl Twin { pub fn private_twin(&self) {} }\n",
+  );
+
+  let items = pub_api::collect_crate(tmp.path()).expect("collect");
+
+  assert!(items.contains(&"pub fn demo::kernel::Handle::tell(&self)".to_string()), "{items:#?}");
+  assert!(items.contains(&"pub fn demo::kernel::Handle::ask(&self)".to_string()), "{items:#?}");
+  // Two types are named `Twin`, so an impl outside the defining module is not attributed.
+  assert!(!items.iter().any(|line| line.contains("private_twin")), "{items:#?}");
+}
+
+#[test]
+fn where_clauses_and_supertraits_are_part_of_the_line() {
+  let tmp = TempCrate::new("bounds");
+  tmp.write("Cargo.toml", "[package]\nname = \"bounds\"\nversion = \"0.1.0\"\n");
+  tmp.write(
+    "src/lib.rs",
+    "pub fn make<F>(factory: F) -> u8 where F: Fn() -> u8 + Clone { factory() }\npub trait Sub: Clone + Send {}\npub struct Wrap<T>(pub T) where T: Copy;\n",
+  );
+
+  let items = pub_api::collect_crate(tmp.path()).expect("collect");
+
+  assert!(
+    items.contains(&"pub fn bounds::make<F>(factory: F) -> u8 where F: Fn() -> u8 + Clone".to_string()),
+    "{items:#?}"
+  );
+  assert!(items.contains(&"pub trait bounds::Sub: Clone + Send".to_string()), "{items:#?}");
+  assert!(items.contains(&"pub struct bounds::Wrap<T> where T: Copy".to_string()), "{items:#?}");
+}
+
+#[test]
+fn a_module_reexported_inside_itself_does_not_recurse_infinitely() {
+  let tmp = TempCrate::new("alias-cycle");
+  tmp.write("Cargo.toml", "[package]\nname = \"loopy\"\nversion = \"0.1.0\"\n");
+  tmp.write("src/lib.rs", "pub mod a;\n");
+  tmp.write("src/a.rs", "pub mod b;\npub use crate::a as again;\npub struct X;\n");
+  tmp.write("src/a/b.rs", "pub use super::*;\npub struct Y;\n");
+
+  let items = pub_api::collect_crate(tmp.path()).expect("collect");
+
+  assert!(items.contains(&"pub struct loopy::a::X".to_string()), "{items:#?}");
+  assert!(items.contains(&"pub struct loopy::a::b::Y".to_string()), "{items:#?}");
+}

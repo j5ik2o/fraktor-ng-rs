@@ -11,20 +11,24 @@ pub(crate) fn emit_public_items(graph: &ModuleGraph, root_id: usize) -> Vec<Stri
   for name in &graph.macro_exports {
     out.insert(format!("pub macro {}::{name}!", graph.crate_name));
   }
-  let mut visited = BTreeSet::new();
+  let mut walk = Walk { visited: BTreeSet::new(), on_path: Vec::new() };
   let root_prefix = vec![graph.crate_name.clone()];
-  walk_module(graph, root_id, &root_prefix, &mut visited, &mut out);
+  walk_module(graph, root_id, &root_prefix, &mut walk, &mut out);
   out.into_iter().collect()
 }
 
-fn walk_module(
-  graph: &ModuleGraph,
-  mod_id: usize,
-  prefix: &[String],
-  visited: &mut BTreeSet<(usize, Vec<String>)>,
-  out: &mut BTreeSet<String>,
-) {
-  if !visited.insert((mod_id, prefix.to_vec())) {
+/// The state of one walk from the crate root.
+struct Walk {
+  /// The modules already walked, with the path they were walked under.
+  visited: BTreeSet<(usize, Vec<String>)>,
+  /// The modules being walked, outermost first. A module that re-exports
+  /// itself or an ancestor (`pub use crate::a as again`, `pub use super::*`)
+  /// would otherwise be walked under ever longer paths.
+  on_path: Vec<usize>,
+}
+
+fn walk_module(graph: &ModuleGraph, mod_id: usize, prefix: &[String], walk: &mut Walk, out: &mut BTreeSet<String>) {
+  if !walk.visited.insert((mod_id, prefix.to_vec())) {
     return;
   }
   let module = &graph.modules[mod_id];
@@ -32,6 +36,10 @@ fn walk_module(
   for item in &module.pub_items {
     emit_item(graph, mod_id, prefix, &item.name, item, out);
   }
+  if walk.on_path.contains(&mod_id) {
+    return;
+  }
+  walk.on_path.push(mod_id);
 
   for edge in &module.submodules {
     if !edge.is_pub {
@@ -40,13 +48,14 @@ fn walk_module(
     let mut child_prefix = prefix.to_vec();
     child_prefix.push(edge.name.clone());
     out.insert(format!("pub mod {}", child_prefix.join("::")));
-    walk_module(graph, edge.target, &child_prefix, visited, out);
+    walk_module(graph, edge.target, &child_prefix, walk, out);
   }
 
   for pub_use in &module.pub_uses {
     let mut active_reexports = BTreeSet::new();
-    emit_pub_use(graph, mod_id, prefix, pub_use, visited, &mut active_reexports, out);
+    emit_pub_use(graph, mod_id, prefix, pub_use, walk, &mut active_reexports, out);
   }
+  walk.on_path.pop();
 }
 
 fn emit_item(
@@ -64,8 +73,14 @@ fn emit_item(
     out.insert(format!("{} {full_name}::{}{}", member.kind_prefix, member.member_name, member.suffix));
   }
 
-  if let Some(impl_members) = graph.modules[defining_mod_id].inherent_impls.get(&item.name) {
-    for member in impl_members {
+  // An inherent impl may sit in any module of the crate. One outside the
+  // defining module is taken only when no other type has the same name.
+  let name_is_unique = graph.type_name_counts.get(&item.name) == Some(&1);
+  for (mod_id, module) in graph.modules.iter().enumerate() {
+    if mod_id != defining_mod_id && !name_is_unique {
+      continue;
+    }
+    for member in module.inherent_impls.get(&item.name).into_iter().flatten() {
       out.insert(format!("{} {full_name}::{}{}", member.kind_prefix, member.member_name, member.suffix));
     }
   }
@@ -76,7 +91,7 @@ fn emit_pub_use(
   mod_id: usize,
   prefix: &[String],
   pub_use: &PubUse,
-  visited: &mut BTreeSet<(usize, Vec<String>)>,
+  walk: &mut Walk,
   active_reexports: &mut BTreeSet<(usize, Vec<String>)>,
   out: &mut BTreeSet<String>,
 ) {
@@ -87,7 +102,7 @@ fn emit_pub_use(
   match &pub_use.kind {
     | UseKind::Glob => {
       if let Some(&target_mod) = resolved.as_ref().and_then(|segs| graph.by_path.get(segs)) {
-        walk_module(graph, target_mod, prefix, visited, out);
+        walk_module(graph, target_mod, prefix, walk, out);
       } else {
         out.insert(format!("pub use {}::* = {}::*", prefix.join("::"), pub_use.segments.join("::")));
       }
@@ -98,7 +113,7 @@ fn emit_pub_use(
           let mut child_prefix = prefix.to_vec();
           child_prefix.push(alias.clone());
           out.insert(format!("pub mod {}", child_prefix.join("::")));
-          walk_module(graph, target_mod, &child_prefix, visited, out);
+          walk_module(graph, target_mod, &child_prefix, walk, out);
           return;
         }
         if target_segs.len() >= 2 {
@@ -116,7 +131,7 @@ fn emit_pub_use(
             {
               let nested =
                 PubUse { segments: reexport.segments.clone(), kind: UseKind::Single { alias: alias.clone() } };
-              emit_pub_use(graph, target_mod, prefix, &nested, visited, active_reexports, out);
+              emit_pub_use(graph, target_mod, prefix, &nested, walk, active_reexports, out);
               return;
             }
           }

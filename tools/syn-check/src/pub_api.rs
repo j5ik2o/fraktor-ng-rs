@@ -25,6 +25,10 @@ pub(crate) struct ModuleGraph {
   pub(crate) modules: Vec<ModuleData>,
   pub(crate) by_path: BTreeMap<Vec<String>, usize>,
   pub(crate) macro_exports: BTreeSet<String>,
+  /// How many structs, enums, unions, and type aliases of each name the
+  /// crate defines, at any visibility. An inherent `impl` outside the
+  /// defining module is attributed to a type only when its name is unique.
+  pub(crate) type_name_counts: BTreeMap<String, usize>,
 }
 
 #[derive(Debug)]
@@ -82,6 +86,7 @@ pub fn collect_crate(crate_dir: &Path) -> Result<Vec<String>, String> {
     modules: Vec::new(),
     by_path: BTreeMap::new(),
     macro_exports: BTreeSet::new(),
+    type_name_counts: BTreeMap::new(),
   };
   let root_path = vec![crate_name];
   let root_id = load_file_module(&mut graph, &lib_rs, root_path, true)?;
@@ -181,6 +186,9 @@ fn collect_items(
         }
       },
       | other => {
+        if let Some(name) = type_name(other) {
+          *graph.type_name_counts.entry(name).or_default() += 1;
+        }
         if let Some(pub_item) = format::extract_pub_item(other) {
           graph.modules[mod_id].pub_items.push(pub_item);
         }
@@ -349,6 +357,16 @@ pub(crate) fn has_cfg_test(attrs: &[Attribute]) -> bool {
     });
     is_test
   })
+}
+
+fn type_name(item: &Item) -> Option<String> {
+  match item {
+    | Item::Struct(x) => Some(x.ident.to_string()),
+    | Item::Enum(x) => Some(x.ident.to_string()),
+    | Item::Union(x) => Some(x.ident.to_string()),
+    | Item::Type(x) => Some(x.ident.to_string()),
+    | _ => None,
+  }
 }
 
 fn has_macro_export(attrs: &[Attribute]) -> bool {
