@@ -20,11 +20,9 @@ use core::any::Any;
 use core::marker::PhantomData;
 use core::time::Duration;
 
-use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Instant;
 
 use fraktor_actor::kernel::actor::test_support::FsmControl;
 use fraktor_actor::kernel::actor::test_support::FsmHandle;
@@ -41,7 +39,9 @@ use spin::Mutex;
 mod tests;
 
 /// A handle on a running state machine that reads its state name and data,
-/// sets its state, and drives its timers from outside the machine.
+/// sets its state, and starts and cancels its timers from outside the
+/// machine. The executor fires the timers; the handle's records of them
+/// are for reading.
 ///
 /// Mirrors `org.apache.pekko.testkit.TestFSMRef`.
 pub struct TestFsmRef<S, D> {
@@ -209,20 +209,19 @@ where
     handle.set_actor_ref(actor_ref.clone());
     let name = actor_ref.path().name().to_string();
     let stop_driver = Arc::new(AtomicBool::new(false));
-    // The driver also ends when the machine stops for good, not only
-    // when this handle is dropped: the system runs the registered
-    // callback at the final termination. A restart does not run it,
-    // so a restarted machine keeps its driver, as the design of issue
-    // #181 requires. The callback runs while the executor is locked,
-    // so it only compares the reference and sets the flag.
-    let driver_flag = stop_driver.clone();
+    // The flag also records the machine's end when the machine stops
+    // for good, not only when this handle is dropped: the system runs
+    // the registered callback at the final termination. A restart does
+    // not run it, so a restarted machine's handle keeps reading as
+    // alive. The callback runs while the executor is locked, so it
+    // only compares the reference and sets the flag.
+    let termination_flag = stop_driver.clone();
     let watched = actor_ref.clone();
     system.downgrade().on_termination(move |stopped| {
       if *stopped == watched {
-        driver_flag.store(true, Ordering::Relaxed);
+        termination_flag.store(true, Ordering::Relaxed);
       }
     });
-    drive_timers(handle.clone(), actor_ref.clone(), stop_driver.clone());
     Ok(Self { actor_ref, handle, name, supervisor, stop_driver, _machine: PhantomData })
   }
 
@@ -324,71 +323,4 @@ where
   pub fn processed_sequence(&self) -> u64 {
     self.handle.processed_sequence()
   }
-}
-
-/// Watches the deadlines of the timers the handle records and sends the
-/// machine a firing mark for each one that passes.
-///
-/// The machine holds the timer table, the generations, and the judgement
-/// of the marks; this thread is only the clock. It is the one place that
-/// waits in real time, because the port's scheduler belongs to a later
-/// stage: the thread wakes every millisecond, which is finer than any
-/// delay the tests use, and a deadline too far ahead to name an instant
-/// for simply never fires. A fixed-rate timer is anchored at the
-/// deadline it last fired at, and a fixed-delay timer at the moment it
-/// fired, as Pekko's two patterns differ.
-fn drive_timers<S, D>(handle: FsmHandle<S, D>, actor_ref: ActorRef, stop: Arc<AtomicBool>)
-where
-  S: Send + Sync + 'static,
-  D: Send + 'static,
-{
-  std::thread::spawn(move || {
-    let mut named: HashMap<String, (u64, Option<Instant>)> = HashMap::new();
-    let mut state_timer: Option<(u64, Option<Instant>, bool)> = None;
-    while !stop.load(Ordering::Relaxed) {
-      let now = Instant::now();
-      let records = handle.timer_records();
-      named.retain(|name, (generation, _)| {
-        records.iter().any(|(used, record)| used == name && record.generation() == *generation)
-      });
-      for (name, record) in &records {
-        let entry = named.entry(name.clone()).or_insert_with(|| (record.generation(), now.checked_add(record.delay())));
-        if entry.0 != record.generation() {
-          *entry = (record.generation(), now.checked_add(record.delay()));
-        }
-        if let Some(deadline) = entry.1 {
-          if now >= deadline {
-            actor_ref.tell(
-              FsmControl::<S, D>::TimerMark { name: name.clone(), generation: record.generation() },
-              actor_ref.clone(),
-            );
-            entry.1 = match record.kind() {
-              | FsmTimerKind::Single => None,
-              | FsmTimerKind::FixedDelay => now.checked_add(record.delay()),
-              | FsmTimerKind::FixedRate => deadline.checked_add(record.delay()),
-            };
-          }
-        }
-      }
-      match handle.state_timer_record() {
-        | Some(record) => {
-          let entry = state_timer.get_or_insert_with(|| (record.generation(), now.checked_add(record.delay()), false));
-          if entry.0 != record.generation() {
-            *entry = (record.generation(), now.checked_add(record.delay()), false);
-          }
-          if !entry.2 {
-            if let Some(deadline) = entry.1 {
-              if now >= deadline {
-                actor_ref
-                  .tell(FsmControl::<S, D>::StateTimeoutMark { generation: record.generation() }, actor_ref.clone());
-                entry.2 = true;
-              }
-            }
-          }
-        },
-        | None => state_timer = None,
-      }
-      std::thread::sleep(Duration::from_millis(1));
-    }
-  });
 }

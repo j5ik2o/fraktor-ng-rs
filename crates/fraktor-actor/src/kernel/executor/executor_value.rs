@@ -966,6 +966,25 @@ impl Executor {
         self.sync_receive_timeout_index(key);
       }
     }
+    // The FSM timers keep the remaining time they had as well: each
+    // row's index entry is rewritten under its new deadline with the
+    // sequence it already had, and a deadline the installed clock
+    // cannot name is cancelled, as a receive timeout is.
+    let rows: Vec<((ActorKey, FsmTimerSlot), Duration, u64)> =
+      self.fsm_timers.iter().map(|(id, timer)| (id.clone(), timer.deadline, timer.seq)).collect();
+    for ((key, slot), deadline, seq) in rows {
+      let remaining = deadline.saturating_sub(previous_now);
+      match installed_now.checked_add(remaining) {
+        | Some(new_deadline) => {
+          self.fsm_timer_index.remove(&(deadline, seq));
+          if let Some(timer) = self.fsm_timers.get_mut(&(key, slot.clone())) {
+            timer.deadline = new_deadline;
+          }
+          self.fsm_timer_index.insert((new_deadline, seq), (key, slot));
+        },
+        | None => self.remove_fsm_timer(key, &slot),
+      }
+    }
   }
 
   /// Returns the monotonic time that a finite restart window uses.

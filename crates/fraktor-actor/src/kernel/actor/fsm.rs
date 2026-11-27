@@ -87,17 +87,6 @@ enum TransitionHandler<S, D> {
 #[derive(Clone, Debug)]
 struct ListenerTerminated(ActorRef);
 
-/// One named timer the machine holds, with the generation it was started
-/// with. The generation comes from the counter the machine shares with
-/// its handle, so a mark struck for an older timer of the same name never
-/// matches the row that stands in the table now.
-#[cfg(feature = "test-support")]
-struct FsmTimer {
-  generation: u64,
-  kind: FsmTimerKind,
-  message: Message,
-}
-
 /// An actor whose behaviour is a state name `S`, the data `D` it carries, and a
 /// state function per state.
 ///
@@ -137,8 +126,6 @@ pub struct Fsm<S, D> {
   #[cfg(feature = "test-support")]
   handle: Option<FsmHandle<S, D>>,
   #[cfg(feature = "test-support")]
-  timers: Vec<(String, FsmTimer)>,
-  #[cfg(feature = "test-support")]
   state_timer: Option<u64>,
 }
 
@@ -165,8 +152,6 @@ where
       state_display: None,
       #[cfg(feature = "test-support")]
       handle: None,
-      #[cfg(feature = "test-support")]
-      timers: Vec::new(),
       #[cfg(feature = "test-support")]
       state_timer: None,
     }
@@ -794,7 +779,7 @@ where
         // state timer of the state that is left is cancelled first, as
         // the promise `setState` documents; Pekko's own call path keeps
         // the old timer armed, which the port does not copy.
-        self.cancel_state_timer();
+        self.cancel_state_timer_with_context(context);
         let target = state.clone().or_else(|| self.current.as_ref().map(|(name, _)| name.clone()));
         let data = data.as_ref().and_then(|slot| slot.lock().take());
         let mut applied = false;
@@ -804,46 +789,63 @@ where
         }
         if applied {
           if let Some(timeout) = timeout {
-            self.arm_state_timer(*timeout);
+            self.arm_state_timer_with_context(context, *timeout);
           }
         }
         self.note_processed(*sequence);
       },
       | FsmControl::StartTimer { sequence, name, kind, message, delay } => {
-        if let Some(handle) = &self.handle {
-          let generation = handle.next_generation();
-          self.timers.retain(|(used, _)| used != name);
-          self.timers.push((name.clone(), FsmTimer { generation, kind: *kind, message: message.clone() }));
-          handle.set_timer_record(name, FsmTimerRecord::new(generation, *kind, *delay));
+        // A timer a test starts stands in the same live table and the
+        // same executor index as a timer a handler starts through a
+        // view, so the executor is the one place that fires it, and a
+        // cancel from either side reaches it.
+        let mode = match kind {
+          | FsmTimerKind::Single => crate::kernel::actor::FsmTimerMode::Single,
+          | FsmTimerKind::FixedDelay => crate::kernel::actor::FsmTimerMode::FixedDelay,
+          | FsmTimerKind::FixedRate => crate::kernel::actor::FsmTimerMode::FixedRate,
+        };
+        {
+          let mut state = self.timer_state.lock();
+          state.start(name, message.clone(), *delay, mode);
         }
+        self.flush_timer_ops(context);
         self.note_processed(*sequence);
       },
       | FsmControl::CancelTimer { sequence, name } => {
-        self.timers.retain(|(used, _)| used != name);
-        if let Some(handle) = &self.handle {
-          handle.remove_timer_record(name);
+        // The cancel goes through the same table and the same queued
+        // operation as a handler's cancel, so flushing it removes the
+        // executor's deadline and the handle's record together.
+        {
+          let mut state = self.timer_state.lock();
+          state.cancel(name);
         }
+        self.flush_timer_ops(context);
         self.note_processed(*sequence);
       },
       | FsmControl::Sentinel { sequence } => {
         self.note_processed(*sequence);
       },
       | FsmControl::TimerMark { name, generation } => {
-        let accepted = self
-          .timers
-          .iter()
-          .find(|(used, _)| used == name)
-          .and_then(|(_, timer)| (timer.generation == *generation).then(|| (timer.kind, timer.message.clone())));
-        if let Some((kind, message)) = accepted {
-          if kind == FsmTimerKind::Single {
-            self.timers.retain(|(used, _)| used != name);
+        // The mark is judged against the one live table, as the
+        // executor's mark is.
+        let accepted = {
+          let state = self.timer_state.lock();
+          state
+            .timers
+            .iter()
+            .find(|(used, _)| used == name)
+            .and_then(|(_, entry)| (entry.generation == *generation).then(|| (entry.mode, entry.message.clone())))
+        };
+        if let Some((mode, message)) = accepted {
+          if mode == crate::kernel::actor::FsmTimerMode::Single {
+            self.timer_state.lock().timers.retain(|(used, _)| used != name);
             if let Some(handle) = &self.handle {
               handle.remove_timer_record(name);
             }
           }
           // A timer receipt is an ordinary receipt for the state timer:
           // it cancels it and advances the generation, as Pekko's does.
-          self.cancel_state_timer();
+          self.cancel_state_timer_with_context(context);
           self.process_event(context, &message);
         }
       },

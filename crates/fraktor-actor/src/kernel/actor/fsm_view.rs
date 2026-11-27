@@ -76,7 +76,7 @@ impl FsmTimerState {
     Self { timers: Vec::new(), named_timer_gen: 0, pending_ops: Vec::new() }
   }
 
-  fn start(&mut self, name: &str, message: Message, delay: Duration, mode: FsmTimerMode) {
+  pub(crate) fn start(&mut self, name: &str, message: Message, delay: Duration, mode: FsmTimerMode) {
     self.named_timer_gen += 1;
     let generation = self.named_timer_gen;
     self.timers.retain(|(used, _)| used != name);
@@ -84,7 +84,7 @@ impl FsmTimerState {
     self.pending_ops.push(FsmTimerOp::Start { name: name.into(), generation, mode, message, delay });
   }
 
-  fn cancel(&mut self, name: &str) {
+  pub(crate) fn cancel(&mut self, name: &str) {
     self.timers.retain(|(used, _)| used != name);
     self.pending_ops.push(FsmTimerOp::Cancel { name: name.into() });
   }
