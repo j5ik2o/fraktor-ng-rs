@@ -39,6 +39,7 @@ use crate::kernel::actor::DeadLetter;
 use crate::kernel::actor::DeadLettersShared;
 use crate::kernel::actor::Props;
 use crate::kernel::actor::SuppressedDeadLetter;
+use crate::kernel::actor_path::ActorPath;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::dispatch::SystemMessage;
 use crate::kernel::event::EventClass;
@@ -48,11 +49,31 @@ use crate::kernel::executor::Executor;
 use crate::kernel::message::Message;
 use crate::kernel::sync::Arc;
 
+/// The kind of a system message, without the handles inside it, so the
+/// comparisons below do not need `SystemMessage: PartialEq` (which the enum
+/// does not derive).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Kind {
+  Create,
+  Resume,
+  Terminate,
+  ChildTerminated,
+}
+
+fn kind_of(message: &SystemMessage) -> Kind {
+  match message {
+    | SystemMessage::Create => Kind::Create,
+    | SystemMessage::Resume => Kind::Resume,
+    | SystemMessage::Terminate => Kind::Terminate,
+    | SystemMessage::ChildTerminated { .. } => Kind::ChildTerminated,
+  }
+}
+
 /// One report that reached dead letters, read back as what it carries.
 #[derive(Clone, Debug, PartialEq)]
 enum Routed {
-  Dead(SystemMessage, ActorRef, ActorRef),
-  Suppressed(SystemMessage, ActorRef, ActorRef),
+  Dead(Kind, ActorRef, ActorRef),
+  Suppressed(Kind, ActorRef, ActorRef),
 }
 
 fn read_report(message: &Message) -> Option<Routed> {
@@ -60,13 +81,13 @@ fn read_report(message: &Message) -> Option<Routed> {
     return dead
       .message()
       .downcast_ref::<SystemMessage>()
-      .map(|carried| Routed::Dead(carried.clone(), dead.sender().clone(), dead.recipient().clone()));
+      .map(|carried| Routed::Dead(kind_of(carried), dead.sender().clone(), dead.recipient().clone()));
   }
   if let Some(dead) = message.downcast_ref::<SuppressedDeadLetter>() {
     return dead
       .message()
       .downcast_ref::<SystemMessage>()
-      .map(|carried| Routed::Suppressed(carried.clone(), dead.sender().clone(), dead.recipient().clone()));
+      .map(|carried| Routed::Suppressed(kind_of(carried), dead.sender().clone(), dead.recipient().clone()));
   }
   None
 }
@@ -114,7 +135,7 @@ fn a_resume_is_a_dead_letter_naming_the_owner_on_both_ends() {
 
   assert_eq!(
     *reports.lock().unwrap(),
-    std::vec![Routed::Dead(SystemMessage::Resume, target.clone(), target)],
+    std::vec![Routed::Dead(Kind::Resume, target.clone(), target)],
     "a Resume is a DeadLetter whose sender and recipient are the closed mailbox's owner"
   );
 }
@@ -131,7 +152,7 @@ fn a_create_is_a_dead_letter_naming_the_owner_on_both_ends() {
 
   assert_eq!(
     *reports.lock().unwrap(),
-    std::vec![Routed::Dead(SystemMessage::Create, target.clone(), target)],
+    std::vec![Routed::Dead(Kind::Create, target.clone(), target)],
     "a Create is a DeadLetter whose sender and recipient are the closed mailbox's owner"
   );
 }
@@ -156,15 +177,15 @@ fn terminate_and_child_terminated_are_suppressed() {
   assert_eq!(
     *reports.lock().unwrap(),
     std::vec![
-      Routed::Suppressed(SystemMessage::Terminate, target.clone(), dead_letters.clone()),
-      Routed::Suppressed(SystemMessage::ChildTerminated { child }, target, dead_letters),
+      Routed::Suppressed(Kind::Terminate, target.clone(), dead_letters.clone()),
+      Routed::Suppressed(Kind::ChildTerminated, target, dead_letters),
     ],
     "a Terminate and a ChildTerminated are suppressed, naming the dead letters handle"
   );
 }
 
-// Keeps `EventStreamBusWeak` and `ActorPath` in use for the module above when
-// it is compiled again (they are imported for the path helper and the weak
-// handle); remove this once the imports are read.
+// Keeps `EventStreamBusWeak` in use for the module above when it is compiled
+// again (it is the weak handle type the shared state holds); remove this and
+// the import once a test reads the handle directly.
 #[allow(dead_code)]
 fn _keep_imports(_: Option<EventStreamBusWeak>) {}
