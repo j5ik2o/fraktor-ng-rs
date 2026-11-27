@@ -16,26 +16,17 @@
 
 //! The mailbox of one actor.
 
-use alloc::boxed::Box;
-use alloc::collections::VecDeque;
-use alloc::vec::Vec;
+use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
 use core::mem;
 
-use crate::kernel::dispatch::mailbox_status::MailboxStatus;
-use crate::kernel::dispatch::MailboxCell;
-use crate::kernel::dispatch::MailboxRun;
-use crate::kernel::dispatch::ManualExecutor;
-use crate::kernel::dispatch::ManualTask;
-use crate::kernel::dispatch::MessageQueue;
-use crate::kernel::dispatch::Next;
-use crate::kernel::dispatch::RunLimits;
-use crate::kernel::dispatch::SystemMessage;
-use crate::kernel::dispatch::Throughput;
-use crate::kernel::message::Envelope;
-use crate::kernel::sync::Arc;
-use crate::kernel::sync::LockCell;
-use crate::kernel::sync::LockFactory;
-use crate::kernel::sync::Weak;
+use crate::kernel::{
+  dispatch::{
+    mailbox_status::MailboxStatus, MailboxCell, MailboxRun, ManualExecutor, ManualTask, MessageQueue, Next, RunLimits,
+    SystemMessage, Throughput,
+  },
+  message::Envelope,
+  sync::{Arc, LockCell, LockFactory, Weak},
+};
 
 #[cfg(test)]
 #[path = "mailbox_test.rs"]
@@ -193,7 +184,8 @@ impl<C: MailboxCell> Mailbox<C> {
   /// Returns the dispatcher of this mailbox, while its system is alive. The
   /// only place that follows the way back.
   pub(crate) fn executor(&self) -> Option<Arc<ManualExecutor<C>>> {
-    // syn-check: allow(tests-location) -- 所有権モデルの条件1の数え上げ（設計 §11.11.7、オーナーの許可 2026-11-27、元帥の項目472）
+    // syn-check: allow(tests-location) -- 所有権モデルの条件1の数え上げ（設計 §11.11.7、オーナーの許可
+    // 2026-11-27、元帥の項目472）
     #[cfg(test)]
     crate::kernel::sync::counts::count_upgrade();
     self.executor.upgrade()
@@ -253,7 +245,8 @@ impl<C: MailboxCell> Mailbox<C> {
   /// empty run, and the user never sees it.
   pub(crate) fn try_schedule(mailbox: &Arc<Self>) -> Option<MailboxRun<C>> {
     if mailbox.reserve() {
-      // syn-check: allow(tests-location) -- 所有権モデルの条件1の数え上げ（設計 §11.11.7、オーナーの許可 2026-11-27、元帥の項目472）
+      // syn-check: allow(tests-location) -- 所有権モデルの条件1の数え上げ（設計 §11.11.7、オーナーの許可
+      // 2026-11-27、元帥の項目472）
       #[cfg(test)]
       crate::kernel::sync::counts::count_run();
       Some(MailboxRun::new(Arc::clone(mailbox)))
@@ -320,9 +313,15 @@ impl<C: MailboxCell> Mailbox<C> {
     }
   }
 
-  /// Returns whether the mailbox is open and suspended.
-  pub(crate) fn is_open_and_suspended(&self) -> bool {
-    self.status.is_open_and_suspended()
+  /// Returns whether the suspend count is above zero (Pekko's
+  /// `isSuspended`).
+  pub(crate) fn is_suspended(&self) -> bool {
+    self.status.is_suspended()
+  }
+
+  /// Returns the number of suspends that still wait for an answer.
+  pub(crate) fn suspend_count(&self) -> usize {
+    self.status.suspend_count()
   }
 
   /// Returns whether the mailbox is closed.

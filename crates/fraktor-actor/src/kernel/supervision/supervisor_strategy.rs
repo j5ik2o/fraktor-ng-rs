@@ -20,13 +20,12 @@
 
 use core::time::Duration;
 
-use crate::kernel::actor::ActorContext;
-use crate::kernel::actor_ref::ActorRef;
-use crate::kernel::supervision::Directive;
-use crate::kernel::supervision::FailureKind;
-use crate::kernel::supervision::RestartLimit;
-use crate::kernel::supervision::RestartWindow;
-use crate::kernel::sync::Arc;
+use crate::kernel::{
+  actor::ActorContext,
+  actor_ref::ActorRef,
+  supervision::{Directive, FailureKind, RestartLimit, RestartWindow},
+  sync::Arc,
+};
 
 #[cfg(test)]
 #[path = "supervisor_strategy_test.rs"]
@@ -62,15 +61,13 @@ fn restart_on_exception(_child: &ActorRef, _failure: FailureKind) -> Directive {
 /// Mirrors `org.apache.pekko.actor.SupervisorStrategy` for the strategies that
 /// the ported tests need:
 ///
-/// - `default_strategy`, which restarts every failed child without a limit but
-///   stops it when the failure is an initialization failure or a `Kill`, as the
-///   default decider does for `ActorInitializationException` and
-///   `ActorKilledException`, and `stopping_strategy`, which stops it, as the
-///   test probe uses them;
-/// - `one_for_one`, which restarts a failed child until its retry count runs
-///   out and then stops it;
-/// - `one_for_one_restarting_initialization_failures`, which applies the same
-///   count to a child that fails while it is being started.
+/// - `default_strategy`, which restarts every failed child without a limit but stops it when the
+///   failure is an initialization failure or a `Kill`, as the default decider does for
+///   `ActorInitializationException` and `ActorKilledException`, and `stopping_strategy`, which
+///   stops it, as the test probe uses them;
+/// - `one_for_one`, which restarts a failed child until its retry count runs out and then stops it;
+/// - `one_for_one_restarting_initialization_failures`, which applies the same count to a child that
+///   fails while it is being started.
 ///
 /// A strategy may also carry a [`Decider`] and a [`ChildTerminated`] hook,
 /// which a parent installs to choose per failure and to react to a terminated
@@ -91,6 +88,7 @@ fn restart_on_exception(_child: &ActorRef, _failure: FailureKind) -> Directive {
 pub struct SupervisorStrategy {
   policy: Policy,
   decider: Option<Arc<Decider>>,
+  decider_custom: bool,
   child_terminated: Option<Arc<ChildTerminated>>,
 }
 
@@ -138,7 +136,7 @@ impl SupervisorStrategy {
   /// Returns the strategy that restarts a failed child, corresponding to
   /// `SupervisorStrategy.defaultStrategy`.
   pub fn default_strategy() -> Self {
-    Self { policy: Policy::RestartAlways, decider: None, child_terminated: None }
+    Self { policy: Policy::RestartAlways, decider: None, decider_custom: false, child_terminated: None }
   }
 
   /// Returns the strategy that stops a failed child, corresponding to
@@ -146,7 +144,7 @@ impl SupervisorStrategy {
   ///
   /// `TestProbe.childActorOf(props)` uses it, as Pekko does.
   pub fn stopping_strategy() -> Self {
-    Self { policy: Policy::StopAlways, decider: None, child_terminated: None }
+    Self { policy: Policy::StopAlways, decider: None, decider_custom: false, child_terminated: None }
   }
 
   /// Returns the one-for-one strategy that restarts a failed child at most
@@ -173,6 +171,7 @@ impl SupervisorStrategy {
         restart_initialization_failures: true,
       },
       decider: None,
+      decider_custom: false,
       child_terminated: None,
     }
   }
@@ -186,14 +185,12 @@ impl SupervisorStrategy {
   /// Pekko's `withinTimeRange`. The two parameters resolve as
   /// `ChildRestartStats.requestRestartPermission` does:
   ///
-  /// - an omitted maximum with no window grants every restart request without
-  ///   counting it;
-  /// - an omitted maximum with a finite window allows one restart per window,
-  ///   because a missing maximum defaults to one inside the window algorithm;
-  /// - a finite maximum with no window counts the restarts over the child's
-  ///   lifetime;
-  /// - a finite maximum with a finite window counts them inside the window and
-  ///   reopens the count once the window has expired.
+  /// - an omitted maximum with no window grants every restart request without counting it;
+  /// - an omitted maximum with a finite window allows one restart per window, because a missing
+  ///   maximum defaults to one inside the window algorithm;
+  /// - a finite maximum with no window counts the restarts over the child's lifetime;
+  /// - a finite maximum with a finite window counts them inside the window and reopens the count
+  ///   once the window has expired.
   ///
   /// A finite window reads monotonic time from the system boundary or an
   /// installed clock, as the all-for-one strategy does. A child that fails
@@ -202,6 +199,7 @@ impl SupervisorStrategy {
     Self {
       policy: Policy::OneForOne { max_retries, window, restart_initialization_failures: false },
       decider: None,
+      decider_custom: false,
       child_terminated: None,
     }
   }
@@ -220,6 +218,7 @@ impl SupervisorStrategy {
     Self {
       policy: Policy::AllForOne { max_retries: RestartLimit::new(max_retries), window },
       decider: Some(Arc::new(restart_on_exception)),
+      decider_custom: false,
       child_terminated: None,
     }
   }
@@ -270,7 +269,16 @@ impl SupervisorStrategy {
     D: Fn(&ActorRef, FailureKind) -> Directive + Send + Sync + 'static,
   {
     self.decider = Some(Arc::new(decider));
+    self.decider_custom = true;
     self
+  }
+
+  /// Returns whether the decider was installed by a caller through
+  /// [`with_decider`](Self::with_decider), rather than being the decision
+  /// the policy itself carries (the all-for-one strategy's built-in
+  /// restart-on-exception decider is not a caller's).
+  pub(crate) fn has_custom_decider(&self) -> bool {
+    self.decider_custom
   }
 
   /// Returns this strategy with a hook that runs once a child has terminated.

@@ -21,17 +21,13 @@ use core::any::Any;
 
 #[cfg(feature = "test-support")]
 use crate::kernel::actor::test_support::ActorHandle;
-use crate::kernel::actor::Actor;
-use crate::kernel::actor::ActorContext;
-use crate::kernel::actor::BehaviorStack;
-use crate::kernel::actor::Props;
-use crate::kernel::actor_ref::ActorRef;
-use crate::kernel::executor::Executor;
-use crate::kernel::message::Message;
-use crate::kernel::supervision::FailureCatcher;
-use crate::kernel::supervision::RestartHistory;
-use crate::kernel::supervision::RunOutcome;
-use crate::kernel::supervision::SupervisorStrategy;
+use crate::kernel::{
+  actor::{Actor, ActorContext, BehaviorStack, Props},
+  actor_ref::ActorRef,
+  executor::Executor,
+  message::Message,
+  supervision::{FailureCatcher, RunOutcome, SupervisorStrategy},
+};
 
 /// An actor that the executor owns and drives.
 ///
@@ -48,24 +44,11 @@ pub(crate) struct ActorCell {
   parent: Option<ActorRef>,
   props: Props,
   strategy: SupervisorStrategy,
-  strategy_inherited: bool,
-  restart_history: RestartHistory,
   post_stop_suppressed: bool,
-  start_failure: Option<StartFailure>,
+  failed_start: bool,
   failed_sender: Option<ActorRef>,
   #[cfg(feature = "test-support")]
   handle: Option<ActorHandle>,
-}
-
-/// What the cell keeps of a start that failed, until a `Create` starts it
-/// again.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StartFailure {
-  /// The parent has not decided for the failure yet.
-  Undecided,
-  /// The parent has decided for the failure (Pekko's `Failed` has reached
-  /// the parent and been handled).
-  Decided,
 }
 
 impl ActorCell {
@@ -76,7 +59,6 @@ impl ActorCell {
     parent: Option<ActorRef>,
     props: Props,
     strategy: SupervisorStrategy,
-    strategy_inherited: bool,
   ) -> Self {
     Self {
       behavior: None,
@@ -85,10 +67,8 @@ impl ActorCell {
       parent,
       props,
       strategy,
-      strategy_inherited,
-      restart_history: RestartHistory::new(),
       post_stop_suppressed: false,
-      start_failure: None,
+      failed_start: false,
       failed_sender: None,
       #[cfg(feature = "test-support")]
       handle: None,
@@ -137,42 +117,12 @@ impl ActorCell {
     &self.strategy
   }
 
-  /// Returns whether this actor's strategy is inherited from its parent.
-  ///
-  /// A named child started through `ActorContext::actorOf` inherits it, so the
-  /// supervisor decision reads the parent's current strategy instead of a copy
-  /// taken at creation. A child started under an explicit strategy keeps the
-  /// one its caller chose.
-  pub(crate) fn strategy_inherited(&self) -> bool {
-    self.strategy_inherited
-  }
-
   /// Returns whether the recipe has built the behaviour for this cell.
   ///
   /// A cell that never finishes `pre_start` has no behaviour, and Pekko does not
   /// run `handleChildTerminated` for such a parent.
   pub(crate) fn is_created(&self) -> bool {
     self.behavior.is_some()
-  }
-
-  /// Returns the number of restart requests this actor has already made.
-  pub(crate) fn restart_count(&self) -> u32 {
-    self.restart_history.count()
-  }
-
-  /// Records one more restart request.
-  pub(crate) fn record_restart_request(&mut self) {
-    self.restart_history.record_plain();
-  }
-
-  /// Returns this actor's restart history, for a time-windowed strategy.
-  pub(crate) fn restart_history(&self) -> RestartHistory {
-    self.restart_history
-  }
-
-  /// Replaces this actor's restart history after a permission check.
-  pub(crate) fn set_restart_history(&mut self, history: RestartHistory) {
-    self.restart_history = history;
   }
 
   /// Takes the behaviour stack out of the cell so the executor can lend it to
@@ -245,6 +195,7 @@ impl ActorCell {
       behavior.pre_restart(context, reason);
     }
   }
+
   /// Replaces the behaviour with a fresh instance from the recipe and runs its
   /// `post_restart`, which is what Pekko's default `postRestart` does.
   ///
@@ -299,27 +250,21 @@ impl ActorCell {
     self.post_stop_suppressed
   }
 
-  /// Returns what the cell keeps of a start that failed, if one did.
-  pub(crate) fn start_failure(&self) -> Option<StartFailure> {
-    self.start_failure
+  /// Returns whether the start of this cell failed: the mark that there
+  /// is no instance, which a retry of the start clears.
+  pub(crate) fn has_failed_start(&self) -> bool {
+    self.failed_start
   }
 
-  /// Records that the start failed and the parent has not decided yet.
+  /// Records that the start failed.
   pub(crate) fn record_start_failure(&mut self) {
-    self.start_failure = Some(StartFailure::Undecided);
+    self.failed_start = true;
   }
 
-  /// Records that the parent has decided for the failed start.
-  pub(crate) fn mark_start_failure_decided(&mut self) {
-    if self.start_failure.is_some() {
-      self.start_failure = Some(StartFailure::Decided);
-    }
-  }
-
-  /// Forgets the failed start, as a `Create` that starts the actor again
-  /// does, and returns whether there was one.
+  /// Forgets the failed start, as a retry of the start does, and returns
+  /// whether there was one.
   pub(crate) fn take_start_failure(&mut self) -> bool {
-    self.start_failure.take().is_some()
+    core::mem::take(&mut self.failed_start)
   }
 
   /// Returns the sender of the message whose handling failed, which
