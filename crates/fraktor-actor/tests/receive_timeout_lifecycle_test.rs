@@ -571,16 +571,18 @@ impl Actor for RestartingParent {
 // which checks nothing. The next check for this actor is at 10.2s, in
 // `finishRecreate` (`FaultHandling.scala` line 289).
 //
-// Whether 10.1s comes before that check is a race in Pekko. If the timer
-// thread (`LightArrayRevolverScheduler.scala` lines 340-356) extracts the
-// task and sends it (lines 403-411) first, the deadline is delivered; if
-// the check runs first, the reschedule below replaces the old deadline and
-// it never arrives. The test's layout, a failure at 10.0s, a deadline at
-// 10.1s and a restart that ends at 10.2s, leaves 100ms for the timer
-// thread, many more than one tick (`LightArrayRevolverScheduler.scala`
-// lines 181-186 round a delay up to a tick), so the deadline is delivered.
-// A deadline less than one tick before the end of the restart would be
-// lost.
+// Whether 10.1s comes before that check is a race in Pekko, and nothing
+// guarantees which side runs first. If the timer thread
+// (`LightArrayRevolverScheduler.scala` lines 340-356) extracts the task and
+// sends it (lines 403-411) first, the deadline is delivered; if the check
+// runs first, the reschedule below replaces the old deadline and it never
+// arrives. The test's layout, a failure at 10.0s, a deadline at 10.1s and a
+// restart that ends at 10.2s, gives the timer thread a 100ms margin (a tick
+// is about 10ms, and `LightArrayRevolverScheduler.scala` lines 181-186
+// round a delay up to one), so an ordinary scheduler is likely to run the
+// timer thread first. That is an expectation, not a guarantee: a margin
+// under one tick still delivers if the task is extracted in it, and a small
+// margin can go either way.
 //
 // The `pre_start` of the restarted actor sets the 100ms again (Pekko's
 // `postRestart` calls `preStart`: `Actor.scala` lines 645-647), so at the
@@ -604,10 +606,10 @@ impl Actor for RestartingParent {
 // The port has no scheduler thread of its own: a deadline that has come
 // fires at a drive point (`run_until_idle`, `finish_run`,
 // `await_envelope`), which sends the `ReceiveTimeout` into the mailbox. The
-// order here, the child's stop and its `finish_run` before the parent's
-// `ChildTerminated` run, comes from driving the system by hand, not from
-// copying Pekko's thread race, and gives the same result: the deadline is
-// fired while the parent waits.
+// hand-driven clock makes the drive points, not a thread race, decide the
+// order: the child's stop and its `finish_run` come before the parent's
+// `ChildTerminated` run, and the deadline fires before the restart ends.
+// That order, not Pekko's race, is what the test pins.
 #[test]
 fn timeout_turned_off_in_pre_restart_still_delivers_a_deadline_that_came_during_the_restart() {
   let (mut spec, clock) = spec_with_clock();
