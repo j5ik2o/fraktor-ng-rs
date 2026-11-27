@@ -80,7 +80,7 @@ impl ByteIterator {
   /// Stops reading the array lengths once `limit` is reached, so a short read
   /// does not walk every array left.
   pub(crate) fn remaining_up_to(&self, limit: usize) -> usize {
-    let lengths = self.chunks.get(self.current..).unwrap_or_default().iter().map(|chunk| chunk.len);
+    let lengths = self.chunks.get(self.current..).unwrap_or_default().iter().map(|chunk| chunk.len());
     remaining_of(lengths, self.offset, limit)
   }
 
@@ -177,7 +177,7 @@ impl ByteIterator {
   pub(crate) fn skip_bytes(&mut self, count: usize) -> usize {
     let mut skipped = 0;
     while skipped < count && self.has_next() {
-      let step = (self.chunks[self.current].len - self.offset).min(count - skipped);
+      let step = (self.chunks[self.current].len() - self.offset).min(count - skipped);
       skipped += step;
       self.advance(step);
     }
@@ -188,7 +188,7 @@ impl ByteIterator {
   // many left, and onto the next array when this one is used up.
   fn advance(&mut self, count: usize) {
     self.offset += count;
-    if self.offset == self.chunks[self.current].len {
+    if self.offset == self.chunks[self.current].len() {
       self.current += 1;
       self.offset = 0;
     }

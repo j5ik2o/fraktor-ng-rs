@@ -39,15 +39,32 @@ mod tests;
 /// `bytes`.
 #[derive(Clone, Debug)]
 pub(crate) struct ByteChunk {
-  pub(crate) bytes: Arc<[u8]>,
-  pub(crate) start: usize,
-  pub(crate) len: usize,
+  bytes: Arc<[u8]>,
+  start: usize,
+  len: usize,
 }
 
 impl ByteChunk {
+  // Creates a chunk over `bytes[start..start + len]`, checking the invariant
+  // here so that no caller has to: the range is never empty and never passes
+  // the end of the array.
+  pub(crate) fn new(bytes: Arc<[u8]>, start: usize, len: usize) -> Self {
+    assert!(len > 0, "ByteChunk length must be positive: len={len}");
+    assert!(
+      matches!(start.checked_add(len), Some(end) if end <= bytes.len()),
+      "ByteChunk range must lie inside its array: start={start} len={len} array_len={}",
+      bytes.len()
+    );
+    Self { bytes, start, len }
+  }
+
   pub(crate) fn full(bytes: Arc<[u8]>) -> Self {
     let len = bytes.len();
-    Self { bytes, start: 0, len }
+    Self::new(bytes, 0, len)
+  }
+
+  pub(crate) fn len(&self) -> usize {
+    self.len
   }
 
   pub(crate) fn as_slice(&self) -> &[u8] {
@@ -137,10 +154,16 @@ impl ByteString {
     let mut offset = 0_usize;
     for chunk in &self.chunks {
       let low = offset;
-      let high = offset + chunk.len;
+      // The chunks together can hold more bytes than a `usize` counts on a
+      // 32-bit target, because concatenating shares arrays without copying.
+      // That total has no position type to hold it, so it is a contract
+      // violation with a clear message, not a wrapped or silent value.
+      let high = offset
+        .checked_add(chunk.len)
+        .expect("ByteString position overflow: the chunks together hold more bytes than a usize can count");
       let (start, stop) = (from.max(low), end.min(high));
       if start < stop {
-        chunks.push(ByteChunk { bytes: chunk.bytes.clone(), start: chunk.start + (start - low), len: stop - start });
+        chunks.push(ByteChunk::new(chunk.bytes.clone(), chunk.start + (start - low), stop - start));
       }
       offset = high;
       if offset >= end {
@@ -194,7 +217,7 @@ impl ByteString {
     }
     if let ([left], [right]) = (self.chunks.as_slice(), other.chunks.as_slice()) {
       if Arc::ptr_eq(&left.bytes, &right.bytes) && left.start + left.len == right.start {
-        let merged = ByteChunk { bytes: left.bytes.clone(), start: left.start, len: left.len + right.len };
+        let merged = ByteChunk::new(left.bytes.clone(), left.start, left.len + right.len);
         return Self { chunks: alloc::vec![merged] };
       }
     }
@@ -250,7 +273,7 @@ impl ByteString {
     if len == 0 {
       Self::empty()
     } else {
-      Self { chunks: alloc::vec![ByteChunk { bytes, start, len }] }
+      Self { chunks: alloc::vec![ByteChunk::new(bytes, start, len)] }
     }
   }
 
@@ -505,14 +528,16 @@ impl ByteString {
   /// `IllegalArgumentException`.
   pub fn grouped(&self, size: usize) -> impl Iterator<Item = ByteString> {
     assert!(size > 0, "size={size} must be positive");
-    let mut groups = Vec::new();
+    let source = self.clone();
     let mut offset = 0_usize;
-    let len = self.len();
-    while offset < len {
-      groups.push(self.range(offset, size));
+    core::iter::from_fn(move || {
+      if offset >= source.len() {
+        return None;
+      }
+      let group = source.range(offset, size);
       offset = offset.saturating_add(size);
-    }
-    groups.into_iter()
+      Some(group)
+    })
   }
 
   /// Returns whether the bytes fill one whole array.
