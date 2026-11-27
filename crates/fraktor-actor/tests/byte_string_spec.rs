@@ -505,8 +505,8 @@ impl Gen {
     }
     let array: Arc<[u8]> = Arc::from(bytes);
     Sample {
-      value:   ByteString::from_shared(array.clone()).slice(0, array.len()),
-      model:   Model::whole(&array),
+      value: ByteString::from_shared(array.clone()).slice(0, array.len()),
+      model: Model::whole(&array),
       _arrays: vec![array],
     }
   }
@@ -525,8 +525,8 @@ impl Gen {
       .collect();
     let array: Arc<[u8]> = encoded.into();
     Sample {
-      value:   ByteString::from_shared(array.clone()).slice(0, array.len()),
-      model:   Model::whole(&array),
+      value: ByteString::from_shared(array.clone()).slice(0, array.len()),
+      model: Model::whole(&array),
       _arrays: vec![array],
     }
   }
@@ -717,7 +717,6 @@ fn jdk_table() -> Vec<(Vec<u8>, String)> {
   }
   assert!(!rows.is_empty(), "the table is empty");
   rows
-
 }
 
 // `new String(bytes, StandardCharsets.UTF_8)` of the JDK. It replaces as
