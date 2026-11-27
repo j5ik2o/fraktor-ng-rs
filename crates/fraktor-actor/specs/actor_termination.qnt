@@ -99,8 +99,24 @@
 //                            keeps (stage 4a does so only after a Kill).
 //   NoChildCheck           : a parent decides a Failed without checking that
 //                            the child is the incarnation it holds.
+//   NoSuspendInheritance   : a child created under a suspended parent does
+//                            not get the parent's suspend count as Suspends
+//                            (Pekko's Children.makeChild does).
+//   ResumeWithoutCause     : faultResume resumes every child without the
+//                            cause, the perpetrator too, so the perpetrator
+//                            keeps its failure (resumeChildren passes it on).
+//   NoSuspendFirst         : all-for-one sends Recreate to the siblings that
+//                            did not fail without a Suspend before it.
+//   SuspendThePerpetrator  : handleInvokeFailure suspends every child, the
+//                            one whose failure it escalates too (exceptFor).
+//   StopAtTheTail          : a failed postRestart stops the actor with a
+//                            Terminate at the tail of its queue, so what the
+//                            run kept aside comes back before the Terminate.
 //
-// CI runs 20 steps (scripts/quint-check-specs.sh). For deeper runs:
+// CI runs 20 steps (scripts/quint-check-specs.sh), which do not reach every
+// deep state (a Recreate kept aside while an actor waits for its restart's
+// children, a child created under a parent that waits); the runs below pin
+// those states and the mistakes about them on every check. For deeper runs:
 //   quint run --invariant=invariant --max-steps=40 --max-samples=50000 \
 //     crates/fraktor-actor/specs/actor_termination.qnt
 module actor_termination {
@@ -123,7 +139,8 @@ module actor_termination {
   type Mode = Fixed | CloseWithChildren | NotifyBeforePostStop | WatchersFirst | EarlyNameRelease | SyncStop
     | KeepWatching | NoCreationWait | NoRecreationWait | NoTerminateToChildren | NotifyTwice | KeepSuspended
     | NoSuspendChildren | NoStashWhenFailed | NoStashWhileWaiting | DropRecreateWhileWaiting
-    | IgnoreUndecidedRecreate | NoSurvivorRecreate | NoChildCheck
+    | IgnoreUndecidedRecreate | NoSurvivorRecreate | NoChildCheck | NoSuspendInheritance | ResumeWithoutCause
+    | NoSuspendFirst | SuspendThePerpetrator | StopAtTheTail
 
   // Free: no incarnation holds the name. Unborn: Create waits. StartFailed:
   // Create failed and the actor has no instance. Closed: finishTerminate ran;
@@ -172,6 +189,9 @@ module actor_termination {
     // Restarts of this actor under way: from preRestart until postRestart
     // (the frame of the old behaviour lives that long).
     restarting: int,
+    // postRestart failed (Pekko's FailedFatally): the actor only stops, and
+    // its postStop does not run (preRestart already ran on the old instance).
+    fatal: bool,
   }
 
   type Ghost = {
@@ -189,6 +209,9 @@ module actor_termination {
     // faultRecreate or faultCreate ran on an actor that was not suspended
     // (Pekko asserts it is).
     recreatedUnsuspended: bool,
+    // An actor whose postRestart failed decided a Failed, ran a Recreate or
+    // received a normal message.
+    actedAfterAFailedRestart: bool,
     // The deepest restart seen: 1 plus the restarts of the same actor that
     // were under way when it began.
     deepestRestart: int,
@@ -215,7 +238,7 @@ module actor_termination {
   pure def fresh(inc: int): Actor = {
     phase: Free, inc: inc, inst: false, handledCreate: false, children: Set(), toDie: Set(), wait: WNone,
     sys: [], stash: [], queue: [], suspend: 0, failed: "", startDecided: false, postStops: 0, restarts: 0,
-    pending: NNone, restarting: 0,
+    pending: NNone, restarting: 0, fatal: false,
   }
 
   pure def act(x: World, n: str): Actor = x.actors.get(n)
@@ -292,7 +315,8 @@ module actor_termination {
   pure def finishTerminate(md: Mode, x: World, n: str): World = {
     val a = act(x, n)
     val closed = {
-      ...a, phase: Closed, inst: false, postStops: a.postStops + (if (a.inst) 1 else 0), queue: [], sys: [], stash: [],
+      ...a, phase: Closed, inst: false, postStops: a.postStops + (if (a.inst and not(a.fatal)) 1 else 0), queue: [],
+      sys: [], stash: [],
       toDie: Set(), wait: WNone, failed: "",
       pending: if (md == WatchersFirst) NParent else NWatchers,
     }
@@ -327,7 +351,7 @@ module actor_termination {
   pure def failActor(md: Mode, x: World, n: str, start: bool, perp: str, rd: Directive): World = {
     val a = act(x, n)
     val first = a.failed == ""
-    val skip = if (first and perp != n) Set(perp) else Set()
+    val skip = if (first and perp != n and md != SuspendThePerpetrator) Set(perp) else Set()
     val x1 = updA(x, n, y => { ...y, suspend: y.suspend + 1, failed: if (first) perp else y.failed })
     val x2 = if (md == NoSuspendChildren) x1 else sendTo(x1, a.children.exclude(skip), Suspend)
     val q = PARENT_OF.get(n)
@@ -362,30 +386,41 @@ module actor_termination {
     else finishCreate(md, x1, n, ok, rd)
   }
 
-  // finishRecreate: the new instance, postRestart, the resume of the
-  // suspend, the end of the restart, then a Recreate for every child it
-  // keeps (the survivors).
-  pure def finishRecreate(md: Mode, x: World, n: str): World = {
+  // finishRecreate: the resume of the suspend, the new instance and
+  // postRestart, the end of the restart, then a Recreate for every child it
+  // keeps (the survivors). `ok` is the outcome of postRestart. A failed one
+  // stops the actor (stage 4b keeps stage 4a's stop; #301 makes it the
+  // parent's decision): the run handles the stop at once, as Terminate, so
+  // that the actor waits for its children (state 2) or closes before the
+  // state can go down and give back what the run kept aside. The survivors
+  // get the Terminate instead of a Recreate.
+  pure def finishRecreate(md: Mode, x: World, n: str, ok: bool): World = {
     val a = act(x, n)
     val x1 = { ...x, g: { ...x.g, restartedWhileDying: x.g.restartedWhileDying or a.toDie.size() > 0 } }
     val keep = md == KeepSuspended
     val x2 = updA(x1, n, y => {
       ...y, inst: true, wait: WNone, toDie: Set(), suspend: if (keep) y.suspend else less(y.suspend), failed: "",
-      restarting: less(y.restarting), restarts: y.restarts + 1,
+      restarting: less(y.restarting),
     })
-    if (md == NoSurvivorRecreate) x2 else sendTo(x2, a.children, Recreate)
+    if (not(ok) and x2.b.fails > 0) {
+      val x3 = updA({ ...x2, b: { ...x2.b, fails: x2.b.fails - 1 } }, n, y => { ...y, fatal: true })
+      if (md == StopAtTheTail) sendSys(x3, n, Terminate) else handleTerminate(md, x3, n)
+    } else {
+      val x3 = updA(x2, n, y => { ...y, restarts: y.restarts + 1 })
+      if (md == NoSurvivorRecreate) x3 else sendTo(x3, a.children, Recreate)
+    }
   }
 
   // The first half of faultRecreate: preRestart stops all or none of the
   // children; postRestart waits for the dying ones (Recreation).
-  pure def restartActor(md: Mode, x: World, n: str, stopKids: bool): World = {
+  pure def restartActor(md: Mode, x: World, n: str, stopKids: bool, ok: bool): World = {
     val a = act(x, n)
     val stopping = if (stopKids) a.children else Set()
     val x0 = { ...x, g: { ...x.g, deepestRestart: max(x.g.deepestRestart, a.restarting + 1) } }
     val x1 = updA(x0, n, y => { ...y, toDie: y.toDie.union(stopping), restarting: y.restarting + 1 })
     val x2 = sendTerminateTo(x1, stopping)
     if (act(x2, n).toDie.size() > 0 and md != NoRecreationWait) updA(x2, n, y => { ...y, wait: WRecreation })
-    else finishRecreate(md, x2, n)
+    else finishRecreate(md, x2, n, ok)
   }
 
   // faultResume: without an instance, the retried start (Pekko turns the
@@ -398,7 +433,7 @@ module actor_termination {
     else {
       val x1 = updA(x, n, y => { ...y, suspend: less(y.suspend), failed: if (byFailure) "" else y.failed })
       if (md == NoSuspendChildren) x1
-      else a.children.fold(x1, (acc, c) => sendSys(acc, c, Resume(byFailure and c == a.failed)))
+      else a.children.fold(x1, (acc, c) => sendSys(acc, c, Resume(byFailure and c == a.failed and md != ResumeWithoutCause)))
     }
   }
 
@@ -410,16 +445,17 @@ module actor_termination {
   }
 
   // faultRecreate: a restart, or the retried start when there is no
-  // instance. An actor that waits for children only gets here under
-  // NoStashWhileWaiting (it stashes the Recreate otherwise); Pekko's
-  // fallback for an actor that is not normal is faultResume.
+  // instance. An actor that waits for children (Creation, Recreation or
+  // Termination) keeps the Recreate aside and only gets here under
+  // NoStashWhileWaiting, so Pekko's branch for an actor that is not normal
+  // (faultResume, reached in Pekko while it waits in Termination) has no
+  // counterpart here.
   pure def faultRecreate(md: Mode, x: World, n: str, stopKids: bool, ok: bool, rd: Directive): World = {
     val a = act(x, n)
     val x1 = { ...x, g: { ...x.g, recreatedUnsuspended: x.g.recreatedUnsuspended or a.suspend == 0 } }
     if (md == IgnoreUndecidedRecreate and a.phase == StartFailed and not(a.startDecided)) x
     else if (not(a.inst)) faultCreate(md, x, n, ok, rd)
-    else if (a.wait == WNone or md == NoStashWhileWaiting) restartActor(md, x1, n, stopKids)
-    else faultResume(md, x1, n, false, ok, rd)
+    else restartActor(md, x1, n, stopKids, ok)
   }
 
   // handleFailure in the parent's run: only a child the parent holds, by the
@@ -439,7 +475,8 @@ module actor_termination {
         if (x0.b.restarts > 0) {
           val x1 = updA({ ...x0, b: { ...x0.b, restarts: x0.b.restarts - 1 } }, c, y => { ...y, startDecided: f.start })
           if (isAllForOne(x1, n))
-            a.children.fold(x1, (acc, s) => sendSys(if (s == c) acc else sendSys(acc, s, Suspend), s, Recreate))
+            a.children.fold(x1, (acc, s) =>
+              sendSys(if (s == c or md == NoSuspendFirst) acc else sendSys(acc, s, Suspend), s, Recreate))
           else sendSys(x1, c, Recreate)
         } else stopAll
       | DStop => stopAll
@@ -480,13 +517,19 @@ module actor_termination {
       match a.wait {
         | WTermination => finishTerminate(md, x2, n)
         | WCreation => finishCreate(md, x2, n, ok, rd)
-        | WRecreation => finishRecreate(md, x2, n)
+        | WRecreation => finishRecreate(md, x2, n, ok)
         | WNone => x2
       }
     else x2
   }
 
-  pure def handleSys(md: Mode, x: World, n: str, m: Sys, ok: bool, d: Directive, rd: Directive, stopKids: bool): World =
+  pure def handleSys(md: Mode, x0: World, n: str, m: Sys, ok: bool, d: Directive, rd: Directive, stopKids: bool): World = {
+    val acts = match m {
+      | Recreate => true
+      | Failed(_) => true
+      | _ => false
+    }
+    val x = { ...x0, g: { ...x0.g, actedAfterAFailedRestart: x0.g.actedAfterAFailedRestart or (acts and act(x0, n).fatal) } }
     match m {
       | Create => handleCreate(md, x, n, ok, rd)
       | Terminate => handleTerminate(md, x, n)
@@ -496,6 +539,7 @@ module actor_termination {
       | Failed(f) => handleFailed(md, x, n, f, d, rd)
       | ChildTerm(r) => handleChildTerm(md, x, n, r, ok, rd)
     }
+  }
 
   // Once the actor's state goes down (Pekko: newState < currentState), what
   // the run kept aside comes back before the rest of the queue.
@@ -510,19 +554,27 @@ module actor_termination {
 
   action setWorld(x: World): bool = all { w' = x, mode' = mode }
 
-  // actorOf: refused when the name is taken or the parent is stopping. A
-  // parent spawns in its own run, so not while it is suspended. The model
-  // also leaves out a spawn while the parent waits for other children, and
-  // reuses a slot only once the run of its old incarnation has sent both
-  // notices (a real name gets a new cell, so nothing of the old one is lost).
+  // actorOf: refused when the name is taken or the parent is stopping. The
+  // child gets Create and then one Suspend for each suspend of its parent's
+  // mailbox (Pekko's Children.makeChild), so a child created under a
+  // suspended parent (from a hook such as handleChildTerminated or
+  // preRestart, or from outside) is suspended like the children the
+  // parent's failure or Suspend reached. The model leaves out a spawn while
+  // the parent waits in Creation (it has no instance, so only an outside
+  // spawn could), and reuses a slot only once the run of its old incarnation
+  // has sent both notices (a real name gets a new cell, so nothing of the old
+  // one is lost).
   action spawn(n: str): bool = {
     val q = PARENT_OF.get(n)
+    val carried = if (q == ROOT or mode == NoSuspendInheritance) 0 else act(w, q).suspend
     all {
       w.b.spawns > 0,
       not(childrenOf(w, q).contains(n)),
       act(w, n).pending == NNone,
-      q == ROOT or (isOpen(w, q) and act(w, q).wait == WNone and act(w, q).suspend == 0),
-      val born = { ...fresh(act(w, n).inc + 1), phase: Unborn, sys: [Create] }
+      q == ROOT or (isOpen(w, q) and Set(WNone, WRecreation).contains(act(w, q).wait)),
+      val born = {
+        ...fresh(act(w, n).inc + 1), phase: Unborn, sys: range(0, carried).foldl([Create], (acc, _) => acc.append(Suspend)),
+      }
       setWorld(setChildren({ ...updA(w, n, _ => born), b: { ...w.b, spawns: w.b.spawns - 1 } }, q,
         childrenOf(w, q).union(Set(n)))),
     }
@@ -597,6 +649,7 @@ module actor_termination {
         receivedWithoutInstance: w.g.receivedWithoutInstance or not(a.inst),
         receivedWhileWaiting: w.g.receivedWhileWaiting or a.wait != WNone,
         termBeforeChildTerm: w.g.termBeforeChildTerm or early,
+        actedAfterAFailedRestart: w.g.actedAfterAFailedRestart or a.fatal,
         receivedUnderAFailedParent: w.g.receivedUnderAFailedParent or (q != ROOT and act(w, q).failed != ""),
       }
       val x = updA({ ...w, g: g1, b: if (failNow) { ...w.b, fails: w.b.fails - 1 } else w.b }, n, y => {
@@ -667,6 +720,9 @@ module actor_termination {
   val recreateWhileSuspended = not(w.g.recreatedUnsuspended)
   // Stage 4b: a run keeps system messages aside only while the actor is
   // suspended or waits for children.
+  // Stage 4b: an actor whose postRestart failed only stops: what its run kept
+  // aside, and what comes after, is not run before it closes.
+  val aFailedRestartOnlyStops = not(w.g.actedAfterAFailedRestart)
   val stashOnlyWhileSuspended = ACTORS.forall(n => isOpen(w, n) and act(w, n).stash.length() > 0 implies stateOf(act(w, n)) > 0)
   // When nothing is in progress, nobody waits for a child: every wait ends.
   val settled = ACTORS.forall(n => act(w, n).sys.length() == 0 and act(w, n).pending == NNone)
@@ -690,7 +746,7 @@ module actor_termination {
     and noTerminatedToAStoppingWatcher and createBeforeTerminate and noReceiveWithoutInstance and noReceiveWhileWaiting
     and failedStartStaysSuspended and retryWithoutTheAttemptsChildren and restartAfterStoppedChildren
     and recoveryNotNested and noReceiveUnderAFailedParent and decideWithInstance and recreateWhileSuspended
-    and stashOnlyWhileSuspended and waitsEnd and settledMeansResumed
+    and stashOnlyWhileSuspended and aFailedRestartOnlyStops and waitsEnd and settledMeansResumed
 
   // ---- initial states and the step ---------------------------------------
 
@@ -706,6 +762,7 @@ module actor_termination {
         receivedWithoutInstance: false, receivedWhileWaiting: false, termBeforeChildTerm: false,
         terminatedToAStoppingWatcher: false, createdWithStaleChildren: false, restartedWhileDying: false,
         receivedUnderAFailedParent: false, decidedWithoutInstance: false, recreatedUnsuspended: false,
+        actedAfterAFailedRestart: false,
         deepestRestart: 0, lostChildTerm: 0, sysDead: 0, deadLettered: 0,
       },
       b: { spawns: SPAWNS, stops: STOPS, fails: FAILS, messages: MESSAGES, restarts: RESTARTS },
@@ -875,6 +932,83 @@ module actor_termination {
       .then(spawn("c1")).then(sysStep("p", true))
       .expect(act(w, "c1").sys == [Create] and act(w, "c1").inc == 2 and invariant)
 
+  // Children.makeChild: c2 is created while p's failure waits for the
+  // guardian's Recreate, so it gets p's one suspend as a Suspend behind its
+  // Create, and p's finishRecreate answers it with the Recreate it sends to
+  // every survivor.
+  run aChildCreatedUnderASuspendedParentGetsItsSuspendsTest =
+    initWith(Fixed, false).then(spawn("p")).then(sysStep("p", true)).then(spawn("c1")).then(sysStep("c1", true))
+      .then(send("p")).then(receive("p", true, DRestart)).then(spawn("c2"))
+      .expect(act(w, "c2").sys == [Create, Suspend] and act(w, "p").sys == [Recreate] and invariant)
+      .then(sysStep("c2", true)).then(sysStep("c2", true)).then(sysStep("c1", true))
+      .expect(act(w, "c2").suspend == 1 and invariant)
+      .then(sysStep("p", true)).then(sysStep("c1", true)).then(sysStep("c2", true))
+      .expect(act(w, "c1").restarts == 1 and act(w, "c2").restarts == 1 and act(w, "c2").suspend == 0 and settled
+        and invariant)
+
+  // The same while p waits in its restart for c2 to stop: c1, stopped by
+  // preRestart, is created again (as a handleChildTerminated hook would) and
+  // is suspended until the Recreate of p's finishRecreate.
+  run aChildCreatedWhileTheParentWaitsIsRecreatedSuspendedTest =
+    initWith(Fixed, false).then(spawn("p")).then(sysStep("p", true)).then(spawn("c1")).then(sysStep("c1", true))
+      .then(spawn("c2")).then(sysStep("c2", true)).then(send("p")).then(receive("p", true, DRestart))
+      .then(runSys("p", true, DRestart, DRestart, true)).then(sysStep("c1", true)).then(sysStep("c1", true))
+      .then(tellRest("c1")).then(sysStep("p", true)).then(spawn("c1"))
+      .expect(act(w, "c1").inc == 2 and act(w, "c1").sys == [Create, Suspend] and act(w, "p").wait == WRecreation
+        and invariant)
+      .then(sysStep("c1", true)).then(sysStep("c1", true)).then(sysStep("c2", true)).then(sysStep("c2", true))
+      .then(tellRest("c2")).then(sysStep("p", true))
+      .expect(act(w, "c1").sys == [Recreate] and act(w, "c1").suspend == 1 and invariant)
+      .then(sysStep("c1", true))
+      .expect(act(w, "c1").restarts == 1 and act(w, "c1").suspend == 0 and act(w, "p").restarts == 1 and settled
+        and invariant)
+
+  // The guardian's decider fails on p's escalation of c1's failure and
+  // resumes p; p's faultResume passes the cause on to c1, the perpetrator,
+  // which clears c1's failure, and g, which c1's failure suspended, is
+  // resumed and receives.
+  run aResumeAnswersThePerpetratorsFailureTest =
+    initWith(Fixed, false).then(spawn("p")).then(sysStep("p", true)).then(spawn("c1")).then(sysStep("c1", true))
+      .then(spawn("g")).then(sysStep("g", true)).then(send("c1")).then(receive("c1", true, DRestart))
+      .then(runSys("p", true, DEscalate, DEscalate, false))
+      .expect(act(w, "p").failed == "c1" and act(w, "p").sys == [Resume(true)] and invariant)
+      .then(sysStep("p", true))
+      .expect(act(w, "c1").sys == [Resume(true)] and invariant)
+      .then(sysStep("g", true)).then(sysStep("c1", true)).then(sysStep("g", true)).then(send("g"))
+      .then(receive("g", false, DRestart))
+      .expect(act(w, "c1").failed == "" and act(w, "c1").suspend == 0 and act(w, "g").suspend == 0 and settled
+        and invariant)
+
+  // c1's postRestart fails while c1 holds g's Failed aside (state 1). The
+  // stop runs in the same run: c1 waits for g in Termination, keeps the
+  // Failed aside, and closes without deciding it.
+  run aFailedPostRestartStopsBeforeAKeptFailedTest =
+    initWith(Fixed, false).then(spawn("p")).then(sysStep("p", true)).then(spawn("c1")).then(sysStep("c1", true))
+      .then(spawn("g")).then(send("c1")).then(receive("c1", true, DRestart)).then(sysStep("g", false))
+      .then(sysStep("c1", true))
+      .expect(act(w, "c1").stash.length() == 1 and invariant)
+      .then(sysStep("p", true)).then(sysStep("c1", false))
+      .expect(act(w, "c1").fatal and act(w, "c1").wait == WTermination and act(w, "c1").stash.length() == 1
+        and act(w, "c1").sys == [] and invariant)
+      .then(sysStep("g", true)).then(sysStep("g", true)).then(tellRest("g")).then(sysStep("c1", true))
+      .then(tellRest("c1")).then(sysStep("p", true))
+      .expect(phaseOf("c1") == Free and phaseOf("g") == Free and act(w, "c1").postStops == 0 and invariant)
+
+  // #254, 1 with a failed postRestart: c1 holds a Suspend and a Recreate
+  // aside while it waits for g; the postRestart of that restart fails, c1
+  // has no child left and closes in the same run, and the kept Recreate never
+  // runs.
+  run aFailedPostRestartStopsBeforeAKeptRecreateTest =
+    initWith(Fixed, true).then(spawn("p")).then(sysStep("p", true)).then(spawn("c1")).then(sysStep("c1", true))
+      .then(spawn("c2")).then(sysStep("c2", true)).then(spawn("g")).then(sysStep("g", true))
+      .then(send("c1")).then(receive("c1", true, DRestart)).then(sysStep("p", true))
+      .then(runSys("c1", true, DRestart, DRestart, true)).then(sysStep("c2", true)).then(sysStep("c2", true))
+      .then(send("c2")).then(receive("c2", true, DRestart)).then(sysStep("p", true))
+      .then(sysStep("c1", true)).then(sysStep("c1", true))
+      .expect(act(w, "c1").stash == [Suspend, Recreate] and invariant)
+      .then(sysStep("g", true)).then(sysStep("g", true)).then(sysStep("c1", false))
+      .expect(phaseOf("c1") == Closed and act(w, "c1").restarts == 0 and act(w, "c1").postStops == 0 and invariant)
+
   // ---- runs: the mistakes, stage 4a ---------------------------------------
 
   run closeWithChildrenLosesTheChildsNoticeTest =
@@ -999,4 +1133,62 @@ module actor_termination {
       .then(sysStep("p", true)).then(spawn("c1")).then(sysStep("p", true)).then(sysStep("c1", true))
       .then(sysStep("c1", true))
       .expect(not(recreateWhileSuspended))
+
+  // c2 is created under p while p's failure is unanswered and gets no
+  // Suspend, so it receives before the guardian's decision on p.
+  run noSuspendInheritanceLetsANewChildReceiveUnderAFailedParentTest =
+    initWith(NoSuspendInheritance, false).then(spawn("p")).then(sysStep("p", true)).then(spawn("c1"))
+      .then(sysStep("c1", true)).then(send("p")).then(receive("p", true, DRestart)).then(spawn("c2"))
+      .then(sysStep("c2", true)).then(send("c2")).then(receive("c2", false, DRestart))
+      .expect(not(noReceiveUnderAFailedParent))
+
+  // p's faultResume resumes c1 without the cause, so c1 keeps its failure,
+  // and g receives under it.
+  run resumeWithoutCauseLeavesThePerpetratorFailedTest =
+    initWith(ResumeWithoutCause, false).then(spawn("p")).then(sysStep("p", true)).then(spawn("c1"))
+      .then(sysStep("c1", true)).then(spawn("g")).then(sysStep("g", true)).then(send("c1"))
+      .then(receive("c1", true, DRestart)).then(runSys("p", true, DEscalate, DEscalate, false)).then(sysStep("p", true))
+      .then(sysStep("g", true)).then(sysStep("c1", true)).then(sysStep("g", true)).then(send("g"))
+      .then(receive("g", false, DRestart))
+      .expect(not(noReceiveUnderAFailedParent))
+
+  // All-for-one without the Suspend first: c2 runs faultRecreate unsuspended.
+  run noSuspendFirstRecreatesAnUnsuspendedSiblingTest =
+    initWith(NoSuspendFirst, true).then(spawn("p")).then(sysStep("p", true)).then(spawn("c1")).then(sysStep("c1", true))
+      .then(spawn("c2")).then(sysStep("c2", true)).then(send("c1")).then(receive("c1", true, DRestart))
+      .then(sysStep("p", true)).then(sysStep("c2", true))
+      .expect(not(recreateWhileSuspended))
+
+  // p's decider fails on c1's failed start and p's failure suspends c1 a
+  // second time; the one Recreate of p's finishRecreate leaves c1 suspended.
+  run suspendThePerpetratorLeavesItSuspendedTest =
+    initWith(SuspendThePerpetrator, false).then(spawn("p")).then(sysStep("p", true)).then(spawn("c1"))
+      .then(sysStep("c1", false)).then(runSys("p", true, DEscalate, DRestart, false)).then(sysStep("p", true))
+      .expect(act(w, "c1").sys == [Suspend, Recreate])
+      .then(sysStep("c1", true)).then(sysStep("c1", true))
+      .expect(not(settledMeansResumed))
+
+  // A failed postRestart that only queues Terminate: c1's state goes down,
+  // g's kept Failed comes back before the Terminate, and c1 decides it.
+  run stopAtTheTailDecidesAKeptFailedTest =
+    initWith(StopAtTheTail, false).then(spawn("p")).then(sysStep("p", true)).then(spawn("c1")).then(sysStep("c1", true))
+      .then(spawn("g")).then(send("c1")).then(receive("c1", true, DRestart)).then(sysStep("g", false))
+      .then(sysStep("c1", true)).then(sysStep("p", true)).then(sysStep("c1", false))
+      .expect(act(w, "c1").sys.length() == 2 and act(w, "c1").sys.head() != Terminate)
+      .then(sysStep("c1", true))
+      .expect(not(aFailedRestartOnlyStops))
+
+  // The same with #254, 1: the kept Recreate runs before the Terminate and
+  // restarts the actor whose postRestart failed.
+  run stopAtTheTailRunsAKeptRecreateTest =
+    initWith(StopAtTheTail, true).then(spawn("p")).then(sysStep("p", true)).then(spawn("c1")).then(sysStep("c1", true))
+      .then(spawn("c2")).then(sysStep("c2", true)).then(spawn("g")).then(sysStep("g", true))
+      .then(send("c1")).then(receive("c1", true, DRestart)).then(sysStep("p", true))
+      .then(runSys("c1", true, DRestart, DRestart, true)).then(sysStep("c2", true)).then(sysStep("c2", true))
+      .then(send("c2")).then(receive("c2", true, DRestart)).then(sysStep("p", true))
+      .then(sysStep("c1", true)).then(sysStep("c1", true)).then(sysStep("g", true)).then(sysStep("g", true))
+      .then(sysStep("c1", false))
+      .expect(act(w, "c1").sys == [Suspend, Recreate, Terminate])
+      .then(sysStep("c1", true)).then(sysStep("c1", true))
+      .expect(not(aFailedRestartOnlyStops))
 }
