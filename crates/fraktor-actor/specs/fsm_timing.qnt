@@ -80,6 +80,17 @@ module fsm_timing {
   pure def eidsOf(table: str -> TimerRow): Set[int] =
     table.keys().map(k => table.get(k).eid)
 
+  // Drops the first occurrence of `mark` from `marks`, keeping the rest in
+  // order. `namedMarks` is a list because one timer can put the same mark in
+  // the mailbox twice, and a set would merge the two deliveries.
+  pure def dropMark(marks: List[NamedMark], mark: NamedMark): List[NamedMark] =
+    marks.foldl(
+      { out: [], done: false },
+      (acc, mark0) =>
+        if (not(acc.done) and mark0 == mark) { out: acc.out, done: true }
+        else { out: acc.out.append(mark0), done: acc.done }
+    ).out
+
   // A `goto` into a state without a state function makes Pekko call
   // `terminate` (FSM.scala:886-888), which cancels every named timer and the
   // state timer (FSM.scala:933-939) without stopping the actor.
@@ -106,7 +117,12 @@ module fsm_timing {
   var timers: str -> TimerRow
 
   // Marks already enqueued in the mailbox and not yet processed.
-  var namedMarks: Set[NamedMark]
+  // A list, not a set: the same timer's name and generation can be delivered
+  // twice (a fixed-rate timer that catches up arms two deadlines, or two
+  // deadlines of one generation), and the mailbox must keep both deliveries
+  // so that cancelling the timer on the first one and dropping the second is
+  // observable (review: a `Set` merged them).
+  var namedMarks: List[NamedMark]
   var stateMarks: Set[StateMark]
 
   // Model-only ghost state for invariants.
@@ -120,9 +136,12 @@ module fsm_timing {
   var staleStateAccepted: bool
   var staleNamedAccepted: bool
   var acceptedSingle: str
-  // The `Single` timers whose mark has been accepted so far. A `Single` fires
-  // at most once (I3), so this never grows a repeated name.
-  var acceptedSingles: Set[str]
+  // How many marks each `Single` registration (`eid`, the identifier the timer
+  // got when it was started) has had accepted. Keying by `eid` rather than by
+  // name is what makes a second acceptance of the same registration visible:
+  // a name seen twice is a double fire, while the same name started again is a
+  // new `eid` (review: a name set could not tell the two apart).
+  var acceptedSingles: int -> int
 
   action init = all {
     alive' = true,
@@ -136,7 +155,7 @@ module fsm_timing {
     stSid' = -1,
     stIssued' = false,
     timers' = Map(),
-    namedMarks' = Set(),
+    namedMarks' = List(),
     stateMarks' = Set(),
     nextEid' = 0,
     nextSid' = 0,
@@ -148,7 +167,7 @@ module fsm_timing {
     staleStateAccepted' = false,
     staleNamedAccepted' = false,
     acceptedSingle' = NoName,
-    acceptedSingles' = Set(),
+    acceptedSingles' = Map(),
   }
 
   action keepLifecycle = all {
@@ -213,11 +232,20 @@ module fsm_timing {
     val keptGen = stGen
     val keptIssued = stIssued
     val keptNextSid = nextSid
-    val keepsSlot = fromStateTimeout and not(arms)
+    // A state timeout mark keeps the consumed slot only when the transition
+    // does happen and arms no new deadline (`FSM.scala:818-821`). A `goto`
+    // into a state without a state function neither transitions nor arms
+    // (`FSM.scala:886-888`), so it must drop the slot instead of keeping it
+    // (review: state timeout into a nonexistent state left `stActive` true).
+    // Whether the transition needs a fresh deadline, worked out from the
+    // target and the override alone, independently of `actualArm` (review:
+    // `keptAfterMark` must not excuse a needed re-arm that a mutation drops).
+    val needsDeadline = selectionShouldArm(effTarget, effOv)
+    val keepsSlot = fromStateTimeout and valid and not(needsDeadline)
     all {
       state' = if (valid) effTarget else state,
       stateGen' = nextStateGen,
-      stActive' = if (arms) true else (if (fromStateTimeout) keptActive else false),
+      stActive' = if (arms) true else (if (keepsSlot) keptActive else false),
       stGen' = if (arms) nextStateGen else keptGen,
       stSid' = if (arms) keptNextSid else keptSid,
       stIssued' = if (arms) false else keptIssued,
@@ -294,12 +322,12 @@ module fsm_timing {
   action namedTimerDue(name: str): bool = all {
     alive,
     timers.keys().contains(name),
-    namedMarks' = namedMarks.union(Set({
+    namedMarks' = namedMarks.append({
       inst: curInst,
       name: name,
       gen: timers.get(name).gen,
       eid: timers.get(name).eid,
-    })),
+    }),
     stateMarks' = stateMarks,
     keepLifecycle,
     keepStateMachine,
@@ -345,7 +373,7 @@ module fsm_timing {
       deadEids' = if (gotoNonExistent(kind, target)) deadEids.union(eidsOf(timers)).union(Set(m.eid))
         else if (single) deadEids.union(Set(m.eid))
         else deadEids,
-      namedMarks' = namedMarks.exclude(Set(m)),
+      namedMarks' = dropMark(namedMarks, m),
       stateMarks' = stateMarks,
       keepLifecycle,
       staleStateAccepted' = staleStateAccepted,
@@ -355,12 +383,15 @@ module fsm_timing {
           or not(timers.keys().contains(m.name) and timers.get(m.name).eid == m.eid)
       ),
       acceptedSingle' = if (single) m.name else acceptedSingle,
-      acceptedSingles' = if (single) acceptedSingles.union(Set(m.name)) else acceptedSingles,
+      acceptedSingles' =
+        if (single)
+          acceptedSingles.put(m.eid, (if (acceptedSingles.keys().contains(m.eid)) acceptedSingles.get(m.eid) else 0) + 1)
+        else acceptedSingles,
     }
   }
 
   action dropNamed(m: NamedMark): bool = all {
-    namedMarks' = namedMarks.exclude(Set(m)),
+    namedMarks' = dropMark(namedMarks, m),
     stateMarks' = stateMarks,
     keepLifecycle,
     keepStateMachine,
@@ -373,7 +404,7 @@ module fsm_timing {
   // Named timer mark reception (Pekko FSM.scala:822-833).
   action receiveNamedMark(m: NamedMark, kind: TransitionKind, target: int, ov: TimeoutOverride): bool = all {
     alive,
-    namedMarks.contains(m),
+    namedMarks.indices().exists(i => namedMarks[i] == m),
     if (m.inst == curInst and timers.keys().contains(m.name) and timers.get(m.name).gen == m.gen)
       acceptNamed(m, kind, target, ov)
     else
@@ -634,9 +665,9 @@ module fsm_timing {
       restartActor,
       stopActor,
       all {
-        namedMarks != Set(),
-        nondet m = namedMarks.oneOf()
-        receiveNamedMark(m, kind, target, ov),
+        namedMarks != List(),
+        nondet i = namedMarks.indices().oneOf()
+        receiveNamedMark(namedMarks[i], kind, target, ov),
       },
       all {
         stateMarks != Set(),
@@ -659,8 +690,13 @@ module fsm_timing {
     alive
     implies
       not(ValidStates.contains(lastTarget))
-      or keptAfterMark
-      or (stActive == (lastOverride == OverrideAfter or (lastOverride == NoOverride and defaultHasTimeout(lastTarget))))
+      or (if (keptAfterMark)
+            // A state timeout mark kept the consumed slot, which is legal
+            // only when the transition needs no fresh deadline: the slot
+            // stays active and no new deadline is armed (`FSM.scala:818-821`).
+            (stActive and liveSid == -1
+              and not(lastOverride == OverrideAfter or (lastOverride == NoOverride and defaultHasTimeout(lastTarget))))
+          else (stActive == (lastOverride == OverrideAfter or (lastOverride == NoOverride and defaultHasTimeout(lastTarget)))))
 
   // I1: `forMax(Infinite)` never leaves a live state timer deadline armed.
   val infiniteNeverArms = (lastOverride == OverrideInfinite) implies (liveSid == -1)
@@ -674,10 +710,10 @@ module fsm_timing {
   // The marker persists until the next ordinary message, start, cancel or
   // transition, so this is a real check and not a tautology (review low 1).
   val singleLeavesTable = acceptedSingle != NoName implies not(timers.keys().contains(acceptedSingle))
-  // I3: a `Single` fires at most once. A repeated name never joins the set, so
-  // its size is the number of distinct singles accepted and no name can be in
-  // it twice.
-  val singleFiresOnce = acceptedSingles.size() <= Names.size()
+  // I3: a `Single` fires at most once. Every registration (`eid`) whose mark
+  // was accepted exactly once, so a second acceptance of the same `eid` shows
+  // here even though a re-started timer is a different `eid`.
+  val singleFiresOnce = acceptedSingles.keys().forall(e => acceptedSingles.get(e) <= 1)
 
   val invariant = armedMatchesSelection
     and infiniteNeverArms
@@ -787,7 +823,47 @@ module fsm_timing {
       .then(receiveOrdinary(Goto, SNonExistent, NoOverride))
       .expect(alive and state == SWithTimeoutA and timers == Map() and liveSid == -1 and invariant)
       .then(receiveNamedMark({ inst: 0, name: "a", gen: 1, eid: 0 }, Goto, SNoTimeout, NoOverride))
-      .expect(state == SWithTimeoutA and namedMarks == Set() and invariant)
+      .expect(state == SWithTimeoutA and namedMarks == List() and invariant)
+
+  // A timer that catches up arms two deadlines, and both marks reach the
+  // mailbox with the same name and generation. The first acceptance leaves the
+  // second queued, so cancelling between them cannot hide it (review: a `Set`
+  // merged the two deliveries into one).
+  run duplicateDeliveryStaysQueuedTest =
+    init
+      .then(startNamedTimer("a", true))
+      .then(namedTimerDue("a"))
+      .then(namedTimerDue("a"))
+      .expect(namedMarks.length() == 2)
+      .then(receiveNamedMark({ inst: 0, name: "a", gen: 1, eid: 0 }, Stay, SNoTimeout, NoOverride))
+      .expect(namedMarks.length() == 1 and invariant)
+      .then(cancelNamedTimer("a"))
+      .expect(namedMarks.length() == 1 and invariant)
+
+  // A state timeout mark into a state without a state function neither
+  // transitions nor keeps the consumed slot (`FSM.scala:818-821, 886-888`;
+  // review: `stActive` stayed true on that path).
+  run stateTimeoutToNonExistentClearsSlotTest =
+    init
+      .then(receiveOrdinary(Goto, SWithTimeoutA, NoOverride))
+      .then(stateTimerDue)
+      .then(receiveStateMark({ inst: 0, gen: 1, sid: 0 }, Goto, SNonExistent, NoOverride))
+      .expect(state == SWithTimeoutA and not(stActive) and liveSid == -1 and invariant)
+
+  // A `Single` started again under the same name is a new registration
+  // (`eid`), and each registration is accepted once. The counts are keyed by
+  // `eid`, so a second acceptance of one registration would show (review).
+  run singleRestartedUnderSameNameFiresOnceTest =
+    init
+      .then(startNamedTimer("a", false))
+      .then(namedTimerDue("a"))
+      .then(receiveNamedMark({ inst: 0, name: "a", gen: 1, eid: 0 }, Stay, SNoTimeout, NoOverride))
+      .expect(acceptedSingles.get(0) == 1 and not(timers.keys().contains("a")) and invariant)
+      .then(startNamedTimer("a", false))
+      .expect(timers.get("a").eid == 1 and invariant)
+      .then(namedTimerDue("a"))
+      .then(receiveNamedMark({ inst: 0, name: "a", gen: 2, eid: 1 }, Stay, SNoTimeout, NoOverride))
+      .expect(acceptedSingles.get(0) == 1 and acceptedSingles.get(1) == 1 and invariant)
 
   // ---- Negative controls (each must violate its targeted invariant) ----
 

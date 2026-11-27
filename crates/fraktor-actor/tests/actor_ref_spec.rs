@@ -190,62 +190,58 @@ impl Actor for WorkerActor {
   }
 }
 
-// Original case 8's protocol: the test drives one round of `complex` and one
-// of `simple` through the reply actor, which sends `complex` to the sender
-// actor and `simple` to the worker actor. The worker answers the test actor,
-// the sender actor answers the test actor, and each answer counts one of the
-// four latch openings of `TestLatch(4)` (two per round: the worker's and the
-// sender's).
+// Original case 8's `SenderActor`: two turns, each asking the reply actor for
+// `complex` and then `simple`. Every reply it sends goes to the test actor, so
+// the test actor receives two answers per turn and `TestLatch(4)` opens only
+// on those answers.
 struct SenderActor {
-  reply_slot: Arc<Mutex<Option<ActorRef>>>,
-  count_hits: TestLatch,
-  rounds_left: usize,
+  reply_actor: Arc<Mutex<Option<ActorRef>>>,
+  test_actor: ActorRef,
+  latch: TestLatch,
+  turns_left: usize,
+}
+
+impl SenderActor {
+  fn request(&self, context: &mut ActorContext<'_>, request: &'static str) {
+    let Some(reply_actor) = self.reply_actor.lock().expect("the reply actor slot").clone() else { return };
+    reply_actor.tell(request, context.self_ref());
+  }
 }
 
 impl Actor for SenderActor {
-  fn pre_start(&mut self, _context: &mut ActorContext<'_>) {}
-
   fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
     let Some(text) = message.downcast_ref::<&'static str>() else { return };
     match *text {
       | "start" => {
-        // The original's `SenderActor` sends `complex`; the port's two-round
-        // dialogue starts with it.
-        self.rounds_left = 2;
+        self.turns_left = 2;
         self.request(context, "complex");
       },
+      // The reply actor hands `complex` back to this actor, which answers the
+      // test actor and asks for the `simple` that goes on to the worker.
       | "complex" => {
-        // The sender actor's own answer to the test actor.
-        reply_to(context, "ToTestActor");
-        self.count_hits.count_down();
-        self.rounds_left = self.rounds_left.saturating_sub(1);
-        if self.rounds_left > 0 {
-          self.request(context, "complex");
-        } else {
-          self.request(context, "simple");
-        }
+        let target = self.test_actor.clone();
+        context.tell(&target, "ToTestActor");
+        self.latch.count_down();
+        self.request(context, "simple");
       },
+      // The worker's answer arrives from the worker and goes on to the test
+      // actor, opening the second latch slot of the turn.
       | "ToSenderActor" => {
-        // The worker's answer to the sender actor, which answers the test
-        // actor and opens the latch. The next round is already asked below
-        // whenever a round was left.
-        reply_to(context, "ToTestActor");
-        self.count_hits.count_down();
+        let target = self.test_actor.clone();
+        context.tell(&target, "ToTestActor");
+        self.latch.count_down();
+        self.turns_left = self.turns_left.saturating_sub(1);
+        if self.turns_left > 0 {
+          self.request(context, "complex");
+        }
       },
       | _ => {},
     }
   }
 }
 
-impl SenderActor {
-  fn request(&mut self, context: &mut ActorContext<'_>, request: &'static str) {
-    let Some(reply_actor) = self.reply_slot.lock().expect("the reply slot").clone() else { return };
-    reply_actor.tell(request, context.self_ref());
-  }
-}
-
-// Original case 8: the reply actor that routes by the prefix of the message to
-// the sender actor (`complex`) or the worker actor (`simple`).
+// Original case 8's `ReplyActor`: it routes `complex` back to the sender actor
+// and `simple` on to the worker.
 struct RoutingReplyActor {
   sender_actor: ActorRef,
   worker_actor: ActorRef,
@@ -253,9 +249,11 @@ struct RoutingReplyActor {
 
 impl Actor for RoutingReplyActor {
   fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
-    if let Some(text) = message.downcast_ref::<&'static str>() {
-      let target = if text.starts_with("complex") { self.sender_actor.clone() } else { self.worker_actor.clone() };
-      target.tell(*text, context.self_ref());
+    let Some(text) = message.downcast_ref::<&'static str>() else { return };
+    if text.starts_with("complex") {
+      self.sender_actor.tell(*text, context.self_ref());
+    } else if text.starts_with("simple") {
+      self.worker_actor.tell(*text, context.self_ref());
     }
   }
 }
@@ -438,32 +436,38 @@ impl SmallCase {
   }
 }
 
-/// Runs one small case: creates the failing actor(s) under the test actor with
-/// the stopping strategy (the `Create` path is the same as under `/user`, and
-/// each failed start logs one `ActorInitializationException`), and checks the
-/// count, the report that reached the caller, the stop, and that the name is
-/// free again. The inner actor is the outer's sibling, as in the original,
-/// which keeps the two failures independent and their logs counted as two.
+/// Runs one small case: creates the inner and the outer actor as `/user`
+/// children, as the original's `import system.actorOf` does (design section
+/// 1.3), and checks the log count, the report that reached the caller, the
+/// stop of the failing side, the survival of the other side, and that the name
+/// is free again (`contextStackMustBeEmpty()`).
 fn run_initialization_case(spec: &mut FraktorSpec, case: SmallCase) {
+  // Small case 13 names the root cause's text; the filter then matches the log
+  // message exactly, as design section 1.3.1 requires. Every other case filters
+  // by the cause name alone.
+  let mut filter = EventFilter::typed("ActorInitializationException");
+  if let Some(text) = case.text {
+    filter = filter.with_message(text);
+  }
   let sink = spec.system().event_sink().expect("the spec system has an event sink");
   let registry = sink.into_any().downcast::<EventSinkRegistry>().expect("the spec uses an EventSinkRegistry");
-  let armed = registry.arm(EventFilter::typed("ActorInitializationException"));
+  let armed = registry.arm(filter);
+  // Both sides exist in every case: a one-sided failure still leaves the other
+  // actor running, which is what design section 1.3.1 checks (`FailingOuterActor`
+  // wraps a normal inner in small cases 3 and 5, `OuterActor` wraps a failing
+  // inner in small case 4, and so on).
+  let makers = [("failingInner", case.inner_fails), ("failingOuter", case.outer_fails)];
   let mut receivers = Vec::new();
   let mut created = Vec::new();
-  let mut inner_success = None;
-  if case.inner_fails || !case.outer_fails {
-    let inner = make_case_actor(spec, "failingInner", case.inner_fails, case.text);
-    if case.inner_fails {
-      receivers.push(inner.1.expect("the maker's receiver"));
-      created.push(inner.0);
+  let mut survivors = Vec::new();
+  for (name, fails) in makers {
+    let (actor, rx) = make_case_actor(spec, name, fails, case.text);
+    if fails {
+      receivers.push(rx.expect("the maker's receiver"));
+      created.push(actor);
     } else {
-      inner_success = Some(inner.0);
+      survivors.push(actor);
     }
-  }
-  if case.outer_fails {
-    let outer = make_case_actor(spec, "failingOuter", true, case.text);
-    receivers.push(outer.1.expect("the maker's receiver"));
-    created.push(outer.0);
   }
   spec.system_mut().run_until_idle();
   let matched = registry.matched(armed);
@@ -477,15 +481,22 @@ fn run_initialization_case(spec: &mut FraktorSpec, case: SmallCase) {
       assert!(!text.is_empty(), "the failure reached the caller");
     }
   }
-  for actor in &created {
+  // The supervisor stops the failed actors; the order of the notices is not
+  // fixed, so the test collects them and compares the set.
+  let mut stopped = Vec::new();
+  for _ in 0..created.len() {
     let terminated: Terminated = spec.expect_msg_type();
-    assert_eq!(terminated.target(), actor, "the supervisor stopped the failed actor");
+    stopped.push(terminated.target().clone());
   }
-  if let Some(inner) = inner_success {
-    assert!(!spec.system().is_actor_terminated(&inner), "the side that did not fail keeps running");
+  for actor in &created {
+    assert!(stopped.contains(actor), "the supervisor stopped the failed actor");
+  }
+  for actor in &survivors {
+    assert!(!spec.system().is_actor_terminated(actor), "the side that did not fail keeps running");
   }
   // `contextStackMustBeEmpty()`: the name is free again and a normal actor of
-  // the same name answers.
+  // the same name answers. The replacement is a `/user` child like the
+  // original, so this checks that name's own namespace (design section 1.3.1).
   for actor in &created {
     let name = actor.path().name().to_string();
     let replacement = spec.system_mut().actor_of_named(reply_actor_props(), &name).expect("the name is free again");
@@ -494,10 +505,20 @@ fn run_initialization_case(spec: &mut FraktorSpec, case: SmallCase) {
     spec.system_mut().stop(&replacement);
     spec.system_mut().run_until_idle();
   }
+  for actor in &survivors {
+    spec.system_mut().stop(actor);
+  }
+  spec.system_mut().run_until_idle();
+  // The test actor watches the survivors too, so their stops leave `Terminated`
+  // notices in its queue; drain them so the next case starts with an empty one.
+  for _ in 0..survivors.len() {
+    let _: Terminated = spec.expect_msg_type();
+  }
 }
 
-/// Starts one actor of a small case under the test actor, watching it, and
-/// returns it with the maker's report receiver when it was made to fail.
+/// Starts one actor of a small case as a `/user` child (design section 1.3),
+/// watching it from the test actor, and returns it with the maker's report
+/// receiver when it was made to fail.
 fn make_case_actor(
   spec: &mut FraktorSpec,
   name: &str,
@@ -513,11 +534,7 @@ fn make_case_actor(
   } else {
     promise_intercept(tx, || ReplyActor)
   };
-  let actor = spec.test_kit_mut().child_actor_of(
-    props,
-    Some(name),
-    fraktor_actor::kernel::supervision::SupervisorStrategy::stopping_strategy(),
-  );
+  let actor = spec.system_mut().actor_of_named(props, name).expect("the name is free");
   spec.test_kit_mut().watch(&actor);
   (actor, fails.then_some(rx))
 }
@@ -656,16 +673,22 @@ fn supports_advanced_nested_actor_ofs() {
 fn supports_reply_via_sender() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let settings = spec.test_kit_settings();
-  // The original's `TestLatch(4)`: two rounds, and each round makes both the
-  // worker's answer and the sender actor's arrival count one opening.
+  // The original's `TestLatch(4)`: two turns, each opening it once for the
+  // sender actor's answer and once for the worker's.
   let latch = TestLatch::new(4, settings);
   let test_actor = spec.test_actor();
-  let reply_slot: Arc<Mutex<Option<ActorRef>>> = Arc::new(Mutex::new(None));
+  let reply_actor_slot: Arc<Mutex<Option<ActorRef>>> = Arc::new(Mutex::new(None));
   // The worker answers the sender actor, as `WorkerActor(..., senderActor)`.
   let sender_actor: ActorRef = spec.system_mut().actor_of({
     let latch = latch.clone();
-    let reply_slot = Arc::clone(&reply_slot);
-    Props::new(move || SenderActor { reply_slot: Arc::clone(&reply_slot), count_hits: latch.clone(), rounds_left: 0 })
+    let reply_actor_slot = Arc::clone(&reply_actor_slot);
+    let reply_target = test_actor.clone();
+    Props::new(move || SenderActor {
+      reply_actor: Arc::clone(&reply_actor_slot),
+      test_actor: reply_target.clone(),
+      latch: latch.clone(),
+      turns_left: 0,
+    })
   });
   let worker: ActorRef = spec.system_mut().actor_of({
     let sender_actor = sender_actor.clone();
@@ -681,11 +704,17 @@ fn supports_reply_via_sender() {
     let worker = worker.clone();
     Props::new(move || RoutingReplyActor { sender_actor: sender_actor.clone(), worker_actor: worker.clone() })
   });
-  *reply_slot.lock().expect("the reply slot") = Some(reply_actor.clone());
+  *reply_actor_slot.lock().expect("the reply actor slot") = Some(reply_actor.clone());
   sender_actor.tell("start", test_actor.clone());
+  // The original awaits the latch; the port also reads the four answers the
+  // test actor receives, so the latch cannot open on bookkeeping alone.
   latch.ready(spec.system(), TestLatch::DEFAULT_TIMEOUT);
+  for _ in 0..4 {
+    spec.expect_msg(&"ToTestActor");
+  }
   spec.system_mut().stop(&reply_actor);
   spec.system_mut().stop(&worker);
+  spec.system_mut().stop(&sender_actor);
   spec.system_mut().run_until_idle();
   spec.terminate();
 }
