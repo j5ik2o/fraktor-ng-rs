@@ -164,7 +164,11 @@ fn custom_unhandled(
   message: &Message,
   data: &i32,
 ) -> Option<FsmState<State, i32>> {
-  if message.is::<Tick>() { Some(FsmState::stay().using(*data)) } else { None }
+  if message.is::<Tick>() {
+    Some(FsmState::stay().using(*data))
+  } else {
+    None
+  }
 }
 
 // Original: `class StateMachine extends FSM[State, Int]` (`FSMTimingSpec.scala:198-290`).
