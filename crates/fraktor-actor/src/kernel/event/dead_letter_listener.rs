@@ -16,6 +16,10 @@
 
 //! The state machine that logs dead letters up to a limit, then suspends.
 
+#[cfg(test)]
+#[path = "dead_letter_listener_test.rs"]
+mod tests;
+
 use alloc::format;
 use alloc::string::String;
 use core::time::Duration;
@@ -26,6 +30,7 @@ use crate::kernel::actor::DeadLetterLogLimit;
 use crate::kernel::actor::DeadLetterSettings;
 use crate::kernel::actor::SuppressedDeadLetter;
 use crate::kernel::actor_ref::ActorRef;
+use crate::kernel::dispatch::SystemMessage;
 use crate::kernel::message::Message;
 use crate::kernel::pretty_duration::PrettyDurationInput;
 
@@ -196,22 +201,26 @@ fn is_wrapped_suppressed(dead: &DeadLetter, is_suppressed: &dyn Fn(&Message) -> 
   false
 }
 
+/// Returns the name a log line names for the payload of `message`: a
+/// system message is named by its kind, and every other payload by its
+/// type name.
+fn payload_name(message: &Message) -> String {
+  if let Some(system) = message.downcast_ref::<SystemMessage>() {
+    return String::from(system.class_name());
+  }
+  String::from(message.payload_type_name())
+}
+
 /// Returns the type name a log line names for `message`, unwrapping one
 /// dead letter layer, and the "wrapped in" suffix for a wrapped message.
 fn unwrapped(message: &Message) -> (String, String) {
   if let Some(inner) = message.downcast_ref::<DeadLetter>() {
-    return (
-      String::from(inner.message().payload_type_name()),
-      format!(" wrapped in [{}]", message.payload_type_name()),
-    );
+    return (payload_name(inner.message()), format!(" wrapped in [{}]", message.payload_type_name()));
   }
   if let Some(inner) = message.downcast_ref::<SuppressedDeadLetter>() {
-    return (
-      String::from(inner.message().payload_type_name()),
-      format!(" wrapped in [{}]", message.payload_type_name()),
-    );
+    return (payload_name(inner.message()), format!(" wrapped in [{}]", message.payload_type_name()));
   }
-  (String::from(message.payload_type_name()), String::new())
+  (payload_name(message), String::new())
 }
 
 fn limit_value(limit: DeadLetterLogLimit) -> u32 {

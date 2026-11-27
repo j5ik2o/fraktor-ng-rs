@@ -18,17 +18,24 @@
 //! routing rules that turn an undeliverable message into a dead letter
 //! event.
 
+#[cfg(test)]
+#[path = "dead_letters_shared_test.rs"]
+mod tests;
+
 use alloc::collections::BTreeSet;
 use core::any::TypeId;
 
 use spin::Mutex;
 
 use crate::kernel::actor::DeadLetter;
+use crate::kernel::actor::DeadLetterTrampoline;
 use crate::kernel::actor::SuppressedDeadLetter;
 use crate::kernel::actor::Terminated;
 use crate::kernel::actor_ref::ActorRef;
+use crate::kernel::dispatch::SystemMessage;
 use crate::kernel::event::EventStreamBusWeak;
 use crate::kernel::message::Message;
+use crate::kernel::sync::Arc;
 
 /// The state behind the dead letters handle.
 ///
@@ -46,6 +53,7 @@ use crate::kernel::message::Message;
 pub(crate) struct DeadLettersShared {
   bus: spin::Once<EventStreamBusWeak>,
   suppression: Mutex<BTreeSet<TypeId>>,
+  trampoline: Mutex<Option<Arc<dyn DeadLetterTrampoline>>>,
 }
 
 impl DeadLettersShared {
@@ -62,7 +70,26 @@ impl DeadLettersShared {
     suppression.insert(TypeId::of::<Terminated>());
     suppression.insert(TypeId::of::<DeadLetter>());
     suppression.insert(TypeId::of::<SuppressedDeadLetter>());
-    Self { bus: spin::Once::new(), suppression: Mutex::new(suppression) }
+    Self { bus: spin::Once::new(), suppression: Mutex::new(suppression), trampoline: Mutex::new(None) }
+  }
+
+  /// Installs the trampoline every publication runs through, replacing
+  /// the one installed before.
+  ///
+  /// The executor installs the kernel's own trampoline when it is
+  /// created, and a system built with another trampoline replaces it
+  /// before any actor starts. A publication that happens before the
+  /// first installation runs where it was raised, as publications did
+  /// before the trampoline existed.
+  pub(crate) fn set_dead_letter_trampoline(&self, trampoline: Arc<dyn DeadLetterTrampoline>) {
+    // The replaced trampoline is taken out and dropped after the lock is
+    // released: dropping it while the lock is held could publish a dead
+    // letter from its drop, which would take the same lock again.
+    let replaced = {
+      let mut slot = self.trampoline.lock();
+      slot.replace(trampoline)
+    };
+    drop(replaced);
   }
 
   /// Records the subscription table the routing rules publish to.
@@ -173,9 +200,41 @@ impl DeadLettersShared {
     }
   }
 
+  /// Routes a system message whose delivery met a closed mailbox.
+  ///
+  /// Mirrors the dead letter mailbox's `systemEnqueue` handing the
+  /// message to the dead letters handle, which publishes it under the
+  /// dead letter rules: a suppressed kind (`Terminate`, and the port's
+  /// own `ChildTerminated`, which stands where Pekko's suppressed
+  /// `DeathWatchNotification` stands) as a [`SuppressedDeadLetter`]
+  /// naming the dead letters handle as the reference that processed it,
+  /// and every other kind as a [`DeadLetter`] whose sender and recipient
+  /// are both the closed mailbox's owner, because a system message has
+  /// no sender of its own.
+  pub(crate) fn route_system_undeliverable(
+    &self,
+    message: SystemMessage,
+    recipient: ActorRef,
+    dead_letters: &ActorRef,
+  ) {
+    match message {
+      | SystemMessage::Terminate | SystemMessage::ChildTerminated { .. } => {
+        self.publish(SuppressedDeadLetter::from_message(Message::new(message), recipient, dead_letters.clone()));
+      },
+      | _ => {
+        self.publish(DeadLetter::from_message(Message::new(message), recipient.clone(), recipient));
+      },
+    }
+  }
+
   fn publish<E: core::any::Any + Send + Sync>(&self, event: E) {
-    if let Some(bus) = self.bus.get() {
-      bus.publish(event);
+    let Some(bus) = self.bus.get().cloned() else {
+      return;
+    };
+    let trampoline = self.trampoline.lock().clone();
+    match trampoline {
+      | Some(trampoline) => trampoline.run(alloc::boxed::Box::new(move || bus.publish(event))),
+      | None => bus.publish(event),
     }
   }
 }

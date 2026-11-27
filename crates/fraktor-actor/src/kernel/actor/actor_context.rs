@@ -22,7 +22,11 @@
 
 //! The view an actor gets while it handles one message.
 
+#[cfg(feature = "test-support")]
+use crate::kernel::actor::test_support::ActorHandle;
 use crate::kernel::actor::Actor;
+#[cfg(feature = "test-support")]
+use crate::kernel::actor::ActorCreationError;
 use crate::kernel::actor::BehaviorStack;
 use crate::kernel::actor::FunctionRef;
 use crate::kernel::actor::InvalidActorNameException;
@@ -31,6 +35,8 @@ use crate::kernel::actor::ReceiveTimeoutSetting;
 use crate::kernel::actor::Running;
 use crate::kernel::actor::StashOverflowException;
 use crate::kernel::actor_ref::ActorRef;
+#[cfg(feature = "test-support")]
+use crate::kernel::actor_system::WeakActorSystem;
 use crate::kernel::executor::Executor;
 use crate::kernel::message::Message;
 use crate::kernel::supervision::SupervisorStrategy;
@@ -120,6 +126,51 @@ impl<'a> ActorContext<'a> {
     self.executor.dead_letters()
   }
 
+  /// Returns the system this actor runs in, as a non-owning handle.
+  ///
+  /// Mirrors `ActorContext.system`. An actor that builds a
+  /// `TestActorRef` while it runs hands the handle to that reference,
+  /// which a test reads from its own thread afterwards.
+  #[cfg(feature = "test-support")]
+  pub fn system(&self) -> WeakActorSystem {
+    self.executor.weak_system()
+  }
+
+  /// Resolves `path` to a handle, as the system's own resolution
+  /// does, reached from inside an actor that is running in the system.
+  #[cfg(feature = "test-support")]
+  pub fn resolve_actor_ref(&self, path: &crate::kernel::actor_path::ActorPath) -> ActorRef {
+    self.executor.resolve_actor_ref(path)
+  }
+
+  /// Starts an actor a test wraps, attaching `handle` to its cell.
+  ///
+  /// Mirrors the creation `TestActorRef` performs from inside an
+  /// actor: the call goes through the same executor entry as the one a
+  /// test thread reaches through a non-owning handle, so the checks
+  /// and the choice of strategy do not depend on the entry. A
+  /// supervisor that is omitted places the actor below the user
+  /// guardian, not below this actor.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ActorCreationError`] when the name, the parent's state,
+  /// or the configuration is refused.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the supervisor is an actor that has not started yet.
+  #[cfg(feature = "test-support")]
+  pub fn try_spawn_test_actor(
+    &mut self,
+    supervisor: Option<&ActorRef>,
+    props: Props,
+    name: Option<&str>,
+    handle: ActorHandle,
+  ) -> Result<ActorRef, ActorCreationError> {
+    self.executor.try_spawn_test_actor(supervisor, props, name, handle)
+  }
+
   /// Publishes `event` on the event stream of the system.
   ///
   /// Mirrors `context.system.eventStream.publish(event)`, which is how an
@@ -171,12 +222,18 @@ impl<'a> ActorContext<'a> {
   /// one Pekko holds after the same calls.
   pub(crate) fn run_behavior(&mut self, initial: &mut dyn Actor, message: Message) {
     self.current_message = Some((message.clone(), self.executor.next_delivery_id()));
-    let mut running = self.stack.take_running();
-    match &mut running {
+    let running = self.stack.take_running();
+    // The taken frame goes back even when the behaviour panics: a
+    // failure of one delivery must not silently drop the behaviour the
+    // actor switched to, as Pekko's stack keeps the head it ran. The
+    // guard restores it on the unwind as on the normal return, and the
+    // failure itself is handled exactly as before.
+    let mut restore = RunningRestore::new(self.stack as *mut BehaviorStack, running);
+    match restore.running() {
       | Running::Frame { frame, .. } => frame(self, message),
       | Running::Receive => initial.receive(self, message),
     }
-    self.stack.finish_running(running);
+    restore.finish();
     self.current_message = None;
   }
 
@@ -392,7 +449,8 @@ impl<'a> ActorContext<'a> {
   ) {
     let key = self.self_ref.key();
     let sender = self.sender();
-    let request = crate::kernel::executor::FsmTimerRequest { mode, message, delay, instance_id, generation, sender: Some(sender) };
+    let request =
+      crate::kernel::executor::FsmTimerRequest { mode, message, delay, instance_id, generation, sender: Some(sender) };
     self.executor.schedule_fsm_named_timer(key, name, request);
   }
 
@@ -563,5 +621,46 @@ impl<'a> ActorContext<'a> {
   pub(crate) fn forward(&mut self, target: &ActorRef, message: Message) {
     let sender = self.sender();
     self.executor.send(sender, target, message);
+  }
+}
+
+/// Holds the behaviour head [`ActorContext::run_behavior`] took out of
+/// the stack and puts it back when the delivery ends, on a panic as on
+/// a return.
+///
+/// The stack is named through a raw pointer because the running frame
+/// receives the whole context, stack included, while it runs: the
+/// guard must not hold a borrow of the stack across that call. The
+/// pointer stays valid because the guard is dropped before the context
+/// it was taken from, and the stack outlives both.
+struct RunningRestore {
+  stack: *mut BehaviorStack,
+  running: Option<Running>,
+}
+
+impl RunningRestore {
+  fn new(stack: *mut BehaviorStack, running: Running) -> Self {
+    Self { stack, running: Some(running) }
+  }
+
+  fn running(&mut self) -> &mut Running {
+    self.running.as_mut().expect("the taken head is held until the delivery ends")
+  }
+
+  /// Puts the head back into its slot, as
+  /// [`BehaviorStack::finish_running`] does at the end of a delivery.
+  fn finish(&mut self) {
+    if let Some(running) = self.running.take() {
+      // SAFETY: the pointer names the stack of the context this guard
+      // was taken from, which outlives the guard, and no other borrow
+      // of that stack is alive here.
+      unsafe { &mut *self.stack }.finish_running(running);
+    }
+  }
+}
+
+impl Drop for RunningRestore {
+  fn drop(&mut self) {
+    self.finish();
   }
 }

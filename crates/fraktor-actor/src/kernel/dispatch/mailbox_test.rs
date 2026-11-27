@@ -364,7 +364,15 @@ impl<C: MailboxCell> Mailbox<C> {
     limits: RunLimits,
     locks: &dyn crate::kernel::sync::LockFactory,
   ) -> Self {
-    Self::with_queue(Some(std::boxed::Box::new(cell)), queue, false, limits, locks, crate::kernel::sync::Weak::new())
+    Self::with_queue(
+      Some(std::boxed::Box::new(cell)),
+      queue,
+      false,
+      limits,
+      locks,
+      crate::kernel::sync::Weak::new(),
+      Self::recording_refused_route(),
+    )
   }
 
   /// Creates the mailbox of `cell` for a balancing team that shares `queue`.
@@ -375,7 +383,28 @@ impl<C: MailboxCell> Mailbox<C> {
     limits: RunLimits,
     locks: &dyn crate::kernel::sync::LockFactory,
   ) -> Self {
-    Self::with_queue(Some(std::boxed::Box::new(cell)), queue, true, limits, locks, crate::kernel::sync::Weak::new())
+    Self::with_queue(
+      Some(std::boxed::Box::new(cell)),
+      queue,
+      true,
+      limits,
+      locks,
+      crate::kernel::sync::Weak::new(),
+      Self::recording_refused_route(),
+    )
+  }
+
+  /// Builds the refused route these tests hand to `with_queue`: the mailbox
+  /// runs it on the sender's thread when it turns an envelope away, and it
+  /// records the refused envelope so the test can see it. Issue #296 makes
+  /// the route a required argument of `with_queue` and `for_actor` (design
+  /// section 4.1); a unit test passes a recorder where production passes the
+  /// dead letter route.
+  pub(crate) fn recording_refused_route() -> Arc<dyn Fn(Envelope) + Send + Sync> {
+    let refused: Arc<std::sync::Mutex<Vec<Envelope>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    Arc::new(move |envelope: Envelope| {
+      refused.lock().unwrap().push(envelope);
+    })
   }
 
   /// Returns whether the mailbox is suspended.

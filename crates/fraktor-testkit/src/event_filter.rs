@@ -42,6 +42,28 @@ impl EventFilter {
   ///
   /// Panics when the system has no event sink, or when the number of matching
   /// events after the body differs from the filter's occurrences.
+  ///
+  /// Runs `body` while muting the events this filter matches, and
+  /// leaves the number of matched events unasserted.
+  ///
+  /// Mirrors `EventFilter.intercept` called for its side of muting
+  /// alone: the port cannot keep `intercept`'s own name for a second
+  /// meaning, so it carries the `any` suffix of `expectMsgType`'s
+  /// sibling `expectMsgAnyOf`. The matched events are discarded, as
+  /// `intercept` discards them after counting.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the system has no event sink.
+  pub fn intercept_any<R>(&self, system: &mut ActorSystem, body: impl FnOnce() -> R) -> R {
+    let registry = registry_of(system).expect("the actor system has no event sink to intercept");
+    let index = registry.arm(self.clone());
+    let outcome = body();
+    system.run_until_idle();
+    registry.disarm(index);
+    outcome
+  }
+
   pub fn intercept<R>(&self, system: &mut ActorSystem, body: impl FnOnce() -> R) -> R {
     let registry = registry_of(system).expect("the actor system has no event sink to intercept");
     let index = registry.arm(self.clone());

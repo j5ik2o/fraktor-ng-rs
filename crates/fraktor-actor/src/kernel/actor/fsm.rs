@@ -24,6 +24,9 @@ use core::time::Duration;
 use portable_atomic::AtomicU64;
 use portable_atomic::Ordering;
 
+use crate::kernel::actor::fsm_state::UnhandledChange;
+use crate::kernel::actor::fsm_view::FsmTimerOp;
+use crate::kernel::actor::fsm_view::FsmTimerState;
 #[cfg(feature = "test-support")]
 use crate::kernel::actor::test_support::FsmControl;
 #[cfg(feature = "test-support")]
@@ -34,9 +37,6 @@ use crate::kernel::actor::test_support::FsmStateTimerRecord;
 use crate::kernel::actor::test_support::FsmTimerKind;
 #[cfg(feature = "test-support")]
 use crate::kernel::actor::test_support::FsmTimerRecord;
-use crate::kernel::actor::fsm_state::UnhandledChange;
-use crate::kernel::actor::fsm_view::FsmTimerOp;
-use crate::kernel::actor::fsm_view::FsmTimerState;
 use crate::kernel::actor::Actor;
 use crate::kernel::actor::ActorContext;
 use crate::kernel::actor::CurrentState;

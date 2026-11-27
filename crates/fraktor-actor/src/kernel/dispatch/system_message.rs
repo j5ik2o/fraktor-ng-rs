@@ -25,7 +25,9 @@ use crate::kernel::actor_ref::ActorRef;
 /// back in the stages that send them. A mailbox keeps these in a queue of
 /// their own, and a run handles all that are waiting before each normal
 /// message. A system message left in a
-/// mailbox that closes, or sent to a closed one, is dropped (section 11.12.3).
+/// mailbox that closes, or sent to a closed one, goes to dead letters under
+/// the dead letter rules: a suppressed kind as a `SuppressedDeadLetter`, and
+/// every other kind as a `DeadLetter`.
 #[derive(Clone, Debug)]
 pub(crate) enum SystemMessage {
   /// Start the actor (Pekko's `Create`).
@@ -40,4 +42,21 @@ pub(crate) enum SystemMessage {
     /// The child that stopped.
     child: ActorRef,
   },
+}
+
+impl SystemMessage {
+  /// Returns the name of this message's kind, in the port's own namespace.
+  ///
+  /// Mirrors the `getClass.getName` a dead letter listener reads for a
+  /// system message in Pekko: the port wraps the enum in a `Message`, whose
+  /// type name is the enum's for every kind, so the listener reads this
+  /// name instead and the kind survives into the log line.
+  pub(crate) fn class_name(&self) -> &'static str {
+    match self {
+      | Self::Create => "fraktor_actor::kernel::dispatch::system_message::Create",
+      | Self::Resume => "fraktor_actor::kernel::dispatch::system_message::Resume",
+      | Self::Terminate => "fraktor_actor::kernel::dispatch::system_message::Terminate",
+      | Self::ChildTerminated { .. } => "fraktor_actor::kernel::dispatch::system_message::ChildTerminated",
+    }
+  }
 }

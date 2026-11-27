@@ -80,19 +80,28 @@ pub(crate) struct Mailbox<C> {
   cell: LockCell<Option<Box<C>>>,
   limits: RunLimits,
   executor: Weak<ManualExecutor<C>>,
-  refused_route: Option<Arc<dyn Fn(Envelope) + Send + Sync>>,
+  refused_route: Arc<dyn Fn(Envelope) + Send + Sync>,
 }
 
 impl<C: MailboxCell> Mailbox<C> {
   /// Creates the mailbox of an actor that `executor` runs, with a queue of its
   /// own and its slot still empty: the actor goes in once it has been built.
+  ///
+  /// `refused_route` is the route an envelope this mailbox turns away
+  /// takes, run on the sender's thread with the refused envelope (which
+  /// names its recipient). It is required at creation, so a mailbox
+  /// without one cannot be built: the system's executor passes the dead
+  /// letter route when it spawns the actor, as Pekko's stopped actor is
+  /// reached through the dead letter mailbox whose `enqueue` sends to
+  /// `deadLetters` on the sender's thread.
   pub(crate) fn for_actor(
     queue: Arc<dyn MessageQueue>,
     limits: RunLimits,
     locks: &dyn LockFactory,
     executor: Weak<ManualExecutor<C>>,
+    refused_route: Arc<dyn Fn(Envelope) + Send + Sync>,
   ) -> Self {
-    Self::with_queue(None, queue, false, limits, locks, executor)
+    Self::with_queue(None, queue, false, limits, locks, executor, refused_route)
   }
 
   fn with_queue(
@@ -102,6 +111,7 @@ impl<C: MailboxCell> Mailbox<C> {
     limits: RunLimits,
     locks: &dyn LockFactory,
     executor: Weak<ManualExecutor<C>>,
+    refused_route: Arc<dyn Fn(Envelope) + Send + Sync>,
   ) -> Self {
     Self {
       status: MailboxStatus::new(),
@@ -111,34 +121,15 @@ impl<C: MailboxCell> Mailbox<C> {
       cell: LockCell::new(locks.new_lock(), cell),
       limits,
       executor,
-      refused_route: None,
+      refused_route,
     }
   }
 
-  /// Installs the route an envelope this mailbox turns away takes, run on
-  /// the sender's thread with the refused envelope (which names its
-  /// recipient). The system's executor installs the dead letter route when
-  /// it spawns the actor, before the mailbox is shared, as Pekko's stopped
-  /// actor is reached through the dead letter mailbox whose `enqueue` sends
-  /// to `deadLetters` on the sender's thread (issue #286). A mailbox with
-  /// no route installed hands a refused envelope to its dispatcher instead,
-  /// which is the shape the kernel's own tests build.
-  pub(crate) fn set_refused_route(&mut self, route: Arc<dyn Fn(Envelope) + Send + Sync>) {
-    self.refused_route = Some(route);
-  }
-
-  /// Runs the installed refused route on this (the sender's) thread and
-  /// returns `None`, or hands the envelope back when no route is installed.
-  /// The route is called through the reference the mailbox holds, so a
-  /// routing clones no handle and walks no way back.
-  pub(crate) fn route_refused(&self, envelope: Envelope) -> Option<Envelope> {
-    match &self.refused_route {
-      | Some(route) => {
-        route(envelope);
-        None
-      },
-      | None => Some(envelope),
-    }
+  /// Runs the refused route on this (the sender's) thread. The route is
+  /// called through the reference the mailbox holds, so a routing clones
+  /// no handle and walks no way back.
+  pub(crate) fn route_refused(&self, envelope: Envelope) {
+    (self.refused_route)(envelope);
   }
 
   /// Puts a normal message on the queue and, when this send wins the
