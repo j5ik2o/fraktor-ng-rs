@@ -1078,6 +1078,9 @@ fn poison_pill_fires_the_due_receive_timeout_into_dead_letters() {
   assert!(*dead.recipient() == actor, "it was addressed to the stopping actor");
   assert!(*dead.sender() == spec.system().dead_letters(), "it has no sender");
   dead_listener.expect_no_message(millis(300));
-  assert!(delivered(&deliveries).is_empty(), "the actor handed neither the PoisonPill nor the ReceiveTimeout to receive");
+  assert!(
+    delivered(&deliveries).is_empty(),
+    "the actor handed neither the PoisonPill nor the ReceiveTimeout to receive"
+  );
   spec.terminate();
 }
