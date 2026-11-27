@@ -2958,8 +2958,8 @@ impl Executor {
       guard.stop_all();
     }
     let mut lent = Lent { executor: &mut guard, returned: false };
-    #[cfg(all(feature = "std", feature = "test-support"))]
-    let _registration = LentRegistration::register(executor, lent.executor);
+    #[cfg(feature = "test-support")]
+    let _registration = crate::adaptor::LentRegistration::register(executor, lent.executor);
     let result = work(lent.executor);
     lent.returned = true;
     result
@@ -2979,18 +2979,12 @@ impl Executor {
   /// returns, and the registration is removed when it does.
   #[cfg(feature = "test-support")]
   pub(crate) fn lend_or_reuse<R>(executor: &spin::Mutex<Executor>, work: impl FnOnce(&mut Executor) -> R) -> R {
-    #[cfg(feature = "std")]
-    {
-      let active = LENT_EXECUTORS.with(|lent| {
-        lent.borrow().iter().rev().find(|(mutex, _)| core::ptr::eq(*mutex, executor)).map(|(_, pointer)| *pointer)
-      });
-      if let Some(pointer) = active {
-        // SAFETY: the pointer was registered by the lend of this same
-        // mutex that is active on this thread, so the executor it
-        // names is exclusively borrowed by this call stack and
-        // outlives the call.
-        return work(unsafe { &mut *pointer });
-      }
+    if let Some(pointer) = crate::adaptor::active_lent_executor(executor) {
+      // SAFETY: the pointer was registered by the lend of this same
+      // mutex that is active on this thread, so the executor it
+      // names is exclusively borrowed by this call stack and
+      // outlives the call.
+      return work(unsafe { &mut *pointer });
     }
     Self::lend(executor, work)
   }
@@ -3755,39 +3749,6 @@ impl Executor {
       let message = custom.unwrap_or_else(|| Message::new(notice));
       recipient.send_message(message, sender);
     }
-  }
-}
-
-#[cfg(all(feature = "std", feature = "test-support"))]
-thread_local! {
-  /// The executors lent on this thread, innermost last, named by the
-  /// mutex that guards each of them and the borrow the lend holds.
-  static LENT_EXECUTORS: core::cell::RefCell<Vec<(*const spin::Mutex<Executor>, *mut Executor)>> =
-    const { core::cell::RefCell::new(Vec::new()) };
-}
-
-/// Records one lend in [`LENT_EXECUTORS`] for the lend's duration, so a
-/// test-support entry reached from inside the lend finds the executor
-/// instead of locking it again (see [`Executor::lend_or_reuse`]).
-#[cfg(all(feature = "std", feature = "test-support"))]
-struct LentRegistration;
-
-#[cfg(all(feature = "std", feature = "test-support"))]
-impl LentRegistration {
-  fn register(mutex: &spin::Mutex<Executor>, executor: &mut Executor) -> Self {
-    LENT_EXECUTORS.with(|lent| {
-      lent.borrow_mut().push((mutex as *const spin::Mutex<Executor>, executor as *mut Executor));
-    });
-    Self
-  }
-}
-
-#[cfg(all(feature = "std", feature = "test-support"))]
-impl Drop for LentRegistration {
-  fn drop(&mut self) {
-    LENT_EXECUTORS.with(|lent| {
-      lent.borrow_mut().pop();
-    });
   }
 }
 
