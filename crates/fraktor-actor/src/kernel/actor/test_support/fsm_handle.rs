@@ -172,7 +172,7 @@ impl<S, D> FsmHandle<S, D> {
 
   /// Returns whether an instance of the machine has finished its
   /// `pre_start`. A machine starts in its own run, after the request that
-  /// created it has returned (design of #234, section 11.12.10), so
+  /// created it has returned, so
   /// `TestFsmRef` runs the dispatcher until this holds or the machine has
   /// stopped.
   pub fn has_started(&self) -> bool {

@@ -70,7 +70,7 @@ impl DeadLettersShared {
   /// The system calls this once, when it builds its event stream; a
   /// later call keeps the first table.
   pub(crate) fn set_bus(&self, bus: EventStreamBusWeak) {
-    let _ = self.bus.call_once(|| bus);
+    self.bus.call_once(|| bus);
   }
 
   /// Registers the payload type `id` for suppression.

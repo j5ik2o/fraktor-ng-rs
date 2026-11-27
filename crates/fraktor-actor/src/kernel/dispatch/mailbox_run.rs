@@ -32,8 +32,7 @@ mod tests;
 /// The right to run one mailbox once, held by whoever won its scheduled bit.
 ///
 /// Mirrors `org.apache.pekko.dispatch.Mailbox.run` (`Mailbox.scala:262`), cut
-/// where the kernel meets the dispatcher (design of #234, section 3.8, idea
-/// 1): the dispatcher calls [`run`](Self::run), and the run tells it whether
+/// where the kernel meets the dispatcher: the dispatcher calls [`run`](Self::run), and the run tells it whether
 /// to run again instead of scheduling itself. Only
 /// [`Mailbox::try_schedule`] makes one.
 pub(crate) struct MailboxRun<C> {
@@ -55,7 +54,7 @@ impl<C: MailboxCell> MailboxRun<C> {
     core::ptr::eq(&*self.mailbox, mailbox)
   }
 
-  /// Runs the mailbox once (design of #234, section 3.5):
+  /// Runs the mailbox once:
   ///
   /// 1. unless the mailbox is closed, takes the actor out of it, and panics
   ///    when it is not there (invariant I1);

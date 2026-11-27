@@ -21,7 +21,7 @@
 //! `alloc::sync`; the others use `portable_atomic_util`, whose atomics fall
 //! back to a critical section that the adaptor provides.
 //!
-//! It also holds the lock port (design of #234, section 3.2, rule C2). The
+//! It also holds the lock port. The
 //! kernel never assumes a kind of lock: a [`LockFactory`] that the adaptor
 //! passes makes a [`RawLock`] for each value the kernel guards, and the
 //! kernel reaches the value only through a closed section (`LockCell::with`).

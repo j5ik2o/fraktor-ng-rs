@@ -26,7 +26,7 @@ pub(crate) enum RunOutcome<C> {
   /// (Devin's review on PR #236).
   ///
   /// When the pool refuses it, the adaptor treats it as any refused
-  /// submission (design of #234, section 3.5): it tries once more, and if
+  /// submission: it tries once more, and if
   /// that is refused too, clears the bit and reports the error. Clearing the
   /// bit comes with the pool (stage 5, invariant I15).
   Again(MailboxRun<C>),

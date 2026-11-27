@@ -28,17 +28,11 @@ use crate::test_kit::TestKit;
 /// Rust type cannot inherit from `FraktorSpec` and override its methods.
 pub trait FraktorSpecHooks {
   /// Runs after the actor system and the test kit are ready.
-  fn at_startup(&mut self, test_kit: &mut TestKit) {
-    let _ = test_kit;
-  }
+  fn at_startup(&mut self, _test_kit: &mut TestKit) {}
 
   /// Runs while the actor system is still running, before it is shut down.
-  fn before_termination(&mut self, test_kit: &mut TestKit) {
-    let _ = test_kit;
-  }
+  fn before_termination(&mut self, _test_kit: &mut TestKit) {}
 
   /// Runs after the actor system has been shut down.
-  fn after_termination(&mut self, test_kit: &mut TestKit) {
-    let _ = test_kit;
-  }
+  fn after_termination(&mut self, _test_kit: &mut TestKit) {}
 }

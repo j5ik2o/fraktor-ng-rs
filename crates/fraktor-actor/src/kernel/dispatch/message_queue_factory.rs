@@ -26,7 +26,7 @@ use crate::kernel::sync::LockFactory;
 /// settings hold one and call it for each mailbox; a balancing dispatcher
 /// calls it once and gives the same queue to every mailbox of its team. The
 /// adaptor may pass a queue that takes no lock (std, tokio) or one of fixed
-/// length (embassy) (design of #234, section 3.8, idea 3). `locks` is the
+/// length (embassy). `locks` is the
 /// factory of the system, for a queue that guards itself with a lock.
 pub trait MessageQueueFactory: Send + Sync {
   /// Returns a new, empty queue.

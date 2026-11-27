@@ -30,8 +30,7 @@ use crate::kernel::sync::LockFactory;
 /// Mirrors `org.apache.pekko.dispatch.BoundedMailbox` with a push time-out of
 /// zero: a full queue hands the envelope back at once, and the mailbox sends
 /// it to dead letters. Waiting for room needs a condition variable, so the
-/// queue that waits lives in the std adaptor (design of #234, section 3.2,
-/// `BlockingBoundedQueue`, stage 5).
+/// queue that waits lives in the std adaptor.
 pub struct BoundedQueue {
   capacity: usize,
   envelopes: LockCell<VecDeque<Envelope>>,

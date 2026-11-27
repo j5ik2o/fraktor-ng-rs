@@ -15,10 +15,10 @@
 // This file has been modified from the Apache Pekko original.
 
 //! Dispatcher definitions and the registry that verifies against them, and
-//! mailboxes and what runs them (design of #234, section 3.2).
+//! mailboxes and what runs them.
 //!
-//! From stage 3 of #234, every actor of a system has a mailbox, which the
-//! dispatcher its caller drives by hand runs (design of #234, section 11.11).
+//! Every actor of a system has a mailbox, which the dispatcher its caller
+//! drives by hand runs.
 
 mod bounded_queue;
 mod classified_envelope;
