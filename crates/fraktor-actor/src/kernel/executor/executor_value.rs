@@ -926,17 +926,6 @@ impl Executor {
         self.receive_timeouts.insert(key, ReceiveTimeoutState::new(timeout));
       },
     }
-    // A setting that is not finite leaves nothing to fire: the scheduled
-    // task is cancelled here, not only at the check after the handling,
-    // so a firing step that runs inside the handling (a child-terminated
-    // hook, for one) cannot send the firing the old setting scheduled.
-    // A `ReceiveTimeout` that already reached the mailbox is untouched
-    // and is always delivered, as in the original.
-    if !matches!(timeout, ReceiveTimeoutSetting::Finite(_)) {
-      if let Some(state) = self.receive_timeouts.get_mut(&key) {
-        state.cancel_task();
-      }
-    }
     self.sync_receive_timeout_index(key);
   }
 
@@ -1060,7 +1049,7 @@ impl Executor {
         continue;
       };
       let target = entry.self_ref.clone();
-      let sender = target.clone();
+      let sender = self.dead_letters();
       self.send(sender, &target, Message::new(ReceiveTimeout::new(timeout)));
     }
   }
@@ -1698,12 +1687,6 @@ impl Executor {
   /// boundary, which keeps its handler from running again, stops its
   /// children, and tells its watchers once the last child has gone.
   pub(crate) fn stop(&mut self, target: &ActorRef) {
-    // The stop is decided: the timeout the actor armed is cancelled at
-    // once, so no firing step can send a `ReceiveTimeout` into the
-    // closing mailbox while the stop waits for the children to go.
-    // `finish_terminate` clears it again at the end, because a
-    // `post_stop` can set a timeout that must not survive either.
-    self.clear_receive_timeout(target.key());
     if self.function_refs.contains(target) {
       self.stop_function_ref(target);
       return;
@@ -1730,6 +1713,7 @@ impl Executor {
     if self.is_terminating(&self_ref) {
       return;
     }
+    self.clear_receive_timeout(self_ref.key());
     self.unwatch_all_of(&self_ref);
     if self.stop_children_and_wait(&self_ref, WaitReason::Termination) {
       mailbox.suspend();
@@ -1838,10 +1822,6 @@ impl Executor {
     let strategy = entry.strategy.clone();
     let siblings = self.open_children_of(&parent);
     let mut stack = cell.take_stack();
-    // The hook stands in for the `Terminated` the original's cell handles
-    // as an auto-received message, so the receive timeout is cancelled
-    // before it and checked after it, as `invoke` does for a message.
-    let timeout_before = self.receive_timeout_before(parent.key(), true);
     self.hook_child_creation_refused = false;
     self.enter_frame(&parent);
     let catcher = self.catcher.clone();
@@ -1856,18 +1836,6 @@ impl Executor {
       }
     };
     self.exit_frame();
-    // A stop the hook asked for its own actor wins over the timeout it
-    // set, as in `invoke`: `stop` has already cleared the timeout when
-    // it queued the `Terminate`, so the check below finds no state for
-    // a closing actor and fires nothing into its mailbox. A parent that
-    // is already stopping (it handled its `Terminate` and waits for its
-    // children) is in the same position: the timeout its hook set is
-    // neither rescheduled nor fired, because the firing would land in
-    // the closing mailbox and go to dead letters when the stop finishes.
-    if !self.is_terminating(&parent) {
-      self.receive_timeout_after(parent.key(), true, timeout_before);
-      self.fire_due_receive_timeouts();
-    }
     cell.restore_stack(stack);
     let refused = core::mem::replace(&mut self.hook_child_creation_refused, false);
     if matches!(outcome, RunOutcome::Failed { .. }) || refused {
@@ -2446,19 +2414,28 @@ impl Executor {
     let message = match message.downcast_ref::<Arc<PendingTermination>>() {
       | Some(pending) => match self.take_pending_termination(pending) {
         | Some(message) => message,
-        | None => return Next::Continue,
+        | None => {
+          let key = cell.key();
+          let timeout_before = self.receive_timeout_before(key, true);
+          self.receive_timeout_after(key, true, timeout_before);
+          self.fire_due_receive_timeouts();
+          return Next::Continue;
+        },
       },
       | None => message,
     };
     cell.set_failed_sender(None);
     if message == KILL {
+      let key = cell.key();
+      let timeout_before = self.receive_timeout_before(key, true);
       mailbox.suspend();
       self.after_run =
         Some(self.failure_of(cell, FailureKind::Killed, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE.to_string(), None));
+      self.receive_timeout_after(key, true, timeout_before);
+      self.fire_due_receive_timeouts();
       return Next::Yield;
     }
     if message == POISON_PILL {
-      self.clear_receive_timeout(cell.key());
       let _ = mailbox.system_enqueue(SystemMessage::Terminate);
       return Next::Continue;
     }
@@ -2469,10 +2446,6 @@ impl Executor {
     self.running.push(key);
     let (outcome, sender) = cell.receive(self, message, sender, catcher.as_deref());
     self.exit_frame();
-    // A stop the handling asked for has already cancelled the
-    // timeout: `stop` clears it when it queues the `Terminate`, so
-    // the check below finds no state for a closing actor and fires
-    // nothing into its mailbox.
     self.receive_timeout_after(key, influences, timeout_before);
     self.fire_due_receive_timeouts();
     match outcome {
@@ -2559,7 +2532,21 @@ impl Executor {
       self.fire_due_receive_timeouts();
       return has_work(self);
     };
-    let Some(start) = self.now_opt() else {
+    // With no receive timeout scheduled, the bound of the wait is
+    // measured on the boundary clock, not on a clock installed for the
+    // actors: a hand-driven installed clock does not advance while this
+    // thread waits in real time, so it would never reach the bound when
+    // stale signals keep ending the inner waits.
+    let use_boundary_clock =
+      self.earliest_receive_timeout_deadline().is_none() && self.boundary.monotonic_time().is_some();
+    let wait_clock = |executor: &Self| {
+      if use_boundary_clock {
+        executor.boundary.monotonic_time()
+      } else {
+        executor.now_opt()
+      }
+    };
+    let Some(start) = wait_clock(self) else {
       // Without a clock, a wait that a stale signal ends is started again
       // for the capped wait; only a wait that sees no signal at all ends
       // with `false`.
@@ -2584,7 +2571,7 @@ impl Executor {
     };
     let deadline = start.saturating_add(wait_cap);
     loop {
-      let now = self.now_opt().unwrap_or(deadline);
+      let now = wait_clock(self).unwrap_or(deadline);
       if now >= deadline {
         self.fire_due_receive_timeouts();
         return has_work(self);
