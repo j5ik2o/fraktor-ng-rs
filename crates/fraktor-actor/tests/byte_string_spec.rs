@@ -467,6 +467,69 @@ impl Gen {
       })
       .collect()
   }
+
+  // A byte string with the malformed units of the design's section 8.2 built
+  // in: the exception (`0xED`, a byte in `0xA0..=0xBF`, and a continuation
+  // byte or none), a `0xED` unit cut before a byte that is not a continuation
+  // byte, the scalars next to the surrogates, and the other malformed shapes
+  // between ASCII, so that a unit is not always alone. Uniform bytes make the
+  // exception rare: one `0xED` in 256, then one byte in 32.
+  fn malformed_byte_string(&mut self) -> Sample {
+    let parties = self.choose(1, 5);
+    let mut bytes = Vec::new();
+    for _ in 0..parties {
+      match self.below(6) {
+        | 0 => bytes.push(self.choose(0x20, 0x7E) as u8),
+        | 1 => {
+          bytes.push(0xED);
+          bytes.push(self.choose(0xA0, 0xBF) as u8);
+          if self.below(3) == 0 {
+            bytes.push(self.choose(0x80, 0xBF) as u8);
+          }
+        },
+        | 2 => {
+          // `0xED,0x80..=0x9F` is a scalar below the surrogates, D000..D7FF.
+          bytes.extend([0xED, self.choose(0x80, 0x9F) as u8, self.choose(0x80, 0xBF) as u8]);
+        },
+        | 3 => {
+          // A unit cut before a byte that is not a continuation byte.
+          let third = [0x00_u8, 0x41, 0xC0, 0xED, 0xF5, self.byte()][self.below(6)];
+          bytes.extend([0xED, self.choose(0xA0, 0xBF) as u8, third]);
+        },
+        | 4 => bytes.extend([0xEE, self.choose(0x80, 0xBF) as u8, self.choose(0x80, 0xBF) as u8]),
+        | _ => {
+          let count = self.choose(0, 4);
+          bytes.extend(self.bytes(count));
+        },
+      }
+    }
+    let array: Arc<[u8]> = Arc::from(bytes);
+    Sample {
+      value:   ByteString::from_shared(array.clone()).slice(0, array.len()),
+      model:   Model::whole(&array),
+      _arrays: vec![array],
+    }
+  }
+
+  // A far less uniform generator than the port's strings: the characters are
+  // UTF-8 characters, but the fragments are cut at random places, so a
+  // character often spans two fragments. The result is the same string.
+  fn cut_string_byte_string(&mut self) -> Sample {
+    let text = self.string();
+    let encoded: Vec<u8> = text
+      .chars()
+      .flat_map(|c| {
+        let mut buffer = [0_u8; 4];
+        c.encode_utf8(&mut buffer).as_bytes().to_vec()
+      })
+      .collect();
+    let array: Arc<[u8]> = encoded.into();
+    Sample {
+      value:   ByteString::from_shared(array.clone()).slice(0, array.len()),
+      model:   Model::whole(&array),
+      _arrays: vec![array],
+    }
+  }
 }
 
 fn seed_of(name: &str) -> u64 {
@@ -489,6 +552,34 @@ fn check(name: &str, mut property: impl FnMut(&mut Gen)) {
   for iteration in 0..MIN_SUCCESSFUL {
     let mut input = Gen::new(seed, iteration);
     let size = input.size;
+    if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| property(&mut input))) {
+      panic!("{name}: failed at seed={seed:#018x} iteration={iteration} size={size}: {}", panic_message(&*payload));
+    }
+  }
+}
+
+// The same, with the seed under another salt, so that a property that uses a
+// generator of its own draws different inputs from one that uses the port's.
+fn check_with(name: &str, salt: u64, mut property: impl FnMut(&mut Gen)) {
+  let seed = seed_of(name) ^ salt;
+  for iteration in 0..MIN_SUCCESSFUL {
+    let mut input = Gen::new(seed, iteration);
+    let size = input.size;
+    if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| property(&mut input))) {
+      panic!("{name}: failed at seed={seed:#018x} iteration={iteration} size={size}: {}", panic_message(&*payload));
+    }
+  }
+}
+
+// The same, on `count` inputs of greater size: the malformed units of the
+// design's section 8.2 are longer than the port's strings, and the iteration
+// sets the size, so the run needs more than 1000 iterations to reach them.
+fn check_sized(name: &str, salt: u64, count: usize, max_size: usize, mut property: impl FnMut(&mut Gen)) {
+  let seed = seed_of(name) ^ salt;
+  for iteration in 0..count {
+    let size = (iteration * max_size / count).min(max_size);
+    let mut input = Gen::new(seed, iteration);
+    input.size = size;
     if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| property(&mut input))) {
       panic!("{name}: failed at seed={seed:#018x} iteration={iteration} size={size}: {}", panic_message(&*payload));
     }
@@ -590,6 +681,45 @@ fn reference_base64(bytes: &[u8]) -> Vec<u8> {
   out
 }
 
+// The rows of `byte_string_jdk_table.tsv`: what
+// `new String(bytes, StandardCharsets.UTF_8)` returns on OpenJDK 26.0.2.1
+// (Temurin), written down by `tools/jdk-utf8-replacement/GenerateJdkUtf8Table.java`
+// and not by any Rust code. This is the independent expected value of
+// `decode_string` (design section 8.2).
+fn jdk_table() -> Vec<(Vec<u8>, String)> {
+  const TABLE: &str = include_str!("byte_string_jdk_table.tsv");
+  let mut rows = Vec::new();
+  for line in TABLE.lines() {
+    if line.is_empty() || line.starts_with('#') {
+      continue;
+    }
+    let fields: Vec<&str> = line.split('\t').collect();
+    assert_eq!(fields.len(), 3, "the table's row {line:?} is not three tab-separated fields");
+    let decode_hex_of_bytes = |fields: &str| -> Vec<u8> {
+      if fields.is_empty() {
+        return Vec::new();
+      }
+      fields.split(' ').map(|part| u8::from_str_radix(part, 16).expect("two hex digits")).collect()
+    };
+    let bytes = decode_hex_of_bytes(fields[0]);
+    let decoded = if fields[1].is_empty() {
+      String::new()
+    } else {
+      fields[1]
+        .split(' ')
+        .map(|part| {
+          let value = u32::from_str_radix(part.strip_prefix("U+").expect("U+"), 16).expect("hex code points");
+          char::from_u32(value).expect("the JDK does not put a surrogate in a string")
+        })
+        .collect()
+    };
+    rows.push((bytes, decoded));
+  }
+  assert!(!rows.is_empty(), "the table is empty");
+  rows
+
+}
+
 // `new String(bytes, StandardCharsets.UTF_8)` of the JDK. It replaces as
 // `String::from_utf8_lossy` does (one U+FFFD for each maximal subpart of an
 // ill-formed sequence), except for `0xED` followed by `0xA0..=0xBF`, the start
@@ -597,6 +727,10 @@ fn reference_base64(bytes: &[u8]) -> Vec<u8> {
 // continuation byte (`0x80..=0xBF`), if there is one, with a single U+FFFD.
 // `0xED` never ends up inside another replaced sequence, so the parts between
 // those sequences decode on their own.
+//
+// This is the rule written a second time, not an independent expected value;
+// `jdk_table` is that. The properties below hold this reference to the table
+// as well as the function under test.
 fn reference_decode_utf8(bytes: &[u8]) -> String {
   let mut out = String::new();
   let mut start = 0;
@@ -1505,5 +1639,139 @@ mod group1_properties {
       let a = input.byte_string_of_len(len);
       assert_eq!(a.value.to_string(), reference_display(a.bytes()), "len={len}");
     });
+  }
+
+  // The independent expected value of `decode_string`: every row of the JDK
+  // table returns what the JDK returned, from the function under test and from
+  // the reference decoder alike.
+  #[test]
+  fn decode_string_matches_the_pinned_jdk_table() {
+    let rows = jdk_table();
+    assert!(rows.len() >= 90, "the table has {} rows", rows.len());
+    for (bytes, expected) in rows {
+      assert_eq!(copy_of(&bytes).decode_string(), expected, "{bytes:02X?}");
+      assert_eq!(reference_decode_utf8(&bytes), expected, "the reference, {bytes:02X?}");
+    }
+  }
+
+  // The same table, through fragments: every split of every row into one or
+  // two fragments, and every row cut to a range, decode alike, because
+  // `decode_string` flattens the bytes first. The table is of whole values, so
+  // this is what tells a reader that the boundaries do not matter here.
+  #[test]
+  fn decode_string_does_not_depend_on_fragment_boundaries() {
+    for (bytes, expected) in jdk_table() {
+      for at in 0..=bytes.len() {
+        let (left, right) = bytes.split_at(at);
+        let value = copy_of(left).concat(&copy_of(right));
+        assert_eq!(value.decode_string(), expected, "{bytes:02X?} split at {at}");
+      }
+      // Three fragments, with a cut unit (`0xED`, `0xA0`) between the
+      // second and the third: the boundaries fall inside a character, and
+      // beside a cut unit; the bytes are the same, so the string must be too.
+      let (first, rest) = bytes.split_at(bytes.len() / 2);
+      let value = copy_of(first).concat(&copy_of(b"\x41\xED\xA0")).concat(&copy_of(rest));
+      let mut joined = bytes[..bytes.len() / 2].to_vec();
+      joined.extend_from_slice(b"\x41\xED\xA0");
+      joined.extend_from_slice(rest);
+      assert_eq!(
+        value.decode_string(),
+        reference_decode_utf8(&joined),
+        "{bytes:02X?} in three fragments, with a cut unit between them"
+      );
+      for from in 0..=bytes.len() {
+        for until in from..=bytes.len() {
+          let sliced = copy_of(&bytes).slice(from, until);
+          assert_eq!(
+            sliced.decode_string(),
+            copy_of(&bytes[from..until]).decode_string(),
+            "{bytes:02X?} [{from}, {until})"
+          );
+        }
+      }
+    }
+  }
+
+  // Property 5, on inputs made of the malformed units of section 8.2: the
+  // function under test and the reference decoder both return what the JDK
+  // table says for the same unit when it is in the table, and both return the
+  // same string when it is not, so a unit is never left to the uniform draw.
+  #[test]
+  fn decode_string_replaces_generated_malformed_units_like_the_jdk() {
+    check_sized("decode_string replaces malformed units", 0x1905_ED5A_7C6A_1101, 4000, 400, |input| {
+      let a = input.malformed_byte_string();
+      assert_eq!(content(&a.value), a.bytes(), "the bytes of the sample");
+      assert_eq!(a.value.decode_string(), reference_decode_utf8(a.bytes()), "{:02X?}", a.bytes());
+      assert_eq!(copy_of(a.bytes()).decode_string(), a.value.decode_string(), "{:02X?} in one fragment", a.bytes());
+    });
+  }
+
+  // The three-byte units of the exception, every second and third byte: one
+  // U+FFFD for the unit in `0xED,0xA0..=0xBF`, two bytes for its cut, and the
+  // rows the JDK table holds for the same bytes.
+  #[test]
+  fn decode_string_takes_the_ed_unit_of_every_second_and_third_byte() {
+    let table = jdk_table();
+    for second in 0xA0_u8..=0xBF {
+      for third in 0x00_u8..=0xFF {
+        let unit = [0xED, second, third];
+        // The bytes the rule says the unit takes: the two of the cut, or the
+        // three of the surrogate, and one U+FFFD for them.
+        let taken = if (0x80..=0xBF).contains(&third) { 3 } else { 2 };
+        let mut expected = String::from("\u{FFFD}");
+        expected.push_str(&reference_decode_utf8(&unit[taken..]));
+        assert_eq!(copy_of(&unit).decode_string(), expected, "{unit:02X?}");
+        if let Some((_, from_table)) = table.iter().find(|(bytes, _)| bytes == &unit) {
+          assert_eq!(&copy_of(&unit).decode_string(), from_table, "{unit:02X?}");
+        }
+        // A fourth continuation byte is a unit of its own after the third.
+        let four = [0xED, second, third, 0x80];
+        assert_eq!(copy_of(&four).decode_string(), reference_decode_utf8(&four), "{four:02X?}");
+      }
+    }
+  }
+
+  // The scalars next to the surrogates are not malformed: `0xED,0x80..=0x9F`
+  // is U+D000..=U+D7FF, and `0xEE,0x80,0x80` is U+E000, so the condition of
+  // the exception (`0xA0..=0xBF`) is exactly the surrogates and no scalar.
+  #[test]
+  fn decode_string_keeps_the_scalars_next_to_the_surrogates() {
+    for second in 0x80_u8..0xA0 {
+      for third in 0x80_u8..=0xBF {
+        let unit = [0xED, second, third];
+        let code = 0xD000 + (u32::from(second - 0x80) << 6) + u32::from(third - 0x80);
+        let expected = char::from_u32(code).expect("below U+D800");
+        assert_eq!(copy_of(&unit).decode_string(), expected.to_string(), "{unit:02X?}");
+      }
+    }
+    assert_eq!(copy_of(&[0xED, 0x9F, 0xBF]).decode_string(), "\u{D7FF}");
+    assert_eq!(copy_of(&[0xEE, 0x80, 0x80]).decode_string(), "\u{E000}");
+  }
+
+  // Property 5, through fragments: strings cut at random places. Every
+  // character that spans a boundary still decodes, and, since the bytes are
+  // well formed, the result is the string the bytes encode.
+  #[test]
+  fn decode_string_restores_characters_cut_across_fragments() {
+    check_with("decode_string restores characters cut across fragments", 0xC0DE_0190_5F5A_1101, |input| {
+      let a = input.cut_string_byte_string();
+      let decoded = a.value.decode_string();
+      assert_eq!(decoded.as_bytes(), a.bytes(), "{:02X?}", a.bytes());
+      assert_eq!(decoded, String::from_utf8(a.bytes().to_vec()).expect("well formed"), "{:02X?}", a.bytes());
+    });
+  }
+
+  // Property 5, the empty value: `decode_string` of no bytes is `""`, as
+  // Pekko returns before it reaches the decoder (`ByteString.scala` L208).
+  #[test]
+  fn decode_string_of_an_empty_value_is_empty() {
+    for empty in [
+      ByteString::from_string("").take(0),
+      ByteString::from_string("abc").slice(1, 1),
+      ByteString::from_string("abc").drop(3),
+    ] {
+      assert_eq!(empty.decode_string(), "");
+    }
+    assert_eq!(copy_of(&[]).decode_string(), "");
   }
 }
