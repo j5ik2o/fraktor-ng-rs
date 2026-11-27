@@ -311,7 +311,7 @@ impl Actor for SenderActor {
         self.latch.count_down();
         let test_actor = self.test_actor.clone();
         let from = context.sender();
-        context.tell(&test_actor, SenderEcho { text: *text, from });
+        context.tell(&test_actor, SenderEcho { text, from });
       },
       | _ => {},
     }
