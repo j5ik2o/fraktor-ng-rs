@@ -112,6 +112,10 @@
 //   StopAtTheTail          : a failed postRestart stops the actor with a
 //                            Terminate at the tail of its queue, so what the
 //                            run kept aside comes back before the Terminate.
+//   HandleRecreateUnderCreation : a Recreate that reaches an actor waiting for
+//                            children runs at once instead of being kept aside
+//                            (an actor waiting in Creation included), so the
+//                            retried start begins inside the one under way.
 //
 // CI runs 20 steps (scripts/quint-check-specs.sh), which do not reach every
 // deep state (a Recreate kept aside while an actor waits for its restart's
@@ -140,7 +144,7 @@ module actor_termination {
     | KeepWatching | NoCreationWait | NoRecreationWait | NoTerminateToChildren | NotifyTwice | KeepSuspended
     | NoSuspendChildren | NoStashWhenFailed | NoStashWhileWaiting | DropRecreateWhileWaiting
     | IgnoreUndecidedRecreate | NoSurvivorRecreate | NoChildCheck | NoSuspendInheritance | ResumeWithoutCause
-    | NoSuspendFirst | SuspendThePerpetrator | StopAtTheTail
+    | NoSuspendFirst | SuspendThePerpetrator | StopAtTheTail | HandleRecreateUnderCreation
 
   // Free: no incarnation holds the name. Unborn: Create waits. StartFailed:
   // Create failed and the actor has no instance. Closed: finishTerminate ran;
@@ -273,7 +277,9 @@ module actor_termination {
 
   pure def shouldStash(md: Mode, m: Sys, state: int): bool =
     if (state == 1) md != NoStashWhenFailed and isFailed(m)
-    else if (state == 2) md != NoStashWhileWaiting and waitsForChildren(m)
+    else if (state == 2)
+      md != NoStashWhileWaiting and waitsForChildren(m)
+        and not(md == HandleRecreateUnderCreation and m == Recreate)
     else false
 
   // systemEnqueue: a closed mailbox hands the message to dead letters.
@@ -722,6 +728,11 @@ module actor_termination {
   // suspended or waits for children.
   // Stage 4b: an actor whose postRestart failed only stops: what its run kept
   // aside, and what comes after, is not run before it closes.
+  // This is stage 4b's provisional stop, not Pekko's property: Pekko hands the
+  // failure to the parent (FaultHandling.scala:298-302); the state goes from 2
+  // to 1 with the children container back to normal
+  // (ChildrenContainer.scala:181-186, ActorCell.scala:545-548), so a kept
+  // Recreate comes back and builds a third instance. #301 makes it Pekko's.
   val aFailedRestartOnlyStops = not(w.g.actedAfterAFailedRestart)
   val stashOnlyWhileSuspended = ACTORS.forall(n => isOpen(w, n) and act(w, n).stash.length() > 0 implies stateOf(act(w, n)) > 0)
   // When nothing is in progress, nobody waits for a child: every wait ends.
@@ -1177,6 +1188,31 @@ module actor_termination {
       .expect(act(w, "c1").sys.length() == 2 and act(w, "c1").sys.head() != Terminate)
       .then(sysStep("c1", true))
       .expect(not(aFailedRestartOnlyStops))
+
+  // An actor waiting in Creation for the child of its first failed attempt
+  // stays in that wait until the child has gone, and then starts again; a
+  // Recreate that reaches it inside that wait cannot be made by this model
+  // (only a parent outside its steps could send one), so the run pins the
+  // wait and its child, and the mistake about it is below.
+  run aRecreateWhileWaitingInCreationIsKeptTest =
+    initWith(Fixed, false).then(spawn("p")).then(sysStep("p", true)).then(spawn("c1")).then(spawn("g"))
+      .then(sysStep("c1", false)).then(sysStep("g", true)).then(sysStep("g", true)).then(sysStep("p", true))
+      .then(sysStep("c1", true))
+      .expect(act(w, "c1").wait == WCreation and act(w, "c1").phase == StartFailed and act(w, "c1").children == Set("g"))
+      .then(sysStep("g", true)).then(sysStep("c1", true))
+      .expect(act(w, "c1").phase == Alive and act(w, "c1").children == Set() and act(w, "c1").wait == WNone)
+
+  // The mistake: a Recreate runs inside a wait instead of being kept aside
+  // (shouldStash lets it through for this mode, Creation included). The model
+  // puts no Recreate in c1's Creation wait, so here the mode behaves as
+  // NoStashWhileWaiting; the run pins the wait.
+  run handleRecreateUnderCreationRunsInsideTheWaitTest =
+    initWith(HandleRecreateUnderCreation, false).then(spawn("p")).then(sysStep("p", true)).then(spawn("c1"))
+      .then(spawn("g")).then(sysStep("c1", false)).then(sysStep("g", true)).then(sysStep("g", true))
+      .then(sysStep("p", true)).then(sysStep("c1", true))
+      .expect(act(w, "c1").wait == WCreation and act(w, "c1").children == Set("g") and act(w, "c1").stash == [])
+      .then(sysStep("g", false))
+      .expect(act(w, "c1").wait == WCreation and act(w, "c1").phase == StartFailed and act(w, "c1").children == Set("g"))
 
   // The same with #254, 1: the kept Recreate runs before the Terminate and
   // restarts the actor whose postRestart failed.
