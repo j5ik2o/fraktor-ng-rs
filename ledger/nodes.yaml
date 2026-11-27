@@ -33557,7 +33557,7 @@ nodes:
   cases:
     total: 23
     ported: 20
-    passing: 0
+    passing: 20
     excluded: []
   rust:
     crate: fraktor-testkit
