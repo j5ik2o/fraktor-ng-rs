@@ -7,7 +7,8 @@
     "security"
   ],
   "missingToolsAllowed": {
-    "ruff": "Python の整形（format）と lint に使う道具。このリポジトリの Python は台帳ツールであり、標準ライブラリだけで書く前提のため、導入していない。"
+    "ruff": "Python の整形（format）と lint に使う道具。このリポジトリの Python は台帳ツールであり、標準ライブラリだけで書く前提のため、導入していない。",
+    "pmd": "Java の lint に使う道具。このリポジトリの Java は #190 の JDK 規則を確かめるための小さな単発の道具（tools/jdk-utf8-replacement/*.java）だけで、cargo のビルドにも CI の検査にも使っていない。pmd は CI に無く、導入するとこの道具の CloseResource の指摘（priority 3、警告）が出るため、いまは欠落を許可する。"
   },
   "accepted": [
     {
