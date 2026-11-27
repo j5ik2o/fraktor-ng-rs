@@ -55,7 +55,7 @@
 | 7 | correctly cancel a named timer | —（#234 段 6 #257 の後。§1.4） | この issue では移さない（#257 後の後続 issue へ回す）。原典（`FSMTimingSpec.scala:237-251`）は `Tick` 処理の中で 1ms タイマ `"hallo"` を張り、`TestKit.awaitCond(context.asInstanceOf[ActorCell].mailbox.hasMessages, 1.second.dilated)`（`:240`）で印がメールボックスに積まれるのを待ってから取り消す。**この待ちが観察の中心なので、待ちを落として移すと、確かめる中身が別物になる。** アクターが自分のメールボックスを読む口（`mailbox.hasMessages`）が無いので今は写せない。ケース 8 と同じく、除外・作らない区分にはせず台帳は `total: 10, ported: 8, passing: 8, status: unported`（`verified_against` なし）のまま残す。代わりの確かめ（§5 P1 と §6 の Quint `staleNamedNeverFires`）は、正しさを補うための裏付けであって、台帳の件数には数えない（決定：`pr288-decisions.md` の 5・6） |
 | 8 | not get confused between named and state timers | —（#234 段 6 #257 の後。§1.4） | この issue では移さない（#257 後の後続 issue へ回す）。外からの `suspend`／`resume` と `mailbox.hasMessages` が必要。ケース 7 と同じ扱いにする。除外・作らない区分にはせず、台帳は `total: 10, ported: 8, passing: 8, status: unported`（`verified_against` なし）のまま残す |
 | 9 | receive and cancel a repeated timer | `receives_and_cancels_a_repeated_timer` | 移す（§3.1）。`view.start_timer_with_fixed_delay("tester", Message::new(Tick), dilated(100ms))` を張り、データ 4 から数えて 5 回 `Tick` を `FraktorSpec::receive_while`（2s）で受け（長さ 5）、0 で `cancel_timer("tester")` して `Initial` へ戻り、`within(500ms)` で `Transition(fsm, TestRepeatedTimer, Initial)` を受ける |
-| 10 | notify unhandled messages | `notifies_unhandled_messages` | 移す（§3.2、§3.5）。`FraktorSpec::filter_events`（§3.5 の (a)。ブロックの中で `spec.within` と `spec.test_kit_mut().expect_msg` を呼ぶ必要があるため、`EventFilter` の関連関数ではなく `FraktorSpec` の口にする）に 2 本の `EventFilter::warning()`（`"unhandled event Tick in state TestUnhandled"` と `"unhandled event Unhandled(test) in state TestUnhandled"`、どちらも `with_source(fsm.path().to_string())`、`with_occurrences(1)`）を同時に張り、`TestUnhandled`（`State` として送り `TestUnhandled` へ移る。`FSMTimingSpec.scala:149`）→ `within(3s) { Message::with_display(Tick)`（`TestUnhandled` の状態関数が未処理にする）→ `SetHandler`（`FsmState::stay().with_unhandled(...)`）→ `Message::with_display(Tick)`（`Unhandled(Tick)` を受信）→ `Message::with_display(Unhandled("test"))` → `Cancel`（`FsmState::goto(Initial).clear_unhandled()`）→ `expect_msg(Transition(fsm, TestUnhandled, Initial))` }` を実行する。原典の `fsm ! TestUnhandled` は `within` の外（`:149`）、`within(3.second)` の内側は `Tick` から遷移の受信まで（`:150-158`）なので、その順に写す |
+| 10 | notify unhandled messages | `notifies_unhandled_messages` | 移す（§3.2、§3.5）。`FraktorSpec::filter_events`（§3.5 の (a)。ブロックの中で `spec.within` と `spec.test_kit_mut().expect_msg` を呼ぶ必要があるため、`EventFilter` の関連関数ではなく `FraktorSpec` の口にする）に 2 本の `EventFilter::warning()`（`"unhandled event Tick in state TestUnhandled"` と `"unhandled event Unhandled(test) in state TestUnhandled"`、どちらも `with_source(fsm.path().to_string())`、`with_occurrences(1)`）を同時に張る（`with_source` の値が `publish_warning` の `log_source` と一致することは §3.2(b) に書いた。一致しなければ `occurrences` の照合で落ちるので、この 1 本で確かめられる）、`TestUnhandled`（`State` として送り `TestUnhandled` へ移る。`FSMTimingSpec.scala:149`）→ `within(3s) { Message::with_display(Tick)`（`TestUnhandled` の状態関数が未処理にする）→ `SetHandler`（`FsmState::stay().with_unhandled(...)`）→ `Message::with_display(Tick)`（`Unhandled(Tick)` を受信）→ `Message::with_display(Unhandled("test"))` → `Cancel`（`FsmState::goto(Initial).clear_unhandled()`）→ `expect_msg(Transition(fsm, TestUnhandled, Initial))` }` を実行する。原典の `fsm ! TestUnhandled` は `within` の外（`:149`）、`within(3.second)` の内側は `Tick` から遷移の受信まで（`:150-158`）なので、その順に写す |
 
 ### 1.3 対応表：ActorRefSpec（12 件）
 
@@ -76,14 +76,34 @@
 | 2 | insert its path in a ActorInitializationException | `inserts_its_path_in_an_actor_initialization_exception` | 移す（§3.4、§3.5）。factory が panic するアクターを `system.actor_of_named(props, "failingActor")` で起こし、`EventFilter::typed("ActorInitializationException").contains("/user/failingActor:").with_occurrences(1).intercept(spec.system_mut(), ...)` で包む（フィルタは 1 本だけなので、既存の `EventFilter::intercept`（`&mut ActorSystem` を取る形）で足りる）。原典と同じく、この文字列は原因の文面（`"pekko://ActorRefSpec/user/failingActor: exception during creation, root cause message: [...]"`）に当たる。原典の `intercept[java.lang.IllegalStateException]`（`:279-283`。`Promise` で呼び手まで届くこと）は、§1.3.1 の中4 の `promise_intercept` で写す。原因に文面が無い（`throw new IllegalStateException`。`:282`）ので、届く panic の文面は空であることを確かめる |
 | 3 | be serializable using Java Serialization on local node | — | **除外（オーナー決定：直列化の設計まで延ばす。§1.5 決定 1）**。Java Serialization 固有 |
 | 4 | throw an exception on deserialize if no system in scope | — | **除外（オーナー決定：直列化の設計まで延ばす。§1.5 決定 2）**。`JavaSerializer.currentSystem` 固有 |
-| 5 | return EmptyLocalActorRef on deserialize if not present in actor hierarchy (and remoting is not enabled) | `returns_an_empty_local_actor_ref_for_a_path_that_is_not_in_the_hierarchy` | ケース本体を移す（バイト列往復は**直列化の設計まで延ばす（§1.5 決定 3）**）。`ReplyActor` を `"non-existing"` で作って `PoisonPill` で停止確認（`watch`＋`expect_msg_terminated`）した後、そのパス文字列を `ActorPath::from_string` → `system.resolve_actor_ref` で解決した参照について、`EmptyLocalActorRef` の 4 性質すべてを検証する：① `resolved.path() == stopped.path()`、② `system.is_actor_terminated(&resolved) == true`、③ メッセージ送信で返信が無く `DeadLetter`（`recipient.path() == resolved.path()`）が発行される、④ `watch(&resolved)` で `Terminated { existence_confirmed: false, .. }` が即座に届く（原典 `ActorRefSpec.scala:341-365`）。原典の `==`（`:363`）は、`(id, generation)` の等価の決まり（I8）に写し、上の 4 点を数に入れる（決定：`pr288-decisions.md` の 3）。原典の等価は「パスと uid」の比較（`ActorRef.scala:181-183`）なので、パスの一致（①）が最も近い代わりである |
-| 6 | support nested actorOfs | `supports_nested_actor_ofs` | 移す（形を変えない）。原典（`ActorRefSpec.scala:367-377`）はコンストラクタ内で `system.actorOf`（親 `/user`）を呼ぶ。テストの本体が先に `nested` を `system.actor_of` で作り、その参照を外側の factory に渡す（§1.3 の「外側と内側の監督の形」と同じ。親は `/user` のまま）。外側は受けた任意のメッセージに `nested` を返す。`ask` で受けた `nested` が `a` と別参照（`a != nested`）であることを検証する |
+| 5 | return EmptyLocalActorRef on deserialize if not present in actor hierarchy (and remoting is not enabled) | `returns_an_empty_local_actor_ref_for_a_path_that_is_not_in_the_hierarchy` | ケース本体を移す（バイト列往復は**直列化の設計まで延ばす（§1.5 決定 3）**）。`ReplyActor` を `"non-existing"` で作って `PoisonPill` で停止確認（`watch`＋`expect_msg_terminated`）した後、そのパス文字列を `ActorPath::from_string` → `system.resolve_actor_ref` で解決した参照について、`EmptyLocalActorRef` の 4 性質すべてを検証する：① `resolved.path() == stopped.path()`、② `system.is_actor_terminated(&resolved) == true`、③ メッセージ送信で返信が無く `DeadLetter`（`recipient.path() == resolved.path()`）が発行される（受け口は §1.3.2）、④ `watch(&resolved)` で `Terminated { existence_confirmed: false, .. }` が即座に届く（原典 `ActorRefSpec.scala:341-365`）。原典の `==`（`:363`）は、`(id, generation)` の等価の決まり（I8）に写し、上の 4 点を数に入れる（決定：`pr288-decisions.md` の 3）。原典の等価は「パスと uid」の比較（`ActorRef.scala:181-183`）なので、パスの一致（①）が最も近い代わりである |
+| 6 | support nested actorOfs | `supports_nested_actor_ofs` | 移す（形を変えない）。原典（`ActorRefSpec.scala:367-377`）はコンストラクタ内で `system.actorOf`（親 `/user`）を呼ぶ。テストの本体が先に `nested` を `system.actor_of` で作り、その参照を外側の factory に渡す（§1.3 の「外側と内側の監督の形」と同じ。親は `/user` のまま）。外側は受けた任意のメッセージに `nested` を返す。`ask` で受けた `nested` が `a` と別参照（`a != nested`）であることを検証する。**この issue で移す。段 7b や後続へは回さない**（`pr288-decisions.md` の 6 件のどれも ActorRefSpec ケース 6 を延ばすとは言っておらず、延ばすと決めたのはケース 3・4・5 のバイト列と FSMTimingSpec のケース 7・8 だけである）。 |
 | 7 | support advanced nested actorOfs | `supports_advanced_nested_actor_ofs` | 移す（形を変えない）。原典（`ActorRefSpec.scala:379-388`）は `OuterActor(system.actorOf(Props(new InnerActor)))` なので、ケース 6 と同じくテストの本体が先に `inner` を `/user` の子として作り、外側の factory に渡す。`OuterActor` が `InnerActor` へ `ActorRef::forward(&inner, message, context)`（`actor_ref_value.rs:101`。`ActorContext::forward` は `pub(crate)` なので `ActorRef::forward` を使う）で転送し、`ask` で `"innerself"`（`!= a`）、`a`（`== a`）、`"self"`（`== a`）、`"msg"`（`== "msg"`）を検証する |
 | 8 | support reply via sender | `supports_reply_via_sender` | 移す。`SenderActor` が `"complex"`／`"simple"` と `"complex2"`／`"simple"` の 2 巡を送り、`ReplyActor` と `WorkerActor`（`1s` を `TestKitSettings::dilated` で sleep）の応答で `TestLatch(4)` が 2 巡とも満ちることを確認し、最後に `system.stop` する |
 | 9 | support actorOfs where the class of the actor isn't public | `supports_actor_ofs_where_the_type_of_the_actor_is_not_public` | 移す（形を変える。対応表 §2.3）。テストファイル内の非公開モジュール `mod non_public` に非公開のアクター型を置き、公開関数 `create_props() -> Props` 経由で `system.actor_of` し、`"pigdog"` を送って同じ文が返ることを確認し `system.stop` する |
 | 10 | stop when sent a poison pill | `stops_when_sent_a_poison_pill` | 移す。`ask(5)` と `ask(0)` の後に `"PoisonPill"`（または定数）を送り、`"five"` と `"null"` の 2 返信が届いてから停止することを `watch`＋`TestKit::expect_msg_terminated`（または `TestProbe::expect_msg_terminated_within`）で確認する |
 | 11 | restart when Kill:ed | `restarts_when_killed` | 移す。原典（`ActorRefSpec.scala:442-463`）の `filterException[ActorKilledException]`（`testkit/package.scala:50-51`）に合わせ、`EventFilter::typed("ActorKilledException").intercept(spec.system_mut(), ...)` で包む（フィルタ 1 本なので既存の `EventFilter::intercept` を使う）。ブロックの中で `TestLatch` を待つ処理は `spec.system_mut()` を通さないので、借用は衝突しない。親が `OneForOneStrategy(max_nr_of_retries = 2, within = 1s)` を持ち、子へ `Kill` を送って子の `pre_restart`・`post_restart` が `TestLatch(2)` を 5s 以内に満たすことを確認する |
 | 12 | be able to check for existence of children | `can_check_for_the_existence_of_children` | 移す（§3.3）。親 `"parent"` が `pre_start` で子 `"child"` を作り、受けた名前に対し `context.child(name).is_some()` を返す。`ask("child") == true`、`ask("whatnot") == false` を確認する |
+
+### 1.3.2 `DeadLetter` をテストから受け取る形（ケース 5 の ③）
+
+ケース 5 の ③ は「メッセージ送信で返信が無く `DeadLetter` が発行される」ことを見るが、受け口を設計に書いていなかった（答え合わせの指摘）。実物に口があるので、次の形で書ける（`crates/fraktor-actor/tests/function_ref_spec.rs:265`、`actor_with_bounded_stash_spec.rs:143` と同じ形を使う）。
+
+```rust
+// ActorRefSpec ケース 5（crates/fraktor-actor/tests/actor_ref_spec.rs）
+let test_actor = spec.test_actor();                       // FraktorSpec::test_actor(&self) -> ActorRef
+spec.system().event_stream()
+  .subscribe(Some(test_actor.clone()), EventClass::of::<DeadLetter>())   // Pekko の eventStream.subscribe(testActor, classOf[DeadLetter])
+  .expect("subscribe to DeadLetter");
+// … stopped を PoisonPill で止め、resolved を解決する …
+resolved.tell("hallo", test_actor.clone());
+let dead = spec.expect_msg_type::<DeadLetter>();          // TestKit の expectMsgType[DeadLetter]
+assert_eq!(dead.recipient().path(), resolved.path());     // 宛先が解決した参照であること（DeadLetter::recipient() -> &ActorRef、dead_letter.rs:63）
+```
+
+- `FraktorSpec::system()`（`fraktor_spec.rs:106`）は `&ActorSystem` を返すので、`system_mut()` を使う前後でも購読を張れる。`EventClass::of::<DeadLetter>()`（`event_class.rs:39`）で型で購読するのは原典の `classOf[DeadLetter]` と同じ。`FraktorSpec::expect_msg_type::<DeadLetter>()`（`fraktor_spec.rs:151`）は `TestKit::expect_msg_type`（`test_kit_value.rs:196`）をそのまま使う。`DeadLetter` は `message()`・`sender()`・`recipient()` を持つ（`dead_letter.rs:53,58,63`）。
+- **`DeadLetter` の `recipient()` が `resolved.path()` と等しいこと**を見る。③ の残り（返信が無いこと）は、その後に `spec.test_kit_mut().expect_no_message(spec.remaining())` を置いて確かめる。
+- この口は実物にある（`function_ref_model_test.rs:227` など 6 か所で同じ購読をしている）ので、**「確かめない」ではなく書く**。
 
 ### 1.3.1 ActorRefSpec ケース 1 の 13 の小ケース
 
@@ -120,13 +140,13 @@ fn promise_intercept(tx: std::sync::mpsc::Sender<String>, make: impl FnOnce() ->
 
 - `FraktorSpec` は `UnwindCatcher` を入れており（`fraktor_spec.rs:87`）、`resume_unwind` で投げ直した panic は今の `Create` の捕捉に届く。エラーログの件数・`Terminated`・名前の解放は、panic を直接上げたときと同じになる。
 - テストは `spec.system_mut().run_until_idle()` のあとに `rx.recv_timeout(..)` を読み、失敗が届いたこと（空でない文面）と、小ケース 13・ケース 2 では文面そのものを確かめる。
-- 小ケース 2 の「外側の creator の中の入れ子」は、原典では内側の匿名アクターに `Promise` を渡している（`:160`）。Rust では外側の factory が内側を作る工程もテスト側にあるので、外側の factory から直接送る。
+- 小ケース 2 の「外側の creator の中の入れ子」は、原典では内側の匿名アクターに `Promise` を渡している（`:158` の `wrap(result => ...)` が `result` を束縛し、`:160` の `promiseIntercept(...)(result)` がそれを使う。`:158-162` が 1 つの式）。Rust では外側の factory が内側を作る工程もテスト側にあるので、外側の factory から直接送る。
 - **届く失敗の種類**：小ケース 2〜12 では、原典の `intercept[ActorInitializationException]` の代わりに届くのが factory の panic（`ActorInitializationException` ではない）になる。この点だけは写せない（決定 4 の「factory の中の panic に写す」に含まれる）。**それ以外（届くこと自体）は原典どおりに写すので、伺わずに数に入れる。**
 
 | 小ケース | 原典の行 | 原典の形 | 原典の `occurrences` | `Promise` を渡す先（原典） | Rust の形 |
 |:---:|:---|:---|:---:|:---|:---|
 | 1 | `:150-152` | `actorOf` の外の `new Actor` | （フィルタ無し） | 無し | **作らない**（オーナー決定。§1.5 決定 4） |
-| 2 | `:156-166` | 外側のコンストラクタの中の `new Actor` | 1 | 入れ子の匿名のアクター（`:160`） | 外側の factory が `panic_intercept` で panic。内側は作らない。届いた失敗があることを確かめる |
+| 2 | `:156-166` | 外側のコンストラクタの中の `new Actor` | 1 | 入れ子の匿名のアクター（`wrap(result => actorOf(Props(new Actor { val nested = promiseIntercept(...)(result) ... })))`。`:158-162`。`result` は `:158` の `wrap` が束縛する） | 外側の factory が `panic_intercept` で panic。内側は作らない。届いた失敗があることを確かめる |
 | 3 | `:168-175` | `FailingOuterActor(actorOf(InnerActor))` | 1 | 外側（`:171`） | 内側は正常、外側の factory が panic。届いた失敗があることを確かめる |
 | 4 | `:177-184` | `OuterActor(actorOf(FailingInnerActor))` | 1 | 内側（`:180`） | 内側の factory が panic、外側は正常。届いた失敗があることを確かめる |
 | 5 | `:186-193` | `FailingInheritingOuterActor(actorOf(InnerActor))` | 1 | 外側（`:189`） | 小ケース 3 と同じ形 |
@@ -170,6 +190,7 @@ fn promise_intercept(tx: std::sync::mpsc::Sender<String>, make: impl FnOnce() ->
 
 - 小ケース 1 を作らない理由（決定の文面）：Pekko がこの禁止で守る「文脈の無いアクターが動かない」は、Rust では `actor_of` を通らないと動けないことで成り立つ。「作った時点で失敗」まで写すと、全アクターの書き方が変わる。
 - **「届く失敗の種類」**（小ケース 2〜12 で `ActorInitializationException` ではなく factory の panic が届く）は、決定の 4「構築子の失敗は factory の中の panic に写す」に含まれる。**届くこと自体は中4 のとおり原典どおりに写す。**
+- **ActorRefSpec ケース 6（`support nested actorOfs`）はこの issue で移す（決定の対象外）。** `pr288-decisions.md` の 6 件はどれもケース 6 を延ばすとは言っていない（延ばすのは 3・4・5 のバイト列と FSMTimingSpec のケース 7・8）。段 7b へ回す決定も記録も無いので、設計の「移す」（§1.3）を正とする。形は §1.3 の「外側と内側の監督の形」で原典どおり（内側は `/user` の兄弟）に写せる。
 
 #### 決定 1：ActorRefSpec ケース 3（`be serializable using Java Serialization on local node`）を直列化の設計まで延ばす
 
@@ -318,7 +339,7 @@ fn promise_intercept(tx: std::sync::mpsc::Sender<String>, make: impl FnOnce() ->
   - `fsm_timer_index: BTreeMap<(Duration, u64), FsmTimerIndexEntry>`。キーは **`(期限, seq)`** である（中3）。
 - **同じ期限の撃つ順（中3）**：索引の第 2 のキーは `ActorKey` や `FsmTimerSlot` ではなく、**予約するたびに単調に増える番号 `seq: u64`** にする。
   - 原典 `LightArrayRevolverScheduler` は期限ごとのバケツに入れた順（FIFO）に実行するので、同じ期限なら**予約した順**に撃つ。
-  - FSM では、状態関数の中の `startSingleTimer` が先に予約され、状態タイムアウトは `make_transition` の最後（`FSM.scala:906-912`）で予約される。手動の時計はハンドラの中で進まないので、同じハンドラの中で張った名前付きタイマと状態タイマは同じ長さなら同じ期限になり、原典では**名前付きタイマが先**である。`(Duration, seq)` のキーはこれをそのまま表す（ケース 8 の「古い `StateTimeout` が捨てられる」道もこの順に頼る）。
+  - FSM では、状態関数の中の `startSingleTimer` が先に予約され、状態タイムアウトは `make_transition` の `currentState.timeout match`（`FSM.scala:906-912`）から `scheduleTimeout`（定義は `:901-904`）を呼んで予約される（予約の行は `:908` と `:911`）。手動の時計はハンドラの中で進まないので、同じハンドラの中で張った名前付きタイマと状態タイマは同じ長さなら同じ期限になり、原典では**名前付きタイマが先**である。`(Duration, seq)` のキーはこれをそのまま表す（ケース 8 の「古い `StateTimeout` が捨てられる」道もこの順に頼る）。
   - **受信タイムアウトの索引との間の順**：`Executor` は 1 つの `seq` のカウンタを FSM タイマと受信タイムアウトで共有し、発火の入口（`fire_due_timers`）で**両方の索引を合わせて `(期限, seq)` の小さい順に撃つ**。`#200` の受信タイムアウトの索引（`executor_value.rs:432` の `BTreeMap<(Duration, ActorKey), u32>`）は第 2 のキーが `ActorKey` なので、同じ入口で撃つために受信タイムアウトの側にも `seq` を足す。受信タイムアウトは繰り返さないので、意味は変わらない（同時刻の複数のアクターの間の順だけが予約順になる。原典も同じ）。
   - P1・P2 の参照モデルも同じ規則（同じ期限なら `seq` の順）で発火列を作る、と §5 に書く。
 - 登録・置き換え・取り消し・停止のたびに旧行を索引から即時削除し、索引に古い行を残さない（`#200` の `sync_receive_timeout_index` と同じ方針）。
@@ -434,6 +455,10 @@ no_std の観点：追加する型・表・`FsmTimerMark`・`Executor` 期限索
 
 - `ActorContext` に `pub(crate) fn publish_warning(&self, message: &str)` を足し、`Executor::publish_warning(&self, source: &ActorRef, message: &str)` へ委譲する。
 - `Executor::publish_warning` は `Warning::new(source.path().to_string(), ACTOR_LOG_CLASS, message)` を作り、`event_stream`（あれば）と `event_sink`（あれば）へ発行する。これは原典 `FSM.scala:770` の `log.warning("unhandled event " + value + " in state " + stateName)` と 1 対 1 に対応し、`UnhandledMessage` を発行する `publish_unhandled` とは別経路である。
+- **`source` の文字列が `fsm.path().to_string()` と一致すること（答え合わせの指摘。ケース 10 が `with_source(fsm.path().to_string())` を書ける根拠）**：
+  - `publish_warning` に渡す `source` は FSM 自身の `ActorRef`（`context.self_ref()`）である。`ActorRef::path()` は `(*self.path).clone()`（`actor_ref_value.rs:69-71`）で、セルと文脈が持つのと同じ `Arc<ActorPath>` を返す。テストが持つ `fsm`（`actor_of` が返した参照）も同じセルを指すので、両方の `path()` は同じ `ActorPath` である。
+  - `Warning::new(log_source, ..)` は受け取った `String` をそのまま持ち、`LogEvent::log_source()` がそれを返す（`Logging/warning.rs:37,47,77`）。したがって `with_source` の照合（`event.log_source() == source`。§3.5）は、テスト側の `fsm.path().to_string()` と完全一致する。
+  - **確かめ方（赤で書ける形）**：ケース 10 の `filter_events` が 2 本のフィルタの `occurrences = 1` を満たせば、そのこと自体が `source` の一致を確かめている（`source` が違えば 1 件も当たらず、`occurrences` の照合で落ちる）。「`source` が空でないこと」を別に見たい場合の対照（`with_source` なしで 1 本張り、そちらでも当たる）は原典に無いのでテストには加えず、設計の根拠としてだけ書く。
 
 #### (c) `whenUnhandled` の動的差し替え（レビュー M2）
 
@@ -458,7 +483,10 @@ impl ActorContext<'_> {
 
 - `ActorCell.scala:682-700`：creator か `preStart` が投げると、`ActorInitializationException(self, s"exception during creation, root cause message: [$rootCauseMessage]", x)` を投げる（根の原因に文面が無いときは `"No message available"`）。
 - `Actor.scala:202-204`：`ActorInitializationException` の `getMessage` は `enrichedMessage` で `s"${actor.path}: $message"` になる。
-- `FaultHandling.scala:404-422`：監督の `logFailure` は `Error(cause, child.path.toString, getClass, logMessage)` を出す。`ActorInitializationException` に原因があるとき、`logMessage` は**原因の `getMessage`**（`IllegalStateException("Ur state be b0rked")` なら `"Ur state be b0rked"`）であり、パスは入らない。
+- `FaultHandling.scala:404-422`：監督の `logFailure` は `Error(cause, child.path.toString, getClass, logMessage)` を出す。`logMessage` は `:406-413` の `cause match` で決まる。**条件付きである**：
+  - `ActorInitializationException` に**原因がある**（`e.getCause ne null`）ときは、原因の `getMessage`（`IllegalStateException("Ur state be b0rked")` なら `"Ur state be b0rked"`）であり、パスは入らない。
+  - 原因が**無い**ときは `case e => e.getMessage`（`:412`）に落ち、これは `enrichedMessage`（`Actor.scala:202-204`）の**パス入りの文面**（`"pekko://.../user/x: exception during creation, root cause message: [..]"`）である。
+  - 今回の port は `:1620` で必ず `x`（panic）を原因として持たせるので、上の第 1 の場合に当たる。だが、原典の `pattern = "/user/failingActor:"`（`ActorRefSpec.scala:278`）は**どちらの場合でも** `cause.getMessage` に当たる（第 1 は `ActorInitializationException` 自身の `getMessage` がパス入り、第 2 も同じ。`TestEventListener.scala:332-339` の `doMatch(src, cause.getMessage)`）。
 - `TestEventListener.scala:332-339`：`ErrorFilter` は `doMatch(src, msg) || doMatch(src, cause.getMessage)` で照合する。`ActorRefSpec.scala:278` の `pattern = "/user/failingActor:"` が当たるのは、ログの文面ではなく、原因（`ActorInitializationException`）の `getMessage` の方である。
 
 したがって、パスはログの文面ではなく原因の文面に入れる。レビュー H2 の直し方の「`message` を `format!("{}: {}", path, message)` にする」は採らない。採るとログの文面が原典の `logMessage` と変わるからである。
@@ -643,6 +671,7 @@ impl FraktorSpec {
   - `FSMTimingSpec`：`total: 10, ported: 8, passing: 8, status: unported`（`verified_against` なし）。ケース 7・8 は `#257` の後に延ばし、`#257` が入ったら戻して数に入れる（決定：`pr288-decisions.md` の 5・6。後続 issue を作る）。
   - `ActorRefSpec`：ケース 3・4 は直列化の設計まで延ばす（「直列化が入ったら見直す」の但し書きつき）。ケース 5 はバイト列を延ばして 4 性質を今数に入れる。ケース 1 の小ケース 1 は「作らない」と確定した（分類「対象が Rust に無い（言語の違い）」、`cases.not_built`。`approved_by`・`approved_at` は元帥の項目 522、2026-11-27）。ケース 1 の小ケース 2〜13 とケース 2・5〜12 は今数に入れる。
   - 延ばすもの（ケース 3・4・5 のバイト列、FSMTimingSpec のケース 7・8）は、どの段で戻すかを PR の本文にも書く（決定の文面）。
+  - **`ActorRefSpec` の red の内訳（23/20/20）について（#182 から引き継ぐ数字であり、この設計では算出しない）**：`pr287-design-fix-report.md:20,38` の「red（23/20/20）」は [#182](https://github.com/j5ik2o/fraktor-ng-rs/issues/182)（#287）の `ActorRefSpecSpec` ノードの値である。いまの `ledger/nodes.yaml:846-871` の `actor-tests:ActorRefSpec` は `cases.total: null`（`triage.kind: pending`）で、`23/20/20` に当たる数字は設計にも台帳にも無い。**この設計は台帳の値を決めない**（第 2 段で更新する。上の 2 行で、どこを延ばすかを決めただけ）。#182 の段 7b と #198 の関係は、#182 がケース 3・5・6 を段 7b へ回したのに対し、#198 では**ケース 6 を今移し、ケース 3・4・5 のバイト列だけを直列化の設計まで延ばす**という違いである（§1.5）。#182 の red の数え方（ケース 1 の 13 の小ケースを 1 件とするか 13 件とするか）を #198 が引き継ぐかどうかは、第 2 段で #182 のノードの書き方を見て決める。
 - **保存済みデータ・上流**：影響なし。
 
 ## 9. 変更の記録（独立設計レビュー・Bugbot 指摘への対応）
@@ -675,7 +704,7 @@ impl FraktorSpec {
 |:---:|:---:|:---|
 | 中1 | 中 | `EventFilter::filter_events` を `EventFilter` の関連関数から `FraktorSpec::filter_events(&mut self, ...)`／`FraktorSpec::intercept(&mut self, ...)` に変えた。実物の `EventFilter::intercept` は `&mut ActorSystem` を取り、`ActorSystem` は `Clone` を持たない（`actor_system_value.rs:89-95`）ので、ブロックの中で `spec.within`／`spec.test_kit_mut()` を呼ぶケース 10・ActorRefSpec ケース 1・2・11 は今の口では書けない。既存の `EventFilter::intercept` は残し、フィルタ 1 本で `spec` を使わないケース（ActorRefSpec 2・11）はそちらで足りることを各ケースに書いた（§3.5、§1.2 ケース 10、§1.3 ケース 2・11、§8） |
 | 中2 | 中 | 繰り返しタイマの間隔 `<= 0` は、原典 `LightArrayRevolverScheduler.scala:242-246` の `checkPeriod` どおり張る時点で panic する（状態関数の失敗として監督へ渡る）。発火のループは `now` を 1 回だけ読み、その `now` 以下の行だけを撃つ（`#200` の `fire_due_receive_timeouts` は毎回 `now_opt()` を読む作りだが、繰り返さない受信タイムアウトにだけ足りる）。`FixedRate` が追いつくために複数回撃つのは原典どおりに残すと 1 行書いた。§7 の壊しうる入力にも行を足した（§3.1(c)、§7） |
-| 中3 | 中 | 索引のキーを `(期限, ActorKey, FsmTimerSlot)` から `(期限, seq)` に変えた。`seq` は予約のたびに単調に増える番号で、原典 LARS の「期限ごとのバケツに入れた順（FIFO）」を表す。FSM では状態関数の中の `startSingleTimer` が先に予約され、状態タイマは `makeTransition` の最後（`FSM.scala:901-904`）で予約されるので、同じ長さなら名前付きタイマが先に撃たれる。受信タイムアウトの索引とも 1 つの `seq` で合わせて撃つと決めた。P1・P2 の参照モデルも同じ規則にする（§3.1(c)、§5、§7） |
+| 中3 | 中 | 索引のキーを `(期限, ActorKey, FsmTimerSlot)` から `(期限, seq)` に変えた。`seq` は予約のたびに単調に増える番号で、原典 LARS の「期限ごとのバケツに入れた順（FIFO）」を表す。FSM では状態関数の中の `startSingleTimer` が先に予約され、状態タイマは `makeTransition` の `currentState.timeout match`（`FSM.scala:906-912`）から `scheduleTimeout` を呼んで予約する（`forMax(After(d))` は `:908`、既定タイムアウトは `:910-911`。`:901-904` は `scheduleTimeout` の定義で、予約そのものは呼び出し行）。つまり状態タイマの予約は常に名前付きタイマより後なので、同じ長さなら名前付きタイマが先に撃たれる。受信タイムアウトの索引とも 1 つの `seq` で合わせて撃つと決めた。P1・P2 の参照モデルも同じ規則にする（§3.1(c)、§5、§7） |
 | 中4 | 中 | ケース 1 の小ケース 2〜12 とケース 2 の「失敗が呼び手まで届く」検査を、原典の `promiseIntercept`／`wrap`（`ActorRefSpec.scala:128-144`）どおりに写す形にした（`promise_intercept`：factory の中で `catch_unwind` → 送信 → `resume_unwind`）。テストは `run_until_idle()` のあとに受け口を読む。小ケース 13 とケース 2 は届いた文面の完全一致（13 は `"Ur state be b0rked"`、ケース 2 は空）も見る。§1.3.1 の表に「`Promise` を渡す先（原典）」の列を足した。届く失敗の種類が AIE でなく panic になる点だけは決定 4 に含まれる（§1.3.1、§1.3 ケース 2） |
 | 低1 | 低 | Quint の `armedMatchesSelection` を作り直した。`expectedArmed` は `liveSid` と同じ `selectionShouldArm` から作っていたので自分自身と比べていた。モデルの変数（`stActive`／`lastTarget`／`lastOverride`）から選択を書き下し直して比べる形にし、`selectionShouldArm` を書き換える変異（両辺が一緒に動く）でも捕まるようにした。`keptAfterMark` は「`StateTimeout` の印を受けて張り直さなかったので枠を残している」（`FSM.scala:818-821`）を表し、存在しない状態への `goto` は対象外にした。`singleLeavesTable` を「最後に受理した `Single` は次の開始・取り消し・遷移まで残す」形にし、`singleFiresOnce`（受理した `Single` の名前の集合が `NamedNames` を超えない）を足した。レビューの 2 つの変異（`NoOverride => false`、未処理のときだけ張らない）は、旧版では `quint run` で違反なし、新版ではどちらも違反になることを確かめた。`namedMarks` の `Set` と trace の浅さは今回直さず、残る弱点として §6 に書いた（§6） |
 | 低2 | 低 | §9 の M3 の行を「正のテスト 11 本」に直した（§9）。§6 の本数も実物に合わせた（`quint test` 19 本） |
@@ -688,6 +717,15 @@ impl FraktorSpec {
 | 低9 | 低 | ケース 10 の手順に、`within` の外の `TestUnhandled`（`FSMTimingSpec.scala:149`）を足した。`start_fsm` に「`initialize()` は呼ばない」（原典 `:198-290`、`:292-300`）を書いた（§1.2 ケース 10、§1.2 冒頭） |
 | 低10 | 低 | 「表から消費する」を「`Executor` 側の索引（と `fsm_timers` の行）から消費し、FSM 側のライブ表 `timers` からは印を受け取ったときに初めて `Single` を消す（`FSM.scala:823-831`）」に書き分けた（§3.1(c)） |
 | 低11 | 低 | 既存のテスト 2 本は、原典と違う今の文面の完全一致に書き直さず、`start(&format!("unhandled message from {}", dead_letters.path()))`（前方一致）に留めることを既定にした。文面を原典の形に直す案 2 は、実装の担当と相談する場合だけにした（§3.5、§8） |
+
+### 9.0.1 答え合わせ（別会話、cc49745 の読み直し）の 4 点への対応
+
+| # | 指摘 | 対応 |
+|:---:|:---|:---|
+| 1 | ケース 6 を「移す」としつつ、決定に「段 7b へ」と読める行が無い | `pr288-decisions.md` の 6 件はどれも ActorRefSpec ケース 6 を延ばすと言っておらず、段 7b へ回す記録も無い。**設計の「移す」を正とし、§1.3 のケース 6 と §1.5 にその関係を書いた**（#182 が 3・5・6 を段 7b へ回したのに対し、#198 は 6 を今移し、3・4・5 のバイト列だけを延ばす） |
+| 2 | 台帳 red 23/20/20 の根拠が設計に無い | §8 の台帳の項に 1 行足した。23/20/20 は #182（#287）の `ActorRefSpecSpec` ノードの数字（`pr287-design-fix-report.md:20,38`）であり、いまの `ledger/nodes.yaml:846-871` は `cases.total: null` で、この設計は台帳の値を決めない。第 2 段で #182 の書き方に合わせて確定する |
+| 3 | 原典の引き違い 3 件 | (a) `FSM.scala:901-904` は `scheduleTimeout` の定義で、予約は `:908`／`:911`（選択は `:906-912`）— §3.1(c) と §9.0 の中3 を直した。(b) 小ケース 2 の `:160` の `result` は `:158` の `wrap(result => ...)` が束縛する — `:158-162` と書いた。(c) `FaultHandling.scala:406-413` は原因があるときだけ `getCause.getMessage` を使い、原因が無ければ `e.getMessage`（パス入りの `enrichedMessage`）— §3.4 を条件付きに書き直した |
+| 4 | red で書けない疑い 2 点 | (a) ケース 5 の `DeadLetter` の受け口を §1.3.2 に書いた（`system().event_stream().subscribe(Some(test_actor), EventClass::of::<DeadLetter>())` → `expect_msg_type::<DeadLetter>()` → `recipient().path()`。実物の口と 6 か所の使用例つき）。(b) ケース 10 の `source` の一致は §3.2(b) に根拠（`ActorRef::path()` は同じ `Arc<ActorPath>`、`Warning` は文字列をそのまま保持）と確かめ方（`occurrences` の照合で足りる）を書いた |
 
 ### 9.1 レビューの外で見つけて直したもの
 
