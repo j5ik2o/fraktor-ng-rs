@@ -11,6 +11,10 @@
 意味論に関わる選択は §6 にまとめ、元帥が 2026-11-27 にすべて決めた。§6 は
 「元帥の決定（2026-11-27）」として書き直してあり、実装はその決定に従う。
 
+改訂（2026-11-27）：独立レビュー（`pr298-design-review.md`、高 4・中 5・低 4）の指摘と、
+元帥の決め直し（同日）を反映した。origin/main（`020786b`）を取り込んだあとの形を基点に
+直してある。変えた点と、採らなかった指摘の理由は §10 にまとめた。
+
 この文書に入れるものは 1 つである。
 
 | ファイル | 中身 |
@@ -29,13 +33,14 @@
    （基点で 91 行目付近）が事実と違う点を、実装と同時に直す。
 2. #296 の中 2 と低：dead letters の経路が入っていないメールボックスの予備の道、
    取り出しの重なり、二重持ちの状態、要らない clone、経緯のコメント、弱い確かめ、
-   bounded が満杯の経路のテスト。
+   bounded が満杯の経路のテスト（取り出し、二重持ち、clone、経緯のコメントは
+   origin/main の #305 で済んでいる。§4.2）。
 3. #297：閉じたメールボックスへの system message を黙って捨てている箇所を、
    原典どおり dead letters へ流す形に直す。原典で確かめた形を §5 に書く。
 
 範囲の外にするものは §5.5 に書く（システム全体の終了時の破棄）。
 
-## 2. 今の形（基点 `526e4f2` で確かめた）
+## 2. 今の形（`526e4f2` で確かめ、origin/main `020786b` の取り込みで行番号と形を直した）
 
 ### 2.1 dead letters が送り手のスレッドで流れる道
 
@@ -61,32 +66,44 @@
   `mailbox.hand_over(ManualTask::Envelope(refused))` で実行器へ渡し、実行器の
   `Executor::deliver` が dead letters へ流す。
 - 本番の道では経路は常に入っている。アクターを生む箇所
-  （`kernel/executor/executor_value.rs` の `spawn` 相当、基点で 940 行目）が
-  `mailbox.set_refused_route(self.dead_letter_route())` を呼ぶ。経路が入っていない
-  メールボックスを作るのは、カーネルの単体テストが `Mailbox::for_actor` を直接使う
-  場合だけである（`kernel/dispatch/mailbox_test.rs`、`mailbox_run_test.rs`）。
+  （`kernel/executor/executor_value.rs` の `spawn` 相当）が
+  `mailbox.set_refused_route(self.dead_letter_route())` を呼ぶ（`set_refused_route` の
+  呼びは 1292 行目）。経路が入っていないメールボックスを作るのは単体テストである。
+  `mailbox_test.rs` は `Mailbox::for_actor` ではなく、テスト用の `Mailbox::new` と
+  `Mailbox::sharing` を使う。どちらも `with_queue` を `Weak::new()` で呼び、
+  `refused_route: None` のままにする（`kernel/dispatch/mailbox.rs` の 98〜114 行目、
+  `mailbox_test.rs` の 357〜379 行目）。`ActorRef::for_mailbox` を呼ぶのは `spawn`
+  （1295 行目）だけなので、予備の道（`route_refused` が `None` を返す分岐から
+  `hand_over`）を通るテストは今は 1 本も無い。経路を必須にするときは、
+  `Mailbox::for_actor` だけでなく `with_queue`、`Mailbox::new`、`Mailbox::sharing` と、
+  それらを呼ぶ単体テストも変える対象である（§4.1）。
 - `Executor::deliver` にはもう 1 つ、経路を通らない分岐がある。境界から届いた封筒を
-  生きている entry のメールボックスへ `enqueue` して断られた場合（基点で 2455 行目
-  付近の `Err(refused)` 分岐）、`route_refused` を通さず
+  生きている entry のメールボックスへ `enqueue` して断られた場合（`executor_value.rs` の
+  2835 行目付近の `Err(refused)` 分岐）、`route_refused` を通さず
   `dead_letters_shared.route_undeliverable` を直接呼ぶ。この分岐は本番でも通る
   （entry が残っているのにメールボックスが閉じた、または bounded が満杯の場合）。
 
 ### 2.3 system message を黙って捨てる箇所
 
-`SystemMessage` は `kernel/dispatch/system_message.rs` の列挙で、種類は §5.3 の表の
-とおりである。閉じたメールボックスに関わる箇所は 3 つある。
+`SystemMessage` は `kernel/dispatch/system_message.rs` の列挙で、origin/main を
+取り込んだ基点では `Create`、`Resume`、`Terminate`、`ChildTerminated` の 4 つだけである
+（`pub(crate)`）。原典の他の種類は、それを送る段（段 4c 以降、#255 ほか）で足す。
+§5.3 の表は原典の全種類との対応を示し、移植の列挙にまだ無いものはそう書いてある。
+閉じたメールボックスに関わる箇所は 3 つある。
 
-1. `Executor::resume_if_open`（基点で 2100 行目付近）。`is_closed` を先に確かめてから
-   `Mailbox::system_send` し、結果を `let _ =` で捨てる。単一スレッドの今の実行器では
-   確かめと送信の間に割り込みは無いので `Err` はほぼ起きないが、#234 の複数スレッド化で
-   競合が入ると、閉じたあとの `Resume` が黙って消える。先確かめ自体が競合に弱い形である。
-2. `Executor::queued_to_dead_letters`（基点で 1680 行目付近）。アクターの停止時に
-   `Mailbox::close` が返した system message を `drop(system)` で捨て、コメントに
-   「段 3 では多くて `Resume` だけなので意味が無い」と書いてある。原典の
+1. `Executor::send_system`（`executor_value.rs` の 572〜576 行目）。`Mailbox::system_send`
+   の結果を `.ok()` で捨てる。失敗のあとの再開（`fail_supervisor` の 3170 行目）と、
+   再起動した親が子を再開する箇所（3336 行目）が `Resume` をこの道で送る。単一スレッドの
+   今の実行器では閉じるのと送るのが同じスレッドなので `Err` はほぼ起きないが、#234 の
+   複数スレッド化で競合が入ると、閉じたあとの `Resume` が黙って消える。今はどの system
+   message も、閉じたメールボックスではここで消える。
+2. `Executor::queued_to_dead_letters`（`executor_value.rs` の 1979〜2001 行目）。アクターの
+   停止時に `Mailbox::close` が返した system message を `drop(system)` で捨て、コメントに
+   「system message は閉じたメールボックスには意味が無い」と書いてある。原典の
    `Mailbox.cleanUp` は、残った system message を 1 つずつ dead letter mailbox へ
    `systemEnqueue` する（§5.1）。
-3. `Executor::stop_all`（基点で 2269 行目付近）。`held.push(entry.mailbox.close())` の
-   結果をまとめて `drop(held)` する。これはシステム全体の終了であり、扱いは §5.5 で分ける。
+3. `Executor::stop_all`（`executor_value.rs` の 2622 行目付近）。`held.push(entry.mailbox.close())`
+   の結果をまとめて `drop(held)` する。これはシステム全体の終了であり、扱いは §5.5 で分ける。
 
 `Mailbox::system_enqueue` 自体は、閉じていれば `Err(message)` で返すだけで、
 dead letters への振り替えは呼び出し側の責任になっている。原典は逆で、
@@ -103,7 +120,8 @@ dead letter mailbox へ振り替える（§5.1）。振り替えの責任が 1 �
 
 #### 候補 1（推す）：公開のトランポリン
 
-`DeadLettersShared::publish` に、スレッドごとの待ち行列と「流している最中」の印を置く。
+`DeadLettersShared::publish` は、公開のジョブをトランポリンのポートへ渡す。印と待ち行列は
+そのポートが持つ（置き場所は下のとおり）。
 
 - 入っていない呼び出し（最も外側）が来たら、印を立て、公開しては待ち行列を順に流す
   ループに入る。ループは待ち行列が空になるまで回り、スタックの深さは一定に保たれる。
@@ -115,24 +133,59 @@ dead letter mailbox へ振り替える（§5.1）。振り替えの責任が 1 �
   公開はすべてここを通るためである。断られた封筒の経路、実行器の `deliver`、
   メールボックスの後片付け（`publish_dead_letter`）、dead letters のハンドル自身への
   送信（`route_at_dead_letters`）のどれから入っても、入れ子は同じ待ち行列で平らになる。
-- スレッドごとの状態は `std::thread_local!` で持つ。先例は
-  `kernel/sync/counts.rs`（テスト用）と `adaptor/ask_driver.rs` にある。待ち行列は
-  システムを区別しない。同じスレッドでシステム A の購読者がシステム B の停止済み
-  アクターへ送る場合も、B の公開は A の最も外側のループが流す。送り手のスレッドは
-  同じであり、順序はスレッド全体で先入れ先出しになる。システムごとに待ち行列を
-  分ける案は、入れ子の入口ごとに印の照合が要り、壊れ方が増えるので採らない。
+- **印と待ち行列は kernel のポートが持ち、実装は adaptor が置く。** kernel に
+  `#[cfg(feature = "std")]` や `std::thread_local!` は置かない。syn-check の
+  `cfg-std-forbid` が kernel の `#[cfg(feature = "std")]` と `use std::` を禁じており、
+  これは必須の CI である。抑制コメントも足さない。`kernel/actor/dead_letter_trampoline.rs`
+  に次のポートを置く。
+
+  ```rust
+  pub type DeadLetterJob = Box<dyn FnOnce() + Send + 'static>;
+
+  /// Runs dead letter publications one at a time on the calling path.
+  pub trait DeadLetterTrampoline: Send + Sync {
+    /// Runs `job` now, or queues it behind the run already under way and
+    /// returns.
+    fn run(&self, job: DeadLetterJob);
+  }
+  ```
+
+  先例は `LockFactory` と `RawLock`、`FailureCatcher` と `UnwindCatcher` である。
+  `DeadLettersShared` は `Arc<dyn DeadLetterTrampoline>` を持ち、`publish` は
+  `bus.clone()` とイベントを包んだジョブを `run` へ渡す。`Executor::new` は kernel の
+  既定 `SharedTrampoline` を入れ、`Executor::with_dead_letter_trampoline` と
+  `ActorSystem::with_dead_letter_trampoline`（`with_failure_catcher` と同じ形）が
+  渡された実装を入れる。`DeadLettersShared::new` はトランポリンを引数に取る。
+- **std の実装（adaptor）。** `adaptor/sender_thread_trampoline.rs` の
+  `SenderThreadTrampoline` が `std::thread_local!` で「流している最中の印
+  （`Cell<bool>`）」と「待ち行列（`RefCell<VecDeque<DeadLetterJob>>`）」を持つ。最も外側の
+  呼び出しは印を立ててジョブを実行し、終わったら待ち行列が空になるまで先入れ先出しで
+  流す。入れ子は積んで返る。ジョブを流す間は待ち行列を借りたままにしない。
+- **kernel の既定（スレッドの無い環境）。** `SharedTrampoline` は 1 つの印と 1 つの
+  `VecDeque` を `spin::Mutex` の後ろに持つ。最も外側はロックの下で印を立て、ジョブを
+  1 つ取り出してロックを離して実行し、また取り出す。入れ子は積んで返る。ロックを持つのは
+  取り出しと積み込みの間だけなので、ジョブの中の公開が同じロックを待って止まることはない。
+  これは実行の主体が 1 つの環境向けである。スレッドのある環境でこの既定を使うと、別の
+  スレッドが積んだジョブを流している側のスレッドが実行しうるので、#286 の「購読者の
+  ハンドラが送り手のスレッドで走る」は保てない。std のシステムを組むときは adaptor の
+  `SenderThreadTrampoline` を渡す。今の実行器は 1 スレッドなので既定でも同じ観察になり、
+  #234 の複数スレッドの段で adaptor の実装を既定にすることを、その段の完了条件に足す。
+- `no_std` でも #296 のスタックあふれは残らない。既定もジョブを積んで反復で流すので、
+  再帰の深さは送り直しの回数に比例しない。`cfg(feature = "std")` で直接公開へ落とす形は
+  採らない。
+- 待ち行列は（std の実装では）スレッドごとで、システムを区別しない。同じスレッドで
+  システム A の購読者がシステム B の停止済みアクターへ送る場合も、B の公開は A の
+  最も外側のループが流す。送り手のスレッドは同じであり、順序はスレッド全体で
+  先入れ先出しになる。システムごとに待ち行列を分ける案は、入れ子の入口ごとに印の照合が
+  要り、壊れ方が増えるので採らない。代償は §3.3 の表に書く。
 - パニックへの備え：購読者のハンドラがパニックで巻き戻ると、印が立ったまま残り、
   そのスレッドの以後の公開がすべて待ち行列に積まれて流れなくなる。ループは
   印と待ち行列を守る RAII の番人を持ち、巻き戻りでは印を下ろし、残った公開は捨てる。
   捨てることは、パニックした配送の続きが保証されないという今の致命の扱い
   （`Executor::lend` の `Lent`）と矛盾しない。
-- `no_std` の形：`fraktor-actor` は `std` 機能が既定で、`no_std` でも使える。
-  `thread_local!` は `std` が要る。`no_std` では、スレッドという概念自体が下の層の
-  担当であり、送り手のスレッドでの同期配送も `std` の形である。設計は、
-  トランポリンの状態を `#[cfg(feature = "std")]` の後ろに置き、`no_std` では
-  今の直接公開（入れ子あり）へ落ちる形を推す。`no_std` で入れ子を防ぐ必要が
-  生じたら、その時点で実行環境ごとの待ち行列の置き場所を別に決める。この点は
-  実装の段で `no_std` の検査（既存の検査クレート）を通して確かめる。
+- スレッドの終わりに TLS を壊している途中は `LocalKey::with` が panic する。
+  `SenderThreadTrampoline` は `try_with` を使い、`Err` のときはジョブをその場で実行する
+  （TLS の破棄中だけ入れ子に戻る）。
 
 #### 候補 2：深さの上限
 
@@ -188,27 +241,35 @@ dead letter mailbox へ振り替える（§5.1）。振り替えの責任が 1 �
 | letter の順序 | 購読者アクターのメールボックスの順序 | 再帰の深さ優先の順序（入れ子が外側の残りの購読者より先に届く） | 公開の単位ごとの先入れ先出し（入れ子は外側の公開が終わってから届く） |
 | 入れ子の letter の購読者の集合が決まる時点 | ディスパッチャが届ける時点 | 入れ子の公開の時点 | 最も外側のループがその letter を流す時点（公開の時点より後になりうる） |
 | 購読者のハンドラが走るスレッド | 購読者アクターのディスパッチャのスレッド | 送り手のスレッド | 送り手のスレッド（最も外側の呼び出しのスレッド） |
+| 購読者のハンドラが別のシステムを駆動したとき | そのシステムのディスパッチャのスレッドが流す（ハンドラは待たない） | 入れ子の公開がその場で流れる | ハンドラが返るまで流れない（待ち行列はスレッド単位で、システムを区別しない） |
 | 際限ない送り直し | 終わらない（メールボックスに積まれ続ける） | スタックがあふれて落ちる | 終わらない（待ち行列が回り続ける）。落ちはしない |
 | `DeadLetter` 自体を宛先が dead letters の letter が落とされる規則（`route_undeliverable` の先頭） | ある（`DeadLetterActorRef` が `DeadLetter` をそのまま公開し、購読者の再送はメールボックスで受ける） | ある | 変わらない |
 
-変わる観察は 2 つだけである。順序が深さ優先から公開単位の先入れ先出しになることと、
-入れ子の letter の購読者の集合が流す時点で決まることである。どちらも、
+変わる観察は 3 つだけである。順序が深さ優先から公開単位の先入れ先出しになること、
+入れ子の letter の購読者の集合が流す時点で決まること、そして購読者のハンドラが別の
+システムの公開を待つと、その公開がハンドラの返るまで流れないことである。どれも、
 今の深さ優先の順序に利用者が頼ることはできない。深さ優先は再帰の作りから
 偶然生まれた強さであり、`docs/decisions/pekko-semantics-first.md` の分け方では
 「作りのずれ」に当たる。公開単位の先入れ先出しは原典のメールボックスの順序に近い。
+3 つ目は、システムごとの待ち行列を採らなかったことの代償であり、利用者には
+rustdoc の注意（§3.4）で「ハンドラからはどのシステムも駆動しない」と伝える。
 
 ### 3.4 rustdoc の直し
 
 `ActorRef::tell` の rustdoc は、実装の段で次の趣旨に書き換える。経緯は書かない。
 
-- 停止済みの宛先への送信は、送り手のスレッドで dead letters へ流れ、`tell` が
-  返る前に購読者が受け取る。
+- 停止済みの宛先への送信は dead letters へ流れ、購読者のハンドラは送り手のスレッドで
+  走る。
 - 購読者のハンドラは、別のアクターへ送ること（停止済みのアクターを含む）ができる。
-  その送信で生じた dead letter は、入れ子にならず順に流れて、最も外側の `tell` が
-  返る前に購読者へ届く。
-- ハンドラが同じシステムを駆動する呼び出し（生む、止める、システムを回す）を
-  してはいけないという今の注意は、そのまま残す。実行器を貸している間の制約は
-  トランポリンでは変わらない。
+  その送信で生じた dead letter も、入れ子にならずに流れる。
+- 購読者のハンドラからは、どのシステムも駆動しない。`run_until_idle`、`ask` の答えを
+  待つこと、システムやアクターを生む・止めることを含む。ハンドラの中で待つと、
+  待たれたシステムの dead letters はハンドラが返るまで流れない（§3.3）。
+
+先入れ先出しの順序と「最も外側の `tell` が返る前に購読者が受け取る」は、
+`docs/decisions/pekko-semantics-first.md` が「狭めた振る舞いを利用者への約束として
+公開 API の文書に書かない」としているものに当たる。rustdoc には事実だけを書き、
+順序や同期を約束として書かない。約束として書くなら、元帥の新しい決定が要る。
 
 ## 4. #296 中 2 と低
 
@@ -243,13 +304,13 @@ dead letter mailbox へ振り替える（§5.1）。振り替えの責任が 1 �
 
 ### 4.2 低の各項目
 
-| 項目（基点の場所） | 直し方 |
+| 項目（issue #296 の低） | いまの状態 / 直し方 |
 |:---|:---|
-| 取り出しの 3 か所（`Executor::notify_watchers`、基点で 2937 行目付近。関数参照の監視者、通常の監視者、カスタムの通知文を別々の走査で集めている） | 監視者の表を 1 回の走査で走り、関数参照の監視者と通常の監視者を分けながら、カスタムの通知文を同じ走査で引く。通知の順序（関数参照の監視者が先、重なる監視者は関数参照側で 1 回だけ）と、表から外す時点は変えない |
-| `routes_closed` と `terminated` の二重持ち（基点で 301〜302 行目） | 状態は 1 つにする。`routes_closed: Arc<AtomicBool>` を唯一の置き場所とし、`Executor::is_terminated` と各所の `self.terminated` の読みは、その原子変数を読むヘルパに寄せる。`stop_all` は原子変数への書き込みだけにする。経路のクロージャが複製を持つ理由（実行器を借りずに読むため）は、原子変数の複製でそのまま満たされる |
-| 要らない clone（`notify_watchers` の関数参照側の通知、基点で 2995 行目付近。`Terminated` を作る複製と、送り手として渡す複製が同じ対象を 2 回複製している） | 通知を作ったあと、対象の複製は送信の 1 回だけにし、通知の中の対象は通知が持つものを送る前に複製しない形へ組み替える。実装の段で、対象の複製の回数を数える既存の数え上げ（所有権モデルの条件 1）に触れないことを確かめる |
-| 経緯のコメント（`executor_value.rs` の基点で 541 行目付近と 2993 行目付近、`dead_letters_on_sender_thread_regression_test.rs` の 17 行目付近、設計書を含む） | 「プルリクエスト #295 のレビューで」「#286 の前に」のような経緯の言い方を消し、今の振る舞いだけを書く。理由が要る箇所は、この設計書と #286 の設計を参照する形にする。#279 の検査で止まる対象なので、直しの範囲は上の 3 ファイルに限らず、#295 で入ったコメント全体を検索して洗う |
-| 弱い確かめ（`dead_letters_on_sender_thread_regression_test.rs` の基点で 140〜144 行目。2 回目の watch のあとの `assert_eq!` に失敗時の文が無く、件数だけでは「古い記録がもう 1 回流れた」場合と区別が弱い） | 失敗時の文を付け、並び全体（対象つきの通知 2 件だけが、順序どおりに積まれていること）を比べる形にする。さらに `run_until_idle` をもう 1 回回して、3 件目が増えないことを確かめる行を足す。テストの面は §7 のとおり既存の公開面で足りる |
+| 取り出しの 3 か所（issue の「2986〜2997 の取り出しの 3 か所目」。dead letters のハンドルを `let dead_letters = self.dead_letters.clone();` で取り出して `route_undeliverable` へ渡していた箇所で、旧 2462、2483、2995 行目付近） | #305（`9db2732`、origin/main）が `Executor::route_undeliverable` にまとめ、clone ごと消した。済んでいる。設計の前の版が「`notify_watchers` の 3 回の走査」と書いたのは取り違えである（レビュー中 1）。`notify_watchers` を 1 走査にまとめるのは別の掃除であり、issue の対象ではないので、この設計では必須にしない |
+| `routes_closed` と `terminated` の二重持ち | #305 が `terminated` を消し、`routes_closed: Arc<AtomicBool>` を唯一の置き場所にした。済んでいる |
+| 要らない clone | #305 が `self.route_undeliverable(message, sender, recipient)` へ寄せ、`dead_letters.clone()` を消した。済んでいる |
+| 経緯のコメント | #305 と #279（`661af21`）が消した。`let _ =` とレビューの経緯の言い方は #279 の CI が禁じる。済んでいる |
+| 弱い確かめ（`dead_letters_on_sender_thread_regression_test.rs`） | `9a29285` が通知の並び全体の比較を入れた。2 回目の watch のあとの `assert_eq!` にはまだ失敗時の文が無い。残りはその文と、`run_until_idle` をもう 1 回回して 3 件目が増えないことを確かめる行である。小さな追加として残す |
 | bounded が満杯の経路のテスト | §7.3 に分けて書く。段 5（#256）と重なる場合は #256 側に置く |
 
 ## 5. #297：閉じたメールボックスへの system message
@@ -274,14 +335,12 @@ dead letter mailbox へ振り替える（§5.1）。振り替えの責任が 1 �
    system message そのもので、送り手と宛先はどちらも `receiver`、すなわち
    閉じたメールボックスの持ち主である。system message には別に送り手が無いので、
    この形しかない。
-2. 閉じたメールボックスへの到達（`Mailbox.scala` の `systemEnqueue`）。
+2. 閉じたメールボックスへの到達（`Mailbox.scala` の `systemEnqueue`、500〜510 行目）。
    通常のメールボックスの `systemEnqueue` は、キューの頭が `NoMessage`
    （閉じた印）なら、自分で `deadLetterMailbox.systemEnqueue(receiver, message)` を
    呼ぶ。呼び出し側が捨てる・流すを選ぶ作りではない。後片付けでも同じで、
-   `Mailbox.cleanUp` と `processAllSystemMessages` の残りの処理は、残った
-   system message を 1 つずつ `dlm.systemEnqueue(actor.self, msg)` する。
-   順序は、後片付けでは system message が先で、通常のメッセージの後片付け
-   （`messageQueue.cleanUp`）があとである。
+   `Mailbox.cleanUp`（354〜370 行目）と `processAllSystemMessages`（303〜345 行目）の
+   残りは、残った system message を 1 つずつ `dlm.systemEnqueue(actor.self, msg)` する。
 3. dead letters のハンドルが `DeadLetter` を受けたとき（`ActorRef.scala` の
    `DeadLetterActorRef.!` と `EmptyLocalActorRef.specialHandle`）。
    ハンドルは、中身で特別扱いを先に試し、当たらなければ `DeadLetter` を
@@ -297,6 +356,24 @@ dead letter mailbox へ振り替える（§5.1）。振り替えの責任が 1 �
      包みの送り手（= 閉じた持ち主）、宛先（処理した参照）は dead letters のハンドルである。
    - それ以外：包みの `DeadLetter` をそのまま公開する。送り手と宛先はどちらも
      閉じた持ち主である。
+
+#### 停止の後片付けの順序（原典で確かめた）
+
+| 順 | 何が dead letters へ流れるか | 原典 | 移植（この設計） |
+|:---:|:---|:---|:---|
+| 1 | `postStop` の `unstashAll` があふれさせた分（bounded のときだけ） | `UnrestrictedStash.postStop`（99〜101 行目）→ `unstashAll`（226、244〜252 行目）→ `enqueueFirst`（270〜276 行目）。bounded であふれた分は `postStop` の中で断られ、`cleanUp` より先に dead letters へ行く（`Mailbox.enqueueFirst` 620 行目） | `discard_stash_overflow` の victims を `stash_to_dead_letters` の先頭で流す（今のまま）。段 3 のメールボックスは unbounded なので 0 件 |
+| 2 | メールボックスの system queue に残った system message | `Mailbox.cleanUp`（354〜368 行目）: `systemDrain` → `dlm.systemEnqueue`。`Terminate` を処理した回に新しく届いたものもここ | `queued_to_dead_letters` が `close()` の `system` を `route_closed_system_message` へ渡す。`Resume` は捨てる（§5.4） |
+| 3 | stash（`postStop` がキューの先頭へ戻した分） | `messageQueue.cleanUp`（367〜369 行目）。`unstashAll` は `enqueueFirst` を後ろから繰り返すので、stash はキューの先頭にあり、キューの封筒より先 | `stash_to_dead_letters` を system のあと、封筒の前に呼ぶ |
+| 4 | キューの通常の封筒 | 同じ `messageQueue.cleanUp` | `close()` が返した `envelopes` |
+| 5 | `Terminate` と同じ `systemDrain` で取り出した残りの system message（段 4） | `processAllSystemMessages`（303〜345 行目）。`Terminate` の処理で閉じたあと、手元に残った `messageList` を 318〜345 行目で `dlm.systemEnqueue` するので、stash と封筒より後 | 移植は 1 通ずつ取り出す（`mailbox.rs` 405〜413 行目）ので「同じ回に取り出した残り」は無く、閉じたときにキューに残った分として 2 で先に流れる。段 3 では `Resume` だけで、捨てるので差は出ない。段 4 で差が出るなら、`process_all_system_messages` を原典と同じバッチの形にして、閉じたあとの残りをキューの後片付けのあとに流す（#255 の段 4c の完了条件に足す） |
+| 6 | `stop_all`（システム全体の終了） | ― | 捨てる（決定 3、§5.5） |
+
+確かめたこと：stash は `UnrestrictedStash.postStop` の `unstashAll` でキューの先頭へ
+戻り、`Mailbox.cleanUp` は system を先に、そのあと `messageQueue.cleanUp` で stash と
+封筒を流す。順序は「system message → stash → キューの通常の封筒」でよい。
+`postStop` が `detach` より先であることは `FaultHandling.finishTerminate`（247〜275 行目、
+254 行目の `aroundPostStop`、261 行目の `dispatcher.detach`）で確かめた。`detach` の
+`unregister` が `mailbox.cleanUp()` を呼ぶ（`AbstractDispatcher.scala` 276〜284 行目）。
 
 ### 5.2 抑制の対象かどうか
 
@@ -314,7 +391,9 @@ system message の種類のうち、`DeadLetterSuppression` を実装するの�
 2026-11-27 に、抑制の対象とすることを決めた（§6 の決定 5）。根拠は、原典で子の終了を
 伝える `DeathWatchNotification` が抑制の対象であることに合わせるためである。
 したがって移植では、抑制の対象の system message は `Terminate`、
-`DeathWatchNotification`、`ChildTerminated` の 3 つになる。
+`DeathWatchNotification`、`ChildTerminated` の 3 つになる。origin/main を取り込んだ
+基点の列挙にあるのは `Create`、`Resume`、`Terminate`、`ChildTerminated` の 4 つだけであり、
+`DeathWatchNotification` は段 4c（#255）で足す。決定 5 はそのときも変わらない。
 
 抑制された letter は、dead letter のログには数えられないが、`AllDeadLetters` の
 購読者は `SuppressedDeadLetter` として受け取る。移植の `DeadLetterListener` と
@@ -325,19 +404,26 @@ system message の種類のうち、`DeadLetterSuppression` を実装するの�
 
 ### 5.3 対応表：原典の種類と移植の種類
 
-| 原典の system message | 抑制 | dead letter mailbox へ行ったあとの形 | 移植の `SystemMessage` | 移植での扱い（この設計） |
-|:---|:---:|:---|:---|:---|
-| `Create` | 対象でない | `DeadLetter(Create, receiver, receiver)` を公開 | `Create` | 同じ |
-| `Recreate` | 対象でない | `DeadLetter(Recreate, receiver, receiver)` を公開 | `Recreate { cause }` | 同じ |
-| `Suspend` | 対象でない | `DeadLetter(Suspend, receiver, receiver)` を公開 | `Suspend` | 同じ |
-| `Resume` | 対象でない | `DeadLetter(Resume, receiver, receiver)` を公開 | `Resume` | 同じ。今は黙って捨てている対象 |
-| `Terminate` | 対象 | `SuppressedDeadLetter(Terminate, receiver, deadLetters)` を公開 | `Terminate` | 同じ |
-| `Supervise` | 対象でない | `DeadLetter(Supervise, receiver, receiver)` を公開 | `Supervise { child, is_async }` | 同じ |
-| `Watch` | 対象でない（特別扱い） | 公開しない。監視者へ `DeathWatchNotification(watchee, false, false)` を返す | `Watch { watchee, watcher }` | §5.4 の 2。移植の監視の通知は通常の `Terminated` で、今はその形で返す（§6 の決定 4） |
-| `Unwatch` | 対象でない（特別扱い） | 公開しない。黙って捨てる（`specialHandle`、671 行目） | `Unwatch { watchee, watcher }` | 公開しない。`DeadLetter` としても `SuppressedDeadLetter` としても出さず、黙って捨てる |
-| `Failed` | 対象でない | `DeadLetter(Failed, receiver, receiver)` を公開 | `Failed { child, cause }` | 同じ |
-| `DeathWatchNotification` | 対象 | `SuppressedDeadLetter(DeathWatchNotification, receiver, deadLetters)` を公開 | `DeathWatchNotification { actor, existence_confirmed, address_terminated }` | 同じ |
-| （原典に無い） | ― | ― | `ChildTerminated { child }` | 抑制の対象とする（元帥の決定、2026-11-27。§6 の決定 5）。`SuppressedDeadLetter(ChildTerminated, receiver, deadLetters)` として公開する |
+| 原典の system message | 抑制 | dead letter mailbox へ行ったあとの形 | 移植の `SystemMessage` | 移植での扱い（この設計） | リスナーが書き出す文面 |
+|:---|:---:|:---|:---|:---|:---|
+| `Create` | 対象でない | `DeadLetter(Create, receiver, receiver)` を公開 | `Create`（今ある） | 同じ | `[fraktor_actor::kernel::dispatch::system_message::Create]` |
+| `Recreate` | 対象でない | `DeadLetter(Recreate, receiver, receiver)` を公開 | `Recreate { cause }`（まだ無い。それを送る段で足す） | 同じ | `[fraktor_actor::kernel::dispatch::system_message::Recreate]` |
+| `Suspend` | 対象でない | `DeadLetter(Suspend, receiver, receiver)` を公開 | `Suspend`（まだ無い） | 同じ | `[fraktor_actor::kernel::dispatch::system_message::Suspend]` |
+| `Resume` | 対象でない | 原典にメッセージとしての対応なし。`finishRecreate` の `resumeNonRecursive()`（`FaultHandling.scala` 278〜284 行目、283 行目）がメッセージではない直接の呼び出しで再開する | `Resume`（今ある） | 閉じたメールボックスでは黙って捨てる。原典の直接の再開に当たり、dead letter にするメッセージが無い（§5.4） | 出さない（捨てる） |
+| `Terminate` | 対象 | `SuppressedDeadLetter(Terminate, receiver, deadLetters)` を公開 | `Terminate`（今ある） | 同じ | 出さない（`SuppressedDeadLetter` は数えない） |
+| `Supervise` | 対象でない | `DeadLetter(Supervise, receiver, receiver)` を公開 | `Supervise { child, is_async }`（まだ無い） | 同じ | `[fraktor_actor::kernel::dispatch::system_message::Supervise]` |
+| `Watch` | 対象でない（特別扱い） | 公開しない。監視者へ `DeathWatchNotification(watchee, false, false)` を返す | `Watch { watchee, watcher }`（まだ無い。段 4c） | §5.4 の 2。段 4c で `Watch` が届くようになったら、まずは通常の `Terminated` で返す（§6 の決定 4） | 出さない |
+| `Unwatch` | 対象でない（特別扱い） | 公開しない。黙って捨てる（`specialHandle`、671 行目） | `Unwatch { watchee, watcher }`（まだ無い。段 4c） | 公開しない。`DeadLetter` としても `SuppressedDeadLetter` としても出さず、黙って捨てる | 出さない |
+| `Failed` | 対象でない | `DeadLetter(Failed, receiver, receiver)` を公開 | `Failed { child, cause }`（まだ無い） | 同じ | `[fraktor_actor::kernel::dispatch::system_message::Failed]` |
+| `DeathWatchNotification` | 対象 | `SuppressedDeadLetter(DeathWatchNotification, receiver, deadLetters)` を公開 | `DeathWatchNotification { actor, existence_confirmed, address_terminated }`（まだ無い。段 4c） | 段 4c で同じにする。今は、閉じた監視者への `watch_with` のカスタム通知が `enqueue_termination` の閉じた分岐で `DeadLetter(custom, watcher, watcher)` として公開され、ログに 1 行出る（原典では出ない）。#297 で、閉じた監視者への通知はカスタムの有無にかかわらず `Message::new(notice)`（`Terminated`）を `route_undeliverable` へ渡す形に直す。`Terminated` は抑制の対象なので `SuppressedDeadLetter` になり、ログは出ない。カスタム文は捨てる（原典では DWN が届かないのでカスタム文は作られない）。段 4c で DWN を送るようになったら、原典どおり `DWN` を抑制として流す | 出さない |
+| （原典に無い） | ― | ― | `ChildTerminated { child }`（今ある） | 抑制の対象とする（元帥の決定、2026-11-27。§6 の決定 5）。`SuppressedDeadLetter(ChildTerminated, receiver, deadLetters)` として公開する | 出さない |
+
+リスナーの文面の列は、`DeadLetterListener` の `Message [<名前>] …` の `<名前>` の部分である
+（`DeadLetter` として公開された system message だけ）。原典は `unwrapped.getClass.getName`
+で種類ごとのクラス名を出す（`DeadLetterListener.scala` 139〜140 行目）。移植は今
+`Message::payload_type_name()`（`core::any::type_name::<T>()`）を出すので、列挙をそのまま
+包むとどの種類も `SystemMessage` と出る（レビュー高 3）。`SystemMessage` に種類ごとの
+`class_name` を持たせ、リスナーがそれを読む形にする（§5.4）。
 
 原典の `NoMessage` は閉じた印そのものであり、system message として送られることは
 ない。移植の列挙に対応は無いので、扱いは要らない。
@@ -355,26 +441,36 @@ system message の種類のうち、`DeadLetterSuppression` を実装するの�
      message: SystemMessage,
      recipient: ActorRef,
      dead_letters: &ActorRef,
-   ) -> Option<SystemMessage>
+   )
    ```
 
-   - `Watch` と `Unwatch` は、この関数は扱わず、そのまま `Some(message)` で返す。
-     答え方に実行器が要るためである（2 を見る）。
-   - `Terminate`、`DeathWatchNotification`、`ChildTerminated` は、抑制として流す。
-     `ChildTerminated` は原典に対応が無く、元帥の決定で抑制に加わった（§5.2）。
+   - `Terminate` と `ChildTerminated` は、抑制として流す。`ChildTerminated` は原典に
+     対応が無く、元帥の決定で抑制に加わった（§5.2）。段 4c で
+     `DeathWatchNotification` が入ったら同じ腕に足す。
      `SuppressedDeadLetter::from_message(Message::new(message), recipient.clone(), dead_letters.clone())`
      を公開する。送り手は閉じた持ち主、処理した参照は dead letters のハンドルであり、
-     原典の `publishSupressedDeadLetter` と移植の既存の抑制の約束
-     （`route_undeliverable` の抑制分岐）の両方に合う。
+     原典の `DeadLetterActorRef.!` の `SuppressedDeadLetter` の公開（`ActorRef.scala` 695 行目）
+     と、移植の既存の抑制の約束（`route_undeliverable` の抑制分岐）の両方に合う。
    - それ以外は `DeadLetter::from_message(Message::new(message), recipient.clone(), recipient)`
      を公開する。送り手と宛先はどちらも閉じた持ち主であり、原典の
      `DeadLetter(handle, receiver, receiver)` と同じである。
-   - 戻りは `None`（流した）にする。公開は §3 のトランポリンを通るので、
-     system message の振り替えが購読者のハンドラから再帰しても入れ子にならない。
+   - `Watch`、`Unwatch`、`Resume` はこの関数へ来ない（2 が先に分ける）。
+   - 公開は §3 のトランポリンを通るので、system message の振り替えが購読者のハンドラから
+     再帰しても入れ子にならない。
    - `SystemMessage` を `Message` に包めることが前提である。列挙は `Clone + Debug` で、
-     中身は `ActorRef` と `FailureKind` であり、`Message::new` の
-     `Any + Send + Sync` を満たす見込みである。実装の段で、列挙に `Send + Sync` の
-     表明が要るかどうかをコンパイラで確かめる。
+     中身は `ActorRef` である（`Recreate` と `Failed` が入ると `FailureKind` も）。
+     `Message::new` の `Any + Send + Sync` を満たす見込みである。実装の段で、列挙に
+     `Send + Sync` の表明が要るかどうかをコンパイラで確かめる。
+
+   **リスナーの文面（高 3）。** `SystemMessage` に
+   `pub(crate) fn class_name(&self) -> &'static str` を足し、種類ごとに
+   `"fraktor_actor::kernel::dispatch::system_message::<種類>"` を返す。
+   `DeadLetterListener` の `unwrapped` は、積み荷が `SystemMessage` なら
+   `payload_type_name()` ではなく `class_name()` を出す。列挙をそのまま包む今の形では、
+   どの種類も `...::system_message::SystemMessage` と出て種類が消える（レビュー高 3）。
+   種類ごとに別の型を作って包む案は採らない。`DeadLetter` の中身を `SystemMessage` として
+   取り出すテストと、`Message` の積み荷をそのまま比べる既存の見方が壊れるためである。
+   名前の解決だけを種類に合わせる。
 
 2. `Executor` に、閉じたメールボックスへの system message の入口を 1 つ作る。
 
@@ -382,33 +478,47 @@ system message の種類のうち、`DeadLetterSuppression` を実装するの�
    fn route_closed_system_message(&mut self, message: SystemMessage, recipient: ActorRef)
    ```
 
-   - `Watch { watchee, watcher }` は、原典の特別扱いに当たる。移植では監視の答えは
-     通常の `Terminated` の通知であり、既存の `enqueue_termination` の道
-     （宛先が止まっていれば dead letters へ流す分岐を含む）で、監視者へ
-     `existence_confirmed = false`、`address_terminated = false` の通知を送る。
-     dead letters 自身への watch は答えない（原典の条件）。
-   - `Unwatch` は、`DeadLetter` として公開せず、黙って捨てる。原典の
-     `specialHandle`（671 行目）どおりで、意図した無視である。§5.4 の 1 で
-     `Some(message)` として返ってきたものを、ここで捨てて終わる。
-   - それ以外は 1 の `route_system_undeliverable` へ渡す。
+   - `Resume` は、黙って捨てて終わる。原典の `Resume` の system message は
+     `SupervisorStrategy.resumeChild` と、再開した親が子を再開する `faultResume` の
+     道だけで、再起動のあとの再開は `FaultHandling.finishRecreate` の
+     `resumeNonRecursive()`（`FaultHandling.scala` 278〜284 行目、283 行目）という
+     メッセージではない直接の呼び出しである。移植の `Resume` はこの直接の呼び出しに
+     当たるので、dead letter にするメッセージが原典に無い。この理由と行をコードの
+     コメントに書く（§5.3 の `Resume` の行）。
+   - `Terminate`、`ChildTerminated`、それ以外の公開する種類は 1 へ渡す。
+   - `Watch`、`Unwatch`、`DeathWatchNotification` は、段 4c（#255）で列挙に足すときに
+     この関数へ腕を足す。`Watch` は決定 4 の形（`enqueue_termination` の道で
+     `Terminated` を返し、dead letters 自身への watch には答えない）、`Unwatch` は
+     原典の `specialHandle`（671 行目）どおり黙って捨てる、`DeathWatchNotification` は
+     1 の抑制の腕へ足す。今の列挙にはこれらの型が無いので、段 3 では通らない。
 
    呼び出し側の直しは 2 か所である。
-   - `resume_if_open`：先確かめ（`is_closed` の読み）を消し、`system_send` の
+   - `send_system`（572〜576 行目）：`.ok()` をやめ、`Mailbox::system_send` の
      `Err(message)` を `route_closed_system_message(message, target.clone())` へ渡す。
-     `let _ =` は消える。先確かめを消す理由は、競合で閉じる場合に先確かめは
-     何も守らないためであり、振り替えが `Err` の側に集まれば競合でも漏れない。
-   - `queued_to_dead_letters`：`drop(system)` を消し、`close` が返した system message を
-     順に `route_closed_system_message` へ渡す。順序は原典の後片付けに合わせ、
-     system message を先に流し、通常の封筒をあとに流す。今の実装は通常の封筒が先
-     なので、この点は順序が変わる。system message が空の場合は何も変わらない。
-     段 3 の今は、残る system message は多くて `Resume` であり、その場合は
-     `DeadLetter(Resume, target, target)` が 1 件増える。黙って捨てることに頼る
-     既存のテストの洗い出しは §7.4 に置く。
+     引数を取るために `&self` から `&mut self` にする（呼び出し側はすべて `&mut self` の
+     中にある。`create_now`、`stop`、`fail_supervisor`、`restart_cell`）。`Resume` を
+     捨てる判断は入口の 1 か所に置く。
+   - `queued_to_dead_letters`（1979 行目）：`drop(system)` を消し、`close` が返した
+     system message を順に `route_closed_system_message` へ渡す。そのあとに
+     `stash_to_dead_letters`、そのあとに `close` が返した封筒を流す。今は
+     `finish_terminate` が `stash_to_dead_letters` を先に呼び、`queued_to_dead_letters` が
+     封筒を流すので、`finish_terminate` の 1743〜1744 行目の 2 呼びを
+     `queued_to_dead_letters` 1 つにまとめ、順序を「system message → stash → 封筒」に
+     する（§5.1 の表）。`Mailbox::close` は cell も `entry.stash` も触らないので、
+     close のあとで stash を読める。
+   - 段 3 で残る system message は `Resume`（捨てる）と、停止に追い越された `Create`
+     （`DeadLetter(Create)` として公開され、ログに 1 行出る）である。`Terminate` と
+     `ChildTerminated` は抑制で、ログには出ない。件数が増えるテストの洗い出しは §7.4 に
+     置く。
 
    `Mailbox` 側は変えない。`system_enqueue` が `Err` で返す今の形は、メールボックスが
    dead letters の規則を持たないための切り分けであり、振り替えの責任は実行器と
    `DeadLettersShared` に集める。原典と作りは違うが、観察（何が、どの形で、
    どの順序で公開されるか）は §5.3 の表どおりにそろえる。
+
+   段 3 では、原典にメッセージとして対応のある「黙って捨てる」は 0 件になる
+   （`Resume` は原典ではメッセージではない）。#297 は、それでも §5.3 の対応表と、
+   `Resume` を捨てる理由のコメントで閉じる。ケースを数から外す扱いはしない。
 
 ### 5.5 範囲の外：`stop_all` の破棄
 
@@ -428,37 +538,55 @@ system message の種類のうち、`DeadLetterSuppression` を実装するの�
 1. トランポリンを採る。候補 1（§3.1）のとおり、入れ子の letter は先入れ先出しで
    流し、購読者の集合は流す時点で決まる。順序が深さ優先から公開単位の
    先入れ先出しへ変わることと、購読者の集合の決まる時点が遅れることは、
-   作りのずれの解消として認められた。
+   作りのずれの解消として認められた。印と待ち行列は kernel のポート
+   `DeadLetterTrampoline` が持ち、std の adaptor がスレッドごとの実装を、kernel の
+   既定がスレッドの無い環境向けの実装を持つ（§3.1）。
 2. 深さの上限は置かない。原典に上限は無く、上限を超えた letter を失う形は採らない。
 3. `stop_all` のあとに残ったものは捨てる。システム全体の終了で閉じた
    メールボックスに残った system message と通常の封筒は、dead letters へ
    流さず、今のとおり捨てる（§5.5）。
-4. 閉じたメールボックスへの `Watch` は、今は `Terminated` で返す。答えは
-   既存の `enqueue_termination` の道で送る `Terminated`（存在の確認なし、
-   住所の終了なし）である。system message の `DeathWatchNotification` で返す形は
-   今回は採らない。その形は、issue #255（段 4c）の完了条件に足された。
-   段 4c で system message の配送が入ったあとに、そちらへ切り替える。
+4. 移植の `SystemMessage` に `Watch` が入る段 4c では、閉じたメールボックスへの
+   `Watch` は `Terminated` で返す。答えは既存の `enqueue_termination` の道で送る
+   `Terminated`（存在の確認なし、住所の終了なし）である。system message の
+   `DeathWatchNotification` で返す形は今回は採らない。その形は、issue #255（段 4c）の
+   完了条件に足された。段 4c で system message の配送が入ったあとに、そちらへ
+   切り替える。origin/main を取り込んだ基点の列挙に `Watch` はまだ無いので、段 3 では
+   この答えを返す道は通らない。
 5. `ChildTerminated` は抑制の対象にする。`DeadLetter` ではなく
    `SuppressedDeadLetter` として公開する。設計の最初の案（抑制の対象でない
    `DeadLetter`）から元帥が変更した。根拠は、原典で子の終了を伝える
    `DeathWatchNotification` が抑制の対象であることに合わせるためである（§5.2）。
-6. system message を通常の封筒より先に流す。`queued_to_dead_letters` の順序は、
-   原典の後片付けの順序に合わせ、system message が先、通常の封筒があとになる。
+6. 停止の後片付けは「system message → stash → キューの通常の封筒」の順に流す。
+   `queued_to_dead_letters` は、`Mailbox::close` が返した system message を先に、
+   そのあとに stash、そのあとに封筒を流す（§5.1 の表）。原典では `postStop` の
+   `unstashAll` が stash をキューの先頭へ戻し、`Mailbox.cleanUp` が system を先に、
+   `messageQueue.cleanUp` をあとに流すので、この順になる。`Resume` は原典に
+   メッセージとしての対応が無いので捨てる（§5.4）。したがって段 3 の後片付けで
+   system message の dead letter は増えない（停止に追い越された `Create` があれば、
+   それは 1 件増える）。`Terminate` と同じ `systemDrain` で取り出した残りの system
+   message をキューの後片付けのあとに流す原典の順序（`Mailbox.scala` 318〜345 行目）は、
+   段 4c で `process_all_system_messages` をバッチの形にするときに合わせる（§5.1 の表）。
 
 この節に無かった扱いとして、閉じたメールボックスへの `Unwatch` も元帥が
 確かめた。原典どおり、`DeadLetter` として公開せず黙って捨てる（§5.1 の 3、
-§5.3 の表）。この扱いは §7 のテストに要る面に入っている。
+§5.3 の表）。段 4c で `Unwatch` が列挙に入ったときに、§5.4 の 2 の腕として足す。
 
 ## 7. テストに要る面
 
 テストの担当（Opus）は、この節の面だけを使って red のテストを先に書く。
-新しい公開 API は作らない。面の追加は §5.4 の 2 つだけで、どちらも `pub(crate)` である。
+テストのために新しい公開 API は作らない。面の追加は §5.4 の 2 つだけで、どちらも
+`pub(crate)` である。実装の側では §3.1 のポート `DeadLetterTrampoline` と
+`ActorSystem::with_dead_letter_trampoline` が増えるが、これは
+`with_failure_catcher` と同じ組立の面であり、意味論の約束は増やさない。
 
 ### 7.1 #296 中 1 のテスト（公開面だけで書ける）
 
-置き場所は `crates/fraktor-actor/tests/dead_letters_on_sender_thread_test.rs` への追加か、
-新しい `crates/fraktor-actor/tests/dead_letters_trampoline_test.rs` である。
-使う面は既存のものだけである（`ActorSystem`、`function_ref`、イベントストリームへの
+置き場所は新しい `crates/fraktor-actor/tests/dead_letters_trampoline_test.rs` に限る。
+既存の `dead_letters_on_sender_thread_test.rs` へ足さない。今のコードでは送り直し
+1000 回が `fatal runtime error: stack overflow, aborting`（SIGABRT）でプロセスごと
+落ちるので、同じファイルの既存のテストも結果を出せなくなる（レビュー中 5）。
+red の間は `cargo test --test dead_letters_trampoline_test` のようにこのファイルだけを
+回す。使う面は既存のものだけである（`ActorSystem`、`function_ref`、イベントストリームへの
 購読、`ActorRef::tell`）。
 
 - 購読者のハンドラは、受け取った `DeadLetter` の積み荷の番号を見て、1000 未満なら
@@ -471,25 +599,44 @@ system message の種類のうち、`DeadLetterSuppression` を実装するの�
   `tell` が返った時点で 1001 件がそろっていること（`run_until_idle` を挟まない）。
 - 番号の積み荷は、文字列ではなく数（`u32`）にする。文字列の積み荷は抑制の判定で
   値を見られる場合があり、テストの対象がぶれるためである。
+- 深さの境目を環境によらず決めるために、スタックの大きさを指定した
+  `std::thread::Builder::new().stack_size(...)` のスレッドで送り直しを回す。
+  red ではそのスレッドのスタックがあふれてプロセスが落ちるが、テストのファイルを
+  分けてあるので、他のテストのバイナリは巻き込まない。
 
 ### 7.2 #297 のテスト（カーネルの単体テストが主）
 
-`SystemMessage` は `pub(crate)` なので、統合テストからは組み立てられない。
-red のテストの置き場所はカーネルの単体テストである。
+`SystemMessage` は origin/main を取り込んだ基点では `pub(crate)` である
+（`dispatch.rs` の 69 行目）。レビューをした `a2eb669` では `pub` だったが、#279 の
+`661af21` が `pub(crate)` に戻した。統合テストからは組み立てられないので、red の
+テストはカーネルの単体テストに置く。
 
-- `DeadLettersShared::route_system_undeliverable` の単体テスト
-  （`kernel/actor/dead_letters_shared.rs` の隣のテストファイル）：種類ごとに、
-  公開されるイベントの種類（`DeadLetter` か `SuppressedDeadLetter` か、公開されないか）、
-  積み荷のバリアント、送り手と宛先を確かめる。使う面は §5.4 の 1 の関数と、
-  既存のバスの組み立て（既存の dead letters の単体テストと同じ組み立て）である。
-- `Executor::route_closed_system_message` と `resume_if_open` の単体テスト
-  （`kernel/executor/executor_value_test.rs`、既存の `record_dead_letters` の
-  組み立てを使う）：閉じたメールボックスへの `Resume` が
-  `DeadLetter(Resume, target, target)` として記録されること。停止時に残った
-  system message が `queued_to_dead_letters` から流れること。`Watch` が監視者への
-  通知になり、公開されないこと。`Unwatch` が、`DeadLetter` としても
-  `SuppressedDeadLetter` としても公開されず、dead letters の記録が空のままであること
-  （黙って捨てる。原典の `specialHandle`、671 行目）。
+- `Executor::route_closed_system_message` と `send_system`/`queued_to_dead_letters` の
+  テスト（`kernel/executor/executor_value_test.rs`）：既存の `death_watch_executor` と
+  `record_dead_letters` の組み立てを使う。ただし `record_dead_letters` は積み荷を
+  `&'static str` として読むので、system message 用に、`DeadLetter` の中身を
+  `SystemMessage` として読む記録器を同じファイルに足す。確かめることは、閉じた
+  メールボックスへの `Resume` が捨てられて記録が空のままであること、`Create` が
+  `DeadLetter(Create, target, target)` として記録されること、`Terminate` と
+  `ChildTerminated` が `SuppressedDeadLetter` として記録されること、停止時に残った
+  system message が `queued_to_dead_letters` から「system → stash → 封筒」の順で
+  流れることである。
+- `DeadLettersShared::route_system_undeliverable` のテスト：専用のテストファイルは
+  今は無い（`kernel/actor/` に `dead_letters_shared_test.rs` は無い）。新しく
+  `#[cfg(test)] #[path = "dead_letters_shared_test.rs"] mod tests;` を
+  `dead_letters_shared.rs` に足し、`EventStreamBus::new()` を作って
+  `shared.set_bus(bus.downgrade())` し、`EventClass::any()` に記録用の関数参照を
+  購読させて、`route_system_undeliverable` が公開するイベントの型と積み荷を見る。
+  関数参照は `Executor::function_ref` で作れるので、実行器を 1 つ組み立てて使う。
+- リスナーの文面（高 3）のテスト：`kernel/event/` にも `dead_letter_listener` の
+  単体テストは無い。`dead_letter_listener.rs` に
+  `#[cfg(test)] #[path = "dead_letter_listener_test.rs"] mod tests;` を足し、
+  `DeadLetterListener::new` と `on_event` に
+  `DeadLetter(Message::new(SystemMessage::Create))` を渡して、返る行が
+  `[fraktor_actor::kernel::dispatch::system_message::Create]` を含むことを確かめる。
+  `SystemMessage` は `pub(crate)` なので、ここでしか作れない。
+- `Watch` と `Unwatch` は段 3 の列挙に無いので、テストも段 4c で足す。決定 4 の答えは
+  そのとき統合テストで確かめる。
 - 統合テストで書けるのは、`Resume` の競合の形ではなく、停止したアクターの
   後片付けで system message が残る形が公開面から作れる場合だけである。
   作れない場合は、単体テストで足りる理由をテストファイルの冒頭に書く
@@ -519,8 +666,10 @@ bounded のメールボックスを持つアクターを作れない。この経
    確かめているテストをすべて挙げる（`DeadLetter` と `SuppressedDeadLetter` の
    購読、dead letter のログの記録の両方）。
 2. そのうち、失敗と監督の流れ（suspend と resume を含む）か、アクターの停止の
-   後片付けを通るテストを印する。§5.4 のあとでは、`Resume` の dead letter が
-   増える場合と、停止時に残った system message の分だけ件数が増える場合がある。
+   後片付けを通るテストを印する。§5.4 のあとでは、`Resume` は捨てるので増えない。
+   件数が動きうるのは、停止に追い越された `Create` の `DeadLetter` が増える場合と、
+   `watch_with` の閉じた監視者への通知が `DeadLetter(custom)` から
+   `SuppressedDeadLetter` に変わる場合である。
 3. 件数が増えるテストは、増える分が §5.3 の表の形と合うかを見て、合えば
    期待値を直し、合わなければ実装の側の漏れとして扱う。期待値を黙って
    合わせる直しはしない。
@@ -531,10 +680,14 @@ bounded のメールボックスを持つアクターを作れない。この経
    system message、§4.2 の弱い確かめの強化を含む）。
 2. §6 の元帥の決定（2026-11-27）は、この文書へ反映済みである。実装は
    その決定どおりに進める。決定 5（`ChildTerminated` の抑制）と決定 4
-   （`Watch` への答えは今は `Terminated`、system message の形は #255 の
+   （`Watch` への答えは段 4c で `Terminated`、system message の形は #255 の
    段 4c の完了条件）は、テストと実装の両方に効くので、先に確かめる。
-3. 実装は、トランポリン、予備の道の削除と `deliver` の統一、system message の
-   振り替え、rustdoc と経緯のコメントの直し、二重持ちの解消の順に行う。
+3. 実装は、トランポリン（kernel のポート、adaptor のスレッドごとの実装、
+   `ActorSystem` の入口）、予備の道の削除と `deliver` の統一、system message の
+   振り替え（`send_system` と `queued_to_dead_letters`、後片付けの順序）、
+   `SystemMessage::class_name` とリスナーの文面、rustdoc と経緯のコメントの直しの
+   順に行う。二重持ちの解消、取り出しの集約、要らない clone、経緯のコメントは
+   origin/main の #305（`9db2732`）で済んでいる。
    必須 CI が緑であることを完了の条件とする（issue #296 と #297 の完了の条件）。
 
 ## 9. 原典の参照
@@ -542,12 +695,107 @@ bounded のメールボックスを持つアクターを作れない。この経
 - `dispatch/Mailboxes.scala`：dead letter mailbox の定義（`systemEnqueue` が
   `deadLetters ! DeadLetter(handle, receiver, receiver)`、`enqueue` が
   `onDeadLetterMailboxEnqueue` で、`DeadLetter` の積み荷は落とす）。
-- `dispatch/Mailbox.scala`：`systemEnqueue` が閉じた状態で dead letter mailbox へ
-  振り替えること、`cleanUp` と `processAllSystemMessages` の残りが
-  `dlm.systemEnqueue` で流れること。
+- `dispatch/Mailbox.scala`：`systemEnqueue`（500〜510 行目）が閉じた状態で dead letter
+  mailbox へ振り替えること、`cleanUp`（354〜370 行目）が system を先に
+  `messageQueue.cleanUp` をあとに流すこと、`processAllSystemMessages`（303〜345 行目）の
+  残りが `dlm.systemEnqueue` で流れること。
+- `actor/Stash.scala`：`UnrestrictedStash.postStop`（99〜101 行目）、`unstashAll`
+  （226、244〜252 行目）、`enqueueFirst`（270〜276 行目）が stash をキューの先頭へ
+  戻すこと。
+- `actor/dungeon/FaultHandling.scala`：`finishRecreate`（278〜284 行目、283 行目の
+  `resumeNonRecursive()`）と `finishTerminate`（247〜275 行目、254 行目の
+  `aroundPostStop`、261 行目の `dispatcher.detach`）。
+- `dispatch/AbstractDispatcher.scala`：`unregister`（276〜284 行目）が
+  `mailbox.cleanUp()` を呼ぶこと。
 - `actor/ActorRef.scala`：`DeadLetter`、`SuppressedDeadLetter`、`DeadLetterSuppression` の
   定義と、`DeadLetterActorRef.!` と `EmptyLocalActorRef.specialHandle` の特別扱い
   （`Watch` への答え、`Unwatch` の無視、抑制の公開）。
 - `dispatch/sysmsg/SystemMessage.scala`：system message の種類と、`Terminate` と
   `DeathWatchNotification` だけが `DeadLetterSuppression` を実装すること。
-- `event/DeadLetterListener.scala`：抑制された letter がログに数えられないこと。
+- `event/DeadLetterListener.scala`：`logDeadLetter` の `unwrapped.getClass.getName`
+  （139〜140 行目）と、抑制された letter がログに数えられないこと。
+
+## 10. 変更の記録（2026-11-27 の改訂）
+
+独立レビュー（`pr298-design-review.md`）の指摘と、元帥の決め直しを受けて変えた点を、
+指摘ごとに書く。採らなかったものは理由も書く。ここは変更の記録であり、実装の手順では
+ない（手順は §8）。
+
+### 元帥の決め直し
+
+- 高 1（`Resume`）：移植の `Resume` は原典の `finishRecreate` の `resumeNonRecursive()`
+  （`FaultHandling.scala` 278〜284 行目、283 行目）に当たる、メッセージではない直接の
+  再開である。閉じたメールボックスでは今のとおり捨て、理由と原典の行をコードの
+  コメントに書く。§5.3 の `Resume` の行は「原典にメッセージとしての対応なし」に直した。
+  §5.4 の呼び出し側は `resume_if_open` ではなく、origin/main の `send_system`
+  （572〜576 行目）を直す形にした。決定 6 も、`Resume` は捨てるので段 3 では
+  system message の dead letter が増えない、と書き直した。
+- 高 4（後片付けの順序）：§5.1 に「system message → stash → キューの通常の封筒」の
+  表を足し、`Terminate` と同じ `systemDrain` で取り出した残りの system message が
+  キューの後片付けより後に流れる原典の順序（`Mailbox.scala` 318〜345 行目）も入れた。
+  `StashSupport` は `UnrestrictedStash.postStop`（99〜101 行目）→ `unstashAll`
+  （226、244〜252 行目）→ `enqueueFirst`（270〜276 行目）で stash をキューの先頭へ
+  戻すことを引き、レビューの読み（stash はキューの封筒より先）が正しいと確かめた。
+  `postStop` が `detach` → `cleanUp` より先であることも `FaultHandling.finishTerminate`
+  （247〜275 行目）と `AbstractDispatcher.unregister`（276〜284 行目）で確かめた。
+
+### 設計の担当が決めたもの
+
+- 高 2（kernel の std）：`#[cfg(feature = "std")]` と `std::thread_local!` を kernel に
+  置く案を捨てた。kernel に `DeadLetterTrampoline` のポートを置き、std の adaptor の
+  `SenderThreadTrampoline` が `thread_local!` で印と待ち行列を持つ。kernel の既定は
+  スレッドの無い環境向けの `SharedTrampoline`（1 つの印と 1 つの待ち行列）で、これも
+  ジョブを積んで反復で流すので、no_std でも #296 のスタックあふれは残らない。
+  `kernel/sync/counts.rs` と `adaptor/ask_driver.rs` を先例に挙げた前の版は取り下げた
+  （前者は `cfg(test)` の抑制つき、後者は adaptor 側である）。抑制コメントは足さない。
+- 高 3（ログの文面）：`SystemMessage::class_name` で種類ごとの名前を返し、リスナーの
+  `unwrapped` がそれを読む形にした。§5.3 に「リスナーが書き出す文面」の列を足した。
+  種類ごとに別の型で包む案は採らない。`DeadLetter` の中身を `SystemMessage` として
+  取り出す見方と、`Message` の積み荷をそのまま比べる既存のテストが壊れるためである。
+- 中 1：§4.2 を issue #296 の実際の項目に直した。issue の「取り出しの 3 か所目」は
+  dead letters のハンドルを `let dead_letters = self.dead_letters.clone();` で取り出して
+  `route_undeliverable` へ渡していた箇所（旧 2462、2483、2995 行目付近）である。
+  前の版が書いた `notify_watchers` の 3 走査は取り違えで、issue の項目ではない。
+  3 か所は origin/main の #305（`9db2732`）で `Executor::route_undeliverable` に
+  集約済みである。
+- 中 2：閉じた監視者への `watch_with` のカスタム通知が `DeadLetter(custom)` として
+  ログに出るずれを、#297 で直すことにした。閉じた監視者への通知は、カスタムの有無に
+  かかわらず `Message::new(notice)`（`Terminated`）を `route_undeliverable` へ渡す。
+  `Terminated` は抑制の対象なので `SuppressedDeadLetter` になり、ログは出ない。
+  カスタム文は捨てる（原典では DWN が届かないのでカスタム文は作られない）。段 4c で
+  DWN を送るようになったら、原典どおり `DWN` を抑制として流す（§5.3 の DWN の行）。
+- 中 3：origin/main を取り込んだ基点の `SystemMessage` には `Watch`、`Unwatch`、
+  `Suspend` などの型が無い（main で段 4a（#253）が送る 4 つだけになっている）。
+  段 3 で届かない分岐を単体テストだけで持つことにはならないので、これらの腕は
+  段 4c（#255）で型と一緒に足す。決定 4 の `Watch` の答えは、そのときに統合テストで
+  確かめる。
+- 中 4：§3.4 の rustdoc から、順序と「`tell` が返る前に購読者が受け取る」という約束を
+  消した。`docs/decisions/pekko-semantics-first.md` が禁じる「狭めた振る舞いを公開 API の
+  文書に書く」に当たるためである。事実（入れ子にならないこと、ハンドラが走るスレッド）
+  だけを書く。
+- 中 5：§7.1 の red は新しい `dead_letters_trampoline_test.rs` に限る。今のコードでは
+  スタックがあふれてプロセスが落ちるので、既存のファイルへ足すとそのファイルの
+  テストも結果を出せない。スタックの大きさを指定したスレッドで回すことも書いた。
+- 低 1：§2.2 を直した。`mailbox_test.rs` は `Mailbox::for_actor` ではなく
+  `Mailbox::new` と `Mailbox::sharing` を使い、どちらも `with_queue` を `Weak::new()` で
+  呼ぶ。`ActorRef::for_mailbox` を呼ぶのは `spawn` だけなので、予備の道を通るテストは
+  今は無い。経路を必須にするときは `with_queue`、`Mailbox::new`、`Mailbox::sharing` も
+  変える対象にした。
+- 低 2：`SystemMessage` はレビューをした `a2eb669` では `pub` だったが、origin/main の
+  #279（`661af21`）が `pub(crate)` に戻した。§7.2 はその前提に直し、隣に単体テストが
+  無いことを認めて、バスと購読者（`EventStreamBus::new`、`set_bus`、`EventClass::any` の
+  記録用の関数参照）とリスナーの組み立てを書いた。
+- 低 3：§5.4 の流れが食い違っていた（1 が `Watch`/`Unwatch` を `Some` で返し、2 がまた
+  分ける）。1 は公開する種類だけを扱い、2 の入口が `Resume` を先に分ける形に直した。
+  `Watch` と `Unwatch` は段 4c で型が入ったときに 2 の腕へ足す。`Option` の戻りは
+  無くした。
+- 低 4：`try_with` で TLS の破棄中を拾い、直接実行へ落ちることを書いた。待ち行列が
+  システムを区別しないため、ハンドラが別のシステムの公開を待つと流れない件は、
+  rustdoc の注意を「どのシステムも駆動しない」に広げ、§3.3 の表に行を足して伝える。
+  システムごとの待ち行列は、入れ子の入口ごとに印の照合が要るので採らない（§3.1）。
+
+### 範囲の外のまま
+
+- レビューの別件（`Kill` が原典では `DeadLetterSuppression` を実装しないのに、移植の
+  `dead_letters_shared.rs` が `"Kill"` を抑制している）は、この設計では触らない。
+  別の issue で確かめる。
