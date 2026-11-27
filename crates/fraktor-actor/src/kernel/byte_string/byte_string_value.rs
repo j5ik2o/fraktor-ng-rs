@@ -33,10 +33,36 @@ mod tests;
 /// an array (`ByteString1`), and a concatenation (`ByteStrings`). This type
 /// covers all three with a list of shared arrays: concatenating shares the
 /// arrays of both operands instead of copying them, as `ByteStrings` does.
+/// One part of a byte string: a range of a shared array.
+///
+/// The range is never empty, and `start + len` never passes the end of
+/// `bytes`.
+#[derive(Clone, Debug)]
+pub(crate) struct ByteChunk {
+  pub(crate) bytes: Arc<[u8]>,
+  pub(crate) start: usize,
+  pub(crate) len: usize,
+}
+
+impl ByteChunk {
+  pub(crate) fn full(bytes: Arc<[u8]>) -> Self {
+    let len = bytes.len();
+    Self { bytes, start: 0, len }
+  }
+
+  pub(crate) fn as_slice(&self) -> &[u8] {
+    &self.bytes[self.start..self.start + self.len]
+  }
+
+  pub(crate) fn is_full(&self) -> bool {
+    self.start == 0 && self.len == self.bytes.len()
+  }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ByteString {
-  // Never holds an empty array.
-  arrays: Vec<Arc<[u8]>>,
+  // Never holds an empty chunk.
+  chunks: Vec<ByteChunk>,
 }
 
 impl ByteString {
@@ -45,7 +71,7 @@ impl ByteString {
   /// Corresponds to Pekko's `ByteString.empty`.
   #[must_use]
   pub fn empty() -> Self {
-    Self { arrays: Vec::new() }
+    Self { chunks: Vec::new() }
   }
 
   /// Creates a byte string from the UTF-8 encoding of `string`.
@@ -75,7 +101,7 @@ impl ByteString {
     if bytes.is_empty() {
       Self::empty()
     } else {
-      Self { arrays: alloc::vec![Arc::from(bytes)] }
+      Self { chunks: alloc::vec![ByteChunk::full(Arc::from(bytes))] }
     }
   }
 
@@ -90,15 +116,51 @@ impl ByteString {
     Self::from_bytes(&bytes)
   }
 
-  // Takes over `arrays` without copying or filtering; the caller passes only
-  // non-empty arrays, so the byte string keeps its invariant.
-  pub(super) fn from_arrays(arrays: Vec<Arc<[u8]>>) -> Self {
-    Self { arrays }
+  // Takes over `chunks` without copying or filtering; the caller passes only
+  // non-empty chunks, so the byte string keeps its invariant.
+  pub(super) fn from_chunks(chunks: Vec<ByteChunk>) -> Self {
+    Self { chunks }
   }
 
-  // The shared arrays, in order. Never holds an empty array.
-  pub(super) fn arrays(&self) -> &[Arc<[u8]>] {
-    &self.arrays
+  // The parts this byte string holds, in order. Never holds an empty part.
+  pub(super) fn arrays(&self) -> &[ByteChunk] {
+    &self.chunks
+  }
+
+  // The bytes from `from` on, for `count` bytes at most, sharing the arrays.
+  fn range(&self, from: usize, count: usize) -> Self {
+    if count == 0 || from >= self.len() {
+      return Self::empty();
+    }
+    let end = from.saturating_add(count).min(self.len());
+    let mut chunks = Vec::new();
+    let mut offset = 0_usize;
+    for chunk in &self.chunks {
+      let low = offset;
+      let high = offset + chunk.len;
+      let (start, stop) = (from.max(low), end.min(high));
+      if start < stop {
+        chunks.push(ByteChunk { bytes: chunk.bytes.clone(), start: chunk.start + (start - low), len: stop - start });
+      }
+      offset = high;
+      if offset >= end {
+        break;
+      }
+    }
+    Self { chunks }
+  }
+
+  fn prefix_len(&self, mut pred: impl FnMut(u8) -> bool) -> usize {
+    let mut count = 0_usize;
+    for chunk in &self.chunks {
+      for &byte in chunk.as_slice() {
+        if !pred(byte) {
+          return count;
+        }
+        count += 1;
+      }
+    }
+    count
   }
 
   /// Creates an empty builder for assembling a byte string from many bytes.
@@ -124,8 +186,20 @@ impl ByteString {
   /// Both operands' arrays are shared, not copied.
   #[must_use]
   pub fn concat(&self, other: &ByteString) -> Self {
-    let arrays = self.arrays.iter().chain(other.arrays.iter()).cloned().collect();
-    Self { arrays }
+    if other.chunks.is_empty() {
+      return self.clone();
+    }
+    if self.chunks.is_empty() {
+      return other.clone();
+    }
+    if let ([left], [right]) = (self.chunks.as_slice(), other.chunks.as_slice()) {
+      if Arc::ptr_eq(&left.bytes, &right.bytes) && left.start + left.len == right.start {
+        let merged = ByteChunk { bytes: left.bytes.clone(), start: left.start, len: left.len + right.len };
+        return Self { chunks: alloc::vec![merged] };
+      }
+    }
+    let chunks = self.chunks.iter().chain(other.chunks.iter()).cloned().collect();
+    Self { chunks }
   }
 
   /// Returns an iterator over the bytes, in order.
@@ -133,7 +207,7 @@ impl ByteString {
   /// Corresponds to Pekko's `iterator`.
   #[must_use]
   pub fn iterator(&self) -> ByteIterator {
-    ByteIterator::over_arrays(self.arrays.clone())
+    ByteIterator::over_chunks(self.chunks.clone())
   }
 
   /// Returns a stream that reads the bytes from the start, in order.
@@ -144,7 +218,7 @@ impl ByteString {
   /// the stream of Pekko's `ByteStrings` does not.
   #[must_use]
   pub fn as_input_stream(&self) -> ByteStringInputStream {
-    ByteStringInputStream::new(self.iterator(), self.arrays.len() <= 1)
+    ByteStringInputStream::new(self.iterator(), self.chunks.len() <= 1)
   }
 }
 
@@ -154,8 +228,12 @@ impl ByteString {
   /// Corresponds to Pekko's `ByteString.fromArrayUnsafe(array)`, which wraps
   /// the array as a `ByteString1C`. An empty array gives an empty byte string.
   #[must_use]
-  pub fn from_shared(_bytes: Arc<[u8]>) -> Self {
-    todo!("ByteString::from_shared is not implemented yet")
+  pub fn from_shared(bytes: Arc<[u8]>) -> Self {
+    if bytes.is_empty() {
+      Self::empty()
+    } else {
+      Self { chunks: alloc::vec![ByteChunk::full(bytes)] }
+    }
   }
 
   /// Creates a byte string that holds up to `length` bytes of `bytes`,
@@ -166,8 +244,14 @@ impl ByteString {
   /// the end of the array, as in [`from_array`](Self::from_array); an empty
   /// range gives an empty byte string.
   #[must_use]
-  pub fn from_shared_range(_bytes: Arc<[u8]>, _offset: usize, _length: usize) -> Self {
-    todo!("ByteString::from_shared_range is not implemented yet")
+  pub fn from_shared_range(bytes: Arc<[u8]>, offset: usize, length: usize) -> Self {
+    let start = offset.min(bytes.len());
+    let len = length.min(bytes.len() - start);
+    if len == 0 {
+      Self::empty()
+    } else {
+      Self { chunks: alloc::vec![ByteChunk { bytes, start, len }] }
+    }
   }
 
   /// Creates a compact byte string from the bytes of `iter`, going over it
@@ -175,8 +259,9 @@ impl ByteString {
   ///
   /// Corresponds to Pekko's `ByteString(iterableOnce)`.
   #[must_use]
-  pub fn from_iterator(_iter: impl IntoIterator<Item = u8>) -> Self {
-    todo!("ByteString::from_iterator is not implemented yet")
+  pub fn from_iterator(iter: impl IntoIterator<Item = u8>) -> Self {
+    let bytes: Vec<u8> = iter.into_iter().collect();
+    Self::from_bytes(&bytes)
   }
 
   /// Returns the number of bytes.
@@ -184,7 +269,7 @@ impl ByteString {
   /// Corresponds to Pekko's `length` and `size`.
   #[must_use]
   pub fn len(&self) -> usize {
-    todo!("ByteString::len is not implemented yet")
+    self.chunks.iter().fold(0_usize, |total, chunk| total.saturating_add(chunk.len))
   }
 
   /// Returns whether the byte string has no bytes.
@@ -192,7 +277,7 @@ impl ByteString {
   /// Corresponds to Pekko's `isEmpty`.
   #[must_use]
   pub fn is_empty(&self) -> bool {
-    todo!("ByteString::is_empty is not implemented yet")
+    self.chunks.is_empty()
   }
 
   /// Returns the byte at `index`, or `None` when `index` is not less than the
@@ -200,8 +285,15 @@ impl ByteString {
   ///
   /// Corresponds to Pekko's `apply(index)`.
   #[must_use]
-  pub fn get(&self, _index: usize) -> Option<u8> {
-    todo!("ByteString::get is not implemented yet")
+  pub fn get(&self, index: usize) -> Option<u8> {
+    let mut offset = index;
+    for chunk in &self.chunks {
+      if offset < chunk.len {
+        return Some(chunk.as_slice()[offset]);
+      }
+      offset -= chunk.len;
+    }
+    None
   }
 
   /// Returns the first byte, or `None` when the byte string is empty.
@@ -209,7 +301,7 @@ impl ByteString {
   /// Corresponds to Pekko's `head`.
   #[must_use]
   pub fn head(&self) -> Option<u8> {
-    todo!("ByteString::head is not implemented yet")
+    self.chunks.first().map(|chunk| chunk.as_slice()[0])
   }
 
   /// Returns the last byte, or `None` when the byte string is empty.
@@ -217,7 +309,7 @@ impl ByteString {
   /// Corresponds to Pekko's `last`.
   #[must_use]
   pub fn last(&self) -> Option<u8> {
-    todo!("ByteString::last is not implemented yet")
+    self.chunks.last().map(|chunk| chunk.as_slice()[chunk.len - 1])
   }
 
   /// Returns all bytes but the first; empty for an empty byte string.
@@ -225,7 +317,7 @@ impl ByteString {
   /// Corresponds to Pekko's `tail`, which is `drop(1)`.
   #[must_use]
   pub fn tail(&self) -> Self {
-    todo!("ByteString::tail is not implemented yet")
+    self.drop(1)
   }
 
   /// Returns all bytes but the last; empty for an empty byte string.
@@ -233,87 +325,107 @@ impl ByteString {
   /// Corresponds to Pekko's `init`, which is `dropRight(1)`.
   #[must_use]
   pub fn init(&self) -> Self {
-    todo!("ByteString::init is not implemented yet")
+    self.drop_right(1)
   }
 
   /// Returns the first `n` bytes, or all of them when there are fewer.
   ///
   /// Corresponds to Pekko's `take(n)`.
   #[must_use]
-  pub fn take(&self, _n: usize) -> Self {
-    todo!("ByteString::take is not implemented yet")
+  pub fn take(&self, n: usize) -> Self {
+    if n >= self.len() {
+      return self.clone();
+    }
+    self.range(0, n)
   }
 
   /// Returns the bytes after the first `n`, or none when there are fewer.
   ///
   /// Corresponds to Pekko's `drop(n)`.
   #[must_use]
-  pub fn drop(&self, _n: usize) -> Self {
-    todo!("ByteString::drop is not implemented yet")
+  pub fn drop(&self, n: usize) -> Self {
+    if n == 0 {
+      return self.clone();
+    }
+    let len = self.len();
+    self.range(n, len.saturating_sub(n))
   }
 
   /// Returns the last `n` bytes, or all of them when there are fewer.
   ///
   /// Corresponds to Pekko's `takeRight(n)`.
   #[must_use]
-  pub fn take_right(&self, _n: usize) -> Self {
-    todo!("ByteString::take_right is not implemented yet")
+  pub fn take_right(&self, n: usize) -> Self {
+    let len = self.len();
+    self.range(len.saturating_sub(n), n)
   }
 
   /// Returns the bytes before the last `n`, or none when there are fewer.
   ///
   /// Corresponds to Pekko's `dropRight(n)`.
   #[must_use]
-  pub fn drop_right(&self, _n: usize) -> Self {
-    todo!("ByteString::drop_right is not implemented yet")
+  pub fn drop_right(&self, n: usize) -> Self {
+    let len = self.len();
+    self.take(len.saturating_sub(n))
   }
 
   /// Returns the bytes from index `from` up to, not including, index `until`.
   ///
   /// Corresponds to Pekko's `slice(from, until)`.
   #[must_use]
-  pub fn slice(&self, _from: usize, _until: usize) -> Self {
-    todo!("ByteString::slice is not implemented yet")
+  pub fn slice(&self, from: usize, until: usize) -> Self {
+    let len = self.len();
+    if from >= len || until == 0 || from >= until {
+      return Self::empty();
+    }
+    if from == 0 && until >= len {
+      return self.clone();
+    }
+    let end = until.min(len);
+    self.range(from, end - from)
   }
 
   /// Returns the first `at` bytes and the rest.
   ///
   /// Corresponds to Pekko's `splitAt(n)`.
   #[must_use]
-  pub fn split_at(&self, _at: usize) -> (Self, Self) {
-    todo!("ByteString::split_at is not implemented yet")
+  pub fn split_at(&self, at: usize) -> (Self, Self) {
+    (self.take(at), self.drop(at))
   }
 
   /// Returns the longest prefix whose bytes satisfy `pred`, and the rest.
   ///
   /// Corresponds to Pekko's `span(p)`.
   #[must_use]
-  pub fn span(&self, _pred: impl FnMut(u8) -> bool) -> (Self, Self) {
-    todo!("ByteString::span is not implemented yet")
+  pub fn span(&self, pred: impl FnMut(u8) -> bool) -> (Self, Self) {
+    let count = self.prefix_len(pred);
+    self.split_at(count)
   }
 
   /// Returns the longest prefix whose bytes satisfy `pred`.
   ///
   /// Corresponds to Pekko's `takeWhile(p)`.
   #[must_use]
-  pub fn take_while(&self, _pred: impl FnMut(u8) -> bool) -> Self {
-    todo!("ByteString::take_while is not implemented yet")
+  pub fn take_while(&self, pred: impl FnMut(u8) -> bool) -> Self {
+    let count = self.prefix_len(pred);
+    self.take(count)
   }
 
   /// Returns the bytes after the longest prefix whose bytes satisfy `pred`.
   ///
   /// Corresponds to Pekko's `dropWhile(p)`.
   #[must_use]
-  pub fn drop_while(&self, _pred: impl FnMut(u8) -> bool) -> Self {
-    todo!("ByteString::drop_while is not implemented yet")
+  pub fn drop_while(&self, pred: impl FnMut(u8) -> bool) -> Self {
+    let count = self.prefix_len(pred);
+    self.drop(count)
   }
 
   /// Returns the index of the first byte that satisfies `pred`.
   ///
   /// Corresponds to Pekko's `indexWhere(p)`, with `None` for its `-1`.
   #[must_use]
-  pub fn index_where(&self, _pred: impl FnMut(u8) -> bool) -> Option<usize> {
-    todo!("ByteString::index_where is not implemented yet")
+  pub fn index_where(&self, pred: impl FnMut(u8) -> bool) -> Option<usize> {
+    self.index_where_from(pred, 0)
   }
 
   /// Returns the index of the first byte at or after `from` that satisfies
@@ -321,24 +433,33 @@ impl ByteString {
   ///
   /// Corresponds to Pekko's `indexWhere(p, from)`, with `None` for its `-1`.
   #[must_use]
-  pub fn index_where_from(&self, _pred: impl FnMut(u8) -> bool, _from: usize) -> Option<usize> {
-    todo!("ByteString::index_where_from is not implemented yet")
+  pub fn index_where_from(&self, mut pred: impl FnMut(u8) -> bool, from: usize) -> Option<usize> {
+    let mut index = 0_usize;
+    for chunk in &self.chunks {
+      for &byte in chunk.as_slice() {
+        if index >= from && pred(byte) {
+          return Some(index);
+        }
+        index += 1;
+      }
+    }
+    None
   }
 
   /// Returns the index of the first byte equal to `elem`.
   ///
   /// Corresponds to Pekko's `indexOf(elem)`, with `None` for its `-1`.
   #[must_use]
-  pub fn index_of(&self, _elem: u8) -> Option<usize> {
-    todo!("ByteString::index_of is not implemented yet")
+  pub fn index_of(&self, elem: u8) -> Option<usize> {
+    self.index_of_from(elem, 0)
   }
 
   /// Returns the index of the first byte at or after `from` equal to `elem`.
   ///
   /// Corresponds to Pekko's `indexOf(elem, from)`, with `None` for its `-1`.
   #[must_use]
-  pub fn index_of_from(&self, _elem: u8, _from: usize) -> Option<usize> {
-    todo!("ByteString::index_of_from is not implemented yet")
+  pub fn index_of_from(&self, elem: u8, from: usize) -> Option<usize> {
+    self.index_where_from(|byte| byte == elem, from)
   }
 
   /// Returns a copy of the bytes, in order.
@@ -346,15 +467,32 @@ impl ByteString {
   /// Corresponds to Pekko's `toArray`.
   #[must_use]
   pub fn to_vec(&self) -> Vec<u8> {
-    todo!("ByteString::to_vec is not implemented yet")
+    let mut bytes = Vec::new();
+    for chunk in &self.chunks {
+      bytes.extend_from_slice(chunk.as_slice());
+    }
+    bytes
   }
 
   /// Copies up to `len` bytes into `dest` from index `start` on, and returns
   /// how many it copied.
   ///
   /// Corresponds to Pekko's `copyToArray(dest, start, len)`.
-  pub fn copy_to_array(&self, _dest: &mut [u8], _start: usize, _len: usize) -> usize {
-    todo!("ByteString::copy_to_array is not implemented yet")
+  pub fn copy_to_array(&self, dest: &mut [u8], start: usize, len: usize) -> usize {
+    let to_copy = len.min(self.len()).min(dest.len().saturating_sub(start));
+    if to_copy == 0 {
+      return 0;
+    }
+    let mut copied = 0_usize;
+    for chunk in &self.chunks {
+      if copied >= to_copy {
+        break;
+      }
+      let count = chunk.len.min(to_copy - copied);
+      dest[start + copied..start + copied + count].copy_from_slice(&chunk.as_slice()[..count]);
+      copied += count;
+    }
+    copied
   }
 
   /// Returns the bytes in groups of `size`; the last group may be shorter.
@@ -365,8 +503,16 @@ impl ByteString {
   ///
   /// Panics when `size` is zero, where Pekko throws an
   /// `IllegalArgumentException`.
-  pub fn grouped(&self, _size: usize) -> impl Iterator<Item = ByteString> {
-    core::iter::from_fn(|| todo!("ByteString::grouped is not implemented yet"))
+  pub fn grouped(&self, size: usize) -> impl Iterator<Item = ByteString> {
+    assert!(size > 0, "size={size} must be positive");
+    let mut groups = Vec::new();
+    let mut offset = 0_usize;
+    let len = self.len();
+    while offset < len {
+      groups.push(self.range(offset, size));
+      offset = offset.saturating_add(size);
+    }
+    groups.into_iter()
   }
 
   /// Returns whether the bytes fill one whole array.
@@ -374,7 +520,11 @@ impl ByteString {
   /// Corresponds to Pekko's `isCompact`.
   #[must_use]
   pub fn is_compact(&self) -> bool {
-    todo!("ByteString::is_compact is not implemented yet")
+    match self.chunks.as_slice() {
+      | [] => true,
+      | [chunk] => chunk.is_full(),
+      | _ => false,
+    }
   }
 
   /// Returns a byte string with the same bytes in one whole array.
@@ -382,7 +532,11 @@ impl ByteString {
   /// Corresponds to Pekko's `compact`.
   #[must_use]
   pub fn compact(&self) -> Self {
-    todo!("ByteString::compact is not implemented yet")
+    if self.is_compact() {
+      self.clone()
+    } else {
+      Self::from_bytes(&self.to_vec())
+    }
   }
 
   /// Decodes the bytes as UTF-8, replacing malformed sequences with U+FFFD.
@@ -390,7 +544,7 @@ impl ByteString {
   /// Corresponds to Pekko's `decodeString(StandardCharsets.UTF_8)`.
   #[must_use]
   pub fn decode_string(&self) -> String {
-    todo!("ByteString::decode_string is not implemented yet")
+    String::from_utf8_lossy(&self.to_vec()).into_owned()
   }
 
   /// Encodes the bytes as padded RFC 4648 Base64.
@@ -398,7 +552,23 @@ impl ByteString {
   /// Corresponds to Pekko's `encodeBase64`.
   #[must_use]
   pub fn encode_base64(&self) -> Self {
-    todo!("ByteString::encode_base64 is not implemented yet")
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = self.to_vec();
+    if bytes.is_empty() {
+      return Self::empty();
+    }
+    let mut out = Vec::new();
+    for group in bytes.chunks(3) {
+      let b0 = u32::from(group[0]);
+      let b1 = group.get(1).copied().map_or(0, u32::from);
+      let b2 = group.get(2).copied().map_or(0, u32::from);
+      let triple = (b0 << 16) | (b1 << 8) | b2;
+      out.push(ALPHABET[(triple >> 18) as usize & 63]);
+      out.push(ALPHABET[(triple >> 12) as usize & 63]);
+      out.push(if group.len() > 1 { ALPHABET[(triple >> 6) as usize & 63] } else { b'=' });
+      out.push(if group.len() > 2 { ALPHABET[triple as usize & 63] } else { b'=' });
+    }
+    Self::from_bytes(&out)
   }
 
   /// Decodes the bytes as RFC 4648 Base64, or returns `None` when they are not
@@ -407,14 +577,82 @@ impl ByteString {
   /// Corresponds to Pekko's `decodeBase64`.
   #[must_use]
   pub fn decode_base64(&self) -> Option<Self> {
-    todo!("ByteString::decode_base64 is not implemented yet")
+    fn value_of(byte: u8) -> Option<u32> {
+      match byte {
+        | b'A'..=b'Z' => Some(u32::from(byte - b'A')),
+        | b'a'..=b'z' => Some(u32::from(byte - b'a') + 26),
+        | b'0'..=b'9' => Some(u32::from(byte - b'0') + 52),
+        | b'+' => Some(62),
+        | b'/' => Some(63),
+        | _ => None,
+      }
+    }
+    let bytes = self.to_vec();
+    if bytes.is_empty() {
+      return Some(Self::empty());
+    }
+    if bytes.len() % 4 == 1 {
+      return None;
+    }
+    let padding = match bytes.iter().position(|&byte| byte == b'=') {
+      | Some(first) => {
+        let count = bytes.len() - first;
+        if count > 2 || bytes[first..].iter().any(|&byte| byte != b'=') {
+          return None;
+        }
+        if !bytes.len().is_multiple_of(4) {
+          return None;
+        }
+        if (count == 2 && first % 4 != 2) || (count == 1 && first % 4 != 3) {
+          return None;
+        }
+        count
+      },
+      | None => 0,
+    };
+    if bytes[..bytes.len() - padding].iter().any(|&byte| value_of(byte).is_none()) {
+      return None;
+    }
+    let mut out = Vec::new();
+    let mut index = 0_usize;
+    while index < bytes.len() {
+      let rest = bytes.len() - index;
+      let take = rest.min(4);
+      let mut values = [0_u32; 4];
+      for (slot, &byte) in values.iter_mut().zip(bytes[index..index + take].iter()) {
+        *slot = if byte == b'=' { 0 } else { value_of(byte)? };
+      }
+      let triple = (values[0] << 18) | (values[1] << 12) | (values[2] << 6) | values[3];
+      out.push((triple >> 16) as u8);
+      let is_last = index + take == bytes.len();
+      let output = if is_last && padding > 0 {
+        3 - padding
+      } else if is_last && take < 4 {
+        take - 1
+      } else {
+        3
+      };
+      if output > 1 {
+        out.push((triple >> 8) as u8);
+      }
+      if output > 2 {
+        out.push(triple as u8);
+      }
+      index += take;
+    }
+    Some(Self::from_bytes(&out))
   }
 
   /// Returns the bytes as slices of the shared arrays, at least one.
   ///
   /// Corresponds to Pekko's `asByteBuffers`.
   pub fn as_byte_slices(&self) -> impl Iterator<Item = &[u8]> {
-    core::iter::from_fn(|| todo!("ByteString::as_byte_slices is not implemented yet"))
+    let slices: Vec<&[u8]> = if self.chunks.is_empty() {
+      alloc::vec![&[][..]]
+    } else {
+      self.chunks.iter().map(|chunk| chunk.as_slice()).collect()
+    };
+    slices.into_iter()
   }
 
   /// Returns the non-empty slices of the shared arrays, none for an empty byte
@@ -422,13 +660,36 @@ impl ByteString {
   ///
   /// Corresponds to Pekko's `asByteBuffersUnsafe`.
   pub fn as_non_empty_byte_slices(&self) -> impl Iterator<Item = &[u8]> {
-    core::iter::from_fn(|| todo!("ByteString::as_non_empty_byte_slices is not implemented yet"))
+    let slices: Vec<&[u8]> = self.chunks.iter().map(|chunk| chunk.as_slice()).collect();
+    slices.into_iter()
   }
 }
 
 impl core::fmt::Display for ByteString {
-  fn fmt(&self, _f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    todo!("Display for ByteString is not implemented yet")
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    f.write_str("ByteString(")?;
+    let mut shown = 0_usize;
+    for chunk in &self.chunks {
+      for &byte in chunk.as_slice() {
+        if shown >= 100 {
+          break;
+        }
+        if shown > 0 {
+          f.write_str(", ")?;
+        }
+        core::fmt::Write::write_fmt(f, format_args!("{}", byte as i8))?;
+        shown += 1;
+      }
+      if shown >= 100 {
+        break;
+      }
+    }
+    f.write_str(")")?;
+    let len = self.len();
+    if len > 100 {
+      core::fmt::Write::write_fmt(f, format_args!("... and [{}] more", len - 100))?;
+    }
+    Ok(())
   }
 }
 
