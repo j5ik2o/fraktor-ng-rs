@@ -51,6 +51,8 @@ use crate::kernel::actor::DeadLetter;
 use crate::kernel::actor::DeadLetterSettings;
 use crate::kernel::actor::DeadLetterTrampoline;
 use crate::kernel::actor::DeadLettersShared;
+use crate::kernel::actor::FsmTimerMark;
+use crate::kernel::actor::FsmTimerMode;
 use crate::kernel::actor::FunctionRef;
 use crate::kernel::actor::Identify;
 use crate::kernel::actor::InvalidActorNameException;
@@ -395,6 +397,15 @@ pub(crate) fn validate_actor_name(name: &str) -> Result<(), InvalidActorNameExce
 /// one fact here lets every entry that starts a new actor, including the ones
 /// that reach the executor through a weak handle, refuse the request with the
 /// same cause as Pekko.
+/// The receive timeout deadline index: `(deadline, seq)` to the
+/// actor and the version of its timeout state. The `seq` is drawn
+/// from the counter the FSM timer index shares, so the two kinds of
+/// rows stand in one scheduling order.
+type ReceiveTimeoutIndex = BTreeMap<(Duration, u64), (ActorKey, u32)>;
+
+/// The reverse of [`ReceiveTimeoutIndex`]: the row an actor stands in.
+type ReceiveTimeoutIndexed = BTreeMap<ActorKey, (Duration, u64)>;
+
 pub(crate) struct Executor {
   actors: BTreeMap<ActorKey, ActorEntry>,
   ref_parents: Vec<ParentEntry>,
@@ -436,8 +447,46 @@ pub(crate) struct Executor {
   not_influence_receive_timeout: BTreeSet<core::any::TypeId>,
   self_handle: Option<Weak<spin::Mutex<Executor>>>,
   receive_timeouts: BTreeMap<ActorKey, ReceiveTimeoutState>,
-  receive_timeout_index: BTreeMap<(Duration, ActorKey), u32>,
-  receive_timeout_indexed: BTreeMap<ActorKey, Duration>,
+  receive_timeout_index: ReceiveTimeoutIndex,
+  receive_timeout_indexed: ReceiveTimeoutIndexed,
+  fsm_timers: BTreeMap<(ActorKey, FsmTimerSlot), FsmScheduledTimer>,
+  fsm_timer_index: BTreeMap<(Duration, u64), (ActorKey, FsmTimerSlot)>,
+  timer_seq: u64,
+}
+
+/// The slot of one FSM timer of one actor in the executor's FSM table.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum FsmTimerSlot {
+  /// The state timer.
+  State,
+  /// A named timer.
+  Named(String),
+}
+
+/// One FSM timer registration, before the executor assigns its
+/// deadline and sequence.
+pub(crate) struct FsmTimerRequest {
+  pub(crate) mode: FsmTimerMode,
+  pub(crate) message: Message,
+  pub(crate) delay: Duration,
+  pub(crate) instance_id: u64,
+  pub(crate) generation: u64,
+  pub(crate) sender: Option<ActorRef>,
+}
+
+/// One FSM timer the executor holds for an actor.
+struct FsmScheduledTimer {
+  deadline: Duration,
+  delay: Duration,
+  seq: u64,
+  mode: FsmTimerMode,
+  message: Message,
+  instance_id: u64,
+  generation: u64,
+  /// The sender of the event that armed this timer, which the mark
+  /// arrives from; the state timer's mark arrives from the machine
+  /// itself.
+  sender: Option<ActorRef>,
 }
 
 impl Executor {
@@ -502,6 +551,9 @@ impl Executor {
       receive_timeouts: BTreeMap::new(),
       receive_timeout_index: BTreeMap::new(),
       receive_timeout_indexed: BTreeMap::new(),
+      fsm_timers: BTreeMap::new(),
+      fsm_timer_index: BTreeMap::new(),
+      timer_seq: 0,
     };
     executor.function_refs.push(executor.dead_letters.clone());
     executor
@@ -914,6 +966,25 @@ impl Executor {
         self.sync_receive_timeout_index(key);
       }
     }
+    // The FSM timers keep the remaining time they had as well: each
+    // row's index entry is rewritten under its new deadline with the
+    // sequence it already had, and a deadline the installed clock
+    // cannot name is cancelled, as a receive timeout is.
+    let rows: Vec<((ActorKey, FsmTimerSlot), Duration, u64)> =
+      self.fsm_timers.iter().map(|(id, timer)| (id.clone(), timer.deadline, timer.seq)).collect();
+    for ((key, slot), deadline, seq) in rows {
+      let remaining = deadline.saturating_sub(previous_now);
+      match installed_now.checked_add(remaining) {
+        | Some(new_deadline) => {
+          self.fsm_timer_index.remove(&(deadline, seq));
+          if let Some(timer) = self.fsm_timers.get_mut(&(key, slot.clone())) {
+            timer.deadline = new_deadline;
+          }
+          self.fsm_timer_index.insert((new_deadline, seq), (key, slot));
+        },
+        | None => self.remove_fsm_timer(key, &slot),
+      }
+    }
   }
 
   /// Returns the monotonic time that a finite restart window uses.
@@ -992,13 +1063,15 @@ impl Executor {
   /// row is removed at once, and the new one is inserted when a firing is
   /// scheduled, so the index never holds a stale row.
   fn sync_receive_timeout_index(&mut self, key: ActorKey) {
-    if let Some(old) = self.receive_timeout_indexed.remove(&key) {
-      self.receive_timeout_index.remove(&(old, key));
+    if let Some((old_deadline, old_seq)) = self.receive_timeout_indexed.remove(&key) {
+      self.receive_timeout_index.remove(&(old_deadline, old_seq));
     }
     if let Some(state) = self.receive_timeouts.get(&key) {
       if let Some((deadline, _)) = state.scheduled() {
-        self.receive_timeout_index.insert((deadline, key), state.version());
-        self.receive_timeout_indexed.insert(key, deadline);
+        self.timer_seq += 1;
+        let seq = self.timer_seq;
+        self.receive_timeout_index.insert((deadline, seq), (key, state.version()));
+        self.receive_timeout_indexed.insert(key, (deadline, seq));
       }
     }
   }
@@ -1057,6 +1130,208 @@ impl Executor {
   fn clear_receive_timeout(&mut self, key: ActorKey) {
     self.receive_timeouts.remove(&key);
     self.sync_receive_timeout_index(key);
+    self.clear_fsm_timers(key);
+  }
+
+  /// Drops every FSM timer of `key`'s actor from the deadline index at
+  /// once, as `terminate` of the original cancels every timer of the
+  /// machine it ends.
+  pub(crate) fn clear_fsm_timers(&mut self, key: ActorKey) {
+    let slots: Vec<FsmTimerSlot> =
+      self.fsm_timers.keys().filter(|(owner, _)| *owner == key).map(|(_, slot)| slot.clone()).collect();
+    for slot in slots {
+      self.remove_fsm_timer(key, &slot);
+    }
+  }
+
+  fn remove_fsm_timer(&mut self, key: ActorKey, slot: &FsmTimerSlot) {
+    if let Some(old) = self.fsm_timers.remove(&(key, slot.clone())) {
+      self.fsm_timer_index.remove(&(old.deadline, old.seq));
+    }
+  }
+
+  fn insert_fsm_timer(&mut self, key: ActorKey, slot: FsmTimerSlot, request: FsmTimerRequest) {
+    let FsmTimerRequest { mode, message, delay, instance_id, generation, sender } = request;
+    self.remove_fsm_timer(key, &slot);
+    if self.now_opt().is_none() {
+      panic!("FSM timer: a finite FSM timer needs a monotonic clock, but this system has none");
+    }
+    let now = self.now_opt().expect("checked above");
+    let Some(deadline) = now.checked_add(delay) else {
+      return;
+    };
+    self.timer_seq += 1;
+    let seq = self.timer_seq;
+    self.fsm_timers.insert(
+      (key, slot.clone()),
+      FsmScheduledTimer { deadline, delay, seq, mode, message, instance_id, generation, sender },
+    );
+    self.fsm_timer_index.insert((deadline, seq), (key, slot));
+  }
+
+  /// Registers a named FSM timer of `key`'s actor.
+  pub(crate) fn schedule_fsm_named_timer(&mut self, key: ActorKey, name: &str, request: FsmTimerRequest) {
+    self.insert_fsm_timer(key, FsmTimerSlot::Named(name.to_string()), request);
+  }
+
+  /// Registers the state timer of `key`'s actor.
+  pub(crate) fn schedule_fsm_state_timer(&mut self, key: ActorKey, generation: u64, delay: Duration, instance_id: u64) {
+    let request = FsmTimerRequest {
+      mode: FsmTimerMode::Single,
+      message: Message::new(crate::kernel::actor::StateTimeout),
+      delay,
+      instance_id,
+      generation,
+      sender: None,
+    };
+    self.insert_fsm_timer(key, FsmTimerSlot::State, request);
+  }
+
+  /// Cancels a named FSM timer of `key`'s actor.
+  pub(crate) fn cancel_fsm_named_timer(&mut self, key: ActorKey, name: &str) {
+    self.remove_fsm_timer(key, &FsmTimerSlot::Named(name.to_string()));
+  }
+
+  /// Cancels the state timer of `key`'s actor.
+  pub(crate) fn cancel_fsm_state_timer(&mut self, key: ActorKey) {
+    self.remove_fsm_timer(key, &FsmTimerSlot::State);
+  }
+
+  /// Returns the earliest scheduled FSM timer deadline.
+  fn earliest_fsm_timer_deadline(&self) -> Option<Duration> {
+    self.fsm_timer_index.keys().next().map(|(deadline, _)| *deadline)
+  }
+
+  /// Returns the earliest deadline of a receive timeout or an FSM timer.
+  fn earliest_timer_deadline(&self) -> Option<Duration> {
+    match (self.earliest_receive_timeout_deadline(), self.earliest_fsm_timer_deadline()) {
+      | (Some(a), Some(b)) => Some(a.min(b)),
+      | (Some(a), None) => Some(a),
+      | (None, Some(b)) => Some(b),
+      | (None, None) => None,
+    }
+  }
+
+  /// Fires the receive timeouts and the FSM timers that are due, in
+  /// one order across both kinds: the row with the smallest
+  /// `(deadline, seq)` fires first, where `seq` is the order the rows
+  /// were scheduled in, drawn from the one counter both kinds share.
+  /// The clock is read once for the whole pass, so both kinds are
+  /// judged against the same reading: a receive timeout whose
+  /// deadline is later than an FSM timer's cannot be delivered first
+  /// and so cannot invalidate the timer's mark by arriving before it.
+  fn fire_due_timers(&mut self) {
+    if self.receive_timeout_index.is_empty() && self.fsm_timer_index.is_empty() {
+      return;
+    }
+    let Some(now) = self.now_opt() else {
+      return;
+    };
+    loop {
+      let receive_next = self.receive_timeout_index.iter().next().map(|(&(deadline, seq), _)| (deadline, seq));
+      let fsm_next = self.fsm_timer_index.iter().next().map(|(&(deadline, seq), _)| (deadline, seq));
+      let fire_receive = match (receive_next, fsm_next) {
+        | (Some(receive), Some(fsm)) => receive <= fsm,
+        | (Some(_), None) => true,
+        | (None, Some(_)) => false,
+        | (None, None) => return,
+      };
+      let progressed = if fire_receive { self.fire_one_receive_timeout(now) } else { self.fire_one_fsm_timer(now) };
+      if !progressed {
+        return;
+      }
+    }
+  }
+
+  /// Fires the earliest FSM timer when its deadline has come by
+  /// `now`, and returns whether a row was consumed: the deadline is
+  /// consumed, a repeating timer is registered again, and the mark
+  /// goes to the machine's mailbox. A row registered again in this
+  /// pass fires again only when its new deadline is not after the
+  /// one reading the pass shares (a fixed-rate timer whose clock
+  /// jumped catches up, as the original's does).
+  fn fire_one_fsm_timer(&mut self, now: Duration) -> bool {
+    let Some((&(deadline, seq), _)) = self.fsm_timer_index.iter().next() else {
+      return false;
+    };
+    if deadline > now {
+      return false;
+    }
+    let Some((key, slot)) = self.fsm_timer_index.remove(&(deadline, seq)) else {
+      return false;
+    };
+    let Some(timer) = self.fsm_timers.remove(&(key, slot.clone())) else {
+      return true;
+    };
+    let message = timer.message.clone();
+    let mode = timer.mode;
+    let instance_id = timer.instance_id;
+    let generation = timer.generation;
+    let delay = timer.delay;
+    let timer_sender = timer.sender.clone();
+    let next_deadline = match mode {
+      | FsmTimerMode::Single => None,
+      | FsmTimerMode::FixedDelay => now.checked_add(delay),
+      | FsmTimerMode::FixedRate => deadline.checked_add(delay),
+    };
+    if let Some(next) = next_deadline {
+      self.timer_seq += 1;
+      let new_seq = self.timer_seq;
+      self.fsm_timer_index.insert((next, new_seq), (key, slot.clone()));
+      self.fsm_timers.insert(
+        (key, slot.clone()),
+        FsmScheduledTimer {
+          deadline: next,
+          delay,
+          seq: new_seq,
+          mode,
+          message: message.clone(),
+          instance_id,
+          generation,
+          sender: timer_sender.clone(),
+        },
+      );
+    }
+    let Some(entry) = self.actors.get(&key) else {
+      return true;
+    };
+    let target = entry.self_ref.clone();
+    if message == POISON_PILL || message == KILL {
+      let sender = self.dead_letters();
+      self.send(sender, &target, message);
+      return true;
+    }
+    let mark = match &slot {
+      | FsmTimerSlot::State => FsmTimerMark::StateTimeout { instance_id, generation },
+      | FsmTimerSlot::Named(name) => FsmTimerMark::Named { instance_id, name: name.clone(), generation },
+    };
+    let sender = timer_sender.unwrap_or_else(|| target.clone());
+    self.send(sender, &target, Message::new(mark));
+    true
+  }
+
+  /// Publishes a warning that names `source` as its source, to the
+  /// event stream and to the event sink.
+  ///
+  /// Mirrors `log.warning(...)` reaching Pekko's `TestEventListener`
+  /// through the system's logging: the stream receives the warning as
+  /// an event, and the sink, the test-side tap, receives the same one.
+  pub(crate) fn publish_warning(&self, source: &ActorRef, message: &str) {
+    let warning = Warning::new(source.path().to_string(), ACTOR_LOG_CLASS, message);
+    if let Some(stream) = self.event_stream.as_ref() {
+      stream.publish(warning.clone());
+    }
+    let sink = self.event_sink.lock().clone();
+    if let Some(sink) = sink {
+      sink.publish(&warning);
+    }
+  }
+
+  /// Returns the live child of `parent` named `name`, if any.
+  pub(crate) fn child_of(&self, parent: &ActorRef, name: &str) -> Option<ActorRef> {
+    self.parent_entry(parent).and_then(|entry| {
+      entry.children.iter().find(|(child_name, _)| child_name == name).map(|(_, child)| child.clone())
+    })
   }
 
   /// Returns the earliest scheduled receive timeout deadline.
@@ -1064,47 +1339,40 @@ impl Executor {
     self.receive_timeout_index.keys().next().map(|(deadline, _)| *deadline)
   }
 
-  /// Fires every receive timeout whose deadline has come, earliest
-  /// first: the deadline is consumed and one `ReceiveTimeout` goes to
-  /// the actor's mailbox, where it is an ordinary message that is always
+  /// Fires the earliest receive timeout when its deadline has come
+  /// by `now`, and returns whether a row was consumed: the deadline
+  /// is consumed and one `ReceiveTimeout` goes to the actor's
+  /// mailbox, where it is an ordinary message that is always
   /// delivered, however the setting changes afterwards.
-  fn fire_due_receive_timeouts(&mut self) {
-    loop {
-      // With nothing scheduled the clock is not read at all.
-      if self.receive_timeout_index.is_empty() {
-        return;
-      }
-      let Some(now) = self.now_opt() else {
-        return;
-      };
-      let Some((&(deadline, key), &version)) = self.receive_timeout_index.iter().next() else {
-        return;
-      };
-      if deadline > now {
-        return;
-      }
-      self.receive_timeout_index.remove(&(deadline, key));
-      self.receive_timeout_indexed.remove(&key);
-      let fired = match self.receive_timeouts.get_mut(&key) {
-        | Some(state) => match state.scheduled() {
-          | Some((scheduled_deadline, timeout)) if scheduled_deadline == deadline && state.version() == version => {
-            state.mark_fired();
-            Some(timeout)
-          },
-          | _ => None,
-        },
-        | None => None,
-      };
-      let Some(timeout) = fired else {
-        continue;
-      };
-      let Some(entry) = self.actors.get(&key) else {
-        continue;
-      };
-      let target = entry.self_ref.clone();
-      let sender = self.dead_letters();
-      self.send(sender, &target, Message::new(ReceiveTimeout::new(timeout)));
+  fn fire_one_receive_timeout(&mut self, now: Duration) -> bool {
+    let Some((&(deadline, seq), &(key, version))) = self.receive_timeout_index.iter().next() else {
+      return false;
+    };
+    if deadline > now {
+      return false;
     }
+    self.receive_timeout_index.remove(&(deadline, seq));
+    self.receive_timeout_indexed.remove(&key);
+    let fired = match self.receive_timeouts.get_mut(&key) {
+      | Some(state) => match state.scheduled() {
+        | Some((scheduled_deadline, timeout)) if scheduled_deadline == deadline && state.version() == version => {
+          state.mark_fired();
+          Some(timeout)
+        },
+        | _ => None,
+      },
+      | None => None,
+    };
+    let Some(timeout) = fired else {
+      return true;
+    };
+    let Some(entry) = self.actors.get(&key) else {
+      return true;
+    };
+    let target = entry.self_ref.clone();
+    let sender = self.dead_letters();
+    self.send(sender, &target, Message::new(ReceiveTimeout::new(timeout)));
+    true
   }
 
   /// Installs the event stream the system publishes its own events to.
@@ -2602,7 +2870,7 @@ impl Executor {
   /// throughput at a time.
   pub(crate) fn run_until_idle(&mut self) {
     loop {
-      self.fire_due_receive_timeouts();
+      self.fire_due_timers();
       self.take_one_from_boundary();
       let Some(task) = self.manual.pop() else {
         return;
@@ -2620,7 +2888,7 @@ impl Executor {
   /// throughput of one, and a run that handles only system messages, or finds
   /// nothing to do, does not count, so the next piece of work runs.
   pub(crate) fn run_one(&mut self) -> bool {
-    self.fire_due_receive_timeouts();
+    self.fire_due_timers();
     self.take_one_from_boundary();
     while let Some(task) = self.manual.pop() {
       if self.run_task(task, Some(Throughput::new(1))) {
@@ -2674,7 +2942,7 @@ impl Executor {
     }
     self.release_held_failures();
     self.finish_boundary();
-    self.fire_due_receive_timeouts();
+    self.fire_due_timers();
   }
 
   /// Hands one normal message to the actor of `cell` (Pekko's
@@ -2696,7 +2964,7 @@ impl Executor {
           let key = cell.key();
           let timeout_before = self.receive_timeout_before(key, true);
           self.receive_timeout_after(key, true, timeout_before);
-          self.fire_due_receive_timeouts();
+          self.fire_due_timers();
           return Next::Continue;
         },
       },
@@ -2736,7 +3004,7 @@ impl Executor {
         handle.note_probe(sequence, snapshot, setting);
       }
       self.receive_timeout_after(key, influences, timeout_before);
-      self.fire_due_receive_timeouts();
+      self.fire_due_timers();
       return Next::Continue;
     }
     if message == KILL {
@@ -2746,7 +3014,7 @@ impl Executor {
       self.after_run =
         Some(self.failure_of(cell, FailureKind::Killed, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE.to_string(), None));
       self.receive_timeout_after(key, true, timeout_before);
-      self.fire_due_receive_timeouts();
+      self.fire_due_timers();
       return Next::Yield;
     }
     if message == POISON_PILL {
@@ -2754,7 +3022,7 @@ impl Executor {
       let timeout_before = self.receive_timeout_before(key, true);
       mailbox.system_enqueue(SystemMessage::Terminate).ok();
       self.receive_timeout_after(key, true, timeout_before);
-      self.fire_due_receive_timeouts();
+      self.fire_due_timers();
       return Next::Continue;
     }
     let key = cell.key();
@@ -2765,7 +3033,7 @@ impl Executor {
     let (outcome, sender) = cell.receive(self, message, sender, catcher.as_deref());
     self.exit_frame();
     self.receive_timeout_after(key, influences, timeout_before);
-    self.fire_due_receive_timeouts();
+    self.fire_due_timers();
     match outcome {
       | RunOutcome::Completed => {
         if self.pending_decider_failures.is_empty() {
@@ -2810,7 +3078,7 @@ impl Executor {
   /// #234, section 11.11.6). A boundary without a signal is polled for `max`,
   /// and what it gives waits for the next run.
   pub(crate) fn await_envelope(&mut self, max: Duration) -> bool {
-    self.fire_due_receive_timeouts();
+    self.fire_due_timers();
     let arrived = self.arrivals.as_ref().map_or(0, |arrivals| arrivals.count());
     let has_work = |executor: &Self| {
       !executor.manual.is_empty()
@@ -2823,7 +3091,7 @@ impl Executor {
     // The wait is cut at the earliest receive timeout deadline: a wait
     // that the deadline cuts short fires the timeout, puts its message
     // in the mailbox, and returns `true`, as a wait that work ends does.
-    let wait_cap = match self.earliest_receive_timeout_deadline() {
+    let wait_cap = match self.earliest_timer_deadline() {
       | Some(deadline) => match self.now_opt() {
         | Some(now) => max.min(deadline.saturating_sub(now)),
         | None => max,
@@ -2842,12 +3110,12 @@ impl Executor {
           return true;
         }
         waited += slice;
-        self.fire_due_receive_timeouts();
+        self.fire_due_timers();
         if has_work(self) {
           return true;
         }
       }
-      self.fire_due_receive_timeouts();
+      self.fire_due_timers();
       return has_work(self);
     };
     // With no receive timeout scheduled, the bound of the wait is
@@ -2855,8 +3123,7 @@ impl Executor {
     // actors: a hand-driven installed clock does not advance while this
     // thread waits in real time, so it would never reach the bound when
     // stale signals keep ending the inner waits.
-    let use_boundary_clock =
-      self.earliest_receive_timeout_deadline().is_none() && self.boundary.monotonic_time().is_some();
+    let use_boundary_clock = self.earliest_timer_deadline().is_none() && self.boundary.monotonic_time().is_some();
     let wait_clock = |executor: &Self| {
       if use_boundary_clock {
         executor.boundary.monotonic_time()
@@ -2879,9 +3146,9 @@ impl Executor {
     // between the two readings would otherwise delay the firing by the
     // same amount. Measure the cap again from `start`: a deadline that
     // has already come fires at once, without waiting.
-    let wait_cap = match self.earliest_receive_timeout_deadline() {
+    let wait_cap = match self.earliest_timer_deadline() {
       | Some(deadline) if deadline <= start => {
-        self.fire_due_receive_timeouts();
+        self.fire_due_timers();
         return has_work(self);
       },
       | Some(deadline) => max.min(deadline - start),
@@ -2892,11 +3159,11 @@ impl Executor {
     loop {
       let now = wait_clock(self).unwrap_or(deadline);
       if now >= deadline {
-        self.fire_due_receive_timeouts();
+        self.fire_due_timers();
         return has_work(self);
       }
       let signaled = arrivals.wait(deadline - now);
-      self.fire_due_receive_timeouts();
+      self.fire_due_timers();
       if has_work(self) {
         return true;
       }
@@ -2976,6 +3243,8 @@ impl Executor {
     self.receive_timeouts.clear();
     self.receive_timeout_index.clear();
     self.receive_timeout_indexed.clear();
+    self.fsm_timers.clear();
+    self.fsm_timer_index.clear();
     self.pending_decider_failures.clear();
     self.running.clear();
     self.termination_callbacks.clear();
@@ -3692,6 +3961,18 @@ impl Executor {
   /// Builds an `Error` event with `cause_name` and `message`, raised by
   /// `target`.
   fn failure_reason(&self, target: &ActorRef, cause_name: &str, message: &str) -> Error {
+    if cause_name == ACTOR_INITIALIZATION_CAUSE {
+      let root = if message.is_empty() { "No message available" } else { message };
+      let cause_message =
+        alloc::format!("{}: exception during creation, root cause message: [{}]", target.path(), root);
+      return Error::with_cause_and_message(
+        cause_name.to_string(),
+        cause_message,
+        target.path().to_string(),
+        ACTOR_LOG_CLASS,
+        message,
+      );
+    }
     Error::with_cause_name(cause_name, target.path().to_string(), ACTOR_LOG_CLASS, message)
   }
 

@@ -102,7 +102,7 @@ fn guardian_reports_unhandled(spec: &mut FraktorSpec, elements: &[&str]) {
   for element in elements {
     path = path.with_child(element);
   }
-  let filter = EventFilter::warning().with_message(&format!("unhandled message from {}", dead_letters.path()));
+  let filter = EventFilter::warning().start(&format!("unhandled message from {}", dead_letters.path()));
   let selection = spec.system().actor_selection(&path);
   let from = dead_letters.clone();
   EventFilter::intercept(&filter, spec.system_mut(), move || {
