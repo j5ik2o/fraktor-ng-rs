@@ -647,7 +647,9 @@ fn a_child_terminated_hook_failure_publishes_twice_with_the_two_causes() {
   assert_eq!(
     published
       .iter()
-      .filter(|(cause, message)| cause == &Some("IllegalStateException") && message == "handleChildTerminated failed")
+      .filter(|(cause, message): &&(Option<&'static str>, String)| {
+        cause == &Some("IllegalStateException") && message == "handleChildTerminated failed"
+      })
       .count(),
     1,
     "the first publish is not the `handleChildTerminated failed` one: {published:?}"
@@ -666,7 +668,7 @@ struct RecordingSink {
 
 impl EventSink for RecordingSink {
   fn publish(&self, event: &dyn LogEvent) {
-    let cause = event.cause_name().map(|cause| KNOWN_CAUSES.iter().copied().find(|known| *known == cause)).flatten();
+    let cause = event.cause_name().and_then(|cause| KNOWN_CAUSES.iter().copied().find(|known| *known == cause));
     self.events.lock().unwrap().push((cause, String::from(event.message())));
   }
 
