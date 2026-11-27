@@ -27,9 +27,13 @@
 // `checkReceiveTimeout`, `rescheduleReceiveTimeout`,
 // `cancelReceiveTimeoutTask`), the order `ActorCell.invoke` calls them in,
 // `ActorCell.create` and `FaultHandling.finishRecreate`
-// (`checkReceiveTimeout(reschedule = true)`), and `FaultHandling.terminate`
-// (both cancels). The comparison is exact: the same `ReceiveTimeout`
-// messages, at the same clock readings, with the same durations.
+// (`checkReceiveTimeout(reschedule = true)`), `FaultHandling.terminate`
+// (both cancels), and `FaultHandling.handleChildTerminated`, which runs a
+// child-terminated hook outside `invoke`, so a setting the hook makes is
+// not checked until the next message. The comparison is exact: the same
+// `ReceiveTimeout` messages, at the same clock readings, with the same
+// durations, and each without a sender (`scheduleOnce` sends with
+// `Actor.noSender`, so `sender()` is dead letters).
 //
 // The inputs come from a fixed-seed SplitMix64, so a failure repeats; every
 // failure message names the seed and the step. The model's scheduler fires a
@@ -46,7 +50,7 @@ use core::time::Duration;
 
 use std::collections::VecDeque;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fraktor_actor::kernel::actor::{
@@ -54,6 +58,7 @@ use fraktor_actor::kernel::actor::{
 };
 use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::message::Message;
+use fraktor_actor::kernel::supervision::SupervisorStrategy;
 use fraktor_actor::kernel::Clock;
 use fraktor_testkit::fraktorspec::FraktorSpec;
 
@@ -165,6 +170,18 @@ impl NotInfluenceReceiveTimeout for Transparent {}
 #[derive(Clone, Debug)]
 struct Crash(Vec<ReceiveTimeoutSetting>);
 
+// A message that influences the timeout; its handler starts a child and
+// stops it, and the actor's child-terminated hook then applies the
+// settings in order.
+#[derive(Clone, Debug)]
+struct StopAChild(Vec<ReceiveTimeoutSetting>);
+
+struct Child;
+
+impl Actor for Child {
+  fn receive(&mut self, _context: &mut ActorContext<'_>, _message: Message) {}
+}
+
 type Deliveries = Arc<Mutex<Vec<Delivery>>>;
 
 // One `ReceiveTimeout` as the actor saw it: the clock reading when it was
@@ -180,6 +197,12 @@ struct RecordingActor {
   started: Arc<AtomicBool>,
   clock: ControlledClock,
   deliveries: Deliveries,
+  // Deliveries whose sender was not dead letters.
+  sent_by_someone: Arc<AtomicUsize>,
+  // The settings the next child-terminated hook applies, and the number
+  // of children started so far, for a fresh child name.
+  hook_settings: Arc<Mutex<Vec<ReceiveTimeoutSetting>>>,
+  children: Arc<AtomicUsize>,
 }
 
 impl Actor for RecordingActor {
@@ -196,6 +219,9 @@ impl Actor for RecordingActor {
 
   fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
     if let Some(timeout) = message.downcast_ref::<ReceiveTimeout>() {
+      if context.sender() != context.dead_letters() {
+        self.sent_by_someone.fetch_add(1, Ordering::SeqCst);
+      }
       self.deliveries.lock().unwrap().push(Delivery { at: self.clock.monotonic(), timeout: timeout.timeout() });
       return;
     }
@@ -211,6 +237,20 @@ impl Actor for RecordingActor {
       apply(context, settings);
       panic!("crash requested by the property test");
     }
+    if let Some(StopAChild(settings)) = message.downcast_ref::<StopAChild>() {
+      *self.hook_settings.lock().unwrap() = settings.clone();
+      let name = format!("child-{}", self.children.fetch_add(1, Ordering::SeqCst));
+      let child = context.actor_of(Props::new(|| Child), &name).expect("the child starts");
+      context.stop(&child);
+    }
+  }
+
+  fn supervisor_strategy(&self) -> SupervisorStrategy {
+    let hook_settings = Arc::clone(&self.hook_settings);
+    SupervisorStrategy::default_strategy().with_child_terminated(move |context, _child, _children| {
+      let settings = core::mem::take(&mut *hook_settings.lock().unwrap());
+      apply(context, &settings);
+    })
   }
 }
 
@@ -225,6 +265,7 @@ struct Harness {
   clock: ControlledClock,
   actor: ActorRef,
   deliveries: Deliveries,
+  sent_by_someone: Arc<AtomicUsize>,
 }
 
 impl Harness {
@@ -235,17 +276,24 @@ impl Harness {
     spec.system().set_clock(Arc::new(clock.clone()));
     let deliveries: Deliveries = Arc::new(Mutex::new(Vec::new()));
     let started = Arc::new(AtomicBool::new(false));
+    let sent_by_someone = Arc::new(AtomicUsize::new(0));
+    let hook_settings = Arc::new(Mutex::new(Vec::new()));
+    let children = Arc::new(AtomicUsize::new(0));
     let actor = spec.system_mut().actor_of(Props::new({
       let clock = clock.clone();
       let deliveries = Arc::clone(&deliveries);
+      let sent_by_someone = Arc::clone(&sent_by_someone);
       move || RecordingActor {
         initial,
         started: Arc::clone(&started),
         clock: clock.clone(),
         deliveries: Arc::clone(&deliveries),
+        sent_by_someone: Arc::clone(&sent_by_someone),
+        hook_settings: Arc::clone(&hook_settings),
+        children: Arc::clone(&children),
       }
     }));
-    Self { spec, clock, actor, deliveries }
+    Self { spec, clock, actor, deliveries, sent_by_someone }
   }
 
   fn send<M: core::any::Any + Send + Sync>(&self, message: M) {
@@ -280,6 +328,10 @@ impl Harness {
     self.deliveries.lock().unwrap().clone()
   }
 
+  fn sent_by_someone(&self) -> usize {
+    self.sent_by_someone.load(Ordering::SeqCst)
+  }
+
   fn finish(mut self) {
     self.spec.terminate();
   }
@@ -312,6 +364,7 @@ enum Envelope {
   Influencing(Vec<ReceiveTimeoutSetting>),
   Transparent(Vec<ReceiveTimeoutSetting>),
   Crash(Vec<ReceiveTimeoutSetting>),
+  StopAChild(Vec<ReceiveTimeoutSetting>),
   ReceiveTimeout(Duration),
 }
 
@@ -406,7 +459,10 @@ impl Model {
 
   // `ActorCell.invoke`, with a failure handled by a restart:
   // `FaultHandling.finishRecreate` runs `postRestart` and then
-  // `checkReceiveTimeout(reschedule = true)`.
+  // `checkReceiveTimeout(reschedule = true)`. The stop of the child that
+  // `StopAChild` asks for reaches the actor as `DeathWatchNotification`, a
+  // system message handled before the next message: its hook only sets the
+  // timeout.
   fn invoke(&mut self, envelope: Envelope) {
     let before = self.cancel_receive_timeout_if_needed(&envelope);
     let failed = match &envelope {
@@ -422,10 +478,14 @@ impl Model {
         settings.iter().for_each(|setting| self.set_receive_timeout(*setting));
         true
       },
+      | Envelope::StopAChild(_) => false,
     };
     self.check_receive_timeout_if_needed(&envelope, before);
     if failed {
       self.check_receive_timeout(true);
+    }
+    if let Envelope::StopAChild(settings) = &envelope {
+      settings.iter().for_each(|setting| self.set_receive_timeout(*setting));
     }
   }
 
@@ -509,7 +569,13 @@ fn random_step(rng: &mut SplitMix64) -> Step {
   let advance_first = if rng.chance(30) { random_advance(rng) } else { Duration::ZERO };
   let envelope = match rng.below(100) {
     | 0..=2 => Envelope::Crash(random_settings(rng, 2)),
-    | 3..=45 => Envelope::Influencing(random_settings(rng, 3)),
+    // The clock does not move first: a `ReceiveTimeout` fired behind the
+    // message could be handled before or after the hook, and the model
+    // fixes no order between the two.
+    | 3..=12 => {
+      return Step::Send { advance_first: Duration::ZERO, envelope: Envelope::StopAChild(random_settings(rng, 2)) }
+    },
+    | 13..=45 => Envelope::Influencing(random_settings(rng, 3)),
     | _ => Envelope::Transparent(random_settings(rng, 3)),
   };
   Step::Send { advance_first, envelope }
@@ -520,6 +586,7 @@ fn real_message(envelope: &Envelope) -> Message {
     | Envelope::Influencing(settings) => Message::new(Influencing(settings.clone())),
     | Envelope::Transparent(settings) => Message::new(Transparent(settings.clone())),
     | Envelope::Crash(settings) => Message::new(Crash(settings.clone())),
+    | Envelope::StopAChild(settings) => Message::new(StopAChild(settings.clone())),
     | Envelope::ReceiveTimeout(_) => unreachable!("the test never sends a ReceiveTimeout itself"),
   }
 }
@@ -539,6 +606,11 @@ fn assert_same(harness: &Harness, model: &Model, seed: u64, index: usize, step: 
     harness.deliveries(),
     model.deliveries,
     "seed {seed:#x}, step {index} ({step:?}): the ReceiveTimeout messages differ from the reference model"
+  );
+  assert_eq!(
+    harness.sent_by_someone(),
+    0,
+    "seed {seed:#x}, step {index} ({step:?}): a ReceiveTimeout had a sender; it is sent without one"
   );
 }
 
@@ -589,7 +661,10 @@ fn random_initial(rng: &mut SplitMix64) -> Option<ReceiveTimeoutSetting> {
 // plus the duration (P1, probed one nanosecond before and at the deadline),
 // that a fired `ReceiveTimeout` is delivered once and always, also after the
 // setting changed or the actor restarted behind it (P3), and that the last of
-// several settings in one handler is the one in effect (P4).
+// several settings in one handler is the one in effect (P4). It also covers
+// that a child-terminated hook leaves the scheduled task alone, so what it
+// sets takes effect at the next message, and that no `ReceiveTimeout` has a
+// sender.
 #[test]
 fn receive_timeouts_match_the_reference_model() {
   for case in 0..96_u64 {
