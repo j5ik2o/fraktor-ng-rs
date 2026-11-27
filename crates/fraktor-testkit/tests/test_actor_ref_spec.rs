@@ -127,8 +127,15 @@ fn string_of(message: &Message) -> Option<&'static str> {
 }
 
 /// Original: `ReplyActor`.
+///
+/// The original builds its worker with `TestActorRef(Props[WorkerActor]())`
+/// and hands the worker the actor's `sender()`. The port's worker factory goes
+/// into an `Arc`, so it must be `'static`; the cell it needs is taken once
+/// when the actor is built and moved into each factory.
 struct ReplyActor {
   cell: TCell,
+  /// The cell a worker built by this actor is given, taken once at build time.
+  worker_cell: TCell,
   reply_to: Option<ActorRef>,
 }
 
@@ -138,13 +145,17 @@ impl Actor for ReplyActor {
     match string_of(&message) {
       | Some("complexRequest") => {
         self.reply_to = Some(context.sender());
-        let worker = TestActorRef::from_props(context.system(), Props::new(|| WorkerActor::new(self.cell.child())));
+        let worker_cell = self.worker_cell.clone();
+        let worker =
+          TestActorRef::from_props(context.system(), Props::new(move || WorkerActor::new(worker_cell.clone())));
         let worker_ref = worker.actor_ref();
         worker.tell("work", context.self_ref());
         let _ = worker_ref;
       },
       | Some("complexRequest2") => {
-        let worker = TestActorRef::from_props(context.system(), Props::new(|| WorkerActor::new(self.cell.child())));
+        let worker_cell = self.worker_cell.clone();
+        let worker =
+          TestActorRef::from_props(context.system(), Props::new(move || WorkerActor::new(worker_cell.clone())));
         let worker_ref = worker.actor_ref();
         let sender = context.sender();
         worker.tell(sender, context.self_ref());
@@ -406,7 +417,8 @@ fn stops_when_sent_a_poison_pill() {
   let cell = TCell::new(test_thread);
   let filter = EventFilter::typed("ActorKilledException");
   filter.intercept_any(spec.system_mut(), || {
-    let a = TestActorRef::from_props(spec.system_mut(), Props::new(|| WorkerActor::new(cell.child())));
+    let worker_cell = cell.child();
+    let a = TestActorRef::from_props(spec.system_mut(), Props::new(move || WorkerActor::new(worker_cell.clone())));
     let target = a.actor_ref();
     let watcher = WatchAndForward { target: target.clone(), test_actor: spec.test_actor(), cell: cell.child() };
     spec.system_mut().actor_of(Props::new(move || watcher.clone()));
@@ -435,8 +447,11 @@ fn allows_access_to_internals() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let test_thread = std::thread::current().id();
   let cell = TCell::new(test_thread);
-  let ref_ =
-    TestActorRef::from_props(spec.system_mut(), Props::new(|| RecordsString { cell: cell.child(), s: String::new() }));
+  let records_cell = cell.child();
+  let ref_ = TestActorRef::from_props(
+    spec.system_mut(),
+    Props::new(move || RecordsString { cell: records_cell.clone(), s: String::new() }),
+  );
   ref_.tell("hallo", spec.test_actor());
   let s: String = ref_.underlying_snapshot();
   assert_eq!(s, "hallo");
@@ -449,7 +464,8 @@ fn sets_receive_timeout_to_none() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let test_thread = std::thread::current().id();
   let cell = TCell::new(test_thread);
-  let a = TestActorRef::from_props(spec.system_mut(), Props::new(|| WorkerActor::new(cell.child())));
+  let worker_cell = cell.child();
+  let a = TestActorRef::from_props(spec.system_mut(), Props::new(move || WorkerActor::new(worker_cell.clone())));
   assert_eq!(a.receive_timeout(), ReceiveTimeoutSetting::Undefined);
   spec.terminate();
 }
@@ -460,7 +476,8 @@ fn sets_calling_thread_dispatcher() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let test_thread = std::thread::current().id();
   let cell = TCell::new(test_thread);
-  let a = TestActorRef::from_props(spec.system_mut(), Props::new(|| WorkerActor::new(cell.child())));
+  let worker_cell = cell.child();
+  let a = TestActorRef::from_props(spec.system_mut(), Props::new(move || WorkerActor::new(worker_cell.clone())));
   assert_eq!(a.dispatcher_kind(), Some(DispatcherKind::CallingThread));
   spec.terminate();
 }
@@ -474,7 +491,8 @@ fn allows_override_of_dispatcher() {
     SPEC_SYSTEM_NAME,
     vec![DispatcherConfig { id: DISP1_NAME.to_string(), kind: DispatcherKind::Default }],
   );
-  let props = Props::new(|| WorkerActor::new(cell.child())).with_dispatcher(DISP1_NAME);
+  let worker_cell = cell.child();
+  let props = Props::new(move || WorkerActor::new(worker_cell.clone())).with_dispatcher(DISP1_NAME);
   let a = TestActorRef::from_props(spec.system_mut(), props);
   assert_eq!(a.dispatcher_kind(), Some(DispatcherKind::Default));
   spec.terminate();
@@ -487,7 +505,8 @@ fn proxies_receive_without_sender() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let test_thread = std::thread::current().id();
   let cell = TCell::new(test_thread);
-  let ref_ = TestActorRef::from_props(spec.system_mut(), Props::new(|| WorkerActor::new(cell.child())));
+  let worker_cell = cell.child();
+  let ref_ = TestActorRef::from_props(spec.system_mut(), Props::new(move || WorkerActor::new(worker_cell.clone())));
   ref_.receive("work");
   assert!(ref_.is_terminated(), "the actor must be terminated after receiving its stop");
   spec.terminate();
@@ -501,7 +520,8 @@ fn proxies_receive_with_sender() {
   let test_thread = std::thread::current().id();
   let cell = TCell::new(test_thread);
   let test_actor = spec.test_actor();
-  let ref_ = TestActorRef::from_props(spec.system_mut(), Props::new(|| WorkerActor::new(cell.child())));
+  let worker_cell = cell.child();
+  let ref_ = TestActorRef::from_props(spec.system_mut(), Props::new(move || WorkerActor::new(worker_cell.clone())));
   ref_.receive_with_sender("work", test_actor);
   assert!(ref_.is_terminated(), "the actor must be terminated after receiving its stop");
   spec.expect_msg("workDone");
@@ -516,9 +536,13 @@ fn does_not_throw_when_parent_is_passed_in_the_apply() {
   let mut parent = TestProbe::new(spec.system_mut());
   let parent_ref = parent.ref_handle();
   let filter = EventFilter::typed("RuntimeException").with_message("expected");
-  filter.intercept(spec.system_mut(), || {
-    let child = TestActorRef::with_supervisor_and_name(spec.system_mut(), || FailsOnOne, &parent_ref, "Child")
-      .expect("the name is free");
+  // `intercept` lends the system, so the child is built first and the body
+  // sends it the failing message. The child's start and the failure it raises
+  // both go through the mailbox, which `intercept` drives to idle after the
+  // body, so the filter is armed when the failure is logged.
+  let child = TestActorRef::with_supervisor_and_name(spec.system_mut(), || FailsOnOne, &parent_ref, "Child")
+    .expect("the name is free");
+  filter.intercept(spec.system_mut(), move || {
     child.tell(1, parent_ref.clone());
   });
   spec.terminate();
@@ -531,9 +555,10 @@ fn does_not_throw_when_child_is_created_through_child_actor_of() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let mut parent = TestProbe::new(spec.system_mut());
   let filter = EventFilter::typed("RuntimeException").with_message("expected");
-  filter.intercept(spec.system_mut(), || {
-    let child = parent.child_actor_of_named(Props::new(|| FailsOnOne), "Child");
-    child.tell(1, parent.ref_handle());
+  let child = parent.child_actor_of_named(Props::new(|| FailsOnOne), "Child");
+  let parent_ref = parent.ref_handle();
+  filter.intercept(spec.system_mut(), move || {
+    child.tell(1, parent_ref.clone());
   });
   spec.terminate();
 }
@@ -546,7 +571,8 @@ fn allows_creation_with_a_default_supervisor() {
   let test_thread = std::thread::current().id();
   let cell = TCell::new(test_thread);
   let guardian = guardian(&spec);
-  let ref_ = TestActorRef::new(spec.system_mut(), || WorkerActor::new(cell.child()));
+  let worker_cell = cell.child();
+  let ref_ = TestActorRef::new(spec.system_mut(), move || WorkerActor::new(worker_cell.clone()));
   let snapshot: WorkerSnapshot = ref_.underlying_snapshot();
   let supervisor = spec.system().resolve_actor_ref(&snapshot.self_ref.path().parent());
   assert_eq!(supervisor, guardian, "a default supervisor is the guardian");
@@ -560,7 +586,8 @@ fn allows_creation_with_a_default_supervisor_and_a_name() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let test_thread = std::thread::current().id();
   let cell = TCell::new(test_thread);
-  let ref_ = TestActorRef::with_name(spec.system_mut(), || WorkerActor::new(cell.child()), "specificActor")
+  let worker_cell = cell.child();
+  let ref_ = TestActorRef::with_name(spec.system_mut(), move || WorkerActor::new(worker_cell.clone()), "specificActor")
     .expect("the name is free");
   let snapshot: WorkerSnapshot = ref_.underlying_snapshot();
   assert_eq!(snapshot.self_ref.path().name(), "specificActor");
@@ -574,9 +601,16 @@ fn allows_creation_with_a_specified_supervisor() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let test_thread = std::thread::current().id();
   let cell = TCell::new(test_thread);
-  let parent = TestActorRef::new(spec.system_mut(), || ReplyActor { cell: cell.child(), reply_to: None });
+  let reply_cell = cell.child();
+  let parent = TestActorRef::new(spec.system_mut(), move || ReplyActor {
+    cell: reply_cell.clone(),
+    worker_cell: reply_cell.clone(),
+    reply_to: None,
+  });
   let parent_ref = parent.actor_ref();
-  let ref_ = TestActorRef::with_supervisor(spec.system_mut(), || WorkerActor::new(cell.child()), &parent_ref);
+  let worker_cell = cell.child();
+  let ref_ =
+    TestActorRef::with_supervisor(spec.system_mut(), move || WorkerActor::new(worker_cell.clone()), &parent_ref);
   let snapshot: WorkerSnapshot = ref_.underlying_snapshot();
   let supervisor = spec.system().resolve_actor_ref(&snapshot.self_ref.path().parent());
   assert_eq!(supervisor, parent_ref);
@@ -590,11 +624,17 @@ fn allows_creation_with_a_specified_supervisor_and_a_name() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let test_thread = std::thread::current().id();
   let cell = TCell::new(test_thread);
-  let parent = TestActorRef::new(spec.system_mut(), || ReplyActor { cell: cell.child(), reply_to: None });
+  let reply_cell = cell.child();
+  let parent = TestActorRef::new(spec.system_mut(), move || ReplyActor {
+    cell: reply_cell.clone(),
+    worker_cell: reply_cell.clone(),
+    reply_to: None,
+  });
   let parent_ref = parent.actor_ref();
+  let worker_cell = cell.child();
   let ref_ = TestActorRef::with_supervisor_and_name(
     spec.system_mut(),
-    || WorkerActor::new(cell.child()),
+    move || WorkerActor::new(worker_cell.clone()),
     &parent_ref,
     "specificSupervisedActor",
   )
@@ -614,7 +654,8 @@ fn allows_creation_with_a_default_supervisor_from_props() {
   let test_thread = std::thread::current().id();
   let cell = TCell::new(test_thread);
   let guardian = guardian(&spec);
-  let props = Props::new(|| WorkerActor::new(cell.child()));
+  let worker_cell = cell.child();
+  let props = Props::new(move || WorkerActor::new(worker_cell.clone()));
   let ref_ = TestActorRef::from_props(spec.system_mut(), props);
   let snapshot: WorkerSnapshot = ref_.underlying_snapshot();
   let supervisor = spec.system().resolve_actor_ref(&snapshot.self_ref.path().parent());
@@ -629,7 +670,8 @@ fn allows_creation_with_a_default_supervisor_and_a_name_from_props() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let test_thread = std::thread::current().id();
   let cell = TCell::new(test_thread);
-  let props = Props::new(|| WorkerActor::new(cell.child()));
+  let worker_cell = cell.child();
+  let props = Props::new(move || WorkerActor::new(worker_cell.clone()));
   let ref_ =
     TestActorRef::from_props_with_name(spec.system_mut(), props, "specificPropsActor").expect("the name is free");
   let snapshot: WorkerSnapshot = ref_.underlying_snapshot();
@@ -644,9 +686,15 @@ fn allows_creation_with_a_specified_supervisor_from_props() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let test_thread = std::thread::current().id();
   let cell = TCell::new(test_thread);
-  let parent = TestActorRef::new(spec.system_mut(), || ReplyActor { cell: cell.child(), reply_to: None });
+  let reply_cell = cell.child();
+  let parent = TestActorRef::new(spec.system_mut(), move || ReplyActor {
+    cell: reply_cell.clone(),
+    worker_cell: reply_cell.clone(),
+    reply_to: None,
+  });
   let parent_ref = parent.actor_ref();
-  let props = Props::new(|| WorkerActor::new(cell.child()));
+  let worker_cell = cell.child();
+  let props = Props::new(move || WorkerActor::new(worker_cell.clone()));
   let ref_ = TestActorRef::from_props_with_supervisor(spec.system_mut(), props, &parent_ref);
   let snapshot: WorkerSnapshot = ref_.underlying_snapshot();
   let supervisor = spec.system().resolve_actor_ref(&snapshot.self_ref.path().parent());
@@ -661,9 +709,15 @@ fn allows_creation_with_a_specified_supervisor_and_a_name_from_props() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
   let test_thread = std::thread::current().id();
   let cell = TCell::new(test_thread);
-  let parent = TestActorRef::new(spec.system_mut(), || ReplyActor { cell: cell.child(), reply_to: None });
+  let reply_cell = cell.child();
+  let parent = TestActorRef::new(spec.system_mut(), move || ReplyActor {
+    cell: reply_cell.clone(),
+    worker_cell: reply_cell.clone(),
+    reply_to: None,
+  });
   let parent_ref = parent.actor_ref();
-  let props = Props::new(|| WorkerActor::new(cell.child()));
+  let worker_cell = cell.child();
+  let props = Props::new(move || WorkerActor::new(worker_cell.clone()));
   let ref_ = TestActorRef::from_props_with_supervisor_and_name(
     spec.system_mut(),
     props,
