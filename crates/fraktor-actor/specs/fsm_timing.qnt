@@ -114,11 +114,15 @@ module fsm_timing {
   var nextSid: int
   var deadEids: Set[int]
   var liveSid: int
-  var expectedArmed: bool
   var lastOverride: TimeoutOverride
+  var lastTarget: int
+  var keptAfterMark: bool
   var staleStateAccepted: bool
   var staleNamedAccepted: bool
   var acceptedSingle: str
+  // The `Single` timers whose mark has been accepted so far. A `Single` fires
+  // at most once (I3), so this never grows a repeated name.
+  var acceptedSingles: Set[str]
 
   action init = all {
     alive' = true,
@@ -138,11 +142,13 @@ module fsm_timing {
     nextSid' = 0,
     deadEids' = Set(),
     liveSid' = -1,
-    expectedArmed' = false,
     lastOverride' = NoOverride,
+    lastTarget' = 0,
+    keptAfterMark' = false,
     staleStateAccepted' = false,
     staleNamedAccepted' = false,
     acceptedSingle' = NoName,
+    acceptedSingles' = Set(),
   }
 
   action keepLifecycle = all {
@@ -172,8 +178,9 @@ module fsm_timing {
     stIssued' = stIssued,
     nextSid' = nextSid,
     liveSid' = liveSid,
-    expectedArmed' = expectedArmed,
     lastOverride' = lastOverride,
+    lastTarget' = lastTarget,
+    keptAfterMark' = keptAfterMark,
   }
 
   action keepStaleFlags = all {
@@ -182,8 +189,10 @@ module fsm_timing {
   }
 
   // Applies `makeTransition` for a state function result (or default unhandled
-  // `stay()`). `armOverride` lets negative controls inject a broken arming
-  // decision while keeping the exact expected selection in `expectedArmed`.
+  // `stay()`). `actualArm` is what the transition arms and `expectedArm` is what
+  // I1 selects; a negative control passes values that differ, which is where
+  // its defect comes from. Nothing here compares the two: `armedMatchesSelection`
+  // works the selection out again from the model's own state (review low 1).
   action applyTransitionWith(
     nextStateGen: int,
     kind: TransitionKind,
@@ -197,18 +206,26 @@ module fsm_timing {
     val effOv = if (kind == Unhandled) NoOverride else ov
     val valid = ValidStates.contains(effTarget)
     val arms = valid and actualArm
-    val expArms = valid and expectedArm
+    // Read the pre-state before any assignment: inside `all { }` a later
+    // assignment would otherwise be visible to `stActive` below.
+    val keptActive = stActive
+    val keptSid = stSid
+    val keptGen = stGen
+    val keptIssued = stIssued
+    val keptNextSid = nextSid
+    val keepsSlot = fromStateTimeout and not(arms)
     all {
       state' = if (valid) effTarget else state,
       stateGen' = nextStateGen,
-      stActive' = if (arms) true else (if (fromStateTimeout) stActive else false),
-      stGen' = if (arms) nextStateGen else stGen,
-      stSid' = if (arms) nextSid else stSid,
-      stIssued' = if (arms) false else stIssued,
-      liveSid' = if (arms) nextSid else -1,
-      nextSid' = if (arms) nextSid + 1 else nextSid,
-      expectedArmed' = expArms,
+      stActive' = if (arms) true else (if (fromStateTimeout) keptActive else false),
+      stGen' = if (arms) nextStateGen else keptGen,
+      stSid' = if (arms) keptNextSid else keptSid,
+      stIssued' = if (arms) false else keptIssued,
+      liveSid' = if (arms) keptNextSid else -1,
+      nextSid' = if (arms) keptNextSid + 1 else keptNextSid,
       lastOverride' = effOv,
+      lastTarget' = effTarget,
+      keptAfterMark' = keepsSlot,
     }
   }
 
@@ -238,6 +255,7 @@ module fsm_timing {
     keepMarks,
     keepStaleFlags,
     acceptedSingle' = NoName,
+    acceptedSingles' = acceptedSingles,
   }
 
   // Starts or replaces a named timer (from a state function or `onTransition`).
@@ -254,6 +272,7 @@ module fsm_timing {
     keepMarks,
     keepStaleFlags,
     acceptedSingle' = NoName,
+    acceptedSingles' = acceptedSingles,
   }
 
   // Cancels a named timer without touching the state timer (I2, I3).
@@ -268,6 +287,7 @@ module fsm_timing {
     keepMarks,
     keepStaleFlags,
     acceptedSingle' = NoName,
+    acceptedSingles' = acceptedSingles,
   }
 
   // Executor deadline fires for an active named timer and enqueues its mark.
@@ -286,6 +306,7 @@ module fsm_timing {
     keepTimers,
     keepStaleFlags,
     acceptedSingle' = NoName,
+    acceptedSingles' = acceptedSingles,
   }
 
   // Executor deadline fires for the currently armed state timer and enqueues
@@ -304,12 +325,14 @@ module fsm_timing {
     stSid' = stSid,
     nextSid' = nextSid,
     liveSid' = liveSid,
-    expectedArmed' = expectedArmed,
     lastOverride' = lastOverride,
+    lastTarget' = lastTarget,
+    keptAfterMark' = keptAfterMark,
     keepLifecycle,
     keepTimers,
     keepStaleFlags,
-    acceptedSingle' = NoName,
+    acceptedSingle' = acceptedSingle,
+    acceptedSingles' = acceptedSingles,
   }
 
   action acceptNamed(m: NamedMark, kind: TransitionKind, target: int, ov: TimeoutOverride): bool = {
@@ -331,7 +354,8 @@ module fsm_timing {
           or deadEids.contains(m.eid)
           or not(timers.keys().contains(m.name) and timers.get(m.name).eid == m.eid)
       ),
-      acceptedSingle' = if (single) m.name else NoName,
+      acceptedSingle' = if (single) m.name else acceptedSingle,
+      acceptedSingles' = if (single) acceptedSingles.union(Set(m.name)) else acceptedSingles,
     }
   }
 
@@ -342,7 +366,8 @@ module fsm_timing {
     keepStateMachine,
     keepTimers,
     keepStaleFlags,
-    acceptedSingle' = NoName,
+    acceptedSingle' = acceptedSingle,
+    acceptedSingles' = acceptedSingles,
   }
 
   // Named timer mark reception (Pekko FSM.scala:822-833).
@@ -366,7 +391,8 @@ module fsm_timing {
     nextEid' = nextEid,
     staleNamedAccepted' = staleNamedAccepted,
     staleStateAccepted' = (staleStateAccepted or m.sid != liveSid),
-    acceptedSingle' = NoName,
+    acceptedSingle' = acceptedSingle,
+    acceptedSingles' = acceptedSingles,
   }
 
   action dropState(m: StateMark): bool = all {
@@ -376,7 +402,8 @@ module fsm_timing {
     keepStateMachine,
     keepTimers,
     keepStaleFlags,
-    acceptedSingle' = NoName,
+    acceptedSingle' = acceptedSingle,
+    acceptedSingles' = acceptedSingles,
   }
 
   // State timeout mark reception (Pekko FSM.scala:818-821).
@@ -409,11 +436,13 @@ module fsm_timing {
     deadEids' = deadEids.union(timers.keys().map(k => timers.get(k).eid)),
     nextSid' = nextSid,
     liveSid' = -1,
-    expectedArmed' = false,
     lastOverride' = NoOverride,
+    lastTarget' = 0,
+    keptAfterMark' = false,
     keepMarks,
     keepStaleFlags,
-    acceptedSingle' = NoName,
+    acceptedSingle' = acceptedSingle,
+    acceptedSingles' = acceptedSingles,
   }
 
   action restartActor = restartWith(nextInst, nextInst + 1)
@@ -437,11 +466,13 @@ module fsm_timing {
     deadEids' = deadEids.union(timers.keys().map(k => timers.get(k).eid)),
     nextSid' = nextSid,
     liveSid' = -1,
-    expectedArmed' = false,
     lastOverride' = NoOverride,
+    lastTarget' = 0,
+    keptAfterMark' = false,
     keepMarks,
     keepStaleFlags,
-    acceptedSingle' = NoName,
+    acceptedSingle' = acceptedSingle,
+    acceptedSingles' = acceptedSingles,
   }
 
   // ---- Negative-control defective actions ----
@@ -462,7 +493,8 @@ module fsm_timing {
     keepTimers,
     keepMarks,
     keepStaleFlags,
-    acceptedSingle' = NoName,
+    acceptedSingle' = acceptedSingle,
+    acceptedSingles' = acceptedSingles,
   }
 
   // Defect 2: `stay()` cancels the old timer and forgets to re-arm the state's
@@ -482,7 +514,8 @@ module fsm_timing {
     keepTimers,
     keepMarks,
     keepStaleFlags,
-    acceptedSingle' = NoName,
+    acceptedSingle' = acceptedSingle,
+    acceptedSingles' = acceptedSingles,
   }
 
   // Defect 3: unhandled event skips `makeTransition(stay())` and leaves the
@@ -502,7 +535,8 @@ module fsm_timing {
     keepTimers,
     keepMarks,
     keepStaleFlags,
-    acceptedSingle' = NoName,
+    acceptedSingle' = acceptedSingle,
+    acceptedSingles' = acceptedSingles,
   }
 
   // Defect 4: `goto(currentState)` skips re-arming the state timeout.
@@ -521,7 +555,37 @@ module fsm_timing {
     keepTimers,
     keepMarks,
     keepStaleFlags,
-    acceptedSingle' = NoName,
+    acceptedSingle' = acceptedSingle,
+    acceptedSingles' = acceptedSingles,
+  }
+
+  // Review low 1, first mutation: `NoOverride` never arms, so neither `stay()`
+  // nor the unhandled default re-arms the state's default timeout. The old
+  // `expectedArmed` comparison did not catch it (it agreed with the mutation),
+  // so `armedMatchesSelection` no longer reads `expectedArmed`.
+  action bugNoOverrideNeverArms = all {
+    alive,
+    applyTransitionWith(stateGen + 1, Stay, state, NoOverride, false, false, false),
+    keepLifecycle,
+    keepTimers,
+    keepMarks,
+    keepStaleFlags,
+    acceptedSingle' = acceptedSingle,
+    acceptedSingles' = acceptedSingles,
+  }
+
+  // Review low 1, second mutation: only the unhandled event skips the re-arm
+  // (the current `fsm.rs:587-590` mistake), while every other `NoOverride`
+  // transition arms the default as it should.
+  action bugUnhandledOnlyNeverArms = all {
+    alive,
+    applyTransitionWith(stateGen + 1, Unhandled, state, NoOverride, false, false, false),
+    keepLifecycle,
+    keepTimers,
+    keepMarks,
+    keepStaleFlags,
+    acceptedSingle' = acceptedSingle,
+    acceptedSingles' = acceptedSingles,
   }
 
   // Defect 5: `stay()` leaves the old state timer armed without advancing
@@ -539,13 +603,15 @@ module fsm_timing {
     stIssued' = stIssued,
     nextSid' = nextSid,
     liveSid' = -1,
-    expectedArmed' = false,
     lastOverride' = NoOverride,
+    lastTarget' = 0,
+    keptAfterMark' = false,
     keepLifecycle,
     keepTimers,
     keepMarks,
     keepStaleFlags,
-    acceptedSingle' = NoName,
+    acceptedSingle' = acceptedSingle,
+    acceptedSingles' = acceptedSingles,
   }
 
   // Defect 6: restart resets local counters to 0 without changing `instance_id`
@@ -582,8 +648,20 @@ module fsm_timing {
 
   // ---- Invariants ----
 
-  // I1: while alive, a live deadline is armed iff I1 selects one.
-  val armedMatchesSelection = alive implies ((liveSid != -1) == expectedArmed)
+  // I1: the armed state timer slot matches what I1 selects. The selection is
+  // written out here again from the model's own variables (`stActive`,
+  // `lastTarget`, `lastOverride`) instead of being read from `expectedArmed`,
+  // which the actions fill from the same call as the arming itself: comparing
+  // the ghost with itself let two broken selections pass the simulation
+  // (review low 1). It is also not written with `selectionShouldArm`: a broken
+  // `selectionShouldArm` would then move both sides.
+  val armedMatchesSelection =
+    alive
+    implies
+      not(ValidStates.contains(lastTarget))
+      or keptAfterMark
+      or (stActive == (lastOverride == OverrideAfter or (lastOverride == NoOverride and defaultHasTimeout(lastTarget))))
+
   // I1: `forMax(Infinite)` never leaves a live state timer deadline armed.
   val infiniteNeverArms = (lastOverride == OverrideInfinite) implies (liveSid == -1)
   // I1, I2, M1: no stale state timeout mark is ever accepted.
@@ -593,7 +671,13 @@ module fsm_timing {
   // I4: a stopped actor has no armed state timer and an empty named timer table.
   val stoppedNeverArms = not(alive) implies (liveSid == -1 and not(stActive) and timers == Map())
   // I3: a single-shot named timer leaves the table once its mark is accepted.
+  // The marker persists until the next ordinary message, start, cancel or
+  // transition, so this is a real check and not a tautology (review low 1).
   val singleLeavesTable = acceptedSingle != NoName implies not(timers.keys().contains(acceptedSingle))
+  // I3: a `Single` fires at most once. A repeated name never joins the set, so
+  // its size is the number of distinct singles accepted and no name can be in
+  // it twice.
+  val singleFiresOnce = acceptedSingles.size() <= Names.size()
 
   val invariant = armedMatchesSelection
     and infiniteNeverArms
@@ -601,6 +685,7 @@ module fsm_timing {
     and staleNamedNeverFires
     and stoppedNeverArms
     and singleLeavesTable
+    and singleFiresOnce
 
   // ---- Positive tests ----
 
@@ -727,6 +812,18 @@ module fsm_timing {
     init
       .then(receiveOrdinary(Goto, SWithTimeoutA, NoOverride))
       .then(bugSameStateGotoDoesNotRearm)
+      .expect(not(armedMatchesSelection))
+
+  run bugNoOverrideNeverArmsTest =
+    init
+      .then(receiveOrdinary(Goto, SWithTimeoutB, NoOverride))
+      .then(bugNoOverrideNeverArms)
+      .expect(not(armedMatchesSelection))
+
+  run bugUnhandledOnlyNeverArmsTest =
+    init
+      .then(receiveOrdinary(Goto, SWithTimeoutB, NoOverride))
+      .then(bugUnhandledOnlyNeverArms)
       .expect(not(armedMatchesSelection))
 
   run bugStayKeepsOldTimerTest =
