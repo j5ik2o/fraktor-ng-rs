@@ -83,6 +83,13 @@ impl TestKitBase {
       | None => format!("{DEFAULT_TEST_ACTOR_NAME}-{}", TEST_ACTOR_ID.fetch_add(1, Ordering::Relaxed)),
     };
     let test_actor = spawn_function_ref(&system, &label, handler_actor);
+    // The test actor places the children a test starts under it under
+    // a stopping strategy, as Pekko's `TestActor` does: it forwards
+    // its supervisor strategy, which `TestKit` sets to
+    // `OneForOneStrategy` with a stop directive, to the actor it
+    // delegates to. The port's test actor is a function reference,
+    // whose strategy for children is recorded on its entry instead.
+    system.register_supervisor_strategy(&test_actor, SupervisorStrategy::stopping_strategy());
     Self {
       system,
       test_actor,

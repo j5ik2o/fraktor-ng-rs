@@ -23,11 +23,15 @@
 use alloc::string::String;
 use core::time::Duration;
 
+#[cfg(feature = "test-support")]
+use crate::kernel::actor::test_support::ActorHandle;
 use crate::kernel::actor::ActorCreationError;
 use crate::kernel::actor::Props;
 use crate::kernel::actor_ref::ActorRef;
 use crate::kernel::executor::Executor;
 use crate::kernel::message::Message;
+#[cfg(feature = "test-support")]
+use crate::kernel::supervision::RunOutcome;
 use crate::kernel::supervision::SupervisorStrategy;
 use crate::kernel::sync::Arc;
 use crate::kernel::sync::Weak;
@@ -117,6 +121,76 @@ impl WeakActorSystem {
     strategy: SupervisorStrategy,
   ) -> Result<ActorRef, ActorCreationError> {
     Executor::lend(&self.upgrade(), |executor| executor.try_spawn_child_from_weak(parent, props, name, strategy))
+  }
+
+  /// Starts an actor a test wraps, attaching `handle` to its cell.
+  ///
+  /// Mirrors the creation `TestActorRef` performs: `supervisor` is the
+  /// parent the actor is started under, or the user guardian when it is
+  /// omitted. The checks are the ones a top-level creation runs, and
+  /// the strategy the child is placed under follows the supervisor, as
+  /// the executor's entry documents.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ActorCreationError`] when the name, the parent's state,
+  /// or the configuration is refused.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the supervisor is an actor that has not started yet.
+  #[cfg(feature = "test-support")]
+  pub fn try_spawn_test_actor(
+    &self,
+    supervisor: Option<&ActorRef>,
+    props: Props,
+    name: Option<&str>,
+    handle: ActorHandle,
+  ) -> Result<ActorRef, ActorCreationError> {
+    Executor::lend_or_reuse(&self.upgrade(), |executor| executor.try_spawn_test_actor(supervisor, props, name, handle))
+  }
+
+  /// Runs `target`'s behaviour once with `message`, outside its
+  /// mailbox, naming `sender` as the sender.
+  ///
+  /// Mirrors `TestActorRef.receive`. A failure of the behaviour is
+  /// returned as [`RunOutcome::Failed`] instead of reaching the
+  /// supervisor.
+  ///
+  /// # Panics
+  ///
+  /// Panics when the actor has stopped.
+  #[cfg(feature = "test-support")]
+  pub fn receive_directly(&self, target: &ActorRef, message: Message, sender: ActorRef) -> RunOutcome {
+    Executor::lend_or_reuse(&self.upgrade(), |executor| executor.receive_directly(target, message, sender))
+  }
+
+  /// Records `strategy` as the one `target` applies to the children it
+  /// supervises.
+  ///
+  /// For an actor this is what `supervisor_strategy` does at its start;
+  /// the test kit uses it for its test actor, a function reference
+  /// whose children Pekko's `TestActor` places under a stopping
+  /// strategy by delegation.
+  #[cfg(feature = "test-support")]
+  pub fn register_supervisor_strategy(&self, target: &ActorRef, strategy: SupervisorStrategy) {
+    Executor::lend_or_reuse(&self.upgrade(), |executor| executor.register_parent_strategy(target.clone(), strategy));
+  }
+
+  /// Resolves `path` to a handle, as
+  /// [`ActorSystem::resolve_actor_ref`](crate::kernel::actor_system::ActorSystem::resolve_actor_ref)
+  /// does, reached through a non-owning handle.
+  #[cfg(feature = "test-support")]
+  pub fn resolve_actor_ref(&self, path: &crate::kernel::actor_path::ActorPath) -> ActorRef {
+    Executor::lend_or_reuse(&self.upgrade(), |executor| executor.resolve_actor_ref(path))
+  }
+
+  /// Returns the handle that absorbs messages which no actor takes,
+  /// as [`ActorSystem::dead_letters`](crate::kernel::actor_system::ActorSystem::dead_letters)
+  /// does, reached through a non-owning handle.
+  #[cfg(feature = "test-support")]
+  pub fn dead_letters(&self) -> ActorRef {
+    Executor::lend_or_reuse(&self.upgrade(), |executor| executor.dead_letters())
   }
 
   /// Starts a handle whose shard runs `handler` for each delivered message.

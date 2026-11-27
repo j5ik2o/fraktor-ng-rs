@@ -97,4 +97,19 @@ pub trait Actor: Send {
   fn supervisor_strategy(&self) -> SupervisorStrategy {
     SupervisorStrategy::default_strategy()
   }
+
+  /// Returns a copy of this actor's state that a test reads through
+  /// `TestActorRef::underlying_snapshot`. The default has none.
+  ///
+  /// Mirrors the fields a test reads off Pekko's `underlyingActor`: the
+  /// port does not hand out the actor itself, so an actor that wants a
+  /// test to read its state publishes a copy here. The executor calls
+  /// this when it processes a test's probe, in mailbox order, so the
+  /// copy is the state of that moment. This method exists only under
+  /// the `test-support` feature, so the default build's trait carries
+  /// no such promise.
+  #[cfg(feature = "test-support")]
+  fn underlying_snapshot(&self) -> Option<alloc::boxed::Box<dyn core::any::Any + Send + Sync>> {
+    None
+  }
 }

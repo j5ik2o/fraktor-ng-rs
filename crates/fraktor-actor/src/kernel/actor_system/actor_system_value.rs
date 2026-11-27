@@ -114,6 +114,8 @@ impl ActorSystem {
   pub fn with_setup(name: &str, boundary: Arc<dyn ShardBoundary>, setup: ActorSystemSetup) -> Self {
     let executor = Arc::new(spin::Mutex::new(Executor::new(Self::root_path(name), boundary)));
     let system = WeakActorSystem::new(name.to_string(), Arc::downgrade(&executor));
+    let self_handle = Arc::downgrade(&executor);
+    Executor::lend(&executor, |executor| executor.set_self_handle(self_handle));
     let event_stream = EventStream::new(system, false);
     Executor::lend(&executor, |executor| executor.set_event_stream(event_stream.clone()));
     if let Some(settings) = setup.get::<DispatchSettings>() {
