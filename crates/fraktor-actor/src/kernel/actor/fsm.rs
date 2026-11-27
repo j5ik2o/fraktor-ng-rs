@@ -44,7 +44,6 @@ use crate::kernel::actor::FsmState;
 use crate::kernel::actor::FsmTimeout;
 use crate::kernel::actor::FsmTimerMark;
 use crate::kernel::actor::FsmView;
-#[cfg(feature = "test-support")]
 use crate::kernel::actor::StateTimeout;
 use crate::kernel::actor::SubscribeTransitionCallBack;
 use crate::kernel::actor::Transition;
@@ -489,7 +488,7 @@ where
   /// by the port.
   fn event_names_state(&self, event: &Message, state: &S) -> bool {
     let text = match event.downcast_ref::<&'static str>() {
-      | Some(text) => text.to_string(),
+      | Some(text) => (*text).to_owned(),
       | None => match event.downcast_ref::<String>() {
         | Some(text) => text.clone(),
         | None => return false,
