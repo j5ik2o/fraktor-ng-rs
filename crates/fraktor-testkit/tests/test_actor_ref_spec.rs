@@ -68,7 +68,7 @@ use fraktor_actor::kernel::message::Message;
 use fraktor_testkit::default_timeout::DefaultTimeout;
 use fraktor_testkit::event_filter::EventFilter;
 use fraktor_testkit::fraktorspec::FraktorSpec;
-use fraktor_testkit::test_actor_ref::{TestActorRef, CALLING_THREAD_DISPATCHER_ID};
+use fraktor_testkit::test_actor_ref::TestActorRef;
 use fraktor_testkit::test_kit::TestProbe;
 
 const SPEC_SYSTEM_NAME: &str = "TestActorRefSpec";
@@ -416,17 +416,18 @@ fn stops_when_sent_a_poison_pill() {
   let test_thread = std::thread::current().id();
   let cell = TCell::new(test_thread);
   let filter = EventFilter::typed("ActorKilledException");
+  let test_actor = spec.test_actor();
+  let worker_cell = cell.child();
+  let a = TestActorRef::from_props(spec.system_mut(), Props::new(move || WorkerActor::new(worker_cell.clone())));
+  let target = a.actor_ref();
+  let watcher = WatchAndForward { target: target.clone(), test_actor: test_actor.clone(), cell: cell.child() };
+  spec.system_mut().actor_of(Props::new(move || watcher.clone()));
   filter.intercept_any(spec.system_mut(), || {
-    let worker_cell = cell.child();
-    let a = TestActorRef::from_props(spec.system_mut(), Props::new(move || WorkerActor::new(worker_cell.clone())));
-    let target = a.actor_ref();
-    let watcher = WatchAndForward { target: target.clone(), test_actor: spec.test_actor(), cell: cell.child() };
-    spec.system_mut().actor_of(Props::new(move || watcher.clone()));
-    a.tell("PoisonPill", spec.test_actor());
-    spec.expect_msg_type::<WrappedTerminated>();
-    assert!(a.is_terminated(), "the actor must be terminated after the poison pill");
-    assert_thread(&cell.other_thread, test_thread);
+    a.tell("PoisonPill", test_actor);
   });
+  spec.expect_msg_type::<WrappedTerminated>();
+  assert!(a.is_terminated(), "the actor must be terminated after the poison pill");
+  assert_thread(&cell.other_thread, test_thread);
   spec.terminate();
 }
 
@@ -533,7 +534,7 @@ fn proxies_receive_with_sender() {
 #[test]
 fn does_not_throw_when_parent_is_passed_in_the_apply() {
   let mut spec = FraktorSpec::new(SPEC_SYSTEM_NAME);
-  let mut parent = TestProbe::new(spec.system_mut());
+  let parent = TestProbe::new(spec.system_mut());
   let parent_ref = parent.ref_handle();
   let filter = EventFilter::typed("RuntimeException").with_message("expected");
   // `intercept` lends the system, so the child is built first and the body
