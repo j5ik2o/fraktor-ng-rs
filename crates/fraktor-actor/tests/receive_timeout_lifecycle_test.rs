@@ -16,16 +16,18 @@
 
 // The receive timeout around the life cycle of an actor: its sender, a
 // child's stop and the parent's child-terminated hook, a restart, a stop the
-// actor asks for itself, `Kill`, and a `Terminated` that arrives after the
-// watch was removed. The cases are outside ReceiveTimeoutSpec and are not
-// counted in the ledger. Each one states what Pekko v2.0.0 does, after:
+// actor asks for itself, `PoisonPill`, `Kill`, and a `Terminated` that
+// arrives after the watch was removed. The cases are outside
+// ReceiveTimeoutSpec and are not counted in the ledger. Each one states what
+// Pekko v2.0.0 does, after:
 //
 // - `actor/dungeon/ReceiveTimeout.scala`: `setReceiveTimeout` changes the
 //   setting and the version only; the scheduled task is touched by
 //   `cancelReceiveTimeoutIfNeeded` and `checkReceiveTimeout`, and the task is
 //   `scheduleOnce(timeout, self, ReceiveTimeout(timeout))`, with no sender.
 // - `ActorCell.invoke` (lines 568-585): those two calls run before and after
-//   every message, an auto-received one (`Kill`, `Terminated`) included.
+//   every message, an auto-received one (`PoisonPill`, `Kill`,
+//   `Terminated`) included.
 // - `ActorCell.systemInvoke` (line 531) and `FaultHandling.handleChildTerminated`
 //   (lines 327-351): a child's stop reaches the parent as the system message
 //   `DeathWatchNotification`, so the parent's `SupervisorStrategy
@@ -833,6 +835,120 @@ fn deadline_that_comes_while_the_actor_stops_fires_nothing() {
   assert!(spec.system().is_actor_terminated(&child), "the child stopped");
   assert_eq!(clock.monotonic(), Duration::from_millis(10_200), "the child's stop moved the clock past its deadline");
   assert!(delivered(&child_deliveries).is_empty(), "the deadline was not delivered to the child");
+  dead_listener.expect_no_message(millis(300));
+  spec.terminate();
+}
+
+// ---------------------------------------------------------------------------
+// `PoisonPill`
+
+// An actor that sets `setting` on "set" and records every `ReceiveTimeout`.
+// With `slow_child`, it has a child whose stop takes two seconds, so its
+// own stop waits two seconds for it.
+struct PoisonedWithTimeout {
+  setting: ReceiveTimeoutSetting,
+  slow_child: Option<ControlledClock>,
+  deliveries: Deliveries,
+}
+
+impl Actor for PoisonedWithTimeout {
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    if let Some(clock) = &self.slow_child {
+      let _child =
+        context.actor_of(slow_stopping_props(clock, Duration::from_secs(2)), "slow").expect("the child starts");
+    }
+  }
+
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    if record(&self.deliveries, &message) {
+      return;
+    }
+    if message.downcast_ref::<&str>() == Some(&"set") {
+      context.set_receive_timeout(self.setting);
+    }
+  }
+}
+
+fn poisoned_props(
+  setting: ReceiveTimeoutSetting,
+  slow_child: Option<ControlledClock>,
+  deliveries: &Deliveries,
+) -> Props {
+  let deliveries = Arc::clone(deliveries);
+  Props::new(move || PoisonedWithTimeout {
+    setting,
+    slow_child: slow_child.clone(),
+    deliveries: Arc::clone(&deliveries),
+  })
+}
+
+fn expect_zero_timeout_dead_letter(spec: &FraktorSpec, listener: &mut TestProbe, actor: &ActorRef, which: &str) {
+  let dead = listener.expect_msg_type::<DeadLetter>();
+  assert_eq!(
+    dead.message().downcast_ref::<ReceiveTimeout>().map(ReceiveTimeout::timeout),
+    Some(Duration::ZERO),
+    "the {which} dead letter is a ReceiveTimeout(0)"
+  );
+  assert!(*dead.recipient() == *actor, "the {which} one was addressed to the stopped actor");
+  assert!(*dead.sender() == spec.system().dead_letters(), "the {which} one has no sender");
+}
+
+// `PoisonPill` is an `AutoReceivedMessage` but not a
+// `NotInfluenceReceiveTimeout` (`Actor.scala` line 47,
+// `ReceiveTimeoutCompat.isNotInfluenceReceiveTimeout`), so `invoke` runs
+// `cancelReceiveTimeoutIfNeeded` before it and `checkReceiveTimeoutIfNeeded`
+// after it, as for any other message; `autoReceiveMessage` only turns it
+// into `self.stop()`, which queues the `Terminate` (`ActorCell.scala` line
+// 595, `Dispatch.stop`).
+//
+// "set" and the `PoisonPill` are queued together. The check after "set"
+// sends a `ReceiveTimeout(0)` at once, behind the `PoisonPill`. The
+// handling of the `PoisonPill` cancels the task, which is `NotCancellable`
+// and so already sent, and the check after it sends a second
+// `ReceiveTimeout(0)` at once, as the check after a `context.stop(self)`
+// does. The `Terminate` is handled before either reaches the actor, so both
+// go to dead letters, in order, without a sender.
+#[test]
+fn zero_timeout_set_before_a_poison_pill_is_sent_again_by_the_poison_pill() {
+  let (mut spec, _clock) = spec_with_clock();
+  let mut dead_listener = dead_letter_listener(&mut spec);
+  let deliveries = new_deliveries();
+  let actor = spec.system_mut().actor_of(poisoned_props(finite(Duration::ZERO), None, &deliveries));
+  spec.system_mut().run_until_idle();
+  let no_sender = spec.system().dead_letters();
+  actor.tell("set", no_sender.clone());
+  actor.tell("PoisonPill", no_sender);
+  spec.system_mut().run_until_idle();
+  assert!(spec.system().is_actor_terminated(&actor), "the PoisonPill stopped the actor");
+  assert!(delivered(&deliveries).is_empty(), "the stopping actor does not handle a ReceiveTimeout");
+  expect_zero_timeout_dead_letter(&spec, &mut dead_listener, &actor, "first");
+  expect_zero_timeout_dead_letter(&spec, &mut dead_listener, &actor, "second");
+  dead_listener.expect_no_message(millis(300));
+  spec.terminate();
+}
+
+// With a finite timeout, the `PoisonPill` moves the deadline: at 10.5s the
+// task due at 11s is cancelled and one due at 11.5s is scheduled. The
+// `Terminate` handled next cancels it (`FaultHandling.terminate` lines
+// 180-182) before the stop waits for the child until 12.5s, so neither
+// deadline fires: not to the actor, and not to dead letters.
+#[test]
+fn finite_timeout_moved_by_a_poison_pill_is_cancelled_when_the_stop_is_handled() {
+  let (mut spec, clock) = spec_with_clock();
+  let mut dead_listener = dead_letter_listener(&mut spec);
+  let deliveries = new_deliveries();
+  let actor =
+    spec.system_mut().actor_of(poisoned_props(finite(Duration::from_secs(1)), Some(clock.clone()), &deliveries));
+  spec.system_mut().run_until_idle();
+  let no_sender = spec.system().dead_letters();
+  actor.tell("set", no_sender.clone());
+  spec.system_mut().run_until_idle();
+  clock.advance(millis(500));
+  actor.tell("PoisonPill", no_sender);
+  spec.system_mut().run_until_idle();
+  assert!(spec.system().is_actor_terminated(&actor), "the PoisonPill stopped the actor");
+  assert_eq!(clock.monotonic(), Duration::from_millis(12_500), "the stop waited for the child past both deadlines");
+  assert!(delivered(&deliveries).is_empty(), "no timeout was delivered");
   dead_listener.expect_no_message(millis(300));
   spec.terminate();
 }
