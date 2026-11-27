@@ -222,12 +222,18 @@ impl<'a> ActorContext<'a> {
   /// one Pekko holds after the same calls.
   pub(crate) fn run_behavior(&mut self, initial: &mut dyn Actor, message: Message) {
     self.current_message = Some((message.clone(), self.executor.next_delivery_id()));
-    let mut running = self.stack.take_running();
-    match &mut running {
+    let running = self.stack.take_running();
+    // The taken frame goes back even when the behaviour panics: a
+    // failure of one delivery must not silently drop the behaviour the
+    // actor switched to, as Pekko's stack keeps the head it ran. The
+    // guard restores it on the unwind as on the normal return, and the
+    // failure itself is handled exactly as before.
+    let mut restore = RunningRestore::new(self.stack as *mut BehaviorStack, running);
+    match restore.running() {
       | Running::Frame { frame, .. } => frame(self, message),
       | Running::Receive => initial.receive(self, message),
     }
-    self.stack.finish_running(running);
+    restore.finish();
     self.current_message = None;
   }
 
@@ -553,5 +559,46 @@ impl<'a> ActorContext<'a> {
   pub(crate) fn forward(&mut self, target: &ActorRef, message: Message) {
     let sender = self.sender();
     self.executor.send(sender, target, message);
+  }
+}
+
+/// Holds the behaviour head [`ActorContext::run_behavior`] took out of
+/// the stack and puts it back when the delivery ends, on a panic as on
+/// a return.
+///
+/// The stack is named through a raw pointer because the running frame
+/// receives the whole context, stack included, while it runs: the
+/// guard must not hold a borrow of the stack across that call. The
+/// pointer stays valid because the guard is dropped before the context
+/// it was taken from, and the stack outlives both.
+struct RunningRestore {
+  stack: *mut BehaviorStack,
+  running: Option<Running>,
+}
+
+impl RunningRestore {
+  fn new(stack: *mut BehaviorStack, running: Running) -> Self {
+    Self { stack, running: Some(running) }
+  }
+
+  fn running(&mut self) -> &mut Running {
+    self.running.as_mut().expect("the taken head is held until the delivery ends")
+  }
+
+  /// Puts the head back into its slot, as
+  /// [`BehaviorStack::finish_running`] does at the end of a delivery.
+  fn finish(&mut self) {
+    if let Some(running) = self.running.take() {
+      // SAFETY: the pointer names the stack of the context this guard
+      // was taken from, which outlives the guard, and no other borrow
+      // of that stack is alive here.
+      unsafe { &mut *self.stack }.finish_running(running);
+    }
+  }
+}
+
+impl Drop for RunningRestore {
+  fn drop(&mut self) {
+    self.finish();
   }
 }

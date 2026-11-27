@@ -1684,6 +1684,25 @@ impl Executor {
     }
     let mailbox = self.entry(target).map(|entry| Arc::clone(&entry.mailbox));
     let mut cell = self.take_cell(target).expect("the actor that receives directly is in its mailbox");
+    if !cell.is_created() {
+      // An actor built a moment ago from inside another actor (the
+      // nested creation `in_context` performs) may not have run its
+      // `Create` yet: its cell holds no behaviour, and a receive now
+      // would drop the message and report success. Start it first, as
+      // a creation on the test thread has already started when a test
+      // receives on it.
+      if let Some(mailbox) = &mailbox {
+        self.handle_create(&mut cell, mailbox);
+      }
+      if !cell.is_created() {
+        if self.actors.contains_key(&target.key()) && self.entry(target).is_some_and(|entry| !entry.mailbox.has_cell())
+        {
+          self.put_cell(cell);
+        }
+        self.finish_run();
+        return RunOutcome::Failed { message: "the actor failed to start".to_string() };
+      }
+    }
     let catcher = self.catcher.clone();
     self.enter_frame(target);
     let (outcome, _sender) = cell.receive(self, message, sender, catcher.as_deref());
@@ -2646,7 +2665,21 @@ impl Executor {
       let influences = !self.is_not_influence_receive_timeout(&message);
       let timeout_before = self.receive_timeout_before(key, influences);
       if let Some(handle) = cell.handle().cloned() {
-        let snapshot = cell.probe_snapshot();
+        // A snapshot hook that panics fails only this probe: the
+        // catcher turns it into no snapshot, which the test reads as
+        // the failure, instead of the panic unwinding out of the run
+        // and being recorded as the executor's fatal failure, which
+        // would stop every actor in the system.
+        let snapshot = match self.catcher.clone() {
+          | Some(catcher) => {
+            let mut taken = None;
+            match catcher.run(&mut || taken = cell.probe_snapshot()) {
+              | RunOutcome::Completed => taken,
+              | RunOutcome::Failed { .. } => None,
+            }
+          },
+          | None => cell.probe_snapshot(),
+        };
         let setting = self.receive_timeout_setting(key);
         handle.note_probe(sequence, snapshot, setting);
       }
@@ -2925,9 +2958,41 @@ impl Executor {
       guard.stop_all();
     }
     let mut lent = Lent { executor: &mut guard, returned: false };
+    #[cfg(all(feature = "std", feature = "test-support"))]
+    let _registration = LentRegistration::register(executor, lent.executor);
     let result = work(lent.executor);
     lent.returned = true;
     result
+  }
+
+  /// Runs `work` on the executor behind `executor`, as [`lend`](Self::lend)
+  /// does, except that a call made from inside a lend of the same executor
+  /// on the same thread reuses that lend instead of locking again.
+  ///
+  /// A test's entry reached from inside an actor — a `TestActorRef`
+  /// built from `context.system()` while the actor runs — arrives while
+  /// the executor is already lent to the run that is handling the
+  /// actor, and the lock would refuse the re-entry as a concurrent use.
+  /// The reuse is sound because the registered pointer names the
+  /// executor of the lend this call stack is inside: it stays alive,
+  /// unmoved, and exclusively borrowed by this thread until that lend
+  /// returns, and the registration is removed when it does.
+  #[cfg(feature = "test-support")]
+  pub(crate) fn lend_or_reuse<R>(executor: &spin::Mutex<Executor>, work: impl FnOnce(&mut Executor) -> R) -> R {
+    #[cfg(feature = "std")]
+    {
+      let active = LENT_EXECUTORS.with(|lent| {
+        lent.borrow().iter().rev().find(|(mutex, _)| core::ptr::eq(*mutex, executor)).map(|(_, pointer)| *pointer)
+      });
+      if let Some(pointer) = active {
+        // SAFETY: the pointer was registered by the lend of this same
+        // mutex that is active on this thread, so the executor it
+        // names is exclusively borrowed by this call stack and
+        // outlives the call.
+        return work(unsafe { &mut *pointer });
+      }
+    }
+    Self::lend(executor, work)
   }
 
   /// Returns whether the system has been terminated.
@@ -3690,6 +3755,39 @@ impl Executor {
       let message = custom.unwrap_or_else(|| Message::new(notice));
       recipient.send_message(message, sender);
     }
+  }
+}
+
+#[cfg(all(feature = "std", feature = "test-support"))]
+thread_local! {
+  /// The executors lent on this thread, innermost last, named by the
+  /// mutex that guards each of them and the borrow the lend holds.
+  static LENT_EXECUTORS: core::cell::RefCell<Vec<(*const spin::Mutex<Executor>, *mut Executor)>> =
+    const { core::cell::RefCell::new(Vec::new()) };
+}
+
+/// Records one lend in [`LENT_EXECUTORS`] for the lend's duration, so a
+/// test-support entry reached from inside the lend finds the executor
+/// instead of locking it again (see [`Executor::lend_or_reuse`]).
+#[cfg(all(feature = "std", feature = "test-support"))]
+struct LentRegistration;
+
+#[cfg(all(feature = "std", feature = "test-support"))]
+impl LentRegistration {
+  fn register(mutex: &spin::Mutex<Executor>, executor: &mut Executor) -> Self {
+    LENT_EXECUTORS.with(|lent| {
+      lent.borrow_mut().push((mutex as *const spin::Mutex<Executor>, executor as *mut Executor));
+    });
+    Self
+  }
+}
+
+#[cfg(all(feature = "std", feature = "test-support"))]
+impl Drop for LentRegistration {
+  fn drop(&mut self) {
+    LENT_EXECUTORS.with(|lent| {
+      lent.borrow_mut().pop();
+    });
   }
 }
 

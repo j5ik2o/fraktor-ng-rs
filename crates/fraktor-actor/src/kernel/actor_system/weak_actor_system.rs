@@ -147,7 +147,7 @@ impl WeakActorSystem {
     name: Option<&str>,
     handle: ActorHandle,
   ) -> Result<ActorRef, ActorCreationError> {
-    Executor::lend(&self.upgrade(), |executor| executor.try_spawn_test_actor(supervisor, props, name, handle))
+    Executor::lend_or_reuse(&self.upgrade(), |executor| executor.try_spawn_test_actor(supervisor, props, name, handle))
   }
 
   /// Runs `target`'s behaviour once with `message`, outside its
@@ -162,7 +162,7 @@ impl WeakActorSystem {
   /// Panics when the actor has stopped.
   #[cfg(feature = "test-support")]
   pub fn receive_directly(&self, target: &ActorRef, message: Message, sender: ActorRef) -> RunOutcome {
-    Executor::lend(&self.upgrade(), |executor| executor.receive_directly(target, message, sender))
+    Executor::lend_or_reuse(&self.upgrade(), |executor| executor.receive_directly(target, message, sender))
   }
 
   /// Records `strategy` as the one `target` applies to the children it
@@ -174,7 +174,7 @@ impl WeakActorSystem {
   /// strategy by delegation.
   #[cfg(feature = "test-support")]
   pub fn register_supervisor_strategy(&self, target: &ActorRef, strategy: SupervisorStrategy) {
-    Executor::lend(&self.upgrade(), |executor| executor.register_parent_strategy(target.clone(), strategy));
+    Executor::lend_or_reuse(&self.upgrade(), |executor| executor.register_parent_strategy(target.clone(), strategy));
   }
 
   /// Resolves `path` to a handle, as
@@ -182,7 +182,7 @@ impl WeakActorSystem {
   /// does, reached through a non-owning handle.
   #[cfg(feature = "test-support")]
   pub fn resolve_actor_ref(&self, path: &crate::kernel::actor_path::ActorPath) -> ActorRef {
-    Executor::lend(&self.upgrade(), |executor| executor.resolve_actor_ref(path))
+    Executor::lend_or_reuse(&self.upgrade(), |executor| executor.resolve_actor_ref(path))
   }
 
   /// Returns the handle that absorbs messages which no actor takes,
@@ -190,7 +190,7 @@ impl WeakActorSystem {
   /// does, reached through a non-owning handle.
   #[cfg(feature = "test-support")]
   pub fn dead_letters(&self) -> ActorRef {
-    Executor::lend(&self.upgrade(), |executor| executor.dead_letters())
+    Executor::lend_or_reuse(&self.upgrade(), |executor| executor.dead_letters())
   }
 
   /// Starts a handle whose shard runs `handler` for each delivered message.

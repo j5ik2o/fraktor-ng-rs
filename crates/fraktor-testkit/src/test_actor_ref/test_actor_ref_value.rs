@@ -493,15 +493,15 @@ impl TestActorRef {
   /// it is sent, or while it is waited for, and when the probe is not
   /// processed within the default timeout.
   fn sync_with_probe(&self) {
-    if self.handle.is_terminated() {
+    if self.actor_gone() {
       panic!("underlying actor is terminated");
     }
     let sequence = self.handle.send_probe(&self.actor_ref);
-    if self.handle.is_terminated() {
+    if self.actor_gone() {
       panic!("underlying actor is terminated");
     }
     let started = Instant::now();
-    while self.handle.processed_sequence() < sequence && !self.handle.is_terminated() {
+    while self.handle.processed_sequence() < sequence && !self.actor_gone() {
       if started.elapsed() > PROBE_TIMEOUT {
         panic!("timeout while waiting for the actor at {} to process a probe", self.actor_ref.path());
       }
@@ -509,9 +509,18 @@ impl TestActorRef {
         std::thread::sleep(Duration::from_millis(1));
       }
     }
-    if self.handle.is_terminated() {
+    if self.actor_gone() {
       panic!("underlying actor is terminated");
     }
+  }
+
+  /// Returns whether the actor is gone, by its handle or by the
+  /// system: a system that terminated takes every actor with it, and
+  /// an actor that never started holds no handle mark, so the handle
+  /// alone would leave a read after `terminate` waiting out the probe
+  /// timeout for a probe that can never be processed.
+  fn actor_gone(&self) -> bool {
+    self.handle.is_terminated() || self.system.is_actor_terminated(&self.actor_ref)
   }
 }
 
