@@ -159,16 +159,18 @@ fn parent(name: &'static str, log: &Log, strategy: SupervisorStrategy) -> Props 
 
 #[test]
 fn a_message_to_a_child_under_a_failed_parent_waits_for_the_decision() {
-  // Design 11.13.3 item 3 and 11.13.12 "失敗" first line: a failure suspends the
-  // child, so a message sent to the child after the parent failed is not
-  // handled until the parent's decision has taken effect. Stage 4a does not
-  // suspend children, so the child answers at once.
+  // Design 11.13.3 item 3, 11.13.12 "失敗" first line and 11.13.18 item 1: a
+  // failure suspends the child, so a message sent to the child after the parent
+  // failed, before the decision, is handled once, after the parent and the
+  // child have restarted. Pekko v2.0.0 `dungeon/FaultHandling.scala`
+  // `finishRecreate` restarts the kept child after the parent's `postRestart`
+  // (lines 293-294), and the child's mailbox stays suspended until then.
   let log = new_log();
   let mut system = with_catcher("Stage4bSuspendedChild");
   let guardian = system.actor_of(parent("guardian", &log, SupervisorStrategy::default_strategy()));
   let failing = system.downgrade().spawn_child(
     &guardian,
-    parent("parent", &log, SupervisorStrategy::one_for_one(3).with_decider(|_, _| panic!("simulated decider panic"))),
+    parent("parent", &log, SupervisorStrategy::default_strategy()),
     Some("parent"),
     SupervisorStrategy::one_for_one(3),
   );
@@ -183,13 +185,92 @@ fn a_message_to_a_child_under_a_failed_parent_waits_for_the_decision() {
   failing.tell("boom", guardian.clone());
   system.run_one();
   assert!(!system.is_actor_terminated(&failing), "the parent stopped; the scenario needs it to restart");
-  // In stage 4b the child is suspended until the parent's decision has taken
-  // effect, so this message waits. Stage 4a never suspends the child, so it is
-  // handled right away.
+  // The parent's `Failed` waits in the guardian's mailbox, so this message
+  // reaches the child before the decision, behind the child's `Suspend`.
   log.lock().unwrap().clear();
   child.tell("ping", guardian.clone());
   system.run_until_idle();
-  assert_eq!(counted(&log, "child:ping"), 0, "the child handled a message under its failed parent");
+  let seen = entries(&log);
+  assert_eq!(counted(&log, "child:ping"), 1, "the child did not handle the message exactly once: {seen:?}");
+  let at = |entry: &str| seen.iter().position(|held| held == entry);
+  assert!(at("parent:post_restart").is_some(), "the parent did not restart: {seen:?}");
+  assert!(at("child:post_restart").is_some(), "the kept child was not restarted: {seen:?}");
+  assert!(
+    at("parent:post_restart") < at("child:ping"),
+    "the child handled the message before the parent restarted: {seen:?}"
+  );
+  assert!(
+    at("child:post_restart") < at("child:ping"),
+    "the child handled the message before its own restart: {seen:?}"
+  );
+}
+
+#[test]
+fn a_failed_parents_own_strategy_does_not_decide_its_own_failure() {
+  // Design 11.13.4 "判断するのは親の戦略だけ" and 11.13.18 item 1 (#319): the
+  // strategy a failing parent applies to its own children takes no part in
+  // the decision for the parent's own failure. Pekko v2.0.0
+  // `dungeon/FaultHandling.scala` `handleFailure` runs the deciding actor's own
+  // `supervisorStrategy` (lines 313-314), so the panicking decider below never
+  // runs: the guardian's default strategy restarts the parent, the parent's
+  // restart recreates the child it keeps, and nothing is left suspended.
+  let log = new_log();
+  let mut system = with_catcher("Stage4bOwnStrategyIsNotAsked");
+  let guardian = system.actor_of(parent("guardian", &log, SupervisorStrategy::default_strategy()));
+  let failing = system.downgrade().spawn_child(
+    &guardian,
+    parent("parent", &log, SupervisorStrategy::one_for_one(3).with_decider(|_, _| panic!("simulated decider panic"))),
+    Some("parent"),
+    SupervisorStrategy::one_for_one(3),
+  );
+  let child = system.downgrade().spawn_child(
+    &failing,
+    worker("child", &log),
+    Some("child"),
+    SupervisorStrategy::default_strategy(),
+  );
+  system.run_until_idle();
+  log.lock().unwrap().clear();
+
+  failing.tell("boom", guardian.clone());
+  system.run_until_idle();
+  let seen = entries(&log);
+  let counts = counts_of(&mut system, &[&guardian, &failing, &child]);
+  assert_eq!(
+    counts,
+    alloc::vec![Some(0), Some(0), Some(0)],
+    "the deciding actor, the parent or the child is still suspended: {seen:?}"
+  );
+  assert_eq!(counted(&log, "parent:pre_restart"), 1, "the parent was not restarted: {seen:?}");
+  assert_eq!(counted(&log, "parent:post_restart"), 1, "the parent was not restarted: {seen:?}");
+  assert_eq!(counted(&log, "child:post_restart"), 1, "the kept child was not recreated: {seen:?}");
+  assert!(!system.is_actor_terminated(&failing));
+  assert!(!system.is_actor_terminated(&child));
+}
+
+#[test]
+fn a_top_level_actor_is_decided_by_the_guardian_not_by_its_own_strategy() {
+  // Design 11.13.4 "判断するのは親の戦略だけ" and 11.13.18 item 1 (#332): a
+  // top-level actor whose strategy stops its own children is restarted on its
+  // own failure. Pekko v2.0.0 decides a top-level failure with the `/user`
+  // guardian's strategy (`ActorRefProvider.scala:534`, `:580`), the
+  // `defaultStrategy` that restarts on an `Exception`
+  // (`actor/FaultHandling.scala:98-100`, `:218-223`).
+  let log = new_log();
+  let mut system = with_catcher("Stage4bTopLevelDecidedByGuardian");
+  let top =
+    system.actor_of(parent("top", &log, SupervisorStrategy::one_for_one(3).with_decider(|_, _| Directive::Stop)));
+  system.run_until_idle();
+  log.lock().unwrap().clear();
+
+  top.tell("boom", top.clone());
+  system.run_until_idle();
+  assert!(
+    !system.is_actor_terminated(&top),
+    "the top-level actor was stopped by its own strategy: {:?}",
+    entries(&log)
+  );
+  assert_eq!(entries(&log), ["top:pre_restart", "top:post_restart"]);
 }
 
 #[test]
