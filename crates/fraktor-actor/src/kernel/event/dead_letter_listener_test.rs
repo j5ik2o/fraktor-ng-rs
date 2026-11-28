@@ -79,7 +79,11 @@ fn a_resume_dead_letter_is_logged_under_its_kind() {
   let target = target();
   let mut listener =
     DeadLetterListener::new(DeadLetterSettings::new(DeadLetterLogLimit::Unlimited, None), dead_letters.clone());
-  let dead = DeadLetter::from_message(Message::new(SystemMessage::Resume), target.clone(), target.clone());
+  let dead = DeadLetter::from_message(
+    Message::new(SystemMessage::Resume { caused_by_failure: false }),
+    target.clone(),
+    target.clone(),
+  );
 
   let line = listener.on_event(&AnyDeadLetter::DeadLetter(&dead), Duration::ZERO, &never_suppressed);
   let line = line.expect("the listener logs an unlimited dead letter");

@@ -16,8 +16,7 @@
 
 //! The status word of a mailbox.
 
-use portable_atomic::AtomicU32;
-use portable_atomic::Ordering;
+use portable_atomic::{AtomicU32, Ordering};
 
 #[cfg(test)]
 #[path = "mailbox_status_test.rs"]
@@ -64,10 +63,15 @@ impl MailboxStatus {
     self.load() & HAS_SYSTEM_MESSAGES != 0
   }
 
-  /// Returns whether the suspend count is above zero in an open mailbox.
-  pub(crate) fn is_open_and_suspended(&self) -> bool {
-    let status = self.load();
-    status & CLOSED == 0 && status >= SUSPEND_UNIT
+  /// Returns whether the suspend count is above zero (Pekko's
+  /// `isSuspended`).
+  pub(crate) fn is_suspended(&self) -> bool {
+    self.load() >= SUSPEND_UNIT
+  }
+
+  /// Returns the number of suspends that still wait for an answer.
+  pub(crate) fn suspend_count(&self) -> usize {
+    self.load() as usize / SUSPEND_UNIT as usize
   }
 
   /// Returns whether a run may take a normal message: open and not suspended

@@ -39,7 +39,10 @@ use crate::kernel::sync::Arc;
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Kind {
   Create,
+  Suspend,
   Resume,
+  Recreate,
+  Failed,
   Terminate,
   ChildTerminated,
 }
@@ -47,7 +50,10 @@ enum Kind {
 fn kind_of(message: &SystemMessage) -> Kind {
   match message {
     | SystemMessage::Create => Kind::Create,
-    | SystemMessage::Resume => Kind::Resume,
+    | SystemMessage::Suspend => Kind::Suspend,
+    | SystemMessage::Resume { .. } => Kind::Resume,
+    | SystemMessage::Recreate { .. } => Kind::Recreate,
+    | SystemMessage::Failed(_) => Kind::Failed,
     | SystemMessage::Terminate => Kind::Terminate,
     | SystemMessage::ChildTerminated { .. } => Kind::ChildTerminated,
   }
@@ -115,7 +121,7 @@ fn a_resume_is_a_dead_letter_naming_the_owner_on_both_ends() {
   let target = executor.try_spawn_user(Props::new(|| Sink), None).unwrap();
   let dead_letters = executor.dead_letters();
 
-  shared.route_system_undeliverable(SystemMessage::Resume, target.clone(), &dead_letters);
+  shared.route_system_undeliverable(SystemMessage::Resume { caused_by_failure: false }, target.clone(), &dead_letters);
 
   assert_eq!(
     *reports.lock().unwrap(),

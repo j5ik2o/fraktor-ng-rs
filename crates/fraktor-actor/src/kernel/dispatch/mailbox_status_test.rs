@@ -254,10 +254,3 @@ fn random_long_sequences_match_the_spec() {
   }
   assert!((0..=5).all(|count| counts.contains(&count)), "seed {seed:#x}: suspend counts reached: {counts:?}");
 }
-
-impl MailboxStatus {
-  /// Returns whether the suspend count is above zero.
-  pub(crate) fn is_suspended(&self) -> bool {
-    self.load() >= super::SUSPEND_UNIT
-  }
-}

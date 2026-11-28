@@ -39,6 +39,20 @@ use crate::kernel::setup::Setup;
 use super::ActorSystem;
 use crate::adaptor::ChannelBoundary;
 
+/// The stage 4b red unit tests (design of #234, section 11.13.12).
+///
+/// They sit beside the tests of `ActorSystem` for one reason: the one
+/// crate-internal read they use (the suspend count, which stage 4b makes a
+/// production entry, 11.13.8) reaches the executor through the private
+/// `executor` field, which only this module may read.
+fn stage4b_suspend_counts(system: &mut ActorSystem, targets: &[&ActorRef]) -> Vec<Option<usize>> {
+  let executor = crate::kernel::sync::lock(&system.executor);
+  targets.iter().map(|target| executor.suspend_count_of(target)).collect()
+}
+
+#[cfg(test)]
+mod stage4b_tests;
+
 struct QueueBoundary {
   queue: Mutex<VecDeque<Envelope>>,
 }
@@ -2287,7 +2301,7 @@ impl Actor for StatefulChild {
 }
 
 #[test]
-fn an_empty_pre_restart_recovers_only_the_uninitialized_child_and_keeps_the_healthy_child_state() {
+fn an_empty_pre_restart_keeps_the_children_but_the_survivors_are_recreated_after_the_restart() {
   let restarts = Arc::new(AtomicUsize::new(0));
   let attempts = Arc::new(AtomicUsize::new(0));
   let received = Arc::new(Mutex::new(Vec::new()));
@@ -2333,10 +2347,23 @@ fn an_empty_pre_restart_recovers_only_the_uninitialized_child_and_keeps_the_heal
   let recovered = failed_child.lock().unwrap().clone().expect("the failed creation returned its child handle");
   recovered.tell("recovered", parent.clone());
   system.run_until_idle();
-  assert_eq!(healthy_creations.load(Ordering::SeqCst), 1, "the healthy child's behavior was recreated");
-  assert_eq!(*observations.lock().unwrap(), alloc::vec![(healthy.clone(), 1), (healthy, 1)]);
-  assert_eq!(*received.lock().unwrap(), alloc::vec!["recovered"], "the retained child still has no behavior");
-  assert_eq!(attempts.load(Ordering::SeqCst), 2, "only the failed child must be created again");
+  // pekko v2.0.0 `actor/src/main/scala/org/apache/pekko/actor/dungeon/FaultHandling.scala`
+  // `finishRecreate` keeps a snapshot of the surviving children (`val survivors = children`,
+  // line 280) and restarts every one of them only after the new instance's `postRestart`
+  // (`survivors.foreach(child => ... child.restart(cause))`, lines 293-294). A restart
+  // builds a fresh behavior, so the healthy child is created again and its state is reset.
+  assert_eq!(healthy_creations.load(Ordering::SeqCst), 2, "the surviving healthy child's behavior was recreated");
+  assert_eq!(*observations.lock().unwrap(), alloc::vec![(healthy.clone(), 1), (healthy, 0)]);
+  assert_eq!(
+    *received.lock().unwrap(),
+    alloc::vec!["recovered"],
+    "the retained child was started by the recreate and handled the message"
+  );
+  assert_eq!(
+    attempts.load(Ordering::SeqCst),
+    2,
+    "the failed child's start was attempted at spawn and again by the recreate"
+  );
   let duplicate = crate::kernel::sync::lock(&system.executor).spawn_named_child(&parent, Props::new(|| NoOp), "bob");
   assert!(duplicate.is_err(), "a recovered live child must still reserve bob");
 }
@@ -2562,13 +2589,17 @@ fn a_child_follows_the_strategy_of_its_restarted_parent() {
   parent.tell("panic", parent.clone());
   system.run_until_idle();
   assert!(!system.is_actor_terminated(&parent), "the parent did not restart");
+  // The parent's restart keeps the kid, and pekko v2.0.0 `FaultHandling.scala`
+  // `finishRecreate` restarts the survivors after the new instance's `postRestart`
+  // (lines 293-294), so the kid's `post_restart` runs once here.
+  assert_eq!(kid_post_restarts.load(Ordering::SeqCst), 1, "the kept kid was not restarted with its parent");
 
   kid_handle.tell("boom", kid_handle.clone());
   system.run_until_idle();
 
   assert_eq!(
     kid_post_restarts.load(Ordering::SeqCst),
-    0,
+    1,
     "the child used the strategy from before the parent restarted"
   );
   assert!(system.is_actor_terminated(&kid_handle), "the child was not stopped by the new parent strategy");
@@ -2608,14 +2639,17 @@ fn unlimited_one_for_one_restarts_do_not_spend_a_later_limit() {
   assert_eq!(creations.load(Ordering::SeqCst), 2);
   assert!(!system.is_actor_terminated(&child));
 
+  // The parent's restart keeps the kid, and pekko v2.0.0 `FaultHandling.scala`
+  // `finishRecreate` restarts the survivors after the new instance's `postRestart`
+  // (lines 293-294), so the kid's `post_restart` runs once here as well.
   child.tell("boom", parent.clone());
   system.run_until_idle();
-  assert_eq!(kid_post_restarts.load(Ordering::SeqCst), 2);
+  assert_eq!(kid_post_restarts.load(Ordering::SeqCst), 3);
   assert!(!system.is_actor_terminated(&child));
 
   child.tell("boom", parent);
   system.run_until_idle();
-  assert_eq!(kid_post_restarts.load(Ordering::SeqCst), 2);
+  assert_eq!(kid_post_restarts.load(Ordering::SeqCst), 3);
   assert!(system.is_actor_terminated(&child));
 }
 

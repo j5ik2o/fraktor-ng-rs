@@ -516,8 +516,14 @@ fn run_recovery(
   if !parent_stopped {
     healthy.tell("read", guardian.clone());
     system.run_until_idle();
-    assert_eq!(*healthy_creations.lock().unwrap(), 1);
-    assert_eq!(*values.lock().unwrap(), alloc::vec![(healthy.clone(), 1), (healthy, 1)]);
+    let parent_restarts = observations.lock().unwrap().restarts;
+    // D4b-1 (A): the parent keeps `healthy` across its restart, and the
+    // `Recreate` the parent's later half sends recreates it, so the child is
+    // created once up front and once more per parent restart.
+    assert_eq!(*healthy_creations.lock().unwrap(), 1 + parent_restarts);
+    // The recreated instance starts empty again, so the read after the
+    // restart sees a fresh value.
+    assert_eq!(*values.lock().unwrap(), alloc::vec![(healthy.clone(), 1), (healthy, 0)]);
   }
   if !child_stopped {
     child.tell("recovered", guardian);
@@ -642,6 +648,17 @@ impl Executor {
   /// and is not part of the crate's API.
   pub(crate) fn parent_entry_count(&self) -> usize {
     self.actors.values().filter(|entry| entry.supervision.is_some()).count() + self.ref_parents.len()
+  }
+
+  /// Returns the suspend count of `target`'s mailbox, or `None` when the actor
+  /// has stopped.
+  ///
+  /// Stage 4b (design of #234, section 11.13.8) makes `suspend_count` a
+  /// production read entry on `Mailbox`; this accessor stands in for it until
+  /// then, so the stage 4b unit tests can read the count without the executor
+  /// exposing its entries.
+  pub(crate) fn suspend_count_of(&self, target: &ActorRef) -> Option<usize> {
+    self.entry(target).map(|entry| entry.mailbox.suspend_count())
   }
 }
 
@@ -1996,11 +2013,20 @@ mod stage4a {
     log: Log,
     fail_on: Option<&'static str>,
     on_pre_restart: Option<Hook>,
+    post_restart_runs_pre_start: bool,
+    strategy: Option<SupervisorStrategy>,
   }
 
   impl Node {
     fn new(label: &'static str, log: &Log) -> Self {
-      Self { label, log: Arc::clone(log), fail_on: None, on_pre_restart: None }
+      Self {
+        label,
+        log: Arc::clone(log),
+        fail_on: None,
+        on_pre_restart: None,
+        post_restart_runs_pre_start: false,
+        strategy: None,
+      }
     }
 
     fn failing_on(mut self, text: &'static str) -> Self {
@@ -2010,6 +2036,21 @@ mod stage4a {
 
     fn on_pre_restart(mut self, hook: impl Fn(&mut ActorContext<'_>) + Send + Sync + 'static) -> Self {
       self.on_pre_restart = Some(Arc::new(hook));
+      self
+    }
+
+    /// Makes `post_restart` run `pre_start` after recording itself, as the
+    /// default `Actor::post_restart` does, so a restart records the second
+    /// `pre_start` too (design section 11.13.5).
+    fn post_restart_runs_pre_start(mut self) -> Self {
+      self.post_restart_runs_pre_start = true;
+      self
+    }
+
+    /// Makes the node apply `strategy` to its own children, in place of
+    /// the default strategy.
+    fn supervising_with(mut self, strategy: SupervisorStrategy) -> Self {
+      self.strategy = Some(strategy);
       self
     }
 
@@ -2026,6 +2067,10 @@ mod stage4a {
   impl Actor for Node {
     fn pre_start(&mut self, _context: &mut ActorContext<'_>) {
       self.record("pre_start");
+    }
+
+    fn supervisor_strategy(&self) -> SupervisorStrategy {
+      self.strategy.clone().unwrap_or_else(SupervisorStrategy::default_strategy)
     }
 
     fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
@@ -2052,8 +2097,11 @@ mod stage4a {
       }
     }
 
-    fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
+    fn post_restart(&mut self, context: &mut ActorContext<'_>) {
       self.record("post_restart");
+      if self.post_restart_runs_pre_start {
+        self.pre_start(context);
+      }
     }
   }
 
@@ -2380,6 +2428,17 @@ mod stage4a {
     system.run_until_idle();
 
     failing.tell("boom", failing.clone());
+    // The first `run_one` delivers `boom` to `a`, whose `Failed` then waits in
+    // the guardian's mailbox. The guardian's run takes that `Failed` and the
+    // ordinary `tick` behind it, so the second `run_one` returns once the
+    // all-for-one decision has sent `b` its `Suspend` and `Recreate`, before
+    // `b` has handled them.
+    assert!(system.run_one(), "the failing run of `a` did not run");
+    guardian.tell("tick", guardian.clone());
+    assert!(system.run_one(), "the guardian's run did not run");
+    assert!(!entries(&log).contains(&String::from("b:post_restart")), "{:?}", entries(&log));
+    // `m` reaches `b` while it waits to restart, behind its `Suspend`
+    // (design of #234, section 11.13.18 item 3).
     sibling.tell("m", sibling.clone());
     system.run_until_idle();
 
@@ -2586,20 +2645,28 @@ mod stage4a {
     }));
     system.run_until_idle();
 
-    // c1: the first failure is restarted and its `Create` queued; the
-    // parent's restart queues a second. The first fails again; the second
-    // does nothing, and the second failure gets a decision of its own. One
-    // decision gives one retry, so every failure is decided and the child
-    // ends up resumed.
+    // c1: the first failure is restarted and its `Recreate` queued; the
+    // parent's restart queues a second. Under section 11.13.11 the second
+    // `Recreate` restarts the child the first one created, and that restart's
+    // default `post_restart` runs `pre_start` again, so c1 attempts one more
+    // start than the stage 4a "second Create does nothing" rule gave. Every
+    // failure is still decided once, and the child ends up resumed.
     assert_eq!(restarts.load(Ordering::SeqCst), 1);
-    assert_eq!(c1_attempts.load(Ordering::SeqCst), 4);
+    assert_eq!(c1_attempts.load(Ordering::SeqCst), 5);
     assert_eq!(c1_decisions.load(Ordering::SeqCst), 3);
     assert_eq!(c2_attempts.load(Ordering::SeqCst), 2);
     assert!(!system.is_actor_terminated(&parent));
     let c1 = system.resolve_actor_ref(&parent.path().with_child("c1"));
     c1.tell("hello", c1.clone());
     system.run_until_idle();
-    assert_eq!(entries(&log), ["hello"], "the retried child is still suspended");
+    // The second `Recreate` restarts the created c1, and that restart's
+    // `pre_restart` runs the default stop hook once; the resumed child then
+    // receives "hello", which shows it is no longer suspended.
+    assert_eq!(
+      entries(&log),
+      ["post_stop", "hello"],
+      "the retried child resumes after its restart and receives `hello`"
+    );
   }
 
   // ----- the decision waits while the parent is suspended
@@ -2717,13 +2784,19 @@ mod stage4a {
     let all_for_one =
       SupervisorStrategy::all_for_one(3, RestartWindow::Unbounded).with_decider(|_, _| Directive::Restart);
     // `a` fails its first start, and its parent decides before `b` has
-    // handled its `Create`.
+    // handled its `Create`. Every sibling is suspended and recreated, so `b`
+    // handles `Create` then `Recreate`: `pre_start` twice, and a `post_restart`
+    // that runs the second `pre_start` (section 11.13.5).
     system.downgrade().spawn_child(&guardian, fails_to_start(&attempts, 1, &log), Some("a"), all_for_one.clone());
-    let unborn = spawn(&system, &guardian, &Node::new("b", &log), all_for_one);
+    let unborn = spawn(&system, &guardian, &Node::new("b", &log).post_restart_runs_pre_start(), all_for_one);
     system.run_until_idle();
 
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
-    assert_eq!(entries(&log), ["b:pre_start"], "the sibling that had not started was restarted");
+    assert_eq!(
+      entries(&log),
+      ["b:pre_start", "b:pre_restart", "b:post_stop", "b:post_restart", "b:pre_start"],
+      "the sibling that had not started handles its `Create`, then is restarted by the `Recreate`"
+    );
     assert!(!system.is_actor_terminated(&unborn));
   }
 
@@ -2780,9 +2853,73 @@ mod stage4a {
   }
 
   #[test]
+  fn a_resume_after_a_failure_carries_the_cause_to_the_perpetrator_child_only() {
+    // Design 11.13.7, the `Resume` row, and 11.13.18 item 9.5: Pekko v2.0.0's
+    // `faultResume` resumes its children with the cause of its own failure
+    // only for the child that failure names as the perpetrator, and without
+    // a cause for every other child (`dungeon/FaultHandling.scala:146-151`,
+    // `dungeon/Children.scala:216-222`,
+    // `child.resume(if (perp == child) causedByFailure else null)`).
+    // `k`'s decider panics on `x`'s failure, so `k` fails with `x` as the
+    // perpetrator; `k`'s parent is a function reference, whose decider for
+    // `k` panics too, so `k` is resumed with the cause (11.13.7: the one
+    // place a `Resume` is sent). The runs are taken one at a time, and the
+    // `Resume`s `k` sends are read from its children's mailboxes before
+    // either child runs: `x` is given the cause, `y` is not.
+    let address = crate::kernel::address::Address::new("pekko", "Stage4bResumeCause");
+    let root = crate::kernel::actor_path::RootActorPath::new(address);
+    let mut executor = super::Executor::new(super::ActorPath::from_root(root), Arc::new(ChannelBoundary::new()));
+    executor.set_failure_catcher(Arc::new(UnwindCatcher));
+    let log = new_log();
+    let asked_for_k = Arc::new(AtomicUsize::new(0));
+    let asked_for_x = Arc::new(AtomicUsize::new(0));
+    let parent = executor.function_ref("parent", |_: &ActorRef, _: Message| {});
+    let k = executor.spawn_child(
+      &parent,
+      Node::new("k", &log).supervising_with(panicking_decider(&asked_for_x)).props(),
+      Some("k"),
+      panicking_decider(&asked_for_k),
+    );
+    executor.run_until_idle();
+    let x = executor.spawn_named_child(&k, Node::new("x", &log).failing_on("boom").props(), "x").expect("`x`");
+    let y = executor.spawn_named_child(&k, Node::new("y", &log).props(), "y").expect("`y`");
+    executor.run_until_idle();
+
+    x.tell("boom", x.clone());
+    let mut runs = 0;
+    while asked_for_k.load(Ordering::SeqCst) == 0
+      || executor.entry(&k).is_some_and(|entry| entry.mailbox.suspend_count() > 0)
+    {
+      let task = executor.manual.pop().expect("a run is left before `k` is resumed");
+      executor.run_task(task, None);
+      runs += 1;
+      assert!(runs <= 2, "`k` was not resumed in the runs of `x` and `k`");
+    }
+    assert_eq!(asked_for_x.load(Ordering::SeqCst), 1, "`k`'s decider was not asked once for `x`");
+    assert_eq!(asked_for_k.load(Ordering::SeqCst), 1, "the function reference's decider was not asked once for `k`");
+
+    let resumes_of = |executor: &super::Executor, child: &ActorRef| -> Vec<bool> {
+      let entry = executor.entry(child).expect("the child is in the table");
+      entry
+        .mailbox
+        .close()
+        .1
+        .into_iter()
+        .filter_map(|message| match message {
+          | super::SystemMessage::Resume { caused_by_failure } => Some(caused_by_failure),
+          | _ => None,
+        })
+        .collect()
+    };
+    assert_eq!(resumes_of(&executor, &x), [true], "the perpetrator `x` was not resumed with the cause once");
+    assert_eq!(resumes_of(&executor, &y), [false], "`y`, which did not fail, was resumed with the cause");
+  }
+
+  #[test]
   fn a_held_failure_of_a_child_that_has_left_the_table_is_dropped() {
     let mut system = with_catcher("Stage4aDroppedDecision");
     let log = new_log();
+    let dead = dead_letters_of(&mut system);
     let asked = Arc::new(AtomicUsize::new(0));
     let slow = Arc::new(Mutex::new(None::<ActorRef>));
     let to_stop = Arc::clone(&slow);
@@ -2794,20 +2931,33 @@ mod stage4a {
     let grandparent = system.actor_of(grandparent_node.props());
     let x = spawn(&system, &grandparent, &Node::new("x", &log), SupervisorStrategy::default_strategy());
     *slow.lock().unwrap() = Some(x);
-    let parent =
-      spawn(&system, &grandparent, &Node::new("p", &log).failing_on("boom"), SupervisorStrategy::one_for_one(5));
+    // Both the strategy `p` applies to its children and the one `c` is
+    // started with count the decisions asked of them, so `asked` reads every
+    // decider that could answer for `c`.
+    let parent = spawn(
+      &system,
+      &grandparent,
+      &Node::new("p", &log).supervising_with(panicking_decider(&asked)),
+      SupervisorStrategy::one_for_one(5),
+    );
     let child = spawn(&system, &parent, &Node::new("c", &log).failing_on("boom"), panicking_decider(&asked));
     system.run_until_idle();
 
-    // `g` waits for `x` in its restart, so the decision for `p` waits; `p`
-    // is suspended, so the decision for `c` waits. Once `g` has restarted,
-    // `p` restarts, and its default `pre_restart` stops `c`, which leaves
-    // `p`'s table. The decision for `c` is then dropped.
+    // `g` fails and suspends `p`, and `c` takes its own `boom` before
+    // `p`'s `Suspend` reaches it, so `c` fails and its `Failed` is held by
+    // the suspended `p`. `g` waits for `x` in its restart; once `g` has
+    // restarted, `p`, a survivor of `g`'s restart, is recreated once
+    // (design 11.13.6, D4b-1 A), and its default `pre_restart` stops `c`,
+    // which leaves `p`'s table. The held `Failed(c)` is then dropped, as
+    // Pekko v2.0.0 drops a `Failed` from an unknown child
+    // (`dungeon/FaultHandling.scala:307-324`): the decider is never asked
+    // (design 11.13.13, decision 1, and 11.13.18 item 6). That `c` failed
+    // at all is read from dead letters: its `boom` was taken, not left.
     grandparent.tell("boom", grandparent.clone());
-    parent.tell("boom", parent.clone());
     child.tell("boom", child.clone());
     system.run_until_idle();
 
+    assert_eq!(entries(&dead), Vec::<String>::new(), "`c` did not take its `boom`, so it never failed");
     assert_eq!(asked.load(Ordering::SeqCst), 0, "the decider was asked about a child that had left the table");
     let log = entries(&log);
     assert_eq!(log.iter().filter(|entry| *entry == "p:post_restart").count(), 1, "{log:?}");
@@ -2842,7 +2992,10 @@ mod closed_mailbox_system_messages {
   #[derive(Clone, Debug, PartialEq, Eq)]
   enum Kind {
     Create,
+    Suspend,
     Resume,
+    Recreate,
+    Failed,
     Terminate,
     ChildTerminated,
   }
@@ -2850,7 +3003,10 @@ mod closed_mailbox_system_messages {
   fn kind_of(message: &SystemMessage) -> Kind {
     match message {
       | SystemMessage::Create => Kind::Create,
-      | SystemMessage::Resume => Kind::Resume,
+      | SystemMessage::Suspend => Kind::Suspend,
+      | SystemMessage::Resume { .. } => Kind::Resume,
+      | SystemMessage::Recreate { .. } => Kind::Recreate,
+      | SystemMessage::Failed(_) => Kind::Failed,
       | SystemMessage::Terminate => Kind::Terminate,
       | SystemMessage::ChildTerminated { .. } => Kind::ChildTerminated,
     }
@@ -2892,7 +3048,11 @@ mod closed_mailbox_system_messages {
     match report {
       | Routed::Dead(kind, _, _) | Routed::Suppressed(kind, _, _) => match kind {
         | Kind::Create => SystemMessage::Create,
-        | Kind::Resume => SystemMessage::Resume,
+        | Kind::Suspend => SystemMessage::Suspend,
+        | Kind::Resume => SystemMessage::Resume { caused_by_failure: false },
+        | Kind::Recreate | Kind::Failed => {
+          unreachable!("the dead letter line tests route Create, Suspend, Resume, Terminate and ChildTerminated only")
+        },
         | Kind::Terminate => SystemMessage::Terminate,
         | Kind::ChildTerminated => SystemMessage::Create,
       },
@@ -2968,7 +3128,7 @@ mod closed_mailbox_system_messages {
     let (mut executor, _bus, reports) = executor_with_reports();
     let (target, _held) = actor_with_a_closed_mailbox(&mut executor);
 
-    executor.send_system(&target, SystemMessage::Resume);
+    executor.send_system(&target, SystemMessage::Resume { caused_by_failure: false });
 
     let seen = reports.lock().unwrap().clone();
     assert_eq!(
@@ -3109,7 +3269,7 @@ mod closed_mailbox_system_messages {
     {
       let entry = executor.entry(&owner).expect("the actor is in the table");
       let mailbox = entry.mailbox.clone();
-      crate::kernel::dispatch::Mailbox::system_send(&mailbox, SystemMessage::Resume).ok();
+      crate::kernel::dispatch::Mailbox::system_send(&mailbox, SystemMessage::Resume { caused_by_failure: false }).ok();
     }
 
     executor.run_until_idle();

@@ -22,92 +22,44 @@
 
 //! The executor that owns one shard of actors and runs their messages.
 
-use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
-use alloc::collections::BTreeSet;
-use alloc::string::String;
-use alloc::string::ToString;
-use alloc::vec::Vec;
+use alloc::{
+  boxed::Box,
+  collections::{BTreeMap, BTreeSet, VecDeque},
+  string::{String, ToString},
+  vec::Vec,
+};
 use core::time::Duration;
 
-use portable_atomic::AtomicBool;
-use portable_atomic::AtomicU64;
-use portable_atomic::Ordering;
+use portable_atomic::{AtomicBool, AtomicU64, Ordering};
 
-use crate::kernel::actor::dispatch_settings::CapacityLimit;
-use crate::kernel::actor::dispatch_settings::DispatchSettings;
 #[cfg(feature = "test-support")]
 use crate::kernel::actor::test_support::ActorControl;
 #[cfg(feature = "test-support")]
 use crate::kernel::actor::test_support::ActorHandle;
-use crate::kernel::actor::ActorContext;
-use crate::kernel::actor::ActorCreationError;
-use crate::kernel::actor::ActorSelection;
-use crate::kernel::actor::ActorSelectionMessage;
-use crate::kernel::actor::AnyDeadLetter;
-use crate::kernel::actor::BehaviorStack;
-use crate::kernel::actor::ConfigurationException;
-use crate::kernel::actor::DeadLetter;
-use crate::kernel::actor::DeadLetterSettings;
-use crate::kernel::actor::DeadLetterTrampoline;
-use crate::kernel::actor::DeadLettersShared;
-use crate::kernel::actor::FsmTimerMark;
-use crate::kernel::actor::FsmTimerMode;
-use crate::kernel::actor::FunctionRef;
-use crate::kernel::actor::Identify;
-use crate::kernel::actor::InvalidActorNameException;
-use crate::kernel::actor::Logging::Error;
-use crate::kernel::actor::Logging::EventSink;
-use crate::kernel::actor::Logging::Info;
-use crate::kernel::actor::Logging::Warning;
-use crate::kernel::actor::Props;
-use crate::kernel::actor::ReceiveTimeout;
-use crate::kernel::actor::ReceiveTimeoutSetting;
-use crate::kernel::actor::ReceiveTimeoutState;
-use crate::kernel::actor::SharedTrampoline;
-use crate::kernel::actor::StashOverflowException;
-use crate::kernel::actor::Terminated;
-use crate::kernel::actor::UnhandledMessage;
-use crate::kernel::actor_path::ActorPath;
-use crate::kernel::actor_ref::next_actor_id;
-use crate::kernel::actor_ref::next_actor_ref;
-use crate::kernel::actor_ref::ActorRef;
-use crate::kernel::dispatch::DispatcherKind;
-use crate::kernel::dispatch::Dispatchers;
-use crate::kernel::dispatch::Mailbox;
-use crate::kernel::dispatch::MailboxCell;
-use crate::kernel::dispatch::MailboxRun;
-use crate::kernel::dispatch::ManualExecutor;
-use crate::kernel::dispatch::ManualTask;
-use crate::kernel::dispatch::Next;
-use crate::kernel::dispatch::RunLimits;
-use crate::kernel::dispatch::RunOutcome as MailboxOutcome;
-use crate::kernel::dispatch::SystemMessage;
-use crate::kernel::dispatch::Throughput;
-use crate::kernel::dispatch::UnboundedQueue;
-use crate::kernel::dispatch::DEFAULT_DISPATCHER_ID;
-use crate::kernel::event::DeadLetterListener;
-use crate::kernel::event::EventStream;
-use crate::kernel::executor::ActorCell;
-use crate::kernel::executor::ArrivalNotice;
-use crate::kernel::executor::FunctionBoundary;
-use crate::kernel::executor::LiveActors;
-use crate::kernel::executor::ShardBoundary;
-use crate::kernel::executor::StartFailure;
-use crate::kernel::message::Envelope;
-use crate::kernel::message::Message;
-use crate::kernel::supervision::Directive;
-use crate::kernel::supervision::FailureCatcher;
-use crate::kernel::supervision::FailureKind;
-use crate::kernel::supervision::RestartHistory;
-use crate::kernel::supervision::RestartLimit;
-use crate::kernel::supervision::RunOutcome;
-use crate::kernel::supervision::SupervisorStrategy;
-use crate::kernel::sync::lock;
-use crate::kernel::sync::Arc;
-use crate::kernel::sync::SpinLockFactory;
-use crate::kernel::sync::Weak;
-use crate::kernel::Clock;
+use crate::kernel::{
+  actor::{
+    dispatch_settings::{CapacityLimit, DispatchSettings},
+    ActorContext, ActorCreationError, ActorSelection, ActorSelectionMessage, AnyDeadLetter, BehaviorStack,
+    ConfigurationException, DeadLetter, DeadLetterSettings, DeadLetterTrampoline, DeadLettersShared, FsmTimerMark,
+    FsmTimerMode, FunctionRef, Identify, InvalidActorNameException,
+    Logging::{Error, EventSink, Info, Warning},
+    Props, ReceiveTimeout, ReceiveTimeoutSetting, ReceiveTimeoutState, SharedTrampoline, StashOverflowException,
+    Terminated, UnhandledMessage,
+  },
+  actor_path::ActorPath,
+  actor_ref::{next_actor_id, next_actor_ref, ActorRef},
+  dispatch::{
+    DispatcherKind, Dispatchers, Failure, Mailbox, MailboxCell, MailboxRun, ManualExecutor, ManualTask, Next,
+    RestartCause, RunLimits, RunOutcome as MailboxOutcome, SystemMessage, Throughput, UnboundedQueue,
+    DEFAULT_DISPATCHER_ID,
+  },
+  event::{DeadLetterListener, EventStream},
+  executor::{ActorCell, ArrivalNotice, FunctionBoundary, LiveActors, ShardBoundary},
+  message::{Envelope, Message},
+  supervision::{Directive, FailureCatcher, FailureKind, RestartHistory, RestartLimit, RunOutcome, SupervisorStrategy},
+  sync::{lock, Arc, SpinLockFactory, Weak},
+  Clock,
+};
 
 #[cfg(test)]
 #[path = "executor_value_test.rs"]
@@ -192,42 +144,19 @@ struct ActorEntry {
   capacities: (CapacityLimit, CapacityLimit),
   supervision: Option<ParentEntry>,
   deferred_replies: Vec<DeferredReply>,
-}
-
-/// A failure that the parent of `child` decides once the run that recorded
-/// it has returned (Pekko's `Failed`, which is not a system message here
-/// yet).
-///
-/// It keeps what the decision reads of the child, so a child that a
-/// `Terminate` closed in the same run is still decided for (section 11.12.2,
-/// "the child had stopped when its parent decided").
-struct Failure {
-  child: ActorRef,
-  parent: Option<ActorRef>,
-  kind: FailureKind,
-  cause_name: &'static str,
-  message: String,
-  /// The sender of the failed message, which the restarted child's
-  /// `pre_restart` sees as `sender()`.
-  sender: Option<ActorRef>,
-  restart_count: u32,
-  own_strategy: SupervisorStrategy,
-  strategy_inherited: bool,
-}
-
-/// What a restart was for, which its second half and the restarts of the
-/// children it keeps read (Pekko's `Recreation(cause)`).
-#[derive(Clone)]
-struct RestartCause {
-  kind: FailureKind,
-  cause_name: &'static str,
-  message: String,
-}
-
-impl RestartCause {
-  fn of(failure: &Failure) -> Self {
-    Self { kind: failure.kind, cause_name: failure.cause_name, message: failure.message.clone() }
-  }
+  /// The child whose failure this actor's recorded failure answers for,
+  /// or the actor itself when the recorded failure is its own (Pekko's
+  /// `perpetrator`, which `isFailed` keeps until the answer takes
+  /// effect). Empty while no failure waits for an answer.
+  perpetrator: Option<ActorRef>,
+  /// The system messages set aside while the actor is suspended or waits
+  /// for its children, in the order they came.
+  system_stash: VecDeque<SystemMessage>,
+  /// The restarts this actor has used, read by the decision of a parent
+  /// that keeps no table for it (a guardian deciding on the spot). A
+  /// child of an actor parent, or of a function reference, keeps its
+  /// count in that parent's table instead, and this stays untouched.
+  restart_history: RestartHistory,
 }
 
 /// What a parent waits for its dying children for (Pekko's
@@ -260,39 +189,50 @@ struct ParentEntry {
   strategy: SupervisorStrategy,
   /// Every child, named or not, from its creation until the parent has
   /// handled its `ChildTerminated` (Pekko's `ChildrenContainer`).
-  children: Vec<(String, ActorRef)>,
+  children: Vec<ChildRecord>,
   /// The children asked to stop that have not ended yet (Pekko's
   /// `shallDie`).
   dying: Vec<ActorRef>,
   /// What the parent waits for its dying children for (Pekko's
   /// `TerminatingChildrenContainer`).
   waiting: Option<WaitReason>,
-  /// The failures of children that wait until the parent is no longer
-  /// suspended (Pekko stashes `Failed` while the parent is failed or waits
-  /// for children), in the order they came.
-  held: Vec<Failure>,
-  /// The children whose failure made the parent's decider panic: the
-  /// parent's restart resumes them once it has finished (section 11.12.6).
-  resume_after_restart: Vec<ActorRef>,
+}
+
+/// What a parent's table keeps of one child (Pekko's `ChildRestartStats`
+/// together with the name and the strategy the child was started under).
+#[derive(Clone)]
+struct ChildRecord {
+  /// The name the child was reserved under.
+  name: String,
+  /// The child's handle, with its identifier and generation.
+  child: ActorRef,
+  /// The restarts the child has used, which the parent's decision reads
+  /// and a granted restart adds to.
+  history: RestartHistory,
+  /// The strategy the child was started under, or `None` when it
+  /// inherits the parent's.
+  spawn_strategy: Option<SupervisorStrategy>,
 }
 
 impl ParentEntry {
   fn new(parent: ActorRef, strategy: SupervisorStrategy) -> Self {
-    Self {
-      parent,
-      strategy,
-      children: Vec::new(),
-      dying: Vec::new(),
-      waiting: None,
-      held: Vec::new(),
-      resume_after_restart: Vec::new(),
-    }
+    Self { parent, strategy, children: Vec::new(), dying: Vec::new(), waiting: None }
   }
 
   /// Returns whether `child` is in the table, by the identifier and the
   /// generation of its handle (Pekko's `getChildByRef`).
   fn holds(&self, child: &ActorRef) -> bool {
-    self.children.iter().any(|(_, held)| held == child)
+    self.children.iter().any(|record| &record.child == child)
+  }
+
+  /// Returns the record of `child`, when the table holds it.
+  fn child_record(&self, child: &ActorRef) -> Option<&ChildRecord> {
+    self.children.iter().find(|record| &record.child == child)
+  }
+
+  /// Returns the record of `child` to change, when the table holds it.
+  fn child_record_mut(&mut self, child: &ActorRef) -> Option<&mut ChildRecord> {
+    self.children.iter_mut().find(|record| &record.child == child)
   }
 
   /// Returns whether the parent stops (Pekko's `isTerminating`).
@@ -311,7 +251,7 @@ impl ParentEntry {
   /// Asks every child to die and waits for them for `reason`. A parent that
   /// stops is marked stopping even without children. Returns the children.
   fn wait_for_all_children(&mut self, reason: WaitReason) -> Vec<ActorRef> {
-    let children: Vec<ActorRef> = self.children.iter().map(|(_, child)| child.clone()).collect();
+    let children: Vec<ActorRef> = self.children.iter().map(|record| record.child.clone()).collect();
     if matches!(reason, WaitReason::Termination) || !children.is_empty() {
       self.dying = children.clone();
       self.waiting = Some(reason);
@@ -325,7 +265,7 @@ impl ParentEntry {
   /// what the parent waited for when `child` was the last dying child: the
   /// wait ends there, except a stop, which stays marked while it finishes.
   fn remove_child(&mut self, child: &ActorRef) -> Option<Option<WaitReason>> {
-    let index = self.children.iter().position(|(_, held)| held == child)?;
+    let index = self.children.iter().position(|record| &record.child == child)?;
     self.children.remove(index);
     self.dying.retain(|held| held != child);
     if !self.dying.is_empty() {
@@ -337,6 +277,35 @@ impl ParentEntry {
     }
     Some(ended)
   }
+}
+
+/// What a decision for one failure is made from: the strategies that may
+/// decide for it, the restarts the failed child has used, and the two
+/// facts that say which strategy's decider may speak for it.
+struct DecisionInputs {
+  /// The strategy the deciding parent applies to its children, when it
+  /// keeps a table.
+  governing: Option<SupervisorStrategy>,
+  /// The strategy the failed child was started under, or `None` when it
+  /// inherits the deciding parent's.
+  spawn_strategy: Option<SupervisorStrategy>,
+  /// The restarts the failed child has already used.
+  count: u32,
+  /// Whether the failed child's recorded failure answers for one of its
+  /// own children (its decider panicked on a child's `Failed`).
+  escalation: bool,
+  /// Whether the deciding parent itself stands under a parent.
+  parent_not_top: bool,
+}
+
+/// The outcome of choosing a directive for one failure.
+enum Decision {
+  /// Apply this directive, which the strategy it names chose; the flag
+  /// says the strategy governs the whole set of siblings at once.
+  Apply(Directive, SupervisorStrategy, bool),
+  /// The chosen decider panicked, with the panic's message: the deciding
+  /// actor fails with it.
+  DeciderPanicked { message: String },
 }
 
 /// One callback that the executor runs with the handle of a stopped actor.
@@ -390,8 +359,8 @@ pub(crate) fn validate_actor_name(name: &str) -> Result<(), InvalidActorNameExce
 /// Mirrors the role of `org.apache.pekko.actor.ActorCell` together with a
 /// dispatcher a caller drives by hand: every actor has its own mailbox, a
 /// mailbox that has work waits in the [`ManualExecutor`], and a
-/// `ShardBoundary` carries what has no mailbox. The executor alone owns the actors' entries; a caller only holds
-/// `ActorRef` handles.
+/// `ShardBoundary` carries what has no mailbox. The executor alone owns the actors' entries; a
+/// caller only holds `ActorRef` handles.
 ///
 /// The executor also owns whether the system has been terminated. Keeping that
 /// one fact here lets every entry that starts a new actor, including the ones
@@ -413,8 +382,6 @@ pub(crate) struct Executor {
   manual: Arc<ManualExecutor<ActorCell>>,
   live: Arc<LiveActors>,
   arrivals: Option<Arc<ArrivalNotice>>,
-  after_run: Option<Failure>,
-  held_failures: usize,
   in_run: bool,
   fatal: bool,
   root: ActorPath,
@@ -424,13 +391,11 @@ pub(crate) struct Executor {
   catcher: Option<Arc<dyn FailureCatcher>>,
   event_sink: Arc<spin::Mutex<Option<Arc<dyn EventSink>>>>,
   event_stream: Option<EventStream>,
-  pending_decider_failures: Vec<(ActorRef, String)>,
   running: Vec<ActorKey>,
   termination_callbacks: Vec<TerminationCallback>,
   dead_letters: ActorRef,
   dead_letters_shared: Arc<DeadLettersShared>,
   dead_letter_listener: Option<ActorRef>,
-  boundary_active: bool,
   hook_child_creation_refused: bool,
   routes_closed: Arc<AtomicBool>,
   clock: Option<Arc<dyn Clock>>,
@@ -515,8 +480,6 @@ impl Executor {
       manual,
       live: Arc::new(LiveActors::new(&SpinLockFactory)),
       arrivals,
-      after_run: None,
-      held_failures: 0,
       in_run: false,
       fatal: false,
       root,
@@ -526,13 +489,11 @@ impl Executor {
       catcher: None,
       event_sink: Arc::new(spin::Mutex::new(None)),
       event_stream: None,
-      pending_decider_failures: Vec::new(),
       running: Vec::new(),
       termination_callbacks: Vec::new(),
       dead_letters,
       dead_letters_shared,
       dead_letter_listener: None,
-      boundary_active: false,
       hook_child_creation_refused: false,
       routes_closed,
       clock: None,
@@ -601,7 +562,7 @@ impl Executor {
   fn children_of(&self, parent: &ActorRef) -> Vec<ActorRef> {
     self
       .parent_entry(parent)
-      .map(|entry| entry.children.iter().map(|(_, child)| child.clone()).collect())
+      .map(|entry| entry.children.iter().map(|record| record.child.clone()).collect())
       .unwrap_or_default()
   }
 
@@ -1372,9 +1333,9 @@ impl Executor {
 
   /// Returns the live child of `parent` named `name`, if any.
   pub(crate) fn child_of(&self, parent: &ActorRef, name: &str) -> Option<ActorRef> {
-    self.parent_entry(parent).and_then(|entry| {
-      entry.children.iter().find(|(child_name, _)| child_name == name).map(|(_, child)| child.clone())
-    })
+    self
+      .parent_entry(parent)
+      .and_then(|entry| entry.children.iter().find(|record| record.name == name).map(|record| record.child.clone()))
   }
 
   /// Returns the earliest scheduled receive timeout deadline.
@@ -1668,17 +1629,20 @@ impl Executor {
     let mailbox = Arc::new(mailbox);
     let label = path.name().to_string();
     let self_ref = ActorRef::for_mailbox(next_actor_id(), Arc::new(path), Arc::clone(&mailbox));
-    self.reserve_name(parent.as_ref(), label, &self_ref, &strategy);
-    let cell = ActorCell::pending(self_ref.clone(), parent.clone(), props, strategy, strategy_inherited);
+    self.reserve_name(parent.as_ref(), label, &self_ref, &strategy, strategy_inherited);
+    let cell = ActorCell::pending(self_ref.clone(), parent.clone(), props, strategy);
     mailbox.put_back_cell(Box::new(cell));
     let entry = ActorEntry {
       self_ref: self_ref.clone(),
-      parent,
+      parent: parent.clone(),
       mailbox: Arc::clone(&mailbox),
       stash: Vec::new(),
       capacities,
       supervision: None,
       deferred_replies: Vec::new(),
+      perpetrator: None,
+      system_stash: VecDeque::new(),
+      restart_history: RestartHistory::new(),
     };
     self.actors.insert(self_ref.key(), entry);
     self.live.insert(self_ref.clone());
@@ -1686,6 +1650,19 @@ impl Executor {
     // `start` attaches the mailbox: `pre_start` runs in the child's own run
     // (section 11.12.2).
     Mailbox::system_send(&mailbox, SystemMessage::Create).ok();
+    // A child started under a suspended parent takes the parent's suspend
+    // on itself, one `Suspend` for each suspend the parent still waits
+    // for an answer to, behind its `Create` (Pekko's `Children.makeChild`).
+    // A parent without a mailbox (a guardian, a function reference) has no
+    // suspend to pass on.
+    if let Some(parent_ref) = parent.as_ref() {
+      if let Some(parent_entry) = self.entry(parent_ref) {
+        let inherited = parent_entry.mailbox.suspend_count();
+        for _ in 0..inherited {
+          Mailbox::system_send(&mailbox, SystemMessage::Suspend).ok();
+        }
+      }
+    }
     self_ref
   }
 
@@ -1698,6 +1675,7 @@ impl Executor {
     label: String,
     child: &ActorRef,
     strategy: &SupervisorStrategy,
+    strategy_inherited: bool,
   ) {
     let Some(parent) = parent else {
       self.user_children.insert(label, child.clone());
@@ -1707,7 +1685,13 @@ impl Executor {
       self.insert_parent_entry(ParentEntry::new(parent.clone(), strategy.clone()));
     }
     if let Some(entry) = self.parent_entry_mut(parent) {
-      entry.children.push((label, child.clone()));
+      let spawn_strategy = if strategy_inherited { None } else { Some(strategy.clone()) };
+      entry.children.push(ChildRecord {
+        name: label,
+        child: child.clone(),
+        history: RestartHistory::new(),
+        spawn_strategy,
+      });
     }
   }
 
@@ -1790,7 +1774,7 @@ impl Executor {
       return Err(InvalidActorNameException::terminating());
     }
     validate_actor_name(name)?;
-    if entry.children.iter().any(|(used, _)| used == name) {
+    if entry.children.iter().any(|record| record.name == name) {
       return Err(InvalidActorNameException::name_taken(name));
     }
     Ok(self.spawn_child_with_origin(parent, props, Some(name), strategy, strategy_inherited))
@@ -1828,7 +1812,7 @@ impl Executor {
           return Err(InvalidActorNameException::terminating().into());
         }
         if let Some(name) = name {
-          if entry.children.iter().any(|(used, _)| used == name) {
+          if entry.children.iter().any(|record| record.name == name) {
             return Err(InvalidActorNameException::name_taken(name).into());
           }
         }
@@ -1936,7 +1920,7 @@ impl Executor {
         return Err(InvalidActorNameException::terminating().into());
       }
       if let Some(name) = name {
-        if entry.children.iter().any(|(used, _)| used == name) {
+        if entry.children.iter().any(|record| record.name == name) {
           return Err(InvalidActorNameException::name_taken(name).into());
         }
       }
@@ -2075,65 +2059,100 @@ impl Executor {
     self.running.contains(&key)
   }
 
-  /// Carries out the decider failures that waited for the outermost frame to
-  /// return.
-  ///
-  /// The deciding actor is out of the cell table during its own frame, so its
-  /// failure waits until no frame runs, where the cell is back and the
-  /// parent's strategy can decide for it.
-  fn finish_boundary(&mut self) {
-    if !self.running.is_empty() || self.boundary_active {
-      return;
-    }
-    self.boundary_active = true;
-    while self.apply_pending_decider_failures() {}
-    self.boundary_active = false;
-  }
-
-  /// Fails the actors whose decider panicked while they were still executing,
-  /// and returns whether there was one.
-  fn apply_pending_decider_failures(&mut self) -> bool {
-    let pending = core::mem::take(&mut self.pending_decider_failures);
-    for (supervisor, message) in &pending {
-      self.apply_supervisor_failure(supervisor, message);
-    }
-    !pending.is_empty()
-  }
-
   /// Handles a system message in the run of `cell` (Pekko's
   /// `ActorCell.systemInvoke`).
+  ///
+  /// A message the actor may not take yet is set aside in the actor's
+  /// system stash: a suspended actor takes no `Failed`, and an actor that
+  /// waits for its children takes no `Suspend`, `Resume`, `Recreate`, or
+  /// `Failed`. `Create`, `Terminate`, and `ChildTerminated` are always
+  /// taken. After each message the state is read again, and when it has
+  /// gone down the messages set aside come back in the order they came,
+  /// before the rest of the queue, and are judged again as they are
+  /// taken, as Pekko's `invokeAll` prepends the unstashed messages and
+  /// runs the list it built.
   fn system_invoke(&mut self, cell: &mut ActorCell, mailbox: &Mailbox<ActorCell>, message: SystemMessage) {
+    let self_ref = cell.self_ref();
+    let mut queue: VecDeque<SystemMessage> = VecDeque::new();
+    queue.push_back(message);
+    while let Some(message) = queue.pop_front() {
+      if self.should_stash(cell, mailbox, &message) {
+        if let Some(entry) = self.entry_mut(&self_ref) {
+          entry.system_stash.push_back(message);
+        }
+        continue;
+      }
+      let before = self.stash_state(cell, mailbox);
+      self.handle_system(cell, mailbox, message);
+      if self.entry(&self_ref).is_none() {
+        // The actor has finished: what it had set aside dies with its
+        // entry, as a closing mailbox discards its stash.
+        return;
+      }
+      if self.stash_state(cell, mailbox) < before {
+        if let Some(entry) = self.entry_mut(&self_ref) {
+          let stashed: Vec<SystemMessage> = entry.system_stash.drain(..).collect();
+          for message in stashed.into_iter().rev() {
+            queue.push_front(message);
+          }
+        }
+      }
+    }
+  }
+
+  /// Returns how much of its system queue `cell` must set aside: nothing
+  /// while it runs free, `Failed` only while it is suspended, and the
+  /// wider set while it waits for its children (Pekko's
+  /// `calculateState`). The suspend count is read from the mailbox, which
+  /// is the one place that keeps it.
+  fn stash_state(&self, cell: &ActorCell, mailbox: &Mailbox<ActorCell>) -> u8 {
+    if self.is_waiting(&cell.self_ref()) {
+      2
+    } else if mailbox.suspend_count() > 0 {
+      1
+    } else {
+      0
+    }
+  }
+
+  /// Returns whether `message` is set aside in the state `cell` is in.
+  fn should_stash(&self, cell: &ActorCell, mailbox: &Mailbox<ActorCell>, message: &SystemMessage) -> bool {
+    match self.stash_state(cell, mailbox) {
+      | 0 => false,
+      | 1 => matches!(message, SystemMessage::Failed(_)),
+      | _ => matches!(
+        message,
+        SystemMessage::Suspend
+          | SystemMessage::Resume { .. }
+          | SystemMessage::Recreate { .. }
+          | SystemMessage::Failed(_)
+      ),
+    }
+  }
+
+  /// Handles one system message that the run of `cell` takes.
+  fn handle_system(&mut self, cell: &mut ActorCell, mailbox: &Mailbox<ActorCell>, message: SystemMessage) {
     match message {
       | SystemMessage::Create => self.handle_create(cell, mailbox),
-      | SystemMessage::Resume => {
-        mailbox.resume();
-      },
+      | SystemMessage::Suspend => self.fault_suspend(cell, mailbox),
+      | SystemMessage::Resume { caused_by_failure } => self.fault_resume(cell, mailbox, caused_by_failure),
+      | SystemMessage::Recreate { cause } => self.fault_recreate(cell, mailbox, cause),
+      | SystemMessage::Failed(failure) => self.handle_failed(cell, mailbox, failure),
       | SystemMessage::Terminate => self.handle_terminate(cell, mailbox),
       | SystemMessage::ChildTerminated { child } => self.handle_child_terminated(cell, mailbox, &child),
     }
   }
 
-  /// Handles `Create` (Pekko's `ActorCell.create` and `faultCreate`, design
-  /// of #234, section 11.12.2).
+  /// Handles `Create` (Pekko's `ActorCell.create`).
   ///
-  /// A cell that stops, that already has its instance, that waits for
-  /// children, or whose failed start the parent has not decided for yet,
-  /// does nothing: one decision gives one retry. A start that failed and that
-  /// the parent decided to retry first stops the children of the failed
-  /// attempt, and starts once they have gone.
+  /// A cell that already has its instance, that waits for children, or
+  /// whose start failed does nothing: a failed start is tried again only
+  /// by the `Recreate` the parent's decision sends, which reaches the
+  /// same retry through `faultCreate`.
   fn handle_create(&mut self, cell: &mut ActorCell, mailbox: &Mailbox<ActorCell>) {
     let self_ref = cell.self_ref();
-    if cell.is_created() || self.is_waiting(&self_ref) {
+    if cell.is_created() || cell.has_failed_start() || self.is_waiting(&self_ref) {
       return;
-    }
-    match cell.start_failure() {
-      | Some(StartFailure::Undecided) => return,
-      | Some(StartFailure::Decided) => {
-        if self.stop_children_and_wait(&self_ref, WaitReason::Creation) {
-          return;
-        }
-      },
-      | None => {},
     }
     self.create_now(cell, mailbox);
   }
@@ -2141,16 +2160,11 @@ impl Executor {
   /// Builds the instance of `cell` and runs its `pre_start` under the
   /// catcher (Pekko's `finishCreate`).
   ///
-  /// A retry first undoes the suspend of the failed start. A failure
-  /// suspends the mailbox again, records the failed start, and leaves it for
-  /// the parent to decide once the run has returned, unless the run already
-  /// left a failure (Pekko's `isFailed`). Pekko's `failActor` clears the
+  /// A failure records the failed start and fails the actor in this run,
+  /// as a failure of `receive` does. Pekko's `failActor` clears the
   /// behaviour stack before a retry, so a `become` issued by a `pre_start`
   /// that threw does not survive into the next creation.
   fn create_now(&mut self, cell: &mut ActorCell, mailbox: &Mailbox<ActorCell>) {
-    if cell.take_start_failure() {
-      mailbox.resume();
-    }
     let self_ref = cell.self_ref();
     let catcher = self.catcher.clone();
     let mut stack = cell.take_stack();
@@ -2173,12 +2187,15 @@ impl Executor {
       },
       | RunOutcome::Failed { message } => {
         self.clear_receive_timeout(self_ref.key());
-        mailbox.suspend();
+        cell.set_failed_sender(Some(self_ref.clone()));
         cell.record_start_failure();
-        if self.after_run.is_none() {
-          let failure = self.failure_of(cell, FailureKind::Initialization, ACTOR_INITIALIZATION_CAUSE, message, None);
-          self.after_run = Some(failure);
-        }
+        let failure = Failure {
+          child: self_ref.clone(),
+          kind: FailureKind::Initialization,
+          cause_name: ACTOR_INITIALIZATION_CAUSE,
+          message,
+        };
+        self.handle_invoke_failure(cell, mailbox, failure, None);
       },
     }
   }
@@ -2200,37 +2217,6 @@ impl Executor {
     for child in self.children_of(parent) {
       self.stop(&child);
     }
-  }
-
-  /// Returns the strategy that decides for `failure`.
-  ///
-  /// A child started through `ActorContext::actorOf` inherits the strategy of
-  /// the parent as it stands when the child fails, so a restart of the parent
-  /// with a new `supervisor_strategy` also governs the children it already
-  /// holds. A child that was started under an explicit strategy keeps it, and a
-  /// child whose parent has no registry falls back to the strategy recorded
-  /// when it was created.
-  fn strategy_for(&self, failure: &Failure) -> SupervisorStrategy {
-    if failure.strategy_inherited {
-      if let Some(entry) = failure.parent.as_ref().and_then(|parent| self.parent_entry(parent)) {
-        return entry.strategy.clone();
-      }
-    }
-    failure.own_strategy.clone()
-  }
-
-  /// Returns the strategy that decides for `target`, whose cell is in its
-  /// mailbox, as [`strategy_for`](Self::strategy_for) does for a failure.
-  fn strategy_of(&self, target: &ActorRef) -> SupervisorStrategy {
-    let (inherited, parent, own) = self
-      .with_cell(target, |cell| (cell.strategy_inherited(), cell.parent(), cell.strategy().clone()))
-      .expect("the cell that a strategy decides for is in its mailbox");
-    if inherited {
-      if let Some(entry) = parent.as_ref().and_then(|parent| self.parent_entry(parent)) {
-        return entry.strategy.clone();
-      }
-    }
-    own
   }
 
   /// Asks the actor or function reference `target` to stop.
@@ -2332,7 +2318,6 @@ impl Executor {
     self.flush_deferred_replies(&target);
     self.clear_receive_timeout(target.key());
     if let Some(entry) = self.actors.remove(&target.key()) {
-      self.held_failures -= entry.supervision.as_ref().map_or(0, |record| record.held.len());
       drop(entry);
     }
     self.ref_parents.retain(|entry| entry.parent != target);
@@ -2362,31 +2347,41 @@ impl Executor {
     let Some(next) = self.parent_entry_mut(&self_ref).and_then(|entry| entry.remove_child(child)) else {
       return;
     };
-    self.run_child_terminated_hook(cell, child);
+    if let Some((cause_name, message)) = self.run_child_terminated_hook(cell, child) {
+      // The hook's failure is reported here once, and then fails the
+      // parent in this run with the failure the hook itself raised, so
+      // the decision above the parent reports that failure, and not
+      // this report, a second time.
+      self.publish_child_failure(
+        &self_ref,
+        HANDLE_CHILD_TERMINATED_FAILED_CAUSE,
+        HANDLE_CHILD_TERMINATED_FAILED_MESSAGE,
+      );
+      let failure = Failure { child: self_ref.clone(), kind: FailureKind::MessageHandling, cause_name, message };
+      self.handle_invoke_failure(cell, mailbox, failure, None);
+    }
     match next {
       | Some(WaitReason::Termination) => self.finish_terminate(cell),
-      | Some(WaitReason::Creation) => self.create_now(cell, mailbox),
-      | Some(WaitReason::Recreation(cause)) => self.finish_recreate(cell, cause),
+      | Some(WaitReason::Creation) => self.finish_create(cell, mailbox),
+      | Some(WaitReason::Recreation(cause)) => self.finish_recreate(cell, mailbox, cause),
       | None => {},
     }
   }
 
-  /// Runs the child-terminated hook of the parent `cell` for `child`.
+  /// Runs the child-terminated hook of the parent `cell` for `child`, and
+  /// returns the failure the hook raised when it failed.
   ///
   /// Mirrors `FaultHandling.handleChildTerminated`: the parent's strategy hook
   /// runs with the parent's context, so it may start a replacement child. A
-  /// hook that throws, or that tries to create a child while the parent is
-  /// terminating, is reported once as
-  /// `IllegalStateException("handleChildTerminated failed")`. The hook does
-  /// not run for a parent that never finished starting, matching Pekko's
-  /// `if (actor != null)` guard.
-  fn run_child_terminated_hook(&mut self, cell: &mut ActorCell, child: &ActorRef) {
+  /// hook that throws fails with the panic it raised; a hook that tries to
+  /// create a child while the parent is terminating fails with the refusal
+  /// Pekko's `attachChild` throws. The hook does not run for a parent that
+  /// never finished starting, matching Pekko's `if (actor != null)` guard.
+  fn run_child_terminated_hook(&mut self, cell: &mut ActorCell, child: &ActorRef) -> Option<(&'static str, String)> {
     let parent = cell.self_ref();
-    let Some(entry) = self.parent_entry(&parent) else {
-      return;
-    };
+    let entry = self.parent_entry(&parent)?;
     if !entry.strategy.has_child_terminated() || !cell.is_created() {
-      return;
+      return None;
     }
     let strategy = entry.strategy.clone();
     let siblings = self.open_children_of(&parent);
@@ -2407,8 +2402,12 @@ impl Executor {
     self.exit_frame();
     cell.restore_stack(stack);
     let refused = core::mem::replace(&mut self.hook_child_creation_refused, false);
-    if matches!(outcome, RunOutcome::Failed { .. }) || refused {
-      self.publish_child_failure(&parent, HANDLE_CHILD_TERMINATED_FAILED_CAUSE, HANDLE_CHILD_TERMINATED_FAILED_MESSAGE);
+    match outcome {
+      | RunOutcome::Failed { message } => Some((RUNTIME_CAUSE, message)),
+      | RunOutcome::Completed if refused => {
+        Some((HANDLE_CHILD_TERMINATED_FAILED_CAUSE, TERMINATED_MESSAGE.to_string()))
+      },
+      | RunOutcome::Completed => None,
     }
   }
 
@@ -2975,29 +2974,22 @@ impl Executor {
     report.delivered > 0
   }
 
-  /// Does what a run left, now that the actor is back in its mailbox: the
-  /// parent decides for the failure the run recorded, the failures that
-  /// waited for a parent that is no longer suspended are decided, and the
-  /// decider failures that waited for the outermost frame are applied.
+  /// Does what a run left, now that the actor is back in its mailbox:
+  /// the timers that came due while it ran fire. A failure the run met
+  /// was handled inside the run itself, so nothing waits for this.
   fn finish_run(&mut self) {
-    if let Some(failure) = self.after_run.take() {
-      self.decide(failure);
-    }
-    self.release_held_failures();
-    self.finish_boundary();
     self.fire_due_timers();
   }
 
   /// Hands one normal message to the actor of `cell` (Pekko's
   /// `ActorCell.invoke`), and says whether its run may take the next.
   ///
-  /// A `Kill` and a failure under the catcher need the actor back in its
-  /// mailbox for the parent's decision, so the run yields and the executor
-  /// decides once the run has returned. A failure, and a `Kill`, suspend the
-  /// mailbox until the decision's effect is over, as Pekko's
-  /// `handleInvokeFailure` does. A `PoisonPill` puts a `Terminate` on the
-  /// actor's own system queue (Pekko's `autoReceiveMessage`), which the run
-  /// handles before the next message.
+  /// A failure, and a `Kill`, are handled inside this run, as Pekko's
+  /// `handleInvokeFailure` handles them: the mailbox is suspended, the
+  /// children are suspended, and the parent is told, so the run goes on
+  /// with the next message only as the mailbox allows. A `PoisonPill`
+  /// puts a `Terminate` on the actor's own system queue (Pekko's
+  /// `autoReceiveMessage`), which the run handles before the next message.
   fn invoke(&mut self, cell: &mut ActorCell, mailbox: &Mailbox<ActorCell>, envelope: Envelope) -> Next {
     let (message, sender) = envelope.into_message();
     let message = match message.downcast_ref::<Arc<PendingTermination>>() {
@@ -3053,12 +3045,17 @@ impl Executor {
     if message == KILL {
       let key = cell.key();
       let timeout_before = self.receive_timeout_before(key, true);
-      mailbox.suspend();
-      self.after_run =
-        Some(self.failure_of(cell, FailureKind::Killed, ACTOR_KILLED_CAUSE, ACTOR_KILLED_MESSAGE.to_string(), None));
+      cell.set_failed_sender(Some(sender.clone()));
+      let failure = Failure {
+        child: cell.self_ref(),
+        kind: FailureKind::Killed,
+        cause_name: ACTOR_KILLED_CAUSE,
+        message: ACTOR_KILLED_MESSAGE.to_string(),
+      };
+      self.handle_invoke_failure(cell, mailbox, failure, None);
       self.receive_timeout_after(key, true, timeout_before);
       self.fire_due_timers();
-      return Next::Yield;
+      return Next::Continue;
     }
     if message == POISON_PILL {
       let key = cell.key();
@@ -3078,13 +3075,7 @@ impl Executor {
     self.receive_timeout_after(key, influences, timeout_before);
     self.fire_due_timers();
     match outcome {
-      | RunOutcome::Completed => {
-        if self.pending_decider_failures.is_empty() {
-          Next::Continue
-        } else {
-          Next::Yield
-        }
-      },
+      | RunOutcome::Completed => Next::Continue,
       | RunOutcome::Failed { message } => {
         cell.set_failed_sender(Some(sender.clone()));
         // A stop after a reply, which the message asked for before it
@@ -3092,10 +3083,10 @@ impl Executor {
         if self.actors.get(&key).is_some_and(|entry| !entry.deferred_replies.is_empty()) {
           return Next::Continue;
         }
-        mailbox.suspend();
-        let failure = self.failure_of(cell, FailureKind::MessageHandling, RUNTIME_CAUSE, message, Some(sender));
-        self.after_run = Some(failure);
-        Next::Yield
+        let failure =
+          Failure { child: cell.self_ref(), kind: FailureKind::MessageHandling, cause_name: RUNTIME_CAUSE, message };
+        self.handle_invoke_failure(cell, mailbox, failure, None);
+        Next::Continue
       },
     }
   }
@@ -3276,8 +3267,6 @@ impl Executor {
     drop(entries);
     self.ref_parents.clear();
     self.live.clear();
-    self.after_run = None;
-    self.held_failures = 0;
     self.in_run = false;
     self.watchers.clear();
     self.watch_messages.clear();
@@ -3288,20 +3277,17 @@ impl Executor {
     self.receive_timeout_indexed.clear();
     self.fsm_timers.clear();
     self.fsm_timer_index.clear();
-    self.pending_decider_failures.clear();
     self.running.clear();
     self.termination_callbacks.clear();
-    self.boundary_active = false;
     while self.boundary.poll().is_some() {}
   }
 
   /// Records that a caller's thread unwound out of the executor: a panic that
-  /// no catcher caught, which Pekko treats as fatal. The frames that were running are forgotten without running
-  /// user code, and the next call into the executor terminates the system.
+  /// no catcher caught, which Pekko treats as fatal. The frames that were running are forgotten
+  /// without running user code, and the next call into the executor terminates the system.
   fn mark_fatal(&mut self) {
     self.fatal = true;
     self.running.clear();
-    self.boundary_active = false;
     self.in_run = false;
   }
 
@@ -3467,18 +3453,15 @@ impl Executor {
     if message.downcast_ref::<StopDeadLetterListener>().is_some() {
       // The dead letter listener's handler posted this notice when its
       // state machine stopped itself. Carry the stop out here, where the
-      // executor can be borrowed, and run the boundary work so this same
-      // pass drains the stop.
+      // executor can be borrowed.
       if let Some(listener) = self.dead_letter_listener.take() {
         self.stop(&listener);
       }
-      self.finish_boundary();
       return;
     }
     if let Some(selection) = message.downcast_ref::<ActorSelectionMessage>() {
       let selection = selection.clone();
       self.deliver_selection(selection.path(), selection.message().clone(), selection.sender().clone());
-      self.finish_boundary();
       return;
     }
     if let Some(entry) = self.entry(&recipient).filter(|entry| entry.mailbox.has_cell()) {
@@ -3494,7 +3477,6 @@ impl Executor {
         },
         | Err(refused) => {
           mailbox.route_refused(refused.with_recipient(recipient));
-          self.finish_boundary();
         },
       }
       return;
@@ -3512,167 +3494,360 @@ impl Executor {
     if recipient == self.root_guardian || recipient == self.user_guardian || recipient == self.system_guardian {
       let dead_letters = self.dead_letters.clone();
       self.publish_unhandled(message, dead_letters, recipient);
-      self.finish_boundary();
       return;
     }
     self.route_undeliverable(message, sender, recipient);
-    // The routing publishes synchronously, so the dead letter listener
-    // may have reached its limit inside this delivery; the boundary
-    // work (including the listener's own stop) runs here as it does at
-    // the end of a delivered message.
-    self.finish_boundary();
   }
 
-  /// Takes what the decision for a failure of `cell` reads of the cell.
-  fn failure_of(
-    &self,
-    cell: &ActorCell,
-    kind: FailureKind,
-    cause_name: &'static str,
-    message: String,
-    sender: Option<ActorRef>,
-  ) -> Failure {
-    Failure {
-      child: cell.self_ref(),
-      parent: cell.parent(),
-      kind,
-      cause_name,
-      message,
-      sender,
-      restart_count: cell.restart_count(),
-      own_strategy: cell.strategy().clone(),
-      strategy_inherited: cell.strategy_inherited(),
-    }
-  }
-
-  /// Lets the parent decide for `failure`, or keeps the failure until the
-  /// parent is no longer suspended.
+  /// Handles a failure of `cell` inside its own run (Pekko's
+  /// `handleInvokeFailure`).
   ///
-  /// A parent stays suspended across runs while it waits for the decision on
-  /// its own failure, after its start failed, and while it waits for
-  /// children. Deciding then could fail a parent that has no instance, or
-  /// restart a parent inside its own restart, so every decision waits, as
-  /// Pekko stashes `Failed` while the parent is failed or waits for children.
-  fn decide(&mut self, failure: Failure) {
-    let suspended_parent = failure
-      .parent
-      .clone()
-      .filter(|parent| self.entry(parent).is_some_and(|entry| entry.mailbox.is_open_and_suspended()));
-    if let Some(parent) = suspended_parent {
-      if let Some(entry) = self.parent_entry_mut(&parent) {
-        entry.held.push(failure);
-        self.held_failures += 1;
-        return;
+  /// The mailbox is suspended once, the perpetrator of the failure is
+  /// recorded while no failure waits for an answer yet, and every child
+  /// but the perpetrator this failure records is suspended: a failure of
+  /// an actor that has already failed records nothing, so its children
+  /// are all suspended, the earlier perpetrator among them. The parent
+  /// is told with a `Failed`. A parent without a mailbox (a guardian, a
+  /// function
+  /// reference) decides on the spot instead, as it does for an actor
+  /// that has no parent.
+  ///
+  /// `perpetrator` names the child whose `Failed` the decider panicked
+  /// on, when the failure is that panic; the caller leaves it empty for
+  /// the actor's own failures, and the actor itself is recorded.
+  fn handle_invoke_failure(
+    &mut self,
+    cell: &mut ActorCell,
+    mailbox: &Mailbox<ActorCell>,
+    failure: Failure,
+    perpetrator: Option<ActorRef>,
+  ) {
+    let self_ref = cell.self_ref();
+    mailbox.suspend();
+    let already_recorded = self.entry(&self_ref).is_some_and(|entry| entry.perpetrator.is_some());
+    let recorded_here = if already_recorded {
+      None
+    } else {
+      let perpetrator = perpetrator.unwrap_or_else(|| self_ref.clone());
+      if let Some(entry) = self.entry_mut(&self_ref) {
+        entry.perpetrator = Some(perpetrator.clone());
+      }
+      Some(perpetrator)
+    };
+    for child in self.children_of(&self_ref) {
+      if recorded_here.as_ref() != Some(&child) {
+        self.send_system(&child, SystemMessage::Suspend);
       }
     }
-    self.apply_decision(failure);
-  }
-
-  /// Decides, in the order they came, the failures held for parents that are
-  /// no longer suspended. A failure whose child is no longer in its parent's
-  /// table is dropped without a decision: the parent has handled the child's
-  /// `ChildTerminated`, as Pekko's `handleFailure` drops a `Failed` from an
-  /// unknown or an old child. A parent that closes drops what it held.
-  fn release_held_failures(&mut self) {
-    while self.held_failures > 0 {
-      let Some(failure) = self.take_releasable_failure() else {
-        return;
-      };
-      let known = failure.parent.as_ref().is_some_and(|parent| self.is_child_in_table(parent, &failure.child));
-      if known {
-        self.apply_decision(failure);
-      }
-    }
-  }
-
-  /// Takes the oldest held failure of a parent that is no longer suspended.
-  fn take_releasable_failure(&mut self) -> Option<Failure> {
-    let entry = self.actors.values_mut().find(|entry| {
-      !entry.mailbox.is_open_and_suspended() && entry.supervision.as_ref().is_some_and(|record| !record.held.is_empty())
-    })?;
-    let failure = entry.supervision.as_mut()?.held.remove(0);
-    self.held_failures -= 1;
-    Some(failure)
-  }
-
-  /// Applies the parent's decision to `failure`.
-  ///
-  /// Mirrors `FaultHandling.handleFailure` and the strategy's
-  /// `processFailure`: the failure is logged, and the strategy restarts the
-  /// child, stops it, or, when its decider panics, fails the parent in its
-  /// turn. A failed start is marked decided first, so that the `Create` of a
-  /// retry, or of the parent's restart, starts it again. A child that stopped
-  /// in the run that failed is still decided for; restarting or stopping it
-  /// does nothing.
-  fn apply_decision(&mut self, failure: Failure) {
-    self.publish_child_failure(&failure.child, failure.cause_name, &failure.message);
-    if failure.kind == FailureKind::Initialization {
-      self.with_cell_mut(&failure.child, ActorCell::mark_start_failure_decided);
-    }
-    let strategy = self.strategy_for(&failure);
-    if strategy.is_all_for_one() {
-      self.apply_all_for_one(&failure, &strategy);
-      return;
-    }
-    let count = self.with_cell(&failure.child, ActorCell::restart_count).unwrap_or(failure.restart_count);
-    match self.decide_catching(strategy, &failure.child, count, failure.kind) {
-      | Ok(Directive::Restart) => self.restart_child(&failure),
-      | Ok(Directive::Stop) => self.stop(&failure.child),
-      | Err(message) => {
-        let resume = failure.kind != FailureKind::Initialization;
-        self.fail_supervisor(failure.parent.clone(), &failure.child, &message, resume);
+    match cell.parent() {
+      | None => self.inline_decide(cell, failure, None),
+      | Some(parent) => {
+        if self.entry(&parent).is_some() {
+          self.send_system(&parent, SystemMessage::Failed(failure));
+        } else {
+          self.inline_decide(cell, failure, Some(parent));
+        }
       },
     }
   }
 
-  /// Restarts the failed child when the strategy permits another restart,
-  /// and stops it otherwise (`OneForOneStrategy.processFailure`). A failed
-  /// start is retried by a `Create`; a failed instance is restarted here.
-  fn restart_child(&mut self, failure: &Failure) {
-    let child = &failure.child;
-    // Pekko's `faultRecreate` restarts only an actor that is not terminating
-    // (`isNormal`); a stopping actor goes on with its stop.
-    if !self.has_cell(child) || self.is_terminating(child) {
+  /// Handles the `Failed` of a child in the run of `cell`, its parent
+  /// (Pekko's `handleFailure`).
+  ///
+  /// A failure of a child that is no longer in the table, under the same
+  /// identifier and generation, is dropped. The failure is published,
+  /// the strategy is chosen and its decider run under the catcher, and
+  /// the directive is applied: a restart sends the child a `Recreate`, a
+  /// stop sends it a `Terminate`, and a decider panic fails the parent
+  /// in this run, with the child as the perpetrator.
+  fn handle_failed(&mut self, cell: &mut ActorCell, mailbox: &Mailbox<ActorCell>, failure: Failure) {
+    let self_ref = cell.self_ref();
+    if !self.is_child_in_table(&self_ref, &failure.child) {
       return;
     }
-    if !self.grant_restart_of(child) {
-      self.stop(child);
-      return;
+    self.publish_child_failure(&failure.child, failure.cause_name, &failure.message);
+    let inputs = self.decision_inputs(&self_ref, &failure, cell.parent().is_some());
+    match self.choose_decision(&failure.child, failure.kind, &inputs) {
+      | Decision::Apply(directive, strategy, governing_all_for_one) => {
+        let cause = RestartCause::of(&failure);
+        self.apply_directive(Some(&self_ref), &failure, directive, &strategy, governing_all_for_one, cause);
+      },
+      | Decision::DeciderPanicked { message } => {
+        let perpetrator = failure.child.clone();
+        let own_failure =
+          Failure { child: self_ref.clone(), kind: FailureKind::MessageHandling, cause_name: RUNTIME_CAUSE, message };
+        self.handle_invoke_failure(cell, mailbox, own_failure, Some(perpetrator));
+      },
     }
-    if failure.kind == FailureKind::Initialization {
-      self.send_system(child, SystemMessage::Create);
-      return;
-    }
-    let cell = self.take_cell(child).expect("the failed cell is in its mailbox");
-    self.restart_cell(child, cell, RestartCause::of(failure), failure.sender.clone(), false);
   }
 
-  /// Records a restart request on the cell of `target` and answers whether the
-  /// restart is permitted.
+  /// Decides for `failure` on the spot, for a parent that has no mailbox
+  /// of its own to run the decision in (a guardian, a function
+  /// reference).
   ///
-  /// Mirrors `OneForOneStrategy.processFailure`, which restarts only when
-  /// `stats.requestRestartPermission(retriesWindow)` grants it and stops the
-  /// child otherwise. A strategy with a finite window answers through the
-  /// child's [`RestartHistory`](crate::kernel::supervision) at `now`, which
-  /// both counts the request and opens or reopens the window in one step; the
-  /// plain cumulative record must not be added on top or the request would
-  /// count twice. A strategy without a finite window keeps the existing
-  /// contract: the directive already applied any cumulative limit. An
-  /// unlimited one-for-one strategy does not record the request.
-  fn grant_restart_of(&mut self, target: &ActorRef) -> bool {
-    let strategy = self.strategy_of(target);
-    match strategy.restart_permission() {
-      | Some((limit, window)) => {
-        let mut history = self.with_cell(target, ActorCell::restart_history).expect("the cell is in its mailbox");
+  /// The failure is published, and the directive is applied as a
+  /// parent's run applies it. A decider panic here has no parent run to
+  /// fail in: the panic is published once more, and a child with an
+  /// instance is resumed with the cause of its failure, while a child
+  /// whose start failed is left as it is.
+  fn inline_decide(&mut self, cell: &mut ActorCell, failure: Failure, parent: Option<ActorRef>) {
+    self.publish_child_failure(&failure.child, failure.cause_name, &failure.message);
+    let inputs = match &parent {
+      | Some(parent) => self.decision_inputs(parent, &failure, self.function_refs.contains(parent)),
+      | None => DecisionInputs {
+        governing: None,
+        spawn_strategy: Some(cell.strategy().clone()),
+        count: self.entry(&failure.child).map_or(0, |entry| entry.restart_history.count()),
+        escalation: self.is_escalation(&failure.child),
+        parent_not_top: false,
+      },
+    };
+    match self.choose_decision(&failure.child, failure.kind, &inputs) {
+      | Decision::Apply(directive, strategy, governing_all_for_one) => {
+        let cause = RestartCause::of(&failure);
+        self.apply_directive(parent.as_ref(), &failure, directive, &strategy, governing_all_for_one, cause);
+      },
+      | Decision::DeciderPanicked { message, .. } => {
+        self.publish_child_failure(&failure.child, RUNTIME_CAUSE, &message);
+        if cell.is_created() {
+          self.send_system(&failure.child, SystemMessage::Resume { caused_by_failure: true });
+        }
+      },
+    }
+  }
+
+  /// Returns whether the recorded failure of `child` answers for one of
+  /// its own children: its decider panicked on a child's `Failed`, so
+  /// the failure the parent above decides for is an escalation.
+  fn is_escalation(&self, child: &ActorRef) -> bool {
+    self.entry(child).and_then(|entry| entry.perpetrator.clone()).is_some_and(|perpetrator| &perpetrator != child)
+  }
+
+  /// Reads what the decision for `failure` of a child in the table of
+  /// `table_parent` is made from: the strategy the table's owner applies
+  /// to its children, the strategy the child was started under when it
+  /// did not inherit, and the restarts the child has used.
+  ///
+  /// `parent_not_top` tells whether the deciding parent itself stands
+  /// under a parent (an actor parent with a parent of its own, or a
+  /// function reference), which is what lets a strategy the child was
+  /// started under decide for it.
+  fn decision_inputs(&self, table_parent: &ActorRef, failure: &Failure, parent_not_top: bool) -> DecisionInputs {
+    let governing = self.parent_entry(table_parent).map(|entry| entry.strategy.clone());
+    let (count, spawn_strategy) =
+      match self.parent_entry(table_parent).and_then(|entry| entry.child_record(&failure.child)) {
+        | Some(record) => (record.history.count(), record.spawn_strategy.clone()),
+        | None => (0, None),
+      };
+    DecisionInputs { governing, spawn_strategy, count, escalation: self.is_escalation(&failure.child), parent_not_top }
+  }
+
+  /// Chooses the directive for a failure from `inputs`, running a
+  /// decider under the catcher when one is chosen.
+  ///
+  /// A child the deciding parent started with a strategy of its own,
+  /// under a parent that itself stands under a parent, is decided by
+  /// that strategy alone, whether or not it carries a decider, ahead of
+  /// the deciding parent's all-for-one reach and of its decider, with
+  /// the started strategy's all-for-one reach when it is all-for-one.
+  /// Otherwise the decider is the first of these that a caller
+  /// installed: the decider of the strategy the deciding parent applies
+  /// to its children; and the decider of the strategy the child was
+  /// started under, when the failure is an escalation, or when the
+  /// failure is of the child's start, which the strategy it was started
+  /// under answers for. With no decider chosen, the strategy the child
+  /// was started under, or the deciding parent's when it inherited,
+  /// decides by its policy alone. An all-for-one strategy, the deciding
+  /// parent's or the one the child was started under, decides for the
+  /// whole set of siblings at once.
+  fn choose_decision(&self, child: &ActorRef, kind: FailureKind, inputs: &DecisionInputs) -> Decision {
+    if inputs.parent_not_top {
+      if let Some(spawn) = inputs.spawn_strategy.clone() {
+        return match self.decide_catching(spawn.clone(), child, inputs.count, kind) {
+          | Ok(directive) => Decision::Apply(directive, spawn.clone(), spawn.is_all_for_one()),
+          | Err(message) => Decision::DeciderPanicked { message },
+        };
+      }
+    }
+    let all_for_one = inputs
+      .governing
+      .clone()
+      .filter(|strategy| strategy.is_all_for_one())
+      .or_else(|| inputs.spawn_strategy.clone().filter(|strategy| strategy.is_all_for_one()));
+    if let Some(strategy) = all_for_one {
+      return match self.decide_catching(strategy.clone(), child, inputs.count, kind) {
+        | Ok(directive) => Decision::Apply(directive, strategy, true),
+        | Err(message) => Decision::DeciderPanicked { message },
+      };
+    }
+    let mut decider: Option<SupervisorStrategy> = None;
+    if let Some(governing) = &inputs.governing {
+      if governing.has_custom_decider() {
+        decider = Some(governing.clone());
+      }
+    }
+    if decider.is_none() {
+      if let Some(spawn) = &inputs.spawn_strategy {
+        let speaks = inputs.escalation || kind == FailureKind::Initialization;
+        if spawn.has_custom_decider() && speaks {
+          decider = Some(spawn.clone());
+        }
+      }
+    }
+    if let Some(strategy) = decider {
+      return match self.decide_catching(strategy.clone(), child, inputs.count, kind) {
+        | Ok(directive) => Decision::Apply(directive, strategy, false),
+        | Err(message) => Decision::DeciderPanicked { message },
+      };
+    }
+    let strategy = inputs
+      .spawn_strategy
+      .clone()
+      .or_else(|| inputs.governing.clone())
+      .unwrap_or_else(SupervisorStrategy::default_strategy);
+    Decision::Apply(strategy.decide(inputs.count, kind), strategy, false)
+  }
+
+  /// Applies a chosen directive for `failure`.
+  ///
+  /// A restart the strategy still has to permit is asked against the
+  /// child's restart record: a granted restart sends the child a
+  /// `Recreate` with the failure's cause, a refused one stops it. A stop
+  /// sends a `Terminate`. Under an all-for-one strategy a restart is
+  /// granted only when every child in the table may still restart,
+  /// asked in the order the children stand in the table and stopping at
+  /// the first refusal, whose own request is still counted: the granted
+  /// restart suspends every sibling but the failed child and recreates
+  /// them all, and a refused one, like a stop, stops them all.
+  ///
+  /// The record a permission is asked against is the child's record in
+  /// the table of `table_parent`; a decision on the spot for a child
+  /// with no table reads the record its own entry keeps.
+  fn apply_directive(
+    &mut self,
+    table_parent: Option<&ActorRef>,
+    failure: &Failure,
+    directive: Directive,
+    strategy: &SupervisorStrategy,
+    governing_all_for_one: bool,
+    cause: RestartCause,
+  ) {
+    let child = &failure.child;
+    if governing_all_for_one {
+      let parent = table_parent.expect("an all-for-one decision is made from a parent's table");
+      let granted = match directive {
+        | Directive::Restart => match strategy.restart_permission() {
+          | Some((limit, window)) => {
+            let now = if window.is_some() && !limit.forbids_restart() { self.now() } else { Duration::ZERO };
+            let mut granted = true;
+            let siblings = self.children_of(parent);
+            for sibling in &siblings {
+              let mut history = self
+                .parent_entry(parent)
+                .and_then(|entry| entry.child_record(sibling))
+                .map(|record| record.history)
+                .unwrap_or_default();
+              let allowed = history.request_permission(limit, window, now);
+              if let Some(entry) = self.parent_entry_mut(parent) {
+                if let Some(record) = entry.child_record_mut(sibling) {
+                  record.history = history;
+                }
+              }
+              if !allowed {
+                granted = false;
+                break;
+              }
+            }
+            granted
+          },
+          | None => true,
+        },
+        | Directive::Stop => false,
+      };
+      if granted {
+        for sibling in self.children_of(parent) {
+          if &sibling != child {
+            self.send_system(&sibling, SystemMessage::Suspend);
+          }
+          self.send_system(&sibling, SystemMessage::Recreate { cause: cause.clone() });
+        }
+      } else {
+        for sibling in self.children_of(parent) {
+          self.stop(&sibling);
+        }
+      }
+      return;
+    }
+    match directive {
+      | Directive::Restart => {
+        let permitted = match strategy.restart_permission() {
+          | Some((limit, window)) => self.request_permission_for(table_parent, child, limit, window),
+          | None => {
+            if strategy.records_plain_restart() {
+              self.record_plain_for(table_parent, child);
+            }
+            true
+          },
+        };
+        if permitted {
+          self.send_system(child, SystemMessage::Recreate { cause });
+        } else {
+          self.stop(child);
+        }
+      },
+      | Directive::Stop => self.stop(child),
+    }
+  }
+
+  /// Asks the restart record of `child` for one restart under `limit`
+  /// and `window`, and answers whether it is granted.
+  fn request_permission_for(
+    &mut self,
+    table_parent: Option<&ActorRef>,
+    child: &ActorRef,
+    limit: RestartLimit,
+    window: Option<Duration>,
+  ) -> bool {
+    match table_parent {
+      | Some(parent) => {
+        let mut history = self
+          .parent_entry(parent)
+          .and_then(|entry| entry.child_record(child))
+          .map(|record| record.history)
+          .unwrap_or_default();
         let allowed = self.apply_permission_to(&mut history, limit, window);
-        self.with_cell_mut(target, |cell| cell.set_restart_history(history));
+        if let Some(entry) = self.parent_entry_mut(parent) {
+          if let Some(record) = entry.child_record_mut(child) {
+            record.history = history;
+          }
+        }
         allowed
       },
       | None => {
-        if strategy.records_plain_restart() {
-          self.with_cell_mut(target, ActorCell::record_restart_request);
+        let mut history = self.entry(child).map_or_else(RestartHistory::new, |entry| entry.restart_history);
+        let allowed = self.apply_permission_to(&mut history, limit, window);
+        if let Some(entry) = self.entry_mut(child) {
+          entry.restart_history = history;
         }
-        true
+        allowed
+      },
+    }
+  }
+
+  /// Records one plain restart request of `child` against its record.
+  fn record_plain_for(&mut self, table_parent: Option<&ActorRef>, child: &ActorRef) {
+    match table_parent {
+      | Some(parent) => {
+        if let Some(entry) = self.parent_entry_mut(parent) {
+          if let Some(record) = entry.child_record_mut(child) {
+            record.history.record_plain();
+          }
+        }
+      },
+      | None => {
+        if let Some(entry) = self.entry_mut(child) {
+          entry.restart_history.record_plain();
+        }
       },
     }
   }
@@ -3685,87 +3860,6 @@ impl Executor {
   fn apply_permission_to(&self, history: &mut RestartHistory, limit: RestartLimit, window: Option<Duration>) -> bool {
     let now = if window.is_some() && !limit.forbids_restart() { self.now() } else { Duration::ZERO };
     history.request_permission(limit, window, now)
-  }
-
-  /// Applies an all-for-one decision: restart every open sibling when all of
-  /// them may still restart, or stop every one otherwise.
-  ///
-  /// Mirrors `AllForOneStrategy.processFailure`: the failed child's failure is
-  /// judged for the whole sibling set. When the failed child's directive is
-  /// `Restart` and every sibling has a restart left in the retry count and time
-  /// window, each sibling restarts; the failed child keeps the message's
-  /// original sender so its hooks see it, and every other sibling, which did
-  /// not fail, is suspended for its restart (Pekko's `suspendFirst`). A failed
-  /// start is retried by a `Create`. When any sibling has no restart left, or
-  /// the failed child's directive is not `Restart`, every sibling stops.
-  fn apply_all_for_one(&mut self, failure: &Failure, strategy: &SupervisorStrategy) {
-    let target = &failure.child;
-    let Some(parent) = failure.parent.clone() else {
-      return;
-    };
-    let siblings = self.open_children_of(&parent);
-    let restart = match self.decide_catching(strategy.clone(), target, 0, failure.kind) {
-      | Ok(directive) => directive == Directive::Restart,
-      | Err(message) => {
-        let resume = failure.kind != FailureKind::Initialization;
-        self.fail_supervisor(Some(parent), target, &message, resume);
-        return;
-      },
-    };
-    let mut permitted = restart;
-    if restart {
-      if let Some((limit, window)) = strategy.restart_permission() {
-        let now = if window.is_some() && !limit.forbids_restart() { self.now() } else { Duration::ZERO };
-        for sibling in &siblings {
-          let Some(mut history) = self.with_cell(sibling, ActorCell::restart_history) else {
-            permitted = false;
-            break;
-          };
-          let allowed = history.request_permission(limit, window, now);
-          self.with_cell_mut(sibling, |cell| cell.set_restart_history(history));
-          if !allowed {
-            permitted = false;
-            break;
-          }
-        }
-      }
-    }
-    // Hooks can fail a deciding actor. Apply those failures only after every
-    // sibling has received this supervision decision.
-    let was_active = core::mem::replace(&mut self.boundary_active, true);
-    if permitted {
-      for sibling in siblings {
-        // A sibling that waits for its children (it stops, its start is
-        // retried, or its restart already runs) is left to that work. A
-        // sibling without an instance has nothing to restart: one that has
-        // not handled its first `Create` is left to it, and one whose failed
-        // start was decided is started again, as Pekko's `faultRecreate`
-        // falls back to `faultCreate`.
-        if self.is_waiting(&sibling) {
-          continue;
-        }
-        let state = self.with_cell(&sibling, |cell| (cell.is_created(), cell.start_failure()));
-        match state {
-          | Some((true, _)) => {},
-          | Some((false, Some(StartFailure::Decided))) => {
-            self.send_system(&sibling, SystemMessage::Create);
-            continue;
-          },
-          | _ => continue,
-        }
-        let Some(cell) = self.take_cell(&sibling) else {
-          continue;
-        };
-        let failed = &sibling == target;
-        let sender = if failed { failure.sender.clone() } else { None };
-        self.restart_cell(&sibling, cell, RestartCause::of(failure), sender, !failed);
-      }
-    } else {
-      for sibling in siblings {
-        self.stop(&sibling);
-      }
-    }
-    self.boundary_active = was_active;
   }
 
   /// Asks `strategy` for the directive for `child`, catching a decider panic.
@@ -3796,105 +3890,98 @@ impl Executor {
     }
   }
 
-  /// Fails the actor that decided for a child when its decider panicked.
-  ///
-  /// The panic is the failure of the deciding actor, not of the child, so the
-  /// deciding actor goes through the same path as a panic in `receive` and its
-  /// own parent chooses `Restart` or `Stop`. The failed child stays suspended:
-  /// with `resume_failed`, the deciding actor's restart resumes it once it has
-  /// finished, and a stop of the deciding actor stops the child with it
-  /// (section 11.12.6). A deciding actor that is still executing has no cell
-  /// in the table, so its failure waits for the outermost frame instead of
-  /// being dropped or applied to the child. A deciding actor without a cell,
-  /// such as a function reference, cannot fail in its turn, so the panic is
-  /// reported once and the child stays as it is.
-  fn fail_supervisor(&mut self, supervisor: Option<ActorRef>, failed: &ActorRef, message: &str, resume_failed: bool) {
-    let Some(supervisor) = supervisor else {
-      self.publish_child_failure(failed, RUNTIME_CAUSE, message);
-      return;
-    };
-    if resume_failed {
-      // A deciding actor without a cell (a function reference, a guardian,
-      // or one that has stopped) is never restarted, so nothing would resume
-      // the child: it is resumed at once, as in stage 3.
-      if self.is_running(&supervisor) || self.has_cell(&supervisor) {
-        if let Some(entry) = self.parent_entry_mut(&supervisor) {
-          entry.resume_after_restart.push(failed.clone());
-        }
-      } else {
-        self.send_system(failed, SystemMessage::Resume);
-      }
+  /// Handles `Suspend` in the run of `cell` (Pekko's `faultSuspend`):
+  /// the actor suspends itself and passes the suspend on to its
+  /// children.
+  fn fault_suspend(&mut self, cell: &mut ActorCell, mailbox: &Mailbox<ActorCell>) {
+    mailbox.suspend();
+    let self_ref = cell.self_ref();
+    for child in self.children_of(&self_ref) {
+      self.send_system(&child, SystemMessage::Suspend);
     }
-    if self.is_running(&supervisor) {
-      self.pending_decider_failures.push((supervisor, message.to_string()));
-      return;
-    }
-    self.apply_supervisor_failure(&supervisor, message);
   }
 
-  /// Fails `supervisor`, whose decider panicked, under the strategy of its
-  /// own parent.
+  /// Handles `Resume` in the run of `cell` (Pekko's `faultResume`).
   ///
-  /// The deciding actor failed while handling a message, so the failure is a
-  /// `MessageHandling` failure, decided as a panic in `receive` is. Its
-  /// mailbox is suspended first, as Pekko's `handleInvokeFailure` suspends the
-  /// actor whose system message threw. A deciding actor that has stopped since
-  /// the panic was captured has no cell to fail, so the panic is reported once
-  /// and nothing else runs.
-  fn apply_supervisor_failure(&mut self, supervisor: &ActorRef, message: &str) {
-    let failure = self.with_cell(supervisor, |cell| {
-      self.failure_of(cell, FailureKind::MessageHandling, RUNTIME_CAUSE, message.to_string(), None)
-    });
-    let Some(failure) = failure else {
-      self.publish_child_failure(supervisor, RUNTIME_CAUSE, message);
+  /// An actor without an instance goes to the retry of its start. An
+  /// actor with one undoes one suspend, and passes the resume on to its
+  /// children: a resume that answers a failure clears the actor's
+  /// failure record, and only the child that record names is resumed
+  /// with the cause, the others without it.
+  fn fault_resume(&mut self, cell: &mut ActorCell, mailbox: &Mailbox<ActorCell>, caused_by_failure: bool) {
+    if !cell.is_created() {
+      self.fault_create(cell, mailbox);
       return;
-    };
-    if let Some(entry) = self.entry(supervisor) {
-      entry.mailbox.suspend();
     }
-    self.decide(failure);
+    let self_ref = cell.self_ref();
+    mailbox.resume();
+    let perpetrator =
+      if caused_by_failure { self.entry_mut(&self_ref).and_then(|entry| entry.perpetrator.take()) } else { None };
+    for child in self.children_of(&self_ref) {
+      let flag = caused_by_failure && perpetrator.as_ref() == Some(&child);
+      self.send_system(&child, SystemMessage::Resume { caused_by_failure: flag });
+    }
   }
 
-  /// Runs the first half of a restart of `cell` (Pekko's `faultRecreate`),
-  /// and the second half at once when no child is to die.
-  ///
-  /// The stash goes back to the mailbox, as Pekko's
-  /// `UnrestrictedStash.preRestart` returns it before the old instance's
-  /// `preRestart`, so the new instance handles it. `pre_restart` runs on the
-  /// old instance, under the catcher; its failure is logged and the restart
-  /// goes on. The children it asked to stop are waited for: the second half
-  /// runs in the run that handles the last one's `ChildTerminated` (section
-  /// 11.12.5). An actor that did not fail itself (an all-for-one sibling, a
-  /// retained child of a killed parent) is suspended first, and the second
-  /// half resumes it.
-  ///
-  /// `original_sender` is the sender of the message whose handling failed, and
-  /// becomes the `sender()` the old instance's `pre_restart` sees, as Pekko's
-  /// `preRestart` sees the sender of the failing message. When it is `None`,
-  /// as for a `Kill` or a supervisor failure, the hook sees the actor's own
-  /// handle.
-  fn restart_cell(
-    &mut self,
-    target: &ActorRef,
-    mut cell: Box<ActorCell>,
-    cause: RestartCause,
-    original_sender: Option<ActorRef>,
-    suspend_first: bool,
-  ) {
-    if suspend_first {
-      if let Some(entry) = self.entry(target) {
-        entry.mailbox.suspend();
-      }
+  /// Retries the start of `cell`, which has no instance (Pekko's
+  /// `faultCreate`): the children of the failed attempt are asked to
+  /// stop and waited for when there are any, and the start runs once
+  /// they have gone.
+  fn fault_create(&mut self, cell: &mut ActorCell, mailbox: &Mailbox<ActorCell>) {
+    let self_ref = cell.self_ref();
+    if self.stop_children_and_wait(&self_ref, WaitReason::Creation) {
+      return;
     }
-    self.unstash_all(target);
-    let reason = self.failure_reason(target, cause.cause_name, &cause.message);
+    self.finish_create(cell, mailbox);
+  }
+
+  /// Runs the start of `cell` whose children of the failed attempt have
+  /// gone (Pekko's `finishCreate`): one suspend is undone, the failure
+  /// record is cleared, and the instance is built.
+  fn finish_create(&mut self, cell: &mut ActorCell, mailbox: &Mailbox<ActorCell>) {
+    let self_ref = cell.self_ref();
+    cell.take_start_failure();
+    mailbox.resume();
+    if let Some(entry) = self.entry_mut(&self_ref) {
+      entry.perpetrator = None;
+    }
+    self.create_now(cell, mailbox);
+  }
+
+  /// Runs the first half of a restart of `cell` in its own run (Pekko's
+  /// `faultRecreate`), and the second half at once when no child is to
+  /// die.
+  ///
+  /// A `Recreate` answers a suspend, so the mailbox is suspended when
+  /// this runs. An actor without an instance goes to the retry of its
+  /// start instead. The children the restart keeps are read from the
+  /// table by the second half, so a child the old instance starts in its
+  /// `pre_restart`, and a child a child-terminated hook starts while the
+  /// restart waits, are among them. The stash goes back to the mailbox,
+  /// as
+  /// Pekko's `UnrestrictedStash.preRestart` returns it before the old
+  /// instance's `pre_restart`, so the new instance handles it.
+  /// `pre_restart` runs on the old instance, under the catcher, with the
+  /// sender of the failed message as its `sender()`; its failure is
+  /// logged and the restart goes on. The children it asked to stop are
+  /// waited for: the second half runs in the run that handles the last
+  /// one's `ChildTerminated`.
+  fn fault_recreate(&mut self, cell: &mut ActorCell, mailbox: &Mailbox<ActorCell>, cause: RestartCause) {
+    debug_assert!(mailbox.is_suspended(), "a Recreate answers a suspend");
+    if !cell.is_created() {
+      self.fault_create(cell, mailbox);
+      return;
+    }
+    let target = cell.self_ref();
+    self.unstash_all(&target);
+    let reason = self.failure_reason(&target, cause.cause_name, &cause.message);
     let reason_box: Box<dyn core::any::Any + Send> = Box::new(reason);
     let catcher = self.catcher.clone();
     let mut old_stack = cell.take_stack();
-    self.enter_frame(target);
-    let hook_sender = original_sender.unwrap_or_else(|| target.clone());
+    self.enter_frame(&target);
+    let hook_sender = cell.failed_sender().unwrap_or_else(|| target.clone());
     let pre_restart_failed = {
-      let mut context = ActorContext::new(target, hook_sender, self, &mut old_stack);
+      let mut context = ActorContext::new(&target, hook_sender, self, &mut old_stack);
       match catcher {
         | Some(catcher) => catcher.run(&mut || cell.pre_restart(&mut context, reason_box.as_ref())),
         | None => {
@@ -3905,51 +3992,47 @@ impl Executor {
     };
     self.exit_frame();
     if let RunOutcome::Failed { message } = pre_restart_failed {
-      self.publish_child_failure(target, RUNTIME_CAUSE, &message);
+      self.publish_child_failure(&target, RUNTIME_CAUSE, &message);
     }
     // The old stack lives until the second half has run, as the old
     // instance's fields did across Pekko's restart.
     cell.restore_stack(old_stack);
-    let waits = self.parent_entry(target).is_some_and(|entry| !entry.dying.is_empty());
+    let waits = self.parent_entry(&target).is_some_and(|entry| !entry.dying.is_empty());
     if waits {
-      if let Some(entry) = self.parent_entry_mut(target) {
+      if let Some(entry) = self.parent_entry_mut(&target) {
         entry.waiting = Some(WaitReason::Recreation(cause));
       }
     } else {
-      self.finish_recreate(&mut cell, cause);
+      self.finish_recreate(cell, mailbox, cause);
     }
-    self.put_cell(cell);
-    self.finish_boundary();
   }
 
-  /// Runs the second half of a restart of `cell` (Pekko's `finishRecreate`).
+  /// Runs the second half of a restart of `cell` (Pekko's
+  /// `finishRecreate`).
   ///
-  /// The recipe creates the new instance and its `post_restart` runs, which
-  /// is what Pekko's default `postRestart` does. A failure of the recipe or of
-  /// `post_restart` stops the actor, as the default decider maps
-  /// `PostRestartException` to stop, and the stop skips the old instance's
-  /// `post_stop`, which `pre_restart` already ran. Otherwise the suspend of the
-  /// failure is undone, the children a `Kill` left are restarted, the
-  /// children whose failed start waits for this restart get a `Create`, and
-  /// the children whose failure made this actor's decider panic are resumed.
-  fn finish_recreate(&mut self, cell: &mut ActorCell, cause: RestartCause) {
+  /// The children the restart keeps are taken from the table first,
+  /// before the new instance is built, so the children it starts are not
+  /// among them, while the children the first half and the wait brought
+  /// in are. One suspend is undone and the failure record is cleared
+  /// before the new instance is built, so a child the new instance
+  /// starts in its `post_restart` does not take the answered suspend on
+  /// itself. The
+  /// recipe creates the new instance and its `post_restart` runs, which
+  /// is what Pekko's default `postRestart` does. The children the
+  /// restart kept are restarted with the same cause. A failure of the
+  /// recipe or of `post_restart` stops the actor in this run, and the
+  /// stop skips the old instance's `post_stop`, which `pre_restart`
+  /// already ran.
+  fn finish_recreate(&mut self, cell: &mut ActorCell, mailbox: &Mailbox<ActorCell>, cause: RestartCause) {
     let target = cell.self_ref();
-    // Pekko's finishRecreate snapshots surviving children before the new
-    // instance can spawn its own. Apply that propagation to a supervised Kill.
-    let survivors: Vec<ActorRef> = if cause.kind == FailureKind::Killed {
-      let dying = self.parent_entry(&target).map(|entry| entry.dying.clone()).unwrap_or_default();
-      self
-        .open_children_of(&target)
-        .into_iter()
-        .filter(|child| {
-          !dying.contains(child)
-            && !self.is_waiting(child)
-            && self.with_cell(child, ActorCell::is_created) == Some(true)
-        })
-        .collect()
-    } else {
-      Vec::new()
-    };
+    let survivors: Vec<ActorRef> = self
+      .parent_entry(&target)
+      .map(|entry| entry.children.iter().map(|record| record.child.clone()).collect())
+      .unwrap_or_default();
+    self.resume_mailbox(&target);
+    if let Some(entry) = self.entry_mut(&target) {
+      entry.perpetrator = None;
+    }
     let old_stack = cell.take_stack();
     cell.set_failed_sender(None);
     let catcher = self.catcher.clone();
@@ -3969,33 +4052,20 @@ impl Executor {
     cell.restore_stack(stack);
     match restarted {
       | RunOutcome::Completed => {
-        self.resume_mailbox(&target);
         self.check_receive_timeout(target.key(), true);
         for child in survivors {
-          if let Some(child_cell) = self.take_cell(&child) {
-            self.restart_cell(&child, child_cell, cause.clone(), None, true);
-          }
-        }
-        let waiting_for_retry = |child: &ActorCell| child.start_failure() == Some(StartFailure::Decided);
-        for child in self.children_of(&target) {
-          if self.with_cell(&child, waiting_for_retry) == Some(true) {
-            self.send_system(&child, SystemMessage::Create);
-          }
-        }
-        let resumed = self
-          .parent_entry_mut(&target)
-          .map(|entry| core::mem::take(&mut entry.resume_after_restart))
-          .unwrap_or_default();
-        for child in resumed {
-          if self.is_child_in_table(&target, &child) {
-            self.send_system(&child, SystemMessage::Resume);
-          }
+          self.send_system(&child, SystemMessage::Recreate { cause: cause.clone() });
         }
       },
       | RunOutcome::Failed { message } => {
         self.publish_child_failure(&target, RUNTIME_CAUSE, &message);
         cell.suppress_post_stop();
-        self.stop(&target);
+        if let Some(parent) = cell.parent() {
+          if let Some(entry) = self.parent_entry_mut(&parent) {
+            entry.mark_dying(&target);
+          }
+        }
+        self.handle_terminate(cell, mailbox);
       },
     }
     drop(old_stack);
@@ -4139,7 +4209,7 @@ struct Lent<'a> {
 impl Drop for Lent<'_> {
   fn drop(&mut self) {
     let executor = &mut *self.executor;
-    if !self.returned && (!executor.running.is_empty() || executor.boundary_active || executor.in_run) {
+    if !self.returned && (!executor.running.is_empty() || executor.in_run) {
       executor.mark_fatal();
     }
   }

@@ -16,15 +16,54 @@
 
 //! The messages between actors that the kernel itself sends.
 
-use crate::kernel::actor_ref::ActorRef;
+use alloc::string::String;
+
+use crate::kernel::{actor_ref::ActorRef, supervision::FailureKind};
+
+/// A failure of one actor, which the `Failed` system message carries to
+/// its parent.
+///
+/// Mirrors `org.apache.pekko.dispatch.sysmsg.Failed`: it keeps what the
+/// parent's decision reads of the child. The number of restarts the child
+/// has already used and the strategy it was started under live in the
+/// parent's table, and the sender of the failed message lives in the
+/// child's cell, so neither rides here.
+#[derive(Clone, Debug)]
+pub(crate) struct Failure {
+  /// The child that failed.
+  pub(crate) child: ActorRef,
+  /// The kind of the failure.
+  pub(crate) kind: FailureKind,
+  /// The name of the cause the failure is reported under.
+  pub(crate) cause_name: &'static str,
+  /// The message of the failure.
+  pub(crate) message: String,
+}
+
+/// What a restart was for, which the `Recreate` system message carries to
+/// the child it restarts.
+///
+/// Mirrors the cause `org.apache.pekko.dispatch.sysmsg.Recreate` carries.
+#[derive(Clone, Debug)]
+pub(crate) struct RestartCause {
+  /// The name of the cause the failure was reported under.
+  pub(crate) cause_name: &'static str,
+  /// The message of the failure.
+  pub(crate) message: String,
+}
+
+impl RestartCause {
+  /// Returns the cause of a restart that answers `failure`.
+  pub(crate) fn of(failure: &Failure) -> Self {
+    Self { cause_name: failure.cause_name, message: failure.message.clone() }
+  }
+}
 
 /// A message that drives the life of an actor rather than its behaviour.
 ///
-/// Mirrors `org.apache.pekko.dispatch.sysmsg.SystemMessage` and the cases that
-/// the port sends so far: the others come
-/// back in the stages that send them. A mailbox keeps these in a queue of
-/// their own, and a run handles all that are waiting before each normal
-/// message. A system message left in a
+/// Mirrors `org.apache.pekko.dispatch.sysmsg.SystemMessage`. A mailbox
+/// keeps these in a queue of their own, and a run handles all that are
+/// waiting before each normal message. A system message left in a
 /// mailbox that closes, or sent to a closed one, goes to dead letters under
 /// the dead letter rules: a suppressed kind as a `SuppressedDeadLetter`, and
 /// every other kind as a `DeadLetter`.
@@ -32,8 +71,23 @@ use crate::kernel::actor_ref::ActorRef;
 pub(crate) enum SystemMessage {
   /// Start the actor (Pekko's `Create`).
   Create,
+  /// Suspend the actor, and pass the suspend on to its children (Pekko's
+  /// `Suspend`).
+  Suspend,
   /// Undo one suspend of the mailbox (Pekko's `Resume`).
-  Resume,
+  Resume {
+    /// Whether this resume answers a failure: the child whose failure it
+    /// answers has its failure record cleared, the others do not.
+    caused_by_failure: bool,
+  },
+  /// Restart the actor for the cause the message carries (Pekko's
+  /// `Recreate`).
+  Recreate {
+    /// What the restart was for.
+    cause: RestartCause,
+  },
+  /// A child has failed (Pekko's `Failed`).
+  Failed(Failure),
   /// Stop the actor (Pekko's `Terminate`).
   Terminate,
   /// A child has stopped (Pekko's `DeathWatchNotification` to the parent,
@@ -54,7 +108,10 @@ impl SystemMessage {
   pub(crate) fn class_name(&self) -> &'static str {
     match self {
       | Self::Create => "fraktor_actor::kernel::dispatch::system_message::Create",
-      | Self::Resume => "fraktor_actor::kernel::dispatch::system_message::Resume",
+      | Self::Suspend => "fraktor_actor::kernel::dispatch::system_message::Suspend",
+      | Self::Resume { .. } => "fraktor_actor::kernel::dispatch::system_message::Resume",
+      | Self::Recreate { .. } => "fraktor_actor::kernel::dispatch::system_message::Recreate",
+      | Self::Failed(_) => "fraktor_actor::kernel::dispatch::system_message::Failed",
       | Self::Terminate => "fraktor_actor::kernel::dispatch::system_message::Terminate",
       | Self::ChildTerminated { .. } => "fraktor_actor::kernel::dispatch::system_message::ChildTerminated",
     }
