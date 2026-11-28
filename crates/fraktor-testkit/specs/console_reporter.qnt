@@ -27,6 +27,8 @@ module console_reporter {
   pure val Shutdowns = Set("A", "B")
   pure val Drop = "D"
   pure val Callers = Shutdowns.union(Set(Drop))
+  // The scheduled report thread, as a holder of the output lock.
+  pure val ReporterThread = "T"
 
   var console: bool
   var positiveInterval: bool
@@ -35,6 +37,10 @@ module console_reporter {
   var handle: Handle
   var stopFlag: bool
   var stopLock: Lock
+  var outputLock: Lock
+  // How many times a caller took the output lock; bounded so that a stuck
+  // state ends the trace instead of being hidden by take-and-release loops.
+  var outputHolds: int
   var calls: str -> Call
   var shutdownCalls: int
   var joins: int
@@ -46,6 +52,7 @@ module console_reporter {
   action initWith(consoleOn: bool, positive: bool): bool = all {
     console' = consoleOn, positiveInterval' = positive, constructed' = false,
     thread' = NotStarted, handle' = Joined, stopFlag' = false, stopLock' = Free,
+    outputLock' = Free, outputHolds' = 0,
     calls' = Callers.mapBy(_ => Idle), shutdownCalls' = 0, joins' = 0, dropped' = false,
     reports' = 0, printedAfterTheFlag' = false,
   }
@@ -64,8 +71,9 @@ module console_reporter {
     thread' = if (console and positiveInterval) Waiting else NotStarted,
     handle' = if (console and positiveInterval) Running else Joined,
     console' = console, positiveInterval' = positiveInterval, stopFlag' = stopFlag,
-    stopLock' = stopLock, calls' = calls, shutdownCalls' = shutdownCalls, joins' = joins,
-    dropped' = dropped, reports' = reports, printedAfterTheFlag' = printedAfterTheFlag,
+    stopLock' = stopLock, outputLock' = outputLock, outputHolds' = outputHolds, calls' = calls,
+    shutdownCalls' = shutdownCalls,
+    joins' = joins, dropped' = dropped, reports' = reports, printedAfterTheFlag' = printedAfterTheFlag,
   }
 
   // wait_timeout_while returns after the interval with the flag clear: the
@@ -78,19 +86,57 @@ module console_reporter {
     thread' = Reporting,
     reports' = reports + 1,
     console' = console, positiveInterval' = positiveInterval, constructed' = constructed,
-    handle' = handle, stopFlag' = stopFlag, stopLock' = stopLock, calls' = calls,
-    shutdownCalls' = shutdownCalls, joins' = joins, dropped' = dropped,
+    handle' = handle, stopFlag' = stopFlag, stopLock' = stopLock, outputLock' = outputLock,
+    outputHolds' = outputHolds,
+    calls' = calls, shutdownCalls' = shutdownCalls, joins' = joins, dropped' = dropped,
     printedAfterTheFlag' = printedAfterTheFlag,
   }
 
-  // report_once prints without the stop lock; the thread goes back to waiting.
+  // report_snapshot takes the output lock before it prints (the output Mutex
+  // and, for the standard output, the StdoutLock inside it).
+  action startPrinting = all {
+    thread == Reporting,
+    outputLock == Free,
+    outputLock' = HeldBy(ReporterThread), outputHolds' = outputHolds,
+    console' = console, positiveInterval' = positiveInterval, constructed' = constructed,
+    thread' = thread, handle' = handle, stopFlag' = stopFlag, stopLock' = stopLock, calls' = calls,
+    shutdownCalls' = shutdownCalls, joins' = joins, dropped' = dropped, reports' = reports,
+    printedAfterTheFlag' = printedAfterTheFlag,
+  }
+
+  // report_once prints without the stop lock, releases the output lock, and
+  // the thread goes back to waiting.
   action finishReport = all {
     thread == Reporting,
+    outputLock == HeldBy(ReporterThread),
     thread' = Waiting,
+    outputLock' = Free, outputHolds' = outputHolds,
     printedAfterTheFlag' = (printedAfterTheFlag or stopFlag),
     console' = console, positiveInterval' = positiveInterval, constructed' = constructed,
     handle' = handle, stopFlag' = stopFlag, stopLock' = stopLock, calls' = calls,
     shutdownCalls' = shutdownCalls, joins' = joins, dropped' = dropped, reports' = reports,
+  }
+
+  // A caller's own use of the output (a StdoutLock it takes, or a
+  // report_metrics it runs) outside any stop.
+  action holdTheOutput(c: str): bool = all {
+    outputLock == Free,
+    calls.get(c) == Idle or calls.get(c) == Returned,
+    outputHolds < 2,
+    outputLock' = HeldBy(c), outputHolds' = outputHolds + 1,
+    console' = console, positiveInterval' = positiveInterval, constructed' = constructed,
+    thread' = thread, handle' = handle, stopFlag' = stopFlag, stopLock' = stopLock, calls' = calls,
+    shutdownCalls' = shutdownCalls, joins' = joins, dropped' = dropped, reports' = reports,
+    printedAfterTheFlag' = printedAfterTheFlag,
+  }
+
+  action releaseTheOutput(c: str): bool = all {
+    outputLock == HeldBy(c),
+    outputLock' = Free, outputHolds' = outputHolds,
+    console' = console, positiveInterval' = positiveInterval, constructed' = constructed,
+    thread' = thread, handle' = handle, stopFlag' = stopFlag, stopLock' = stopLock, calls' = calls,
+    shutdownCalls' = shutdownCalls, joins' = joins, dropped' = dropped, reports' = reports,
+    printedAfterTheFlag' = printedAfterTheFlag,
   }
 
   // The notify (or any wake) with the flag set: the thread leaves at once,
@@ -101,7 +147,8 @@ module console_reporter {
     stopFlag,
     thread' = Finished,
     console' = console, positiveInterval' = positiveInterval, constructed' = constructed,
-    handle' = handle, stopFlag' = stopFlag, stopLock' = stopLock, calls' = calls,
+    handle' = handle, stopFlag' = stopFlag, stopLock' = stopLock, outputLock' = outputLock,
+    outputHolds' = outputHolds, calls' = calls,
     shutdownCalls' = shutdownCalls, joins' = joins, dropped' = dropped, reports' = reports,
     printedAfterTheFlag' = printedAfterTheFlag,
   }
@@ -114,7 +161,8 @@ module console_reporter {
     shutdownCalls' = if (byDrop) shutdownCalls else shutdownCalls + 1,
     dropped' = (dropped or byDrop),
     console' = console, positiveInterval' = positiveInterval, constructed' = constructed,
-    thread' = thread, handle' = handle, stopFlag' = stopFlag, joins' = joins,
+    thread' = thread, handle' = handle, stopFlag' = stopFlag, outputLock' = outputLock,
+    outputHolds' = outputHolds, joins' = joins,
     reports' = reports, printedAfterTheFlag' = printedAfterTheFlag,
   }
 
@@ -126,6 +174,8 @@ module console_reporter {
     not(dropped),
     calls.get(c) == Idle or calls.get(c) == Returned,
     shutdownCalls < 4,
+    // The contract: release the output lock before stopping.
+    outputLock != HeldBy(c),
     takeTheStopLock(c, false),
   }
 
@@ -135,6 +185,7 @@ module console_reporter {
     constructed,
     not(dropped),
     Shutdowns.forall(c => calls.get(c) == Idle or calls.get(c) == Returned),
+    outputLock != HeldBy(Drop),
     takeTheStopLock(Drop, true),
   }
 
@@ -146,8 +197,9 @@ module console_reporter {
     stopLock' = Free,
     calls' = calls.set(c, Flagged),
     console' = console, positiveInterval' = positiveInterval, constructed' = constructed,
-    thread' = thread, handle' = handle, shutdownCalls' = shutdownCalls, joins' = joins,
-    dropped' = dropped, reports' = reports, printedAfterTheFlag' = printedAfterTheFlag,
+    thread' = thread, handle' = handle, outputLock' = outputLock, outputHolds' = outputHolds,
+    shutdownCalls' = shutdownCalls,
+    joins' = joins, dropped' = dropped, reports' = reports, printedAfterTheFlag' = printedAfterTheFlag,
   }
 
   // Under the reporter-thread lock: join a running thread, wait for a joining
@@ -161,7 +213,8 @@ module console_reporter {
     }),
     handle' = if (handle == Running) Joining else handle,
     console' = console, positiveInterval' = positiveInterval, constructed' = constructed,
-    thread' = thread, stopFlag' = stopFlag, stopLock' = stopLock,
+    thread' = thread, stopFlag' = stopFlag, stopLock' = stopLock, outputLock' = outputLock,
+    outputHolds' = outputHolds,
     shutdownCalls' = shutdownCalls, joins' = joins, dropped' = dropped, reports' = reports,
     printedAfterTheFlag' = printedAfterTheFlag,
   }
@@ -175,7 +228,8 @@ module console_reporter {
     handle' = Joined,
     joins' = joins + 1,
     console' = console, positiveInterval' = positiveInterval, constructed' = constructed,
-    thread' = thread, stopFlag' = stopFlag, stopLock' = stopLock,
+    thread' = thread, stopFlag' = stopFlag, stopLock' = stopLock, outputLock' = outputLock,
+    outputHolds' = outputHolds,
     shutdownCalls' = shutdownCalls, dropped' = dropped, reports' = reports,
     printedAfterTheFlag' = printedAfterTheFlag,
   }
@@ -187,16 +241,20 @@ module console_reporter {
     calls' = calls.set(c, Returned),
     console' = console, positiveInterval' = positiveInterval, constructed' = constructed,
     thread' = thread, handle' = handle, stopFlag' = stopFlag, stopLock' = stopLock,
-    shutdownCalls' = shutdownCalls, joins' = joins, dropped' = dropped, reports' = reports,
-    printedAfterTheFlag' = printedAfterTheFlag,
+    outputLock' = outputLock, outputHolds' = outputHolds, shutdownCalls' = shutdownCalls,
+    joins' = joins, dropped' = dropped,
+    reports' = reports, printedAfterTheFlag' = printedAfterTheFlag,
   }
 
   action step = any {
-    construct, wakeToReport, finishReport, wakeToStop, beginDrop,
+    construct, wakeToReport, startPrinting, finishReport, wakeToStop, beginDrop,
     { nondet c = Shutdowns.oneOf() beginShutdown(c) },
     {
       nondet c = Callers.oneOf()
-      any { setTheFlag(c), lookAtTheThread(c), joinReturn(c), waitReturn(c) }
+      any {
+        setTheFlag(c), lookAtTheThread(c), joinReturn(c), waitReturn(c),
+        holdTheOutput(c), releaseTheOutput(c),
+      }
     },
   }
 
@@ -214,9 +272,16 @@ module console_reporter {
   val joinedAtMostOnce = joins <= 1
   val nothingRunsAfterTheDrop =
     dropped implies Shutdowns.forall(c => calls.get(c) == Idle or calls.get(c) == Returned)
+  // The contract of the output lock: no caller holds it while it stops, so a
+  // joiner never waits for a thread that waits for the joiner's lock.
+  val noStopHoldsTheOutput =
+    Callers.forall(c => outputLock == HeldBy(c) implies (calls.get(c) == Idle or calls.get(c) == Returned))
+  // Only a printing thread or a caller outside a stop holds the output lock.
+  val theThreadHoldsTheOutputOnlyToPrint = outputLock == HeldBy(ReporterThread) implies thread == Reporting
   val invariant = threadOnlyWithConsoleAndInterval and flagOnlyAfterAStopBegins
     and leavesOnlyOnTheFlag and stopLockOnlyAroundTheFlag and noReportOnceACallReturned
     and oneJoinerAtATime and joinedAtMostOnce and nothingRunsAfterTheDrop
+    and noStopHoldsTheOutput and theThreadHoldsTheOutputOnlyToPrint
 
   run zeroIntervalStartsNoThreadTest =
     initWith(true, false).then(construct).then(beginShutdown("A")).then(setTheFlag("A")).then(lookAtTheThread("A"))
@@ -232,7 +297,7 @@ module console_reporter {
     initWith(false, true).then(construct).then(wakeToReport).fail()
 
   run reportThenShutdownTest =
-    initWith(true, true).then(construct).then(wakeToReport).then(finishReport)
+    initWith(true, true).then(construct).then(wakeToReport).then(startPrinting).then(finishReport)
       .then(beginShutdown("A")).then(setTheFlag("A")).then(lookAtTheThread("A"))
       .then(wakeToStop).then(joinReturn("A"))
       .expect(thread == Finished and reports == 1 and joins == 1 and calls.get("A") == Returned
@@ -249,7 +314,7 @@ module console_reporter {
     initWith(true, true).then(construct).then(wakeToReport).then(beginShutdown("A"))
       .then(setTheFlag("A")).then(lookAtTheThread("A"))
       .expect(stopFlag and thread == Reporting and calls.get("A") == Joiner)
-      .then(finishReport).then(wakeToStop).then(joinReturn("A"))
+      .then(startPrinting).then(finishReport).then(wakeToStop).then(joinReturn("A"))
       .expect(printedAfterTheFlag and reports == 1 and calls.get("A") == Returned)
 
   run concurrentShutdownWaitsForTheJoinTest =
@@ -277,12 +342,42 @@ module console_reporter {
       .then(beginDrop).then(setTheFlag(Drop)).then(lookAtTheThread(Drop))
       .expect(dropped and joins == 1 and calls.get(Drop) == Returned)
 
+  // Another thread holding the output only delays the stop: the joiner waits
+  // until the report can print, and the stop returns after the release.
+  run anotherHolderOfTheOutputOnlyDelaysTheStopTest =
+    initWith(true, true).then(construct).then(wakeToReport).then(holdTheOutput("B"))
+      .then(beginShutdown("A")).then(setTheFlag("A")).then(lookAtTheThread("A"))
+      .expect(calls.get("A") == Joiner and thread == Reporting and outputLock == HeldBy("B"))
+      .then(releaseTheOutput("B")).then(startPrinting).then(finishReport).then(wakeToStop)
+      .then(joinReturn("A"))
+      .expect(calls.get("A") == Returned and joins == 1 and outputLock == Free)
+
+  // A caller that released the output lock first stops as usual.
+  run releasingTheOutputBeforeTheStopTest =
+    initWith(true, true).then(construct).then(holdTheOutput("A")).then(releaseTheOutput("A"))
+      .then(beginShutdown("A")).then(setTheFlag("A")).then(wakeToStop).then(lookAtTheThread("A"))
+      .then(joinReturn("A"))
+      .expect(calls.get("A") == Returned and joins == 1)
+
   // Negative controls: steps the protocol must not allow.
+
+  // The contract: a caller holding the output lock does not stop.
+  run noShutdownWhileHoldingTheOutputTest =
+    initWith(true, true).then(construct).then(holdTheOutput("A")).then(beginShutdown("A")).fail()
+
+  run noDropWhileHoldingTheOutputTest =
+    initWith(true, true).then(construct).then(holdTheOutput(Drop)).then(beginDrop).fail()
+
+  // The report waits for the output lock.
+  run theReportWaitsForTheOutputTest =
+    initWith(true, true).then(construct).then(holdTheOutput("A")).then(wakeToReport)
+      .then(startPrinting).fail()
 
   // The boundary is the return: after it no report begins.
   run noReportAfterTheReturnTest =
     initWith(true, true).then(construct).then(wakeToReport).then(beginShutdown("A"))
-      .then(setTheFlag("A")).then(lookAtTheThread("A")).then(finishReport).then(wakeToStop)
+      .then(setTheFlag("A")).then(lookAtTheThread("A")).then(startPrinting).then(finishReport)
+      .then(wakeToStop)
       .then(joinReturn("A")).then(wakeToReport).fail()
 
   run joinCannotReturnWhileAReportPrintsTest =
