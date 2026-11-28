@@ -46,11 +46,13 @@
 
 ### 既存の実装の調査結果
 
-- `crates/fraktor-testkit` には計測に関わるモジュールは無い。既存のモジュールは `coroner`、`default_timeout`、`event_filter`、`fraktorspec`、`implicit_sender`、`manual_scheduler`、`test_actors`、`test_kit`、`test_kit_extension` であり、レジストリ、ゲージ、ヒストグラム、タイマーのいずれも持たない。
-- `crates/fraktor-actor` の中を `metric`、`histogram`、`gauge` で検索しても、計測に関わる実装は無い（一致するのは `kernel/version` の文字列だけである）。
-- ワークスペースの依存にも Codahale Metrics や HdrHistogram に相当するものは無い。`crates/fraktor-testkit/Cargo.toml` の依存は `fraktor-actor` だけである。
+この項は第1段（`b591452`）の時点の調査の記録である。いまは第2段の実装がマージ済みであり、`crates/fraktor-testkit/src/metrics_kit.rs` と `metrics_kit/` の13ファイルがあり、`crates/fraktor-testkit/Cargo.toml` 9〜15行（ed9fba5）の依存は `fraktor-actor`、`spin`、`hdrhistogram = "=7.6.0"`（`default-features = false`）、unix 限定の `libc` である。
 
-したがって、5件すべてについて本体の新規追加が要る。原典で対応するファイルは、testkit の本体（`src/main`）ではなく、テスト側（`src/test`）の `org.apache.pekko.testkit.metrics` パッケージに置かれた `private[pekko]` の内部ユーティリティ一式である（`MetricsKit.scala`、`MetricsKitOps.scala`、`MetricKeyDSL.scala`、`AveragingGauge.scala`、`HdrHistogram.scala`、`KnownOpsInTimespanTimer.scala`、`FileDescriptorMetricSet.scala`、`MemoryUsageSnapshotting.scala`、`reporter/PekkoConsoleReporter.scala`）。外部ライブラリへの依存は、Codahale／Dropwizard Metrics（レジストリ、カウンタ、ゲージ、レポーターの枠組み）と HdrHistogram（Java 版、値の分布の記録）である。
+- 第1段の時点では、`crates/fraktor-testkit` には計測に関わるモジュールは無かった。既存のモジュールは `coroner`、`default_timeout`、`event_filter`、`fraktorspec`、`implicit_sender`、`manual_scheduler`、`test_actors`、`test_kit`、`test_kit_extension` であり、レジストリ、ゲージ、ヒストグラム、タイマーのいずれも持たない。
+- `crates/fraktor-actor` の中を `metric`、`histogram`、`gauge` で検索しても、計測に関わる実装は無い（一致するのは `kernel/version` の文字列だけである）。
+- ワークスペースの依存にも Codahale Metrics や HdrHistogram に相当するものは無かった。`crates/fraktor-testkit/Cargo.toml` の依存は `fraktor-actor` だけだった。
+
+したがって、第1段の時点では、5件すべてについて本体の新規追加が要った。原典で対応するファイルは、testkit の本体（`src/main`）ではなく、テスト側（`src/test`）の `org.apache.pekko.testkit.metrics` パッケージに置かれた `private[pekko]` の内部ユーティリティ一式である（`MetricsKit.scala`、`MetricsKitOps.scala`、`MetricKeyDSL.scala`、`AveragingGauge.scala`、`HdrHistogram.scala`、`KnownOpsInTimespanTimer.scala`、`FileDescriptorMetricSet.scala`、`MemoryUsageSnapshotting.scala`、`reporter/PekkoConsoleReporter.scala`）。外部ライブラリへの依存は、Codahale／Dropwizard Metrics（レジストリ、カウンタ、ゲージ、レポーターの枠組み）と HdrHistogram（Java 版、値の分布の記録）である。
 
 ### 新しく足すもの（ファイルの配置）
 
@@ -155,7 +157,9 @@ impl MetricsKit {
   pub fn report_metrics(&self);                  // 原典 reportMetrics
   pub fn report_and_clear_metrics(&self);        // 原典 reportAndClearMetrics
   pub fn clear_metrics(&self);                   // 原典 clearMetrics(MetricFilter.ALL) の範囲
-  pub fn shutdown_metrics(&self);                // 原典 shutdownMetrics。冪等であり、定期報告スレッドを即座に止める
+  pub fn shutdown_metrics(&self);                // 原典 shutdownMetrics。冪等。定期報告スレッドに停止を求め、
+                                                      // スレッドが終わるまで待つ。停止を求める前に始まった報告は
+                                                      // 戻る前に終わりうる（§2「停止の境界」）
 }
 impl Drop for MetricsKit;                        // shutdown_metrics 未呼出でも定期報告スレッドを止めて接合する
 ```
@@ -167,8 +171,8 @@ impl Drop for MetricsKit;                        // shutdown_metrics 未呼出�
 1. **例外は `Result` で表す。** 原典は種類の衝突とヒストグラムの溢れを `IllegalArgumentException` で表す。対応表（`Throwable` の扱い）と既存の移植の慣例に従い、公開 API は `Result<_, MetricsError>` を返す。ケース5の検査は、返ったエラーの `Display` が `"can not be stored in this histogram"` を含むことに写る。メッセージの文面は `Given value {value} can not be stored in this histogram (min: {lowest_discernible_value}, max: {highest_trackable_value})` とし、原典の末尾の括弧の誤り（`}`）は再現しない。検査される部分文字列は変わらない。
 2. **`timed_with_known_ops` の `finally` は、ドロップするガードで表す。** Rust では、クロージャがパニックするとスタックの巻き戻しでその後のコードは実行されないため、明示の呼び出し順序だけでは `finally` を保証できない。そこで、`metrics_kit_value.rs` の中だけに置く非公開の RAII ガード（タイマーへの参照を持ち、`Drop` で `stop()` を呼ぶ）を使い、ガードを `run()` の呼び出しの前から関数の終わりまでのスコープに置く。通常の戻りでもパニックの伝播中でも、スコープを抜けるときに必ず `stop()` が呼ばれる。ガードは `Drop` に頼るため、クロージャに `UnwindSafe` の制約は課さない。パニック時に止まることは単体テストで確かめる対象として §10 に挙げる。
 3. **キーの `/` は名前付きのメソッド `child` にする。** Scala の演算子 DSL を Rust の `Div` 実装で真似ることはしない。キーの整形規則そのものは原典どおりに写す（§4）。
-4. **登録キーの生成規則はメソッドごとに原典どおりにする。** `hdr_histogram` は、引数のキーに `"hdr-histogram"` を繋いだキー（例：`metrics-kit.hist.hdr-histogram`）で登録する（原典 `MetricsKitOps.scala` の `(key / "hdr-histogram")`）。そのため、同じキーで `average_gauge` と `hdr_histogram` を両方呼んでも衝突しない。`measure_file_descriptors` は、引数のキーに `"file-descriptors"` を繋いだ接頭辞の下に、`file-descriptors.open`・`file-descriptors.max`・`file-descriptors.ratio` を繋いで整形した3キーで登録する（ケース1の項の実例を参照）。登録は原典の `registerAll` と同じく一括であり、同じキーでの再呼出は、同種でも再利用せずエラーにする。3キーのいずれかが既存のキーと衝突する場合は、登録の前に全件を検査し、1件も登録せずにエラーを返す（原子性。I2 と I8）。
-5. **`hdr_histogram` の再取得は、引数の検証より先にレジストリを引く。** 原典の `getOrRegister` は名前渡し（遅延評価）であり、既存のキーがある場合は新しいヒストグラムを構築しない。Rust でも、導出したキーで先にレジストリを照会し、同種の既存ハンドルがあれば、引数（最大値・有効数字・単位）を検証せずにそのハンドルを返す。既存が無く、または種類が違う場合にだけ、検証と構築と登録を行う。
+4. **登録キーの生成規則はメソッドごとに原典どおりにする。** `hdr_histogram` は、引数のキーに `"hdr-histogram"` を繋いだキー（例：`metrics-kit.hist.hdr-histogram`）で登録する（原典 `MetricsKitOps.scala` の `(key / "hdr-histogram")`）。そのため、同じキーで `average_gauge` と `hdr_histogram` を両方呼んでも衝突しない。`measure_file_descriptors` は、引数のキーに `"file-descriptors"` を繋いだ接頭辞の下に、`file-descriptors.open`・`file-descriptors.max`・`file-descriptors.ratio` を繋いで整形した3キーで登録する（ケース1の項の実例を参照）。同じキーでの再呼出は、同種でも再利用せずエラーにする。原典の `registerAll`（`MetricRegistry.java` 595〜603行）は1件ずつ `register` を呼び、`register` は既存の名前なら `IllegalArgumentException("A metric named " + name + " already exists")` を投げる（164〜169行）からである。`getOrRegister` を使う他の3つのメソッド（`average_gauge`・`timed_with_known_ops`・`hdr_histogram`）とはここが違う（I2）。原典は1件ずつ登録するため、途中のキーが衝突すると、それより前に登録したキーは残る（全か無かではない）。Rust（`metrics_kit_value.rs` 282〜298行（ed9fba5））は登録の前に3キーを全件検査し、1件も登録せずに `MetricsError::InvalidArgument` を返す（I8）。この全か無かは原典と違う（§2「原典と違う点」）。
+5. **`hdr_histogram` の再取得は、引数の検証より先にレジストリを引く。** 原典の `getOrRegister` は名前渡し（遅延評価）であり、既存のキーがある場合は新しいヒストグラムを構築しない。Rust でも、導出したキーで先にレジストリを照会し、同種の既存ハンドルがあれば、引数（最大値・有効数字・単位）を検証せずにそのハンドルを返す。既存が無い場合は、検証と構築と登録を行う。種類の違う既存がある場合、原典は登録をしないが、構築はする。衝突のメッセージに新しく作ろうとした計測のクラス名を使うため（`MetricsKit.scala` 170〜172行の `metric.getClass`）、名前渡しの `metric` がここで評価されるからである。そのため、引数が不正なら、衝突の例外より先に HdrHistogram の構築子の `IllegalArgumentException` が出る。Rust の `hdr_histogram`（`metrics_kit_value.rs` 263〜273行（ed9fba5））は、種類の違う既存があると検証も構築もせずに `KindConflict` を返す。引数が不正で、かつキーに別の種類があるときだけ、返るエラーが原典と違う（§2「原典と違う点」）。
 6. **`getOrRegister` の種類の衝突は型付きのエラーにする。** 原典のメッセージは `Key: [%s] is already for different kind of metric! Was [%s], expected [%s]` であるが、`Was` に渡されているのは新しく作ろうとした計測のクラスであり、名前が示す「既存の種類」ではないという原典側の取り違えがある。Rust では `MetricsError::KindConflict { key, existing, requested }` とし、`Display` にはキーと両方の種類名を含める。文面の完全一致は原典の検査対象ではないため、取り違えは写さない。
 
 ### 設定（HOCON を写す部分）
@@ -190,7 +194,7 @@ impl Default for MetricsKitSettings;  // 上のテスト側 reference.conf の�
 
 なお、このコード片は3型の形をまとめて示したものであり、実際の配置はファイル表のとおり3ファイルに分ける（`type-per-file`）。
 
-`reporters` の意味は原典の `settings.Reporters.contains("console")` どおりにする。`Console` が重複して入っていてもレポーターは最大で1台だけ作り、空の場合は0台であり、その場合の `report_metrics()` は何もしない。`verbose` が `true` のときは、報告に百分位の分布（原典 `PekkoConsoleReporter` の `outputPercentileDistribution` 相当）を含め、`false` のときは含めない。タイマーの報告の時間の整形には、`crates/fraktor-actor` に実装済みの `PrettyDurationInput`（`fraktor_actor::kernel::PrettyDurationInput`）を再利用する。
+`reporters` の意味は原典の `settings.Reporters.contains("console")` どおりにする。`Console` が重複して入っていてもレポーターは最大で1台だけ作り、空の場合は0台であり、その場合の `report_metrics()` は何もしない。`verbose` が `true` のときは、報告に百分位の分布（原典 `PekkoConsoleReporter` の `outputPercentileDistribution` 相当）を含め、`false` のときは含めない。タイマーの報告の時間の整形には、`crates/fraktor-actor` に実装済みの `PrettyDurationInput`（`fraktor_actor::kernel::pretty_duration::PrettyDurationInput`）を再利用する。
 
 この置き換えで表せなくなるのは、HOCON の文字列としての不正（型の違う値、存在しないキーへの文字列指定）であり、それらは移植では作れない入力として §4 に書く。なお、原典の設定には graphite レポーターの項目もあるが、`MetricsKit.initMetricReporters` が作るのは console だけであり、graphite は設定だけの死んだ表面であるため作らない。これはケースの除外ではなく、原典でも動かない表面を作らない判断である。
 
@@ -201,15 +205,20 @@ impl Default for MetricsKitSettings;  // 上のテスト側 reference.conf の�
 - **方法 A（推奨）: `hdrhistogram` クレートを `fraktor-testkit` の依存に足す。** このクレートは Gil Tene の HdrHistogram の Rust 移植であり、記録・件数・最小・最大・百分位の意味論が原典の基になった Java 版と対応する。既定の機能（直列化など）は外し（`default-features = false`）、同期版も使わず、こちらで `Mutex` で包む。エラーの型が違うため、範囲外の記録が返したエラーは §2 の判断1の `MetricsError` に翻訳し、Pekko の文面を作る。依存を足すのは std 前提の testkit だけであり、`fraktor-actor` の kernel の no_std には触らない。
 - **方法 B: バケット集計を自前で実装する。** 依存は増えないが、Java 版 HdrHistogram の添字計算（バケット幅、サブバケットの半分ずらし、百分位の丸め）をすべて写すことになり、分量と誤りの余地がこの issue の大きさ（size 1）を超える。方法 A がレビューで採られない場合の代替として残す。
 
-百分位や平均の端数の丸めが Java 版と完全に一致するかは、方法 A でも保証の対象が原典のケースには無い（ケース4は百分位を検査しない）。第2段では、原典の入力列に対する件数・最小・最大を単体テストで固定し、百分位は参考値として報告に留める。
+原典の5ケースは百分位を検査しない（ケース4も件数と溢れが無いことだけである）。第2段では、原典の入力列に対する件数・最小・最大を単体テストで固定した。百分位と平均と分布は、#299 で報告の出力の形として原典と完全に一致させる（§2「ヒストグラムの値の求め方」、§15 の R15〜R19・R21）。クレートの `iter_quantiles` は原典と一致しないため、分布と百分位と平均は `iter_recorded()` の列から原典の規則で求める。
 
 ### ファイルディスクリプタ
 
-原典は `UnixOperatingSystemMXBean` のメソッドハンドルで開いている数と上限と比率を取る。Rust では unix 系に限り、次のように同じ値を取る設計にする。
+原典は `UnixOperatingSystemMXBean` のメソッドハンドルで開いている数と上限と比率を取る（`FileDescriptorMetricSet.scala` 35〜40・48〜63行）。値を作るのは JDK である。#340 で JDK（Temurin 26.0.2.1+1）のソースを読み、macOS で JVM を動かして確かめた（2026-11-28）。JDK のソースの行は、adoptium/jdk26u のタグ `jdk-26.0.2.1+1` のものである。Rust では unix 系に限り、次のように原典と同じ値を取る設計にする。
 
-- 開いている数: Linux では `/proc/self/fd` の要素数を優先し、読めない場合は `/dev/fd` の要素数に落とす（最小のコンテナ環境でも安定させるため）。読み取り自体が使うディスクリプタもその時点では開いているため、数に含めることは原典の「その時点の開数」と矛盾しない。
-- 上限: `getrlimit(RLIMIT_NOFILE)` が要るため、`fraktor-testkit` に unix 限定で `libc` 依存を足す。これも testkit だけの依存であり、kernel の no_std には触らない。無制限の設定では `RLIM_INFINITY`（`u64::MAX`）が返りうるため、値は `u64` のまま扱い、`i64` へ素朴に変換して負の値にしない。
-- 比率: 開いている数を上限で割った `f64`（原典 `FileDescriptorRatioGauge` と同じ）。上限が `u64::MAX` のときは比率は0に近い値になる。
+- **開いている数。** Linux では `/proc/self/fd` の要素数を優先し、読めない場合は `/dev/fd` の要素数に落とす（最小のコンテナ環境でも安定させるため）。原典の JDK は、読み取りのために自分が開いたディスクリプタを数に入れない。Linux では `/proc/self/fd` の件数から自分の1本を引き（`src/jdk.management/unix/native/libmanagement_ext/OperatingSystemImpl.c` 352〜353行）、macOS では `proc_pidinfo` で数えるので余分を開かない（306〜311行）。Rust の `read_dir` は、開いたディレクトリのディスクリプタも1本として数える。そこで要素数から1を引き（`saturating_sub(1)`。要素には自分の1本が必ず入るので、0にはならない）、同じプロセスで原典と同じ数にする。いまの本番（`file_descriptor_gauge.rs` 66〜69行（ed9fba5））は1を引いておらず、原典より1多い（§2「原典と違う点」）。
+- **上限。** `getrlimit(RLIMIT_NOFILE)` が要るため、`fraktor-testkit` に unix 限定で `libc` 依存を足す。これも testkit だけの依存であり、kernel の no_std には触らない。原典の JDK も、`getrlimit(RLIMIT_NOFILE)` の soft（`rlim_cur`）を `jlong` にして返すだけである（`OperatingSystemImpl.c` 357〜368行、返すのは367行）。無制限の特別扱いは無い。Pekko の振る舞いは「soft を返す」ことであり、fraktor はそれを写す（`file_descriptor_gauge.rs` 77〜95行（ed9fba5）の `rlim_cur`）。
+  - **原典の JVM は HotSpot の `MaxFDLimit` で soft を上げるので、同じ環境でも値が違う。** HotSpot は起動時に、既定で有効の `MaxFDLimit`（`src/hotspot/share/runtime/globals.hpp` 448〜449行）により、プロセスの soft を macOS では `MIN(0x100000, rlim_max)`（`src/hotspot/os/bsd/os_bsd.cpp` 2051行）、Linux では `rlim_max`（`src/hotspot/os/linux/os_linux.cpp` 4572行）に書き換える。そのため、soft が 1024 の環境でも、soft が無制限の環境でも、原典の値は 1048576 になった（macOS で実測。`-XX:-MaxFDLimit` を付けたときだけ、soft そのもの（1024、または `9223372036854775807`）が返った）。この書き換えは JVM が自分のプロセスに対して行うことで、Pekko の振る舞いではない。
+  - **fraktor のライブラリはプロセスの rlimit を書き換えない。** `setrlimit` は呼ばない。テストのプロセスの soft がそのまま値になる。
+  - **無制限の値。** `RLIM_INFINITY` は macOS では `2^63 - 1`（`9223372036854775807`）、Linux では `u64::MAX` である。ただし Linux のカーネルは `RLIMIT_NOFILE` に `nr_open`（既定 1048576）を超える値を許さないので、Linux では無制限にならない。値は `u64` のまま読み（`FileDescriptorReading::Max(Option<u64>)`、§2「報告の作りと、確かめる口」）、報告には10進の整数で書く。macOS の無制限では `9223372036854775807` と書き、原典の `Long` の `%s`（`-XX:-MaxFDLimit` のとき）と同じ文字列になる。`i64` への素朴な変換はしない。公開の `FileDescriptorGauge::value()` は `f64` を返すので、`2^63 - 1` は `2^63` に丸まる（公開の口の型の違い。§2「原典と違う点」）。
+- **比率。** 開いている数を上限で割った `f64` である（`FileDescriptorRatioGauge.java` 43〜45行の `Ratio.of(open, max)` と、`RatioGauge.java` 41〜47行の `numerator / d`。分母が0・`NaN`・無限なら `NaN`）。報告では `Double.toString` の規則で書く（§2「書式の規則」）。比率が 0.001 未満のときは指数表記になる。原典の JVM で確かめた例は、`4.0 / 1048576.0` が `3.814697265625E-6`、`42.0 / 1048576.0` が `4.00543212890625E-5`、`4.0 / 9223372036854775807.0` が `4.336808689942018E-19` である。Rust の `{}` の十進（`0.000003814697265625`）は使わない。
+- **試験。** テストは、そのプロセスで `libc::getrlimit(RLIMIT_NOFILE)` を呼んで soft を読み、報告の上限の値の行がその10進と一致することを確かめる。1048576 のような数を決め打ちしない（§15 の R6w）。
+- **台帳。** JVM の環境の違いとして記録し、移植済みに数える（§7）。
 
 unix でないプラットフォーム（CI の Windows を含む）でも、3つのゲージの登録は行い、ケース1はスキップしない。原典のケース1も Windows でスキップせず通る（登録だけを検査し、ゲージの値は呼ばないためであり、値を読む側を止めるのは別ファイルの `FileDescriptorMetricSetSpec` だけである）。非 unix では値の取得は未取得を表す形（開数と上限は `Option<u64>` の `None`、比率は `f64::NAN`）に確定させる。CI は Linux と Windows を動かしており（macOS は無い）、`fraktor-actor` の dev-dependencies 経由で Windows でも `fraktor-testkit` がビルドと lint の対象になるため、非 unix の分岐も警告ゼロで通る形にする。
 
@@ -217,7 +226,7 @@ unix でないプラットフォーム（CI の Windows を含む）でも、3�
 
 #### 行番号の書き方
 
-本項では、原典の行は「ファイル名 N行」と書き、Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）の行番号である。ファイル名を省かない。リポジトリの行は「`パス` N行（ed9fba5）」と書き、`origin/main` の `ed9fba5d5bb071c6ac32373e2d50b871d087bb3d` の行番号である（この改訂の HEAD `74cff4c` は ed9fba5 に設計の文書だけを足したもので、コードの行は同じ）。原典のファイルは次のとおりである。
+本項では、原典の行は「ファイル名 N行」と書き、Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）の行番号である。ファイル名を省かない。リポジトリの行は「`パス` N行（ed9fba5）」と書き、`origin/main` の `ed9fba5d5bb071c6ac32373e2d50b871d087bb3d` の行番号である。このブランチは ed9fba5 の上に、設計の文書と `docs/design/issue-299/` と `crates/fraktor-testkit/specs/console_reporter.qnt` だけを足したものなので（`git diff --name-only ed9fba5` で確かめる）、Rust のコードの行は ed9fba5 と同じである。原典のファイルは次のとおりである。
 
 | 略さない名前 | 置き場所 |
 |:---|:---|
@@ -248,9 +257,9 @@ Rust の `Metric`（`crates/fraktor-testkit/src/metrics_kit/metric.rs` 23〜32�
 | 順 | 原典の種類 | 入る Rust の列挙子 | 原典の行 |
 |:---|:---|:---|:---|
 | 1 | ゲージ（標準） | `AveragingGauge` と `FileDescriptorGauge` | `PekkoConsoleReporter.scala` 47行、`printGauge` 85〜87行 |
-| 2 | `KnownOpsInTimespanTimer` | `KnownOpsInTimespanTimer` | 54行、128〜136行 |
-| 3 | `HdrHistogram` | `HdrHistogram` | 55行、138〜153行 |
-| 4 | `AveragingGauge` | `AveragingGauge` | 56行、155〜157行 |
+| 2 | `KnownOpsInTimespanTimer` | `KnownOpsInTimespanTimer` | `PekkoConsoleReporter.scala` 54行、128〜136行 |
+| 3 | `HdrHistogram` | `HdrHistogram` | `PekkoConsoleReporter.scala` 55行、138〜153行 |
+| 4 | `AveragingGauge` | `AveragingGauge` | `PekkoConsoleReporter.scala` 56行、155〜157行 |
 
 - **`AveragingGauge` は2回出る。** 原典の `AveragingGauge` は `Gauge[Double]` でもある（`AveragingGauge.scala` の `extends Gauge[Double]`）ため、ゲージの種類（`value = ...`）と `AveragingGauge` の種類（`avg = ...`）の両方に現れる。
 - **ファイルディスクリプタの3つはゲージの種類にだけ出る。** 原典では3つとも `Gauge` であり（`FileDescriptorMetricSet.scala` 35〜40行）、独自の種類には入らない。
@@ -282,7 +291,7 @@ Rust の `Metric`（`crates/fraktor-testkit/src/metrics_kit/metric.rs` 23〜32�
 | `AveragingGauge` | `Double`（和 / 個数） | `Double.toString`（`2.5`、`2.0`、`1.0E-4`、`NaN`） | `AveragingGauge.scala` の `getValue` |
 | 開数・上限（unix） | `Long` | 10進の整数（`42`、`1024`） | `FileDescriptorMetricSet.scala` 35〜39行、55〜63行 |
 | 開数・上限（非 unix） | 値は返らず、`getValue` が `ClassCastException` を投げる | 値の行は出ない（下の「非 unix のファイルディスクリプタ」） | `FileDescriptorMetricSet.scala` 48〜53行、61〜63行 |
-| 比率（unix） | `Double`（開数 / 上限。上限が0なら `NaN`） | `Double.toString`（`0.041015625`） | `FileDescriptorRatioGauge.java` 43〜45行、`RatioGauge.java` 41〜47行 |
+| 比率（unix） | `Double`（開数 / 上限。上限が0なら `NaN`） | `Double.toString`（`0.041015625`。0.001 未満は `3.814697265625E-6` のような指数表記） | `FileDescriptorRatioGauge.java` 43〜45行、`RatioGauge.java` 41〜47行 |
 | 比率（非 unix） | `Double.NaN` | `NaN` | `FileDescriptorRatioGauge.java` 46〜47行、`RatioGauge.java` 43〜44行 |
 
 **`KnownOpsInTimespanTimer`**（`PekkoConsoleReporter.scala` 128〜136行）: 4行。
@@ -403,7 +412,7 @@ Rust では4つの種類のすべてをキー順に出す。元帥の指示（�
 | `%d` | 10進、桁区切りなし | `i64`・`u64` の `Display` |
 | `%s` の `Double` | `Double.toString`：`1e-3 <= abs(v) < 1e7` は小数、外は `1.0E-4` のような指数表記、整数値にも `.0`、`NaN`・`Infinity`・`-Infinity` | 同じ規則の関数を testkit に置く。最短の桁は Rust のもの（下の違いの表の2行目） |
 | `%2.2f`・`%12.4f`・`%2.12f`・`%14.2f` | `Double.toString` の最短桁を HALF_UP で丸める（`0.125` は `0.13`、`1.125` は `1.13`）。負は `-` を付け、`-0.0` と負の小さい値は `-0.00`。`NaN`・`Infinity`・`-Infinity` はその綴り。幅は右寄せ | 最短桁を HALF_UP で丸める関数を1つ置き、幅は右寄せで埋める。Rust の `{:.2}` は2進の正確な値を偶数丸めする（`0.125` が `0.12`）ので使わない |
-| `%.4g`（`PrettyDuration`） | 最短桁を HALF_UP で4桁に丸め、丸めた後の指数が −4 以上 4 未満なら小数、外なら `1.235e+14` の形。負は `-` を付ける | 正のナノ秒は `fraktor_actor::kernel::PrettyDurationInput::Finite(..).pretty()` を使う（同じ規則）。0以下は `fraktor-actor` の `pretty_duration_format::format_g`（`pub(crate)` で非負だけを受ける）と同じ作りの関数を testkit に置き、負の値は `-` と絶対値の書式で書く。単位は常に `ns` |
+| `%.4g`（`PrettyDuration`） | 最短桁を HALF_UP で4桁に丸め、丸めた後の指数が −4 以上 4 未満なら小数、外なら `1.235e+14` の形。負は `-` を付ける | 正のナノ秒は `fraktor_actor::kernel::pretty_duration::PrettyDurationInput::Finite(..).pretty()` を使う（同じ規則）。0以下は `fraktor-actor` の `pretty_duration_format::format_g`（`pub(crate)` で非負だけを受ける）と同じ作りの関数を testkit に置き、負の値は `-` と絶対値の書式で書く。単位は常に `ns` |
 | `Locale` | `PekkoConsoleReporter.scala` の `"...".format` は JVM の既定のロケール、分布は `Locale.US`（`AbstractHistogram.java` 1796・1802・1824〜1831行）、`PrettyDuration` は `Locale.ROOT` | 常に `.`（下の違いの表の3行目） |
 
 #### ヒストグラムの値の求め方
@@ -415,24 +424,29 @@ Rust では4つの種類のすべてをキー順に出す。元帥の指示（�
 
 Rust の `hdrhistogram` 7.6.0 の `iter_quantiles(5)` は、この刻みと値が原典と一致しない。0〜4 の5件で実測すると、クレートは14行、原典は15行であり、百分位 0.6 の行（原典は値2・累積3、クレートは値3・累積4）、0.8 の行（原典は値3・累積4、クレートは値4・累積5）が違い、原典の 0.825 の行がクレートには無い。そのため分布はクレートの `iter_quantiles` を使わず、`iter_recorded()` の（値、件数）の列から上の規則で組み立てる。`value_at_percentile` も使わず同じ累積から求め、`mean` と `stddev` も上の式で求める。
 
+`iter_recorded()` の1歩は、件数が0でない1つの添字である。各歩の `IterationValue` から次の2つだけを使う（hdrhistogram 7.6.0 の `src/iterators/mod.rs`）。
+
+- **値** は `value_iterated_to()`（114行）である。`iter_recorded()` では、その添字の値の階級の上端（`highest_equivalent(value_for(index))`、226〜228行）になる。原典の `AbstractHistogramIterator` の `valueIteratedTo` と同じく上端である。百分位の9行と分布の表の値には、これをそのまま使う。`mean` と `stddev` には、この値から `median_equivalent(...)` で中点を取って使う（原典 `getMean` 1385〜1397行の `medianEquivalentValue`）。
+- **件数** は `count_at_value()`（137行）、すなわちその添字の件数である。分布の表の `TotalCount` と百分位の判定は、これを先頭から足した累積の件数を使う。`count_since_last_iteration()`（142行）は使わない。
+
 原典は `getData` でヒストグラムを複製してから読む（`HdrHistogram.scala` 58行）。Rust も同じにし、`Mutex` の中では `hdrhistogram::Histogram` を複製するだけにして、読み取りと出力は複製の上で行う。そのため `HdrHistogram` に非公開の `with_snapshot`（複製を渡して閉包を呼ぶ）を置き、いまの `report_values` と `PERCENTILES`（`crates/fraktor-testkit/src/metrics_kit/hdr_histogram.rs` 27行、165〜173行（ed9fba5））は置き換える。`min`・`max`・`unit`・`count` の公開メソッドはそのまま残す。
 
 #### 未停止のタイマー（問い2の決定）
 
 報告は原典どおり、未停止のタイマーで負の `time` と `avg` を出す（`KnownOpsInTimespanTimer.scala` 42〜46行、`PekkoConsoleReporter.scala` 132〜135行）。前の版の問い2の案A（`time = not stopped`）は原典に無い出力なので採らない。
 
-- **開始時刻の読み。** 原典の `startTime` は `System.nanoTime` の値であり、その起点は Java の契約で「固定だが任意」である。Rust の `Instant` は数値を取り出せないため、`KnownOpsInTimespanTimer` に構築時の `SystemTime::now()` の `UNIX_EPOCH` からのナノ秒（`i64`）を非公開で持たせ、未停止の報告の `elapsedTime` を `0 - その値` とする。値は約 −1.8×10^18 になり、`time = -1.8xxe+18 ns`、`ops/s = -0.00`、操作回数が10なら `avg = -1.8xxe+17 ns` になる。数字は原典でも機械の時計で変わるので、テストは形だけを比べる。
+- **開始時刻の読み。** 原典の `startTime` は `System.nanoTime` の値であり、その起点は Java の契約で「固定だが任意」である。Rust の `Instant` は数値を取り出せないため、`KnownOpsInTimespanTimer` に構築時の `SystemTime::now()` の `UNIX_EPOCH` からのナノ秒（`i64`）を非公開で持たせ、未停止の報告の `elapsedTime` を `0 - その値` とする。`duration_since(UNIX_EPOCH)` の `as_nanos()` は `u128` なので、`i64` へは `i64::try_from(..).unwrap_or(i64::MAX)` で飽和させる（`as i64` は上位を切り捨てて負や小さい値になるので使わない）。`UNIX_EPOCH` より前の時計（`duration_since` が `Err`）は0とする。`i64::MAX` ナノ秒は 2262-04-11 に当たるので、飽和はそれ以降に起きる。2026年の値は約 1.8×10^18 であり、`time = -1.8xxe+18 ns`、`ops/s = -0.00`、操作回数が10なら `avg = -1.8xxe+17 ns` になる。指数が18になるのは、値が 10^18（2001-09-09）以上で飽和の前（2262-04-11）までの間である。数字は原典でも機械の時計で変わるので、テストは構築の前後に読んだ時計から期待の範囲を決める（§15 の R13）。
 - **停止後の経過。** これまでどおり `Instant` の差（`stop - start`）のナノ秒を `i64` に飽和させたものを使う。
 - **`avg` が `i64::MIN` になる場合**（未停止で操作回数0）。原典は `IllegalArgumentException` で報告が止まる（上の表の最後の行）。Rust は `ops/s` の行まで書いてから `ConsoleReporter::report` が `Err`（`io::ErrorKind::InvalidInput`）を返す。`as i64` の変換は Java の `toLong` と同じく飽和し、`NaN` は0になる。
-- **公開 API は変えない。** `elapsed()`・`avg_duration_nanos()`・`ops_per_second()` は未停止で `None` を返したままにし（I5）、報告だけが非公開の読みを使う。原典の `elapsedTime`・`avgDuration`・`opsPerSecond` は未停止でも値を返す（`KnownOpsInTimespanTimer.scala` 42〜46行）ので、公開の口は原典と違う。直すには公開 API の型を変える判断が要るため、この改訂では書かずに報告に上げる（直す issue は未起票）。
+- **公開 API は変えない。** `elapsed()`・`avg_duration_nanos()`・`ops_per_second()` は未停止で `None` を返したままにし（I5）、報告だけが非公開の読みを使う。原典の `elapsedTime`・`avgDuration`・`opsPerSecond` は未停止でも値を返す（`KnownOpsInTimespanTimer.scala` 42〜46行）ので、公開の口は原典と違う。直すのは #337 である。
 
 #### 非 unix のファイルディスクリプタ
 
 原典の開数と上限のゲージは、`UnixOperatingSystemMXBean` のメソッドハンドルを `(Object)Object` の形に変えて呼ぶ（`FileDescriptorMetricSet.scala` 48〜53行、61〜63行）。`com.sun.management.UnixOperatingSystemMXBean` は JDK の共通のソース（OpenJDK の `src/jdk.management/share/classes/`）にあるため、Windows でもクラスはあり、`findVirtual` は成功する。Windows の OS Bean はこのインタフェースを実装しないため、`invokeExact` の引数の型変換で `ClassCastException` が投げられる。スクリプトで、`UnixOperatingSystemMXBean` を実装しない Bean を渡して確かめた（`.expected` の `=== gauges: file descriptors on a non-unix bean`）。報告は見出しと先頭の項目のキーの行まで出て、`getValue` の例外が `report` から外へ出る。比率のゲージは `FileDescriptorRatioGauge.java` 43〜47行で `NaN` を返すので、比率だけなら `value = NaN` が出る（`=== gauges: the ratio alone on a non-unix bean`）。原典の `FileDescriptorMetricSetSpec.scala` 31〜32行も、Bean が `UnixOperatingSystemMXBean` でなければ値の検査を `cancel` する。
 
-Rust は報告をこれに合わせる。開数と上限の読みが無い（非 unix）とき、そのゲージの値の行は書かず、`ConsoleReporter::report` は `Err`（`io::ErrorKind::Unsupported`）を返す。それまでに書いた見出しとキーの行はそのまま残る。比率は `NaN` と書く。
+Rust は報告をこれに合わせる。開数と上限の読みが無い（非 unix）とき、そのゲージの値の行は書かず、`ConsoleReporter::report` は `Err`（`io::ErrorKind::Unsupported`）を返す。それまでに書いた見出しとキーの行はそのまま残る。比率の読みは非 unix でも `NaN` であり、比率の項目まで書き進んだとき（比率だけを報告するとき）は `value = NaN` と書く。3つがそろっているときは、キー順の先頭の上限（`...-max`）で止まるので、比率の行は出ない（`.expected` 39〜42行、§15 の R6）。
 
-違いが2つ残る。どちらも公開 API の判断が要るため、この改訂では書かずに報告に上げる（直す issue は未起票）。
+違いが2つ残る。どちらも直すのは #338 である。
 
 - 原典の `reportMetrics`（`MetricsKit.scala` 108〜111行）は例外を呼び出し側へ出す。Rust の `report_metrics()` は `()` を返し、`Err` を捨てる。
 - 原典の開数と上限の `getValue` は非 unix で例外を投げる。Rust の公開の `FileDescriptorGauge::value()` は `NaN` を返す（`crates/fraktor-testkit/src/metrics_kit/file_descriptor_gauge.rs` 52〜61行（ed9fba5））。
@@ -478,10 +492,14 @@ Rust で同じにできないもの、または直すのに公開 API の判断�
 |:---|:---|:---|
 | `Double.toString` の最短の桁 | Rust 側で同じ規則を実装するが、最短の桁は Rust のものを使う。JDK 19 以降は同じ最短表現で、JDK 18 以前は同じ値でも桁が増えることがある。JDK の版による差であり、Rust で一つに決める | `AveragingGauge.scala` の `getValue`、`PekkoConsoleReporter.scala` 86行 |
 | `Locale` | 原典の `"...".format` は JVM の既定のロケールを使うため、小数点が `,` のロケールでは Pekko も `,` を出す。Rust は常に `.` である。CI のロケールでは差は出ない | `PekkoConsoleReporter.scala` 74〜157行 |
-| 未停止のタイマーの公開の口 | Rust の `elapsed()` 等は `None`、原典は負の値。報告は原典どおり。直すには公開 API の型の変更が要る（直す issue は未起票） | `KnownOpsInTimespanTimer.scala` 42〜46行 |
-| 非 unix のファイルディスクリプタ | 報告は原典どおり止まるが、`report_metrics()` は `Err` を捨て、公開の `value()` は `NaN` を返す。直すには公開 API の変更が要る（直す issue は未起票） | `MetricsKit.scala` 108〜111行、`FileDescriptorMetricSet.scala` 48〜63行 |
-| 上限が無制限のときの値 | Rust は `RLIM_INFINITY` を `u64` のまま書く（`18446744073709551615`）。原典の値は JDK の `getMaxFileDescriptorCount` が返す `Long` であり、この改訂では JDK の実装を確かめていない | `FileDescriptorMetricSet.scala` 58〜59行 |
-| `report_and_clear_metrics` の並行の登録 | 原典は `reportMetrics(); clearMetrics()` であり、報告の間に登録された計測も消す。Rust は取り出した計測だけを消し、報告の間の登録を残す。出力の失敗で取り出した計測を戻すのは、原典の `PrintStream` が書き込みの失敗を投げないため原典に対応する経路が無い。どちらも既存のテスト（`metrics_kit_review_followup_test.rs`）が固定しているため、この改訂では変えずに報告に上げる（直す issue は未起票） | `MetricsKit.scala` 96〜99行 |
+| 未停止のタイマーの公開の口 | Rust の `elapsed()` 等は `None`、原典は負の値。報告は原典どおり。直すのは #337 | `KnownOpsInTimespanTimer.scala` 42〜46行 |
+| 非 unix のファイルディスクリプタ | 報告は原典どおり止まるが、`report_metrics()` は `Err` を捨て、公開の `value()` は `NaN` を返す。直すのは #338 | `MetricsKit.scala` 108〜111行、`FileDescriptorMetricSet.scala` 48〜63行 |
+| ファイルディスクリプタの上限の値（JVM の環境の違い） | Pekko の振る舞いは soft を返すことであり、Rust はそれを写す。原典の JVM は起動時に HotSpot の `MaxFDLimit` でプロセスの soft を上げるので、同じ環境でも値が違う（soft が 1024 や無制限でも 1048576 になる）。これは JVM が自分のプロセスにすることで、ライブラリはプロセスの rlimit を書き換えない（元帥の決定、#340、2026-11-28）。直さない | `FileDescriptorMetricSet.scala` 51〜53・58〜59行、JDK `OperatingSystemImpl.c` 357〜368行、HotSpot `os_bsd.cpp` 2051行・`os_linux.cpp` 4572行 |
+| ファイルディスクリプタの開数（本番） | 原典の JDK は読み取りに使う自分のディスクリプタを数えない。設計は1を引いて同じにするが、いまの本番（`file_descriptor_gauge.rs` 66〜69行（ed9fba5））は1多い。公開の型は変わらない。本番の担当へ申し送る（#299 の範囲に入れるかは中将が決める） | JDK `OperatingSystemImpl.c` 306〜311・352〜353行 |
+| `FileDescriptorGauge::value()` の上限の型 | 公開の口は `f64` を返すので、macOS の無制限（`2^63 - 1`）は `2^63` に丸まる。報告は `u64` の読みから10進で書くので原典と同じ。公開の口を直すには型の変更が要るので、設計には書かず報告に上げた（直す issue は中将が立てる） | `FileDescriptorMetricSet.scala` 38〜39行（`Gauge[Long]`） |
+| `measure_file_descriptors` の衝突 | 原典の `registerAll` は1件ずつ登録するので、途中のキーが衝突すると前のキーが残る。Rust は事前の全件検査で1件も登録しない（I8）。エラーの文面も原典（`A metric named ... already exists`）と違う。既存のテスト `metrics_kit_edge_case_test.rs` の `measuring_file_descriptors_registers_all_or_nothing`（295〜312行（ed9fba5））が全か無かを固定しているので、直すにはテストを変えるので、設計には書かず報告に上げた（直す issue は中将が立てる） | `MetricRegistry.java` 164〜169・595〜603行 |
+| `hdr_histogram` の種類の衝突と不正な引数 | 原典は種類の衝突でも構築するので、引数が不正なら構築子の例外が先に出る。Rust は検証せずに `KindConflict` を返す。返るエラーの列挙子が変わるので、設計には書かず報告に上げた（直す issue は中将が立てる） | `MetricsKit.scala` 165〜175行、`MetricsKitOps.scala` 59〜66行 |
+| `report_and_clear_metrics` の並行の登録 | 原典は `reportMetrics(); clearMetrics()` であり、報告の間に登録された計測も消す。Rust は取り出した計測だけを消し、報告の間の登録を残す。出力の失敗で取り出した計測を戻すのは、原典の `PrintStream` が書き込みの失敗を投げないため原典に対応する経路が無い。どちらも既存のテスト（`metrics_kit_review_followup_test.rs`）が固定している。直すのは #339 | `MetricsKit.scala` 96〜99行 |
 
 前の版がこの表に置いていた「ファイルディスクリプタの開数と上限の型」と「ファイルディスクリプタの見出しの名前」は、上の非公開の読みと見出しの決定で原典と同じになるため、表から外した。
 
@@ -491,7 +509,27 @@ Rust で同じにできないもの、または直すのに公開 API の判断�
 
 #### 停止の境界
 
-停止の保証の境界は、停止フラグを立てた時点ではなく、`shutdown_metrics()`（または `Drop` の停止手順）が戻った時点である。スレッドは報告の前に停止フラグを読むため、停止要求の直前に始まっていた報告は、停止手順が戻る前に完了することがある。戻った後に新しい報告が始まることはない。並行して `shutdown_metrics()` を呼んだ場合も、全ての呼び出しがスレッドの終了を待ってから戻る（接合中の呼び出しは完了を待つ）。報告は出力のロック（出力の `Mutex` と、標準出力なら `StdoutLock`）を取って書く。呼び出し側が出力のロックを持ったまま停止手順を呼ぶと、スレッドが出力のロックを待ち、停止手順がスレッドの終了を待つため止まったままになる。そのため、出力のロックを解放してから停止する契約とし、公開 API の文書に明記した（`metrics_kit_value.rs` 149〜154行（ed9fba5））。この契約と、契約を守る限り待ちの輪ができないことは、`console_reporter.qnt` の `outputLock` と不変条件 `noStopHoldsTheOutput` で検査する（§6）。
+停止の保証の境界は、停止フラグを立てた時点ではなく、`shutdown_metrics()`（または `Drop` の停止手順）が戻った時点である。スレッドは報告の前に停止フラグを読むため、停止要求の直前に始まっていた報告は、停止手順が戻る前に完了することがある。戻った後に新しい報告が始まることはない。並行して `shutdown_metrics()` を呼んだ場合も、全ての呼び出しがスレッドの終了を待ってから戻る（接合中の呼び出しは完了を待つ）。
+
+#### 出力のロックの契約
+
+報告は2つのロックをこの順に取る。
+
+1. **出力の `Mutex`。** `MetricsKit` が持つ `output: Mutex<Box<dyn Write + Send>>`（`metrics_kit_value.rs` 43行（ed9fba5））を、`report_snapshot`（64〜70行、取るのは68行）が報告の間だけ取る。報告スレッドの報告も、呼び出し側の `report_metrics()` と `report_and_clear_metrics()` も同じ口を通る。呼び出し側がこの `Mutex` を外から持つ口は無い。
+2. **書き手のロック。** 出力の `Mutex` の中で、書き手（`Write`）が各 `write` で取るロックである。`MetricsKit::new` の書き手は標準出力であり、`Stdout` の `write` は再入できる `StdoutLock` を取る。どのスレッドも `std::io::stdout().lock()` で同じロックを持てる。`with_output` に渡す書き手は、呼び出し側も持てるロックを取ることがある（既存のテストの `CapturedOutput` は `Arc<Mutex<Vec<u8>>>` で、この `Mutex` は再入できない）。取らないこともある（いつも失敗する書き手など）。
+
+行き詰まりになるのは、あるスレッドが書き手のロックを持ったまま、次のどれかを呼ぶ場合である。
+
+- **`shutdown_metrics()` を呼ぶか、kit をドロップする。** 報告スレッドが出力の `Mutex` を持って書き手のロックを待ち、停止の手順はスレッドの終了を待つ。
+- **`report_metrics()` か `report_and_clear_metrics()` を呼ぶ。** 停止とは関係なく起きる。報告スレッドが出力の `Mutex` を持って書き手のロックを待ち、呼び出し側は書き手のロックを持って出力の `Mutex` を待つ（ロックの順が逆である）。書き手のロックが再入できない場合は、報告スレッドが無くても、呼び出し側が自分を待つ。
+
+別のスレッドが書き手のロックを持っているだけなら、そのスレッドが手放すまで遅れるだけで、行き詰まりにはならない。ただし、そのスレッドが停止や報告をしているスレッドを待つ場合は別である。これはこの kit の外の待ちなので、契約の外に置く。
+
+そのため契約は次のとおりとする。**「書き手のロックを持っているスレッドは、そのロックを手放してから、`shutdown_metrics()`・kit のドロップ・`report_metrics()`・`report_and_clear_metrics()` を呼ぶ」。** 書き手のロックとは、`new` では `StdoutLock`、`with_output` では渡した書き手が `write` の中で取るロックである。別のスレッドが持つことは禁じない。
+
+いまの本番の文書（`metrics_kit_value.rs` 149〜154行（ed9fba5））の「no `StdoutLock` may be held while `shutdown_metrics` runs or the kit is dropped」は、この契約と3点で違う。どのスレッドにも禁じているので広すぎる。`report_metrics()` と `report_and_clear_metrics()` が入っていない。`with_output` の書き手のロックが入っていない。本番の文書の直しは本番の担当へ申し送る（§15 の末尾）。
+
+この契約と、契約を守る限り待ちの輪ができないことは、`console_reporter.qnt` で検査する（§6）。出力の `Mutex` は `outputMutex`、書き手のロックは `writerLock`、書き手の種類は `writer`（`NoSharedLock`・`ReentrantLock`・`PlainLock`）である。契約は `beginShutdown`・`beginDrop`・`beginReport` のガードで、不変条件 `noStopOrReportHoldsTheWriter` で表す。行き詰まりは、ガードとは別に定義した待ちの輪 `deadlocked` と、不変条件 `noDeadlock` で表す。
 
 #### 報告の失敗の扱い
 
@@ -504,12 +542,12 @@ Rust で同じにできないもの、または直すのに公開 API の判断�
 ## 3. 守る性質（不変条件）
 
 - **I1（キーの整形の一貫性）。** `MetricKey` のパスは、生成（`from_string`）と連結（`child`）のどちらでも、原典の `sanitizeMetricKeyPart` を通した部品だけから組み立てる。整形の順序は原典どおりで、先に `"..."` を `"…"`（U+2026）に置き、次に `"."` を `"-"` に、`]`・`[`・`(`・`)`・`<`・`>` を `"|"` に、空白を `"-"` に、`"/"` を `"-"` に置く。ここでいう空白は原典の `.replaceAll(" ", "-")` どおり ASCII の半角スペース（U+0020）だけであり、タブ・改行・全角スペース（U+3000）は置換しない（`char::is_whitespace()` で広く解釈しない）。
-- **I2（レジストリの一意性）。** 1つのキーに登録できる計測は1つだけである。同じキーで同じ種類を再び求めると、既存のハンドルが返り、状態は共有される。同じキーで違う種類を求めると `MetricsError::KindConflict` になり、レジストリは変わらない。
+- **I2（レジストリの一意性）。** 1つのキーに登録できる計測は1つだけである。原典の `getOrRegister`（`MetricsKit.scala` 165〜175行）を使う `average_gauge`・`timed_with_known_ops`・`hdr_histogram` では、同じキーで同じ種類を再び求めると、既存のハンドルが返り、状態は共有される。同じキーで違う種類を求めると `MetricsError::KindConflict` になり、レジストリは変わらない。原典の `registerAll` を使う `measure_file_descriptors` は再利用せず、3キーのどれかが既存なら、種類によらず `MetricsError::InvalidArgument` になる（§2 の判断4、I8）。
 - **I3（平均の定義）。** `AveragingGauge::value` は、加えられたすべての値の合計を個数で割ったものに等しい。一括の加算（`add_slice`）は、要素ごとの加算と同じ結果になる。個数が 0 のときは原典どおり `NaN` である（`0.0 / 0.0`。原典の `LongAdder` の和と個数でも同じになる）。
 - **I4（ヒストグラムの件数と記録できる範囲）。** 成功した `update` の回数と `count` は常に等しい。範囲外の値で失敗した `update` は件数を変えない。記録できる値の下限は `0` である。上限は、構築時に決めた追跡可能な最大値そのものではなく、対数バケットの上界（その最大値を含むバケットの等価階級の上限）である。これは原典の Java 版 HdrHistogram と、方法 A の `hdrhistogram` クレートの両方に共通する振る舞いであり、たとえば最大値 `100_000_000`・有効数字4桁では、記録できる上限は `134_217_727`（`2^27 - 1`）であり、`100_000_001` も記録でき、`134_217_728` から範囲外のエラーになる。追跡可能な最大値で厳密に弾く狭めはしない（原典準拠）。
 - **I5（タイマーの一回限り）。** `KnownOpsInTimespanTimer::stop` は、最初に呼ばれたときだけ `true` を返して停止時刻を固定し、以後は `false` を返して停止時刻を変えない。`count` は停止の前後によらず常に `expected_ops` である。原典の `elapsedTime` は未停止では負の値になるが、`Duration` は負を表せないため、未停止の間は公開の `elapsed()`・`avg_duration_nanos()`・`ops_per_second()` のいずれも `None` を返すことに確定させる（開始からの経過で代用しない）。これは公開の口の性質であり、報告の出力には及ばない。報告は非公開の開始時刻の読みから原典どおり負の `time` と `avg` を出す（§2「未停止のタイマー」）。公開の口が原典（`KnownOpsInTimespanTimer.scala` 42〜46行）と違う点は §2「原典と違う点」に書いた。
 - **I6（消去の完全性）。** `clear_metrics` の後はレジストリが空になり、同じキーで新しい計測を作り直せる（原典の `after { clearMetrics() }` がケース間の干渉を断つ前提である）。
-- **I8（ファイルディスクリプタ登録の原子性）。** `measure_file_descriptors` の3キーの登録は全か無かである。いずれかのキーが既存と衝突する場合は、事前の全件検査で失敗し、レジストリは呼び出しの前と変わらない。
+- **I8（ファイルディスクリプタ登録の原子性）。** `measure_file_descriptors` の3キーの登録は全か無かである。いずれかのキーが既存と衝突する場合は、事前の全件検査で失敗し、レジストリは呼び出しの前と変わらない。原典の `registerAll` は1件ずつ登録するので全か無かではなく、この性質は原典と違う（§2「原典と違う点」。報告に上げた）。
 - **I7（報告の無害性）。** `report_metrics` はレジストリを変えない。消去まで含めるのは `report_and_clear_metrics` だけである。報告が有効かどうか（`reportMetricsEnabled`）は原典では常時 `true` のフックであり、Rust では設定の表面にせず、メソッドを呼ぶかどうかで表す。
 
 ## 4. 壊しうる入力
@@ -531,33 +569,51 @@ Rust で同じにできないもの、または直すのに公開 API の判断�
 - **P1（キーの整形）。** 任意の文字列について、`from_string` で作った単一部品のキーのパスは `"."`、半角スペース（U+0020）、`"/"`、`[`、`]`、`(`、`)`、`<`、`>` を含まない。`child` で連結したパスには部品の区切りとして `"."` が入るため、この性質は単一部品にだけ主張し、連結したパスについては「各部品が整形済みである」ことを主張する。整形は冪等である（整形した文字列をもう一度整形しても変わらない）。
 - **P2（平均）。** 任意の値の列について、一括の加算と要素ごとの加算で `value` が一致し、参照実装（列の合計を `i64` の回り込む加算で求めて個数で割る値）と一致する。空の列では `NaN` である。
 - **P3（ヒストグラム）。** バケット上界以下の値だけを記録したとき `count` は記録回数に等しく、最小と最大は記録した値の最小と最大の階級の中にある。バケット上界を超える値を混ぜたとき、失敗した回数だけ `count` が記録の試行回数より少なくなる。追跡可能な最大値を超えてバケット上界以下の値は、失敗ではなく記録される。
-- **P4（レジストリ）。** 同じキーへの同じ種類の再取得は状態を共有する（片方への加算がもう片方から見える）。消去の後は再取得で新しい状態になる。違う種類の再取得は常にエラーになり、既存の登録は壊れない。
+- **P4（レジストリ）。** `average_gauge`・`timed_with_known_ops`・`hdr_histogram` で、同じキーへの同じ種類の再取得は状態を共有する（片方への加算がもう片方から見える）。`measure_file_descriptors` は対象にしない（I2）。消去の後は再取得で新しい状態になる。違う種類の再取得は常にエラーになり、既存の登録は壊れない。
 - **P5（タイマー）。** `stop` を何回呼んでも `true` は最大で1回だけであり、`count` は常に入力した操作回数に等しい。
 - **P6（ファイルディスクリプタのキー）。** 空のレジストリ（または対象のキー配下）に対して `measure_file_descriptors` を呼んだ後は、そのキーから導かれる3キーがちょうど登録される。プラットフォームは限定しない（非 unix でも登録はされる）。
 
 ## 6. Quint を書くかどうか
 
-**定期報告スレッドのライフサイクルについて書く。** 対象は `crates/fraktor-testkit/specs/console_reporter.qnt` である。モデルは1つの状態列挙ではなく、次の3つの状態と、停止フラグ・停止ロック・出力のロックで表す（出力のロックは 2026-11-28 に足した。下の「`console_reporter.qnt` の見直し」）。
+**定期報告スレッドのライフサイクルについて書く。** 対象は `crates/fraktor-testkit/specs/console_reporter.qnt` である。モデルは1つの状態列挙ではなく、次の3つの状態と、報告の段階（`Print`）と、停止フラグ・停止ロック・出力の `Mutex`・書き手のロックで表す（出力のロックは 2026-11-28 に足し、同じ日の3回目の改訂で2つのロックに分けた。下の「`console_reporter.qnt` の見直し」）。
 
 - スレッドの状態 `Thread`：`NotStarted`（未起動）・`Waiting`（待機中）・`Reporting`（報告中）・`Finished`（終了）。スレッドが起動するのは、Console レポーターが有効であること（`console`）と、間隔が正であること（`positiveInterval`）の両方が成り立つときだけであり、この2つの条件は分けて持つ。
 - ハンドルの状態 `Handle`：`Running`・`Joining`・`Joined`。実装の `ReporterThreadState`（`Running`・`Joining`・`Finished`）に対応し、実装の `Finished` をモデルでは `Joined` と呼ぶ。
 - 停止の呼び出し側の状態 `Call`：`Idle`・`Flagging`・`Flagged`・`Joiner`・`WaitingForTheJoin`・`Returned`。`shutdown_metrics()` の呼び出しと `Drop` のどちらも、この同じ遷移を通る。
+- 報告の段階 `Print`：`NoPrint`・`WantsTheOutput`（出力の `Mutex` を待つ）・`HasTheOutput`（`Mutex` を持って書く）。報告スレッドと、`report_metrics()`・`report_and_clear_metrics()` を呼ぶ呼び出し側が持つ。
 
-停止のロックは、停止フラグ（`stopFlag`）の読み書きの間だけ保持する。報告スレッドはロックを解放してから報告するため、報告の途中でも停止側はフラグを立てて接合へ進める。停止手順は、ロックを取り、フラグを立て、ロックを解放して起こし、ハンドルの状態を見る、という順序でそろえる。最初に `Running` を見つけた呼び出しが `Joiner` として接合し、`Joining` を見つけた呼び出しは `WaitingForTheJoin` として完了を待ち、`Joined` を見つけた呼び出しはそのまま `Returned` になる。停止の保証の境界は、フラグを立てた時点ではなく、呼び出しが戻った時点であり、不変条件 `noReportOnceACallReturned`（呼び出しが戻った後は、報告は走っておらず新しく始まることもない）で表す。ほかの不変条件は、`threadOnlyWithConsoleAndInterval`（Console と間隔の条件が無ければスレッドは起動せず報告も無い）、`flagOnlyAfterAStopBegins`、`leavesOnlyOnTheFlag`（スレッドはフラグが立ったときにだけ終わる）、`stopLockOnlyAroundTheFlag`（ロックはフラグの読み書きの間だけ）、`oneJoinerAtATime`、`joinedAtMostOnce`、`nothingRunsAfterTheDrop` である。あわせて、`shutdown_metrics()` の冪等性、ドロップ時の停止、長い待機の途中での停止要求による即時の終了をモデル化する。なお、以前の版が挙げた「停止要求済み」という状態はモデルには無い。停止要求は `stopFlag` と `Call` の遷移で表す。定期報告スレッドは、待ちと時間とロックと停止要求が絡む並行の状態遷移であり、`fraktor-testkit` の既存の Quint 仕様 `watch_handle.qnt`（監視スレッド）と同型であるため、検査の対象にする。
+停止のロックは、停止フラグ（`stopFlag`）の読み書きの間だけ保持する。報告スレッドはロックを解放してから報告するため、報告の途中でも停止側はフラグを立てて接合へ進める。停止手順は、ロックを取り、フラグを立て、ロックを解放して起こし、ハンドルの状態を見る、という順序でそろえる。最初に `Running` を見つけた呼び出しが `Joiner` として接合し、`Joining` を見つけた呼び出しは `WaitingForTheJoin` として完了を待ち、`Joined` を見つけた呼び出しはそのまま `Returned` になる。停止の保証の境界は、フラグを立てた時点ではなく、呼び出しが戻った時点であり、不変条件 `noReportOnceACallReturned`（呼び出しが戻った後は、報告は走っておらず新しく始まることもない）で表す。ほかの不変条件は、`threadOnlyWithConsoleAndInterval`（Console と間隔の条件が無ければスレッドは起動せず報告も無い）、`flagOnlyAfterAStopBegins`、`leavesOnlyOnTheFlag`（スレッドはフラグが立ったときにだけ終わる）、`stopLockOnlyAroundTheFlag`（ロックはフラグの読み書きの間だけ）、`oneJoinerAtATime`、`joinedAtMostOnce`、`nothingRunsAfterTheDrop`、`noStopOrReportHoldsTheWriter`（停止や報告の中のスレッドは書き手のロックを持たない）、`theOutputIsHeldOnlyToPrint`、`noDeadlock`（待ちの輪が無い）である。あわせて、`shutdown_metrics()` の冪等性、ドロップ時の停止、長い待機の途中での停止要求による即時の終了をモデル化する。なお、以前の版が挙げた「停止要求済み」という状態はモデルには無い。停止要求は `stopFlag` と `Call` の遷移で表す。定期報告スレッドは、待ちと時間とロックと停止要求が絡む並行の状態遷移であり、`fraktor-testkit` の既存の Quint 仕様 `watch_handle.qnt`（監視スレッド）と同型であるため、検査の対象にする。
 
 書かない部分も明記する。タイマーの「計測中→停止済み」の2状態は、停止が一回限りである性質を I5 と P5 で直接に確かめられるため Quint にはしない。レジストリの登録・取得・消去は写像の意味論であり、順序の interleaving をモデル化しても得られる検査が増えないため Quint にはしない。
 
-出力の形（§2）も Quint にはしない。§2 の「報告の作りと、確かめる口」のとおり、報告は「読む」と「書く」に分かれる。状態を持たず、同じ入力に同じバイト列を返すと言えるのは「書く」の段（非公開の `render`。読みの列と `verbose` と行の区切りが同じなら同じバイト列）だけである。「読む」の段は、ヒストグラムの `Mutex` の中の複製、OS のファイルディスクリプタ、時計を読むため、呼ぶたびに値が変わりうる。どちらの段も遷移を持たないため Quint の対象にならない。並び順と書式は §15 の単体テストが `render` で直接に確かめる。
+出力の形（§2）も Quint にはしない。§2 の「報告の作りと、確かめる口」のとおり、報告は「読む」と「書く」に分かれる。状態を持たず、同じ入力に同じバイト列を返すと言えるのは「書く」の段（非公開の `render`。読みの列と `verbose` と行の区切りが同じなら同じバイト列）だけである。「読む」の段は、ヒストグラムの `Mutex` の中の複製、OS のファイルディスクリプタ、時計を読むため、呼ぶたびに値が変わりうる。どちらの段も遷移を持たないため Quint の対象にならない。並び順と書式は §15 のテストが確かめる。単体テストは非公開の `render` を読みから直接に呼び、結合テストは公開の `ConsoleReporter::report` と `MetricsKit` を通す（§15 の「口」の列）。
 
 `report_and_clear_metrics()` の手順（取り出す、出力する、成功なら消去済み・失敗なら戻す、並行の再登録は残す。§2「報告の失敗の扱い」）は状態遷移であるが、Quint にはせずテストで確かめる。1回の呼び出しの中の手順であり、並行の関与は「出力の途中で別の登録が入る」ことだけである。この割り込みは、書き込みの中で同じ `MetricsKit` に登録する `Write` を出力先にすれば、テストで決定的に起こせる（§15 の R12）。写像の意味論（取り出し・`or_insert` による戻し）は Quint で interleaving を探しても検査が増えない。
 
-#### `console_reporter.qnt` の見直し（2026-11-28）
+#### `console_reporter.qnt` の見直し（2026-11-28、3回目の改訂で作り直した）
 
-quint-modeling の見直しの手順で読み、次の4つを確かめた。quint は 0.32.0（`package-lock.json` の版）である。
+quint-modeling の見直しの手順で読み、次の4つを確かめた。quint は 0.32.0（`package-lock.json` の版）である。再現の手順は `docs/design/issue-299/check-console-reporter-qnt.sh` に置いた。`npm ci` の後にリポジトリの根で動かすと、(0) の検査、(a) の13版、(b) の数え上げをして、すべて通れば `all checks passed` を出して0で終わる（このホストで約1分半）。壊した版は一時ディレクトリに作り、`crates/*/specs` には置かない（`scripts/quint-check-specs.sh` がそこを調べるため）。
 
-**直したこと。** 前の版のモデルは停止ロックだけを持ち、§2「停止の境界」の出力のロックの契約が無かった。`outputLock`（`Free`・`HeldBy(呼び出し側)`・`HeldBy("T")`（報告スレッド））と、呼び出し側が出力のロックを取った回数 `outputHolds`（2回まで）を足し、action `startPrinting`（報告スレッドが出力のロックを取る）・`holdTheOutput`・`releaseTheOutput` を足した。`finishReport` は出力のロックを返す。`beginShutdown` と `beginDrop` には「その呼び出し側が出力のロックを持っていない」というガードを足した（公開 API の文書の契約）。不変条件は `noStopHoldsTheOutput`（停止の途中の呼び出し側は出力のロックを持たない）と `theThreadHoldsTheOutputOnlyToPrint` を足して10個になった。`run` は5つ足して22個（すべて名前が `Test` で終わる）。`outputHolds` に上限を置いたのは、取って返すだけの繰り返しで行き詰まった状態が隠れないようにするためである（上限が無いと全ての実行が20歩まで伸びた。上限を置いた後は最短9歩で終わる実行がある）。`quint typecheck`、`quint test`（22 passing）、`quint run --invariant=invariant --max-steps=20 --max-samples=10000`（違反なし）を通した。
+**前の版の何が違っていたか。** 2回目の改訂の版（16d1afc）には、次の3つの問題があった。
 
-**(a) わざと壊した版。** 1か所だけを変えた版を作り、その不変条件だけを `quint run --invariant=<名前> --max-steps=20 --max-samples=10000 --seed=0x2a` で調べた。11版すべてが違反を返した。
+1. **本番の2つのロックを1つに写していた。** `outputLock` は、出力の `Mutex`（`metrics_kit_value.rs` 43行（ed9fba5））と呼び出し側の `StdoutLock` を1つにまとめていた。そのため、`with_output` の書き手がロックを取らない場合も、呼び出し側の `StdoutLock` が報告を止めることになっていた。また、呼び出し側の `report_metrics()` の中のロックの順（出力の `Mutex`、次に書き手のロック）が無かった。
+2. **ガードが本番の文書の契約と違っていた。** `beginShutdown` は `HeldBy(c)` だけを、`beginDrop` は `HeldBy(Drop)` だけを見ていた。本番の文書（149〜154行）は、どのスレッドにも `StdoutLock` を禁じている。どちらが正しいかは §2「出力のロックの契約」で決めた。
+3. **行き詰まりを検査していなかった。** `noStopHoldsTheOutput` はガードが保つ状態を言い直しただけであり、行き詰まりそのものは定義されていなかった。また、`releaseTheOutput` のガードは `outputLock == HeldBy(c)` だけだったので、接合を待って止まっているスレッドも手放せた。
+
+レビューの反例（`initWith(true, true)` → `construct` → `wakeToReport` → `holdTheOutput("A")` → `beginDrop` → `setTheFlag("D")` → `lookAtTheThread("D")`）は、前の版では不変条件に違反しない。これを新しい版で読み直した。ロックを持つ A がドロップする D と別のスレッドなら、A は止まっていないので手放せ、ドロップは遅れるだけである（run `aHolderOtherThanTheDropperOnlyDelaysTheDropTest`）。ドロップするスレッド自身がロックを持っていれば、行き詰まりになる（run `theDropperHoldingTheWriterDeadlocksTest`、契約を外した場合）。前の版では、この2つの区別がつかなかった。
+
+**直したこと。**
+
+- 出力の `Mutex` を `outputMutex`、書き手のロックを `writerLock` に分けた。書き手の種類を `writer` で選ぶ。`NoSharedLock` はロックを取らない書き手、`ReentrantLock` は `StdoutLock`（`new`）、`PlainLock` は共有のバッファの `Mutex` のように再入できないロックである。
+- 報告の段階 `printing`（`NoPrint`・`WantsTheOutput`・`HasTheOutput`）を、報告スレッドと呼び出し側の両方に持たせた。呼び出し側の報告 `beginReport`（`report_metrics()` と `report_and_clear_metrics()`）を足した。報告は `takeTheOutput`（出力の `Mutex` を取る）、`finishPrinting`（書き手のロックを通して書き、`Mutex` を返す）の順に進む。前の版の `startPrinting`・`finishReport` はこの2つに置き換えた。
+- 契約のガードを `contract implies writerLock != HeldBy(c)` の形にし、`beginShutdown`・`beginDrop`・`beginReport` に置いた。`contract` は既定の `init` では真であり、契約を外した場合の行き詰まりを示す run だけが偽で始める。
+- `holdTheWriter`・`releaseTheWriter` は、止まっていないスレッド（`isFree`：停止の中でも報告の中でもない）だけができる。
+- 行き詰まりを、ガードとは別に、待ちの関係 `waitsFor` の輪 `deadlocked` として定義した。待ちの関係は次の4つである。出力の `Mutex` を待つ報告は、その持ち主を待つ。`Mutex` を持って書けない報告は、書き手のロックの持ち主を待つ。再入できないロックでは自分自身も持ち主になりうる。接合する呼び出しは、終わっていない報告スレッドを待つ。接合の完了を待つ呼び出しは、接合する呼び出しを待つ。スレッドは4本なので、関係を4回たどれば、すべての輪が見つかる。
+- 不変条件は11個になった。`noStopHoldsTheOutput` は `noStopOrReportHoldsTheWriter` に、`theThreadHoldsTheOutputOnlyToPrint` は `theOutputIsHeldOnlyToPrint` に置き換え、`noDeadlock`（`not(deadlocked)`）を足した。
+- run は33個である（すべて名前が `Test` で終わる）。待ちの状態に実際に至ること（`waitsFor` が空でない状態）を確かめる run と、契約を外すと輪ができることを確かめる run 4つを含む。後者は、ドロップするスレッドが持つ場合、停止するスレッドが持つ場合、報告スレッドが `Mutex` を持つ間に `StdoutLock` を持つスレッドが報告する場合、再入できないロックを持つスレッドが報告する場合である。そのため `deadlocked` が空の定義ではないことも、`quint test` で確かめられる。
+- `quint typecheck`、`quint test`（33 passing）、`quint run --invariant=invariant --max-steps=20 --max-samples=10000`（違反なし）を通した。`scripts/quint-check-specs.sh` も通る。
+
+**(a) わざと壊した版。** 1か所だけを変えた版を13作り、狙った不変条件だけを `quint run --invariant=<名前> --max-steps=20 --max-samples=10000 --seed=0x2a` で調べた。スクリプトは、それぞれの版について、変更が1か所に当たったこと、型が通ること、壊していない仕様が同じ種で違反しないこと、壊した版が `[violation]` を出すことを確かめる。13版すべてが違反を返した。
 
 | 不変条件 | 変えた箇所 | 結果 |
 |:---|:---|:---|
@@ -568,36 +624,56 @@ quint-modeling の見直しの手順で読み、次の4つを確かめた。quin
 | `noReportOnceACallReturned` | `joinReturn` のガード `thread == Finished` を外す | 違反 |
 | `oneJoinerAtATime` | `lookAtTheThread` でハンドルを `Running` のままにする | 違反 |
 | `joinedAtMostOnce` | `joinReturn` でハンドルを `Joined` ではなく `Running` に戻す | 違反 |
-| `nothingRunsAfterTheDrop` | `beginDrop` のガード「停止中の `shutdown_metrics` が無い」を外す | 違反 |
-| `noStopHoldsTheOutput` | `beginShutdown` の出力のロックのガードを外す | 違反 |
-| `noStopHoldsTheOutput` | `beginDrop` の出力のロックのガードを外す | 違反 |
-| `theThreadHoldsTheOutputOnlyToPrint` | `finishReport` で出力のロックを返さない | 違反 |
+| `nothingRunsAfterTheDrop` | `beginDrop` のガード「停止中・報告中の呼び出しが無い」を外す | 違反 |
+| `noDeadlock` | `beginShutdown` の契約のガードを外す | 違反 |
+| `noDeadlock` | `beginDrop` の契約のガードを外す | 違反 |
+| `noDeadlock` | `beginReport` の契約のガードを外す | 違反 |
+| `noStopOrReportHoldsTheWriter` | `holdTheWriter` のガード `isFree(c)` を外す | 違反 |
+| `theOutputIsHeldOnlyToPrint` | `finishPrinting` で出力の `Mutex` を返さない | 違反 |
 
-`noStopHoldsTheOutput` の違反は、出力のロックを持ったまま停止を始めた呼び出し側の状態であり、そこから報告中のスレッドは `startPrinting` できず、接合する側は `joinReturn` できない。§2 の止まったままの状態がこれに当たる。
+契約のガードを外した3版は、`noDeadlock` に違反する。つまり、ガードの言い直しではない不変条件で、契約が要ることを確かめられる。
 
-**(b) 各 action が起きること。** `quint run --mbt --max-steps=20 --max-samples=1000 --n-traces=1000 --seed=0x1 --out-itf=...` の1000本の実行で、`mbt::actionTaken` を数えた。13の action すべてが1回以上起きた（括弧の中は起きた実行の本数）: `construct` 1000、`wakeToReport` 88、`startPrinting` 88、`finishReport` 88、`wakeToStop` 223、`beginShutdown` 534、`beginDrop` 961、`setTheFlag` 1000、`lookAtTheThread` 1000、`joinReturn` 223、`waitReturn` 59、`holdTheOutput` 1000、`releaseTheOutput` 1000。
+**(b) 各 action が起きること。** `quint run --mbt --max-steps=20 --max-samples=1000 --n-traces=1000 --seed=0x1` の1000本の実行で、`mbt::actionTaken` を数えた。14の action すべてが1回以上起きた（括弧の中は起きた実行の本数）: `construct` 1000、`wakeToReport` 125、`takeTheOutput` 328、`finishPrinting` 326、`wakeToStop` 239、`beginShutdown` 541、`beginReport` 280、`beginDrop` 850、`setTheFlag` 999、`lookAtTheThread` 995、`joinReturn` 226、`waitReturn` 18、`holdTheWriter` 682、`releaseTheWriter` 682。
 
 **(c) 状態と action と本番の対応。** 行は `crates/fraktor-testkit/src/metrics_kit/metrics_kit_value.rs`（ed9fba5）である。
 
 | モデル | 本番 |
 |:---|:---|
 | `console`・`positiveInterval` | `with_output` の `has_console` と `scheduled_report_interval > Duration::ZERO`（169・180行） |
+| `writer` | `new`（163〜165行）の書き手 `std::io::stdout()` は `ReentrantLock`。`with_output`（168行）は渡した書き手による。共有のバッファの `Mutex` を取るもの（`metrics_kit_edge_case_test.rs` 41〜62行（ed9fba5）の `CapturedOutput`）は `PlainLock`、ロックを取らないもの（`metrics_kit_review_followup_test.rs` 53〜63行（ed9fba5）の `FailingOutput`）は `NoSharedLock` |
+| `contract` | 公開 API の文書の契約（§2「出力のロックの契約」）。本番のコードは検査しない |
 | `thread` | 報告スレッドの閉包（182〜193行）。`Waiting` は `wait_timeout_while` の中、`Reporting` は `report_once`（192行）の中、`Finished` は `break`（189行）の後 |
 | `handle` | `ReporterThreadState`（31〜38行）。モデルの `Joined` は本番の `Finished` |
 | `stopFlag`・`stopLock` | `stop_requested: Mutex<bool>`（46行）とそのロック |
-| `outputLock` | `output: Mutex<Box<dyn Write + Send>>`（43行）のロックと、出力先が標準出力なら `StdoutLock`。`HeldBy("T")` は `report_snapshot` の `self.output.lock()`（68行）から戻るまで |
+| `outputMutex` | `output: Mutex<Box<dyn Write + Send>>`（43行）のロック。取るのは `report_snapshot` の68行で、69行の `report` から戻ると返る |
+| `writerLock` | 書き手が `write` の中で取るロック。`Stdout` では `StdoutLock`、`CapturedOutput` では `bytes` の `Mutex`。呼び出し側も同じロックを持てる |
+| `printing` | `report_snapshot`（64〜70行）の中の位置。`WantsTheOutput` は68行の `lock()` の待ち、`HasTheOutput` は69行の `report` の中 |
 | `calls` | `stop_reporter_thread`（93〜118行）の中の位置。`Flagging` は95〜96行、`Flagged` は98行の後、`Joiner` は107〜110行、`WaitingForTheJoin` は104行、`Returned` は102・114行 |
 | `construct` | `with_output`（168〜197行） |
 | `wakeToReport`・`wakeToStop` | 183〜191行（フラグを読んで報告へ進むか抜ける） |
-| `startPrinting`・`finishReport` | `report_snapshot`（64〜70行）の出力のロックの取得と、`report_once` からの戻り |
+| `beginReport` | `report_metrics`（305〜307行）と `report_and_clear_metrics`（315〜320行）から `report_snapshot` に入るところ。Console レポーターが無ければ65〜67行で何も取らずに戻るので、モデルでは `console` のときだけ起きる |
+| `takeTheOutput`・`finishPrinting` | 68行の出力の `Mutex` の取得と、69行の `report` の書き込み（各 `write` が書き手のロックを通る）から戻って `Mutex` を返すまで |
+| `holdTheWriter`・`releaseTheWriter` | 呼び出し側が `std::io::stdout().lock()` や共有のバッファの `Mutex` を取って返すこと（本番のコードには無い） |
 | `beginShutdown`・`beginDrop` | `shutdown_metrics`（334〜336行）と `Drop::drop`（339〜343行）から `stop_reporter_thread` に入るところ |
 | `setTheFlag`・`lookAtTheThread`・`joinReturn`・`waitReturn` | 95〜98行、99〜108行、110〜114行、104行の待ちからの戻り |
-| `holdTheOutput`・`releaseTheOutput` | 呼び出し側が `std::io::stdout().lock()` を取って返すこと（本番のコードには無く、公開 API の文書の契約 149〜154行が対象） |
-| `beginShutdown`・`beginDrop` の出力のロックのガード | 公開 API の文書の契約（149〜154行）。本番のコードは検査しない |
+| `beginShutdown`・`beginDrop`・`beginReport` の契約のガード | 公開 API の文書の契約。本番のコードは検査しない |
+| `waitsFor`・`deadlocked` | 本番には無い。スレッドがどのロックやどのスレッドの終わりを待つかを、上の対応から定義したもの |
 
-**(d) 検査の大きさと、見られないもの。** 呼び出し側は `shutdown_metrics` の2本（A、B）とドロップの1本、報告は3回まで、`shutdown_metrics` の呼び出しは合わせて4回まで、呼び出し側が出力のロックを取るのは2回まで、1本の実行は20歩まで、10,000本の無作為の実行である（`scripts/quint-check-specs.sh` と同じ）。全探索ではなく、違反が無かったことは「調べた実行の中に反例が無かった」という意味である。モデルが見られないものは次のとおりである。報告の中身とレジストリ（§2 の `render` と §15 のテストの対象）、`report_and_clear_metrics` の取り出しと戻し（テストの対象）、報告スレッドの中のパニックと、ロックの poisoning（本番は `expect` で落ちる）、`Condvar` の見かけの目覚め（`wait_timeout_while` の述語が吸収するため、モデルでは目覚めを1つの action にまとめた）、間隔の長さ（時間はモデルに無い）、`thread::spawn` の失敗、出力のロックを持ったまま `report_metrics` を同じスレッドで呼ぶこと（`StdoutLock` は再入できる）、生存性（「いずれ戻る」は不変条件では表せず、行き詰まりは `quint run` では検出されない。行き詰まりの状態に至らないことを `noStopHoldsTheOutput` で間接に見ている）。
+**(d) 検査の大きさと、見られないもの。** スレッドは、`shutdown_metrics` と `report_metrics` を呼ぶ2本（A、B）、ドロップする1本（D）、報告スレッド（T）である。報告スレッドの報告は3回まで、`shutdown_metrics` の呼び出しは合わせて4回まで、呼び出し側の報告は合わせて2回まで、呼び出し側が書き手のロックを取るのは2回までで、1本の実行は20歩まで、10,000本の無作為の実行である（`scripts/quint-check-specs.sh` と同じ）。全探索ではなく、違反が無かったことは「調べた実行の中に反例が無かった」という意味である。
 
-**設計とテストの項目との読み直し。** `.qnt` を直した後に §2「停止の境界」と §15 を読み直した。§2 の契約の文は `noStopHoldsTheOutput` と同じことを言い、§15 の項目は出力のロックの契約をテストに求めていない（止まったままの状態をテストで起こすと、テストが止まるため）。食い違いは無い。
+`noDeadlock` が見るのは、この4本のスレッドの間の待ちの輪である。停止ロックと報告スレッドの状態のロック（`reporter_thread`、99〜108行）は待ちの関係に入れていない。どちらも持ち主が止まらずに手放すからである（停止ロックを持つのは `Flagging` の呼び出しだけで、`setTheFlag` は常にできる。`reporter_thread` は接合の前に109行で手放す）。
+
+モデルが見られないものは次のとおりである。
+
+- 報告の中身とレジストリ（§2 の `render` と §15 のテストの対象）。`report_and_clear_metrics` の取り出しと戻し（テストの対象）。
+- 報告スレッドの中のパニックと、ロックの poisoning（本番は `expect` で落ちる）。
+- `Condvar` の見かけの目覚め（`wait_timeout_while` の述語が吸収するため、モデルでは目覚めを1つの action にまとめた）。間隔の長さ（時間はモデルに無い）。`thread::spawn` の失敗。
+- 1回の報告の書き込みは、書き手のロックを1回通るものとしてまとめた。本番は `write` のたびに取って返すので、書き込みの合間に別のスレッドがロックを取れる。ただし、それで増えるのは遅れだけで、待ちの輪は増えない。
+- 書き手の `write` が同じ kit を呼び返すこと。登録（R12）は出力の `Mutex` と関わらないので問題ない。`write` の中から停止やドロップをすると、報告スレッドが自分を接合することになるが、これはモデルに無い。
+- kit の外の待ち。たとえば、書き手のロックを持つ別のスレッドが、停止するスレッドを待つ場合である。
+- 生存性。「いずれ戻る」は不変条件では表せない。止まっていないスレッドが書き手のロックを手放さないまま、いつまでも動かない場合は、遅れが終わらない。これは行き詰まり（待ちの輪）とは別であり、モデルの外である。
+
+**設計とテストの項目との読み直し。** `.qnt` を直した後に、§2「停止の境界」「出力のロックの契約」と §15 を読み直した。§2 の契約の文は、3つのガードと `noStopOrReportHoldsTheWriter` と同じことを言う。契約を守る限り待ちの輪ができないことは `noDeadlock` が言う。§15 の項目は、出力のロックの契約をテストに求めていない。行き詰まりをテストで起こすと、テストが止まるためである。§15 が使う書き手は、`Vec<u8>`（ロックを取らない）、いつも失敗する書き手、R12 の登録する書き手であり、どれもテストの中でロックを持ったまま停止や報告をしない。食い違いは無い。
 
 ## 7. 台帳の見込みと、区分の提案
 
@@ -614,6 +690,7 @@ quint-modeling の見直しの手順で読み、次の4つを確かめた。quin
 
 - **`cases` は動かない。** 対象ノード（33460〜33486行）は `total: 5`、`ported: 5`、`passing: 5` のままである。出力の形を確かめるテストは原典の5ケースの検査ではなく、原典外の単体テストだからである。
 - **`verified_against: v2.0.0` は付いたままである。** 対象ノードの33486行に既にあり、付け直しも書き換えもしない。
+- **ファイルディスクリプタの上限の値は、JVM の環境の違いとして記録し、移植済みに数える（元帥の決定、#340、2026-11-28）。** 原典の JVM は HotSpot の `MaxFDLimit` でプロセスの soft を上げるので、同じ環境でも原典と fraktor の値が違うことがある（§2「ファイルディスクリプタ」）。Pekko の振る舞い（soft を返す）は写しているので、ノードは移植済み（`cases` の5件、green）のまま数える。台帳のノードには、この種の違いを持つ欄が無い（`ledger/README.md`）。そのため記録はこの設計の §2「ファイルディスクリプタ」と「原典と違う点」の表に置き、ノードの値は変えない。
 - したがって第2段で `ledger/nodes.yaml` を触る必要は無い。
 
 ## 8. 複数スレッドの実行器・dispatcher との関係
@@ -630,7 +707,7 @@ quint-modeling の見直しの手順で読み、次の4つを確かめた。quin
 
 1. Claude Opus の担当が、本設計の対応表どおりに `metrics_kit_spec.rs` の5件と PBT を書き、red を確認してブランチに置く（進め方の変更、2026-11-26）。
 2. 実装は red のテストを通す範囲だけを書き、テストは書き換えない。テストが誤りだと思った場合は、実装でごまかさず、判断の依頼として中将へ上げる。
-3. あわせて、原典外の単体テストとして、タイマーのパニック時の停止（`catch_unwind` の後にタイマーが停止済みであり、2回目の `stop()` が `false` を返すこと）、種類の衝突のエラー、ヒストグラムの境界値（バケット上界ちょうど、バケット上界+1、負の値、および追跡可能な最大値+1 が記録できること）、`update_with_count` の負の個数と 0 の個数、未停止のタイマーの `elapsed()` 等が `None` であること、ファイルディスクリプタ登録の衝突時にレジストリが変わらないことを固定する。
+3. あわせて、原典外の単体テストとして、タイマーのパニック時の停止（`catch_unwind` の後にタイマーが停止済みであり、2回目の `stop()` が `false` を返すこと）、種類の衝突のエラー、ヒストグラムの境界値（最大値 `100_000_000`・有効数字4桁で、バケット上界ちょうどの `134_217_727` と追跡可能な最大値+1 の `100_000_001` は記録でき、バケット上界+1 の `134_217_728` と負の値は範囲外のエラーになること。I4・§4）、`update_with_count` の負の個数と 0 の個数、未停止のタイマーの `elapsed()` 等が `None` であること、ファイルディスクリプタ登録の衝突時にレジストリが変わらないことを固定する。
 4. 台帳の対象ノードを green に更新し、`ledger/tools` の検査を通す。Quint は §6 の `console_reporter.qnt` を書き、Quint の検査を通す。
 5. CI と同じ検査をすべて流し、PR をドラフトから外す。マージはしない。
 
@@ -672,7 +749,7 @@ issue #299 の元帥の点検（2026-11-27）の重い指摘「コンソール�
 変えた点は次のとおりである。
 
 - 種類ごとの見出し（80桁のバナー）、種類の順、1項目1行の書式、キーの順序、空行の位置を、原典の行（`PekkoConsoleReporter.scala` 38〜175行）に対応づけて書いた。
-- 原典のコードと、原典が使う Dropwizard 4.2.40 と HdrHistogram 2.2.2 のコードから出力の例を作って載せた。`HdrHistogram` の9行と百分位の分布は、原典が使う HdrHistogram 2.2.2 を JVM（Temurin 26）で動かして確かめた。Rust 側は `hdrhistogram` 7.6.0 で同じ入力を記録し、百分位の表の値と件数が一致することを確かめた。違ったのは12桁の百分位の2行だけで、これは Java の HALF_UP と Rust の偶数丸めの違いであり、同じ関数を置いて同じにする（§2）。
+- 原典のコードと、原典が使う Dropwizard 4.2.40 と HdrHistogram 2.2.2 のコードから出力の例を作って載せた。`HdrHistogram` の9行と百分位の分布は、原典が使う HdrHistogram 2.2.2 を JVM（Temurin 26）で動かして確かめた。Rust 側は `hdrhistogram` 7.6.0 で同じ入力を記録して比べた。（3回目の改訂で直した文。もとの文は「値と件数が一致し、違ったのは12桁の百分位の2行だけ」だったが、下の追記と §2 のとおり、クレートの `iter_quantiles(5)` は行の数も値も件数も原典と違う。）原典と同じになるのは、§2 の再構成（`iter_recorded()` の列から原典の刻みの規則で組み立てたもの）と、HALF_UP で丸める書式の関数を合わせたものである（§2「ヒストグラムの値の求め方」「書式の規則」）。
   - 追記（§14 の改訂）：ここで「一致」と書いたのは、§2 の独自の再構成（`iter_recorded()` の列から原典の刻みの規則で組み立てたもの）の値と件数である。クレートの `iter_quantiles(5)` そのものは一致しない。0〜4 の5件で、クレートは14行、原典は15行であり、百分位 0.6 と 0.8 の行の値と件数が違い、0.825 の行がクレートに無い（§2「ヒストグラムの値の求め方」）。原典の刻みは `PercentileIterator.java` 78〜91行、表の書式は `AbstractHistogram.java` 1789〜1790行である。
 - JVM の書式のうち Rust で同じにできるもの（`%d`、HALF_UP の固定小数、`NaN`・`Infinity`、UTF-16 順）は同じにし、できないものだけを違いとして1行ずつ挙げた。
 - red のテストの担当のための面（`report` で足りるか、確かめる項目）を書いた。
@@ -720,7 +797,7 @@ issue #299 の「あわせて」の2点は、PR #306（`68a48a7`、コミット 
 
 共通の約束を先に書く。
 
-- `NL` は結合テストでは `if cfg!(windows) { "\r\n" } else { "\n" }`、単体テストでは `render` に渡した区切りである。百分位の分布の表の行（見出し・その後の空行・各行・`#[` の3行）は常に `"\n"` である。
+- `NL` は結合テストでは `if cfg!(windows) { "\r\n" } else { "\n" }`、単体テストでは `render` に渡した区切りである。単体テスト（R2〜R7、R10、R11、R20）は区切り `"\n"` で `render` を呼ぶ。`"\r\n"` を渡すのは R21 だけである。単体テストの `verbose` は、R21 が `true`、ほかは `false` である（R15 の読みを使う R21 だけが分布を出す）。百分位の分布の表の行（見出し・その後の空行・各行・`#[` の3行）は常に `"\n"` である。
 - 期待の文字列の元は `docs/design/issue-299/console-reporter-examples.expected` の節（`=== ` の行の名前で引く）である。そこから次の3点だけを差し替える。(1) 独自の3種類（タイマー、ヒストグラム、平均ゲージ）の項目の順をキー順にする（原典はハッシュ順、Rust はキー順。§2「キーの順序」）。(2) タイマーの見出しを `-- KnownOpsInTimespanTimer ` と `-` 53個にする（`.expected` には駆動のプログラムの無名の子クラスの名前が出ている）。(3) 行の区切りを `NL` にする。
 - 見出しの `-` の数は `76 - 名前の長さ` である。`AveragingGauge` は62個、`FileDescriptorMetricSet$$anon$1` と `$$anon$2` は45個、`FileDescriptorRatioGauge` は52個、`KnownOpsInTimespanTimer` は53個、`HdrHistogram` は64個。どれも改行を除いて80文字である。
 - 表の「red」は、いまの実装（`console_reporter.rs` 49〜77行（ed9fba5）の `key: gauge value=...` の形）で落ちる項目である。「緑のまま」はいまの性質を固定する項目である。
@@ -728,20 +805,20 @@ issue #299 の「あわせて」の2点は、PR #306（`68a48a7`、コミット 
 | # | 口 | 入力 | 期待 | いま |
 |:---|:---|:---|:---|:---|
 | R1 | 結合 | 空の `BTreeMap` | 出力は `NL` ちょうど | red |
-| R2 | 単体 | 上の6つの名前それぞれを先頭に持つ読み | 1行目は `"-- " + 名前 + " " + "-" × (76 - 長さ)`、改行を除いて80文字 | red |
+| R2 | 単体 | 区切り `\"\n\"`、`verbose = false`。キー `k` に次の読みを1つだけ置いて、6回 `render` する。(1) `AveragingGauge { value: 2.5 }`、(2) `FileDescriptor(Open(Some(42)))`、(3) `FileDescriptor(Max(Some(1024)))`、(4) `FileDescriptor(Ratio(0.5))`、(5) `KnownOpsInTimespanTimer { ops: 10, elapsed_nanos: 1234567 }`、(6) 5 を1件記録したヒストグラムの `HdrHistogram { snapshot, unit: \"ns\" }` | 出力の1行目は順に、`-- AveragingGauge ` と `-` 62個、`-- FileDescriptorMetricSet$$anon$1 ` と `-` 45個、`-- FileDescriptorMetricSet$$anon$2 ` と `-` 45個、`-- FileDescriptorRatioGauge ` と `-` 52個、`-- KnownOpsInTimespanTimer ` と `-` 53個、`-- HdrHistogram ` と `-` 64個。どれも80文字 | red |
 | R3 | 単体 | `metrics-kit.avg-size` に `AveragingGauge { value: 2.5 }`、`metrics-kit.file-desc.file-descriptors.file-descriptors-{max,open,ratio}` に `Max(Some(1024))`・`Open(Some(42))`・`Ratio(0.041015625)` | `.expected` の `=== gauges: averaging gauge and file descriptors 42/1024` の節（15行。末尾は空行2つ） | red |
 | R4 | 単体 | R3 からファイルディスクリプタの3つだけ | `=== gauges: file descriptors only` の節。見出しは `-- FileDescriptorMetricSet$$anon$2 ` と `-` 45個 | red |
 | R5 | 単体 | `Max(Some(0))`・`Open(Some(42))`・`Ratio(f64::NAN)` | `=== gauges: file descriptors with limit 0` の節（`value = 0`、`value = NaN`） | red |
 | R6 | 単体 | `Max(None)`・`Open(None)`・`Ratio(f64::NAN)`（非 unix） | 書かれたのは見出しの1行と `  metrics-kit.file-desc.file-descriptors.file-descriptors-max` + `NL` だけで、`render` は `Err`（`io::ErrorKind::Unsupported`）を返す | red |
-| R6w | 結合 | `MetricsKit::measure_file_descriptors(&MetricKey::from_string("metrics-kit").child("file-desc"))` の後の `registered_metrics()` を `report` | `cfg(windows)`: R6 と同じ出力と `Err`。`cfg(unix)`: 見出しは `-- FileDescriptorMetricSet$$anon$2 `、開数と上限の値の行は `             value = ` の後が10進の数字だけ、比率の値の行は `Double.toString` の形（数字と `.` を含み、`NaN` ではない） | red |
+| R6w | 結合 | `MetricsKit::measure_file_descriptors(&MetricKey::from_string(\"metrics-kit\").child(\"file-desc\"))` の後の `registered_metrics()` を `ConsoleReporter::new(false)` で `report`。`cfg(unix)` では、テストが同じプロセスで `libc::getrlimit(libc::RLIMIT_NOFILE, ..)` を呼んで soft（`rlim_cur`）を読む（前提：`getrlimit` が0を返し、`/proc/self/fd` か `/dev/fd` の `read_dir` が成功すること。崩れていたら前提の崩れとして `panic!` する） | `cfg(windows)`: R6 と同じ出力と `Err`（`Unsupported`）。`cfg(unix)`: `Ok`。1行目は `-- FileDescriptorMetricSet$$anon$2 ` と `-` 45個。2〜7行目はキー順に `...-max`・`...-open`・`...-ratio` のキーと値の行。上限の値の行は `             value = ` の後がテストの読んだ soft の10進とちょうど一致する（1048576 のような数を決め打ちしない）。開数の値の行は `             value = ` の後が `^[0-9]+$`。比率の値の行は `             value = ` の後が `Double.toString` の形の `^[0-9]+\.[0-9]+(E-?[0-9]+)?$` で、`NaN` ではない（上限が大きいと `4.00543212890625E-5` のような指数表記になる。§2「ファイルディスクリプタ」） | red |
 | R7 | 単体 | `...-ratio` に `Ratio(f64::NAN)` だけ | `=== gauges: the ratio alone on a non-unix bean` の節。見出しは `-- FileDescriptorRatioGauge ` と `-` 52個 | red |
 | R8 | 結合 | `metrics-kit.a-empty`（何も足さない）、`b-tiny`（0 を9999個と 1）、`c-quarter`（0 を3個と 25）、`d-whole`（0 と 4）、`e-eighth`（0 を7個と 1）の `AveragingGauge` | ゲージの節は `.expected` の `=== averaging gauges` と同じ（`NaN`、`1.0E-4`、`6.25`、`2.0`、`0.125`）。平均ゲージの節はキー順で `avg = NaN`、`avg = 0.00`、`avg = 6.25`、`avg = 2.00`、`avg = 0.13` | red |
-| R9 | 結合 | `metrics-kit.` + U+E000 に 1、`metrics-kit.` + U+1F600 に 2 の `AveragingGauge` | 2つの節のどちらも U+1F600 のキーが先（ゲージの節は `.expected` の `=== key order` と同じ。平均ゲージの節もキー順で U+1F600 が先） | red |
+| R9 | 結合 | キーは `MetricKey::from_string(\"metrics-kit\").child(\"\u{E000}\")` と `MetricKey::from_string(\"metrics-kit\").child(\"\u{1F600}\")`（`from_string(\"metrics-kit.\u{E000}\")` は `.` を `-` に整形するので使わない。I1）。前者に 1、後者に 2 を足した `AveragingGauge` を `average_gauge` で作り、`ConsoleReporter::new(false)` で `report` | 2つの節のどちらも U+1F600 のキーが先（ゲージの節は `.expected` の `=== key order` の節（75〜88行）のゲージの部分（76〜80行）と同じ。平均ゲージの節もキー順で U+1F600 が先） | red |
 | R10 | 単体 | タイマーの読み `(ops, elapsed_nanos)` を `metrics-kit.t1-ms` (10, 1234567)、`t2-zero` (10, 0)、`t3-unstopped` (10, −123456789012345)、`t4-no-ops` (0, 1000)、`t5-no-ops-zero` (0, 0) | キー順に、`=== timers` の節の各4行（例: `              time = 1.235 ms`、`             ops/s = 8100.01`、`               avg = 123.5 μs`、`             ops/s = Infinity`、`              time = -1.235e+14 ns`、`             ops/s = -0.00`、`               avg = -1.235e+13 ns`、`               avg = 1.068e+05 d`、`             ops/s = NaN`）。見出しは `-- KnownOpsInTimespanTimer ` と `-` 53個 | red |
 | R11 | 単体 | `metrics-kit.t6-unstopped-no-ops` に (0, −123456789012345) | 見出し、キー、`               ops = 0`、`              time = -1.235e+14 ns`、`             ops/s = -0.00` まで書き、`render` は `Err`（`io::ErrorKind::InvalidInput`）を返す（`=== a timer whose avg is Long.MinValue`） | red |
-| R12 | 結合 | `Arc<MetricsKit>` を `with_output` で作り、出力先の `Write` が最初の `write` で同じ kit に `metrics-kit.late` の `AveragingGauge` を登録する。先に `metrics-kit.avg-size` を登録してから `report_and_clear_metrics()` | 後の `registered_metrics()` のキーは `["metrics-kit.late"]` だけ（報告の間の登録は残る。原典との違いは §2「原典と違う点」）。kit への参照は `Weak` で持たせ、循環させない | 緑のまま |
-| R13 | 結合 | `KnownOpsInTimespanTimer::new(10)` を止めずに `Metric::KnownOpsInTimespanTimer` で `report` | 4行が `               ops = 10`、`time` の行が `^              time = -[1-9]\.[0-9]{3}e\+18 ns$`、`             ops/s = -0.00`、`avg` の行が `^               avg = -[1-9]\.[0-9]{3}e\+17 ns$` に合う（開始時刻の読みは UNIX 時刻のナノ秒。2286年まで指数は18） | red |
-| R14 | 結合 | `KnownOpsInTimespanTimer::new(10)` を `stop()` してから `report` | `ops = 10`。`time` と `avg` の行は、`= ` の後が「数字4つと `.` 1つからなる値（`1.235`、`12.35`、`123.5`、`0.000` の形）、空白、`ns`・`μs`・`ms`・`s`・`min`・`h` のいずれか」で、`ops/s` の行は `= ` の後が `[0-9]+\.[0-9]{2}` か `Infinity`（経過0のとき）。この3つを1つの述語にして1つの `assert!` で確かめる | red |
+| R12 | 結合 | 設定は `MetricsKitSettings::default()`（`scheduled_report_interval` が0なので定期報告のスレッドは起動しない）。kit は `Arc::new_cyclic(\|weak\| MetricsKit::with_output(settings, Box::new(RegisteringOutput { kit: weak.clone(), registered: false, bytes })))` で作る（`Weak<MetricsKit>` を構築の前に得る）。`RegisteringOutput` の `write` は、最初の呼び出しだけ `kit.upgrade()` で得た kit に `average_gauge(&MetricKey::from_string(\"metrics-kit\").child(\"late\"))` を呼び、`buf` を `bytes` に足す。先に `metrics-kit.avg-size` を登録してから `report_and_clear_metrics()` | 後の `registered_metrics()` のキーは `[\"metrics-kit.late\"]` だけ（報告の間の登録は残る。原典との違いは §2「原典と違う点」、直すのは #339）。kit への参照は `Weak` で持たせ、循環させない | 緑のまま |
+| R13 | 結合 | `b` = 構築の直前の `SystemTime::now().duration_since(UNIX_EPOCH)` のナノ秒、`KnownOpsInTimespanTimer::new(10)`、`a` = 構築の直後の同じ値（前提：`10^18 <= b <= a <= i64::MAX`、すなわち 2001-09-09 から 2262-04-11 の間。外れたら前提の崩れとして `panic!` する）。止めずに `Metric::KnownOpsInTimespanTimer` で `ConsoleReporter::new(false)` の `report` | 4行が `               ops = 10`、`time` の行、`             ops/s = -0.00`、`avg` の行。`time` の行は `^              time = -([1-9]\.[0-9]{3})e\+18 ns$` に合い、取り出した `-m × 10^18` を `t` とすると `-a - 5×10^14 <= t <= -b + 5×10^14`（4桁に丸めた幅）。`avg` の行は `^               avg = -([1-9]\.[0-9]{3})e\+17 ns$` に合い、`-m × 10^17` を `v` とすると `-a/10 - 5×10^13 <= v <= -b/10 + 5×10^13` | red |
+| R14 | 結合 | `KnownOpsInTimespanTimer::new(10)` を `stop()` してから `ConsoleReporter::new(false)` で `report` | 4行が `               ops = 10`、`time`、`ops/s`、`avg` の順。`time` の行は `              time = ` の後が `PrettyDurationInput::Finite(timer.elapsed().unwrap()).pretty()`（`fraktor_actor::kernel::pretty_duration::PrettyDurationInput`）とちょうど一致する。`avg` の行は `               avg = ` の後が `PrettyDurationInput::Finite(Duration::from_nanos(timer.avg_duration_nanos().unwrap() as u64)).pretty()` とちょうど一致する（`ops` が10で経過が非負なので `avg` は非負）。単位は `ns`・`μs`・`ms`・`s`・`min`・`h`・`d` のどれでもよく、`1000 μs`（999.96 μs の4桁）や `1.068e+05 d` の形も含む。`ops/s` の行は `             ops/s = ` の後が `^([0-9]+\.[0-9]{2}\|Infinity)$` に合い、数なら `timer.ops_per_second().unwrap()` との差が 0.005 以下 | red |
 | R15 | 結合 | `HdrHistogram::new(100_000_000, 4, "ns")` に 0〜4 を1回ずつ、`verbose = true` | `=== HdrHistogram: 0..4, verbose` の節。9行と、分布の見出し・空行・15行・`#[` の3行。分布の部分の区切りは常に `"\n"`、それ以外は `NL` | red |
 | R16 | 結合 | R15 と同じで `verbose = false` | 9行だけで、`       Value     Percentile TotalCount 1/(1-Percentile)` の行が無い。`count` と `median` の行も無く、`stddev` の行に単位が無い | red |
 | R17 | 結合 | 空の `HdrHistogram`、`verbose = true` | `=== HdrHistogram: empty, verbose` の節（`min = 0 ns` … `99.9% <= 0 ns`、分布は見出し・空行・`#[` の3行だけ） | red |
@@ -752,6 +829,62 @@ issue #299 の「あわせて」の2点は、PR #306（`68a48a7`、コミット 
 | R22 | 結合 | `HdrHistogram` だけを登録 | `-- ` で始まる行がちょうど1つ（`-- HdrHistogram`）で、`-- AveragingGauge`・`-- KnownOpsInTimespanTimer`・`-- FileDescriptor` で始まる行が無い。出力の末尾は `NL` + `NL` | red |
 | R23 | 結合 | いつも失敗する `Write` | `report` は `Err` を返す | 緑のまま |
 
-書式の関数（`Double.toString`、HALF_UP の固定小数、負を受ける `%.4g`）は、上の項目の期待の文字列で決まる。別に関数だけを確かめる項目を足すなら、`0.125` の2桁が `0.13`、`-0.0` の2桁が `-0.00`、`f64::INFINITY` の2桁が `Infinity`、`1.0e-4` の `Double.toString` が `1.0E-4`、`2.0` が `2.0`、−1.23456789012345e14 の4桁の `%g` が `-1.235e+14` を入れる。
+書式の関数（`Double.toString`、HALF_UP の固定小数、負を受ける `%.4g`）は、上の項目の期待の文字列で決まる。別に関数だけを確かめる項目を足すなら、`0.125` の2桁が `0.13`、`-0.0` の2桁が `-0.00`、`f64::INFINITY` の2桁が `Infinity`、`1.0e-4` の `Double.toString` が `1.0E-4`、`2.0` が `2.0`、−1.23456789012345e14 の4桁の `%g` が `-1.235e+14` を入れる。ファイルディスクリプタの比率の `Double.toString` では、`4.0 / 1048576.0` が `3.814697265625E-6`、`42.0 / 1048576.0` が `4.00543212890625E-5`、`4.0 / 9223372036854775807.0` が `4.336808689942018E-19` を入れる（原典の JVM で確かめた値。§2「ファイルディスクリプタ」）。上限の読み `Max(Some(9223372036854775807))` の値の行は `             value = 9223372036854775807` である。
 
 既存のテストとの関係。`metrics_kit_edge_case_test.rs` の `an_unstopped_timer_has_no_elapsed_time`（公開の口が `None`）と、`metrics_kit_review_followup_test.rs` の `report_and_clear_keeps_the_metrics_when_the_output_fails` は、この設計でも変わらない。報告の文字列の中身を確かめている既存のテストは、`output.text().matches("metrics-kit.avg-size")` のようにキーの文字列だけを見ているので、形が変わっても落ちない見込みである（第2段で確かめる）。
+
+### 本番の担当への申し送り
+
+テストではなく、本番のコードと rustdoc の担当（muse）への申し送りである。#299 の設計の3回目の改訂で見つかったもので、公開の型は変わらない。
+
+1. **出力のロックの契約の rustdoc。** `metrics_kit_value.rs` 149〜154行（ed9fba5）の文書を、§2「出力のロックの契約」に合わせる。対象を「書き手のロックを持っているスレッド」に限り（ほかのスレッドが持つことは禁じない）、`report_metrics()` と `report_and_clear_metrics()` を加え、`with_output` の書き手が `write` の中で取るロック（共有のバッファの `Mutex` など）も含める。`report_metrics`（300〜307行）・`report_and_clear_metrics`（309〜320行）・`shutdown_metrics`（329〜336行）・`with_output`（167行）の文書にも、同じ契約への参照を置く。
+2. **ファイルディスクリプタの開数。** `file_descriptor_gauge.rs` 66〜69行（ed9fba5）の `read_dir` の要素数から、読み取りに使ったディスクリプタの1本を引く（§2「ファイルディスクリプタ」）。ライブラリは `setrlimit` を呼ばない（いまも呼んでいない）。
+3. **未停止のタイマーの開始時刻の読み。** これから足す非公開の読みでは、`as_nanos()` から `i64` へ `i64::try_from(..).unwrap_or(i64::MAX)` で飽和させる（§2「未停止のタイマー」）。
+
+
+## 16. 改訂（2026-11-28、3回目）：敵対的な読みと #340 への対応
+
+77c2acf の設計と `.qnt` に対する敵対的な読み（DS41F、2026-11-28）を、1件ずつ原典・本番のコード・実測で確かめてから直した。あわせて #340 の結果と元帥の決定（#340 のコメント、2026-11-28）を入れた。表の行番号は 77c2acf のものである（この改訂で行がずれた）。§12 と §14 は前の改訂の記録であり、書き換えない。
+
+| 指摘 | 対応 | 確かめたことと直した場所 |
+|:---|:---|:---|
+| 1-1 §10 の境界値が「記録できる」と読める | 採る | I4・§4 と同じく、`134_217_727` と `100_000_001` は記録でき、`134_217_728` と負の値は範囲外と書き分けた（§10 の 3.） |
+| 1-2 百分位の「参考値」と R15〜R19 の完全一致 | 採る | 204行を、#299 で百分位を原典と完全に一致させる文に直した（§2「ヒストグラムの実装方法」） |
+| 1-3 I2・P4 と measure_file_descriptors の再呼出 | 採る | 原典 `MetricsKitOps.scala` 38・47・64〜66行は `getOrRegister`、106行は `registerAll`。I2・P4 を `getOrRegister` の3メソッドに限り、`measure_file_descriptors` は種類によらず `InvalidArgument`（`metrics_kit_value.rs` 288〜291行）と書いた |
+| 1-4 「registerAll と同じく一括」と I8 の全か無か | 採る | `MetricRegistry.java` 595〜603行は1件ずつ `register`（164〜169行）。判断4と I8 を原典どおりの説明に直し、全か無かを「原典と違う点」に足した。直すには既存のテスト（`measuring_file_descriptors_registers_all_or_nothing`）を変えるので、設計には書かず報告に上げた |
+| 1-5 §13 の「2行だけ」 | 採る | 文を置き換え、もとの文を括弧で残した（§13） |
+| 1-6 判断5の「種類が違う場合にも検証と構築と登録」 | 一部を採る | 原典 `MetricsKit.scala` 170〜172行は、種類の衝突のメッセージのために名前渡しの `metric` を評価するので、衝突でも構築（検証）はする。誤りは「登録」だけである。判断5を原典どおりに直した。本番（263〜273行）は衝突で検証しないので原典と違う。返るエラーの列挙子が変わるので、設計には書かず報告に上げた |
+| 1-7 §6 の「単体テストが render で」 | 採る | 単体と結合の両方の口で確かめると直した（§6） |
+| 1-8 §2 の「計測のモジュールは無い」「依存は fraktor-actor だけ」 | 採る | 第1段（b591452）の記録と明記し、いまの13ファイルと `Cargo.toml` 9〜15行の依存を書いた |
+| 1-9 220行の HEAD 74cff4c | 採る | HEAD の SHA は書かず、「ed9fba5 の上に文書と `.qnt` だけ」を `git diff --name-only ed9fba5` で確かめる形にした |
+| 1-10 251〜253行のファイル名の省略 | 採る | `PekkoConsoleReporter.scala` を足した |
+| 1-11 433行の「比率は NaN と書く」 | 採る | 比率まで書き進んだときだけと限り、3つでは上限で止まることを書いた（`.expected` 39〜42行） |
+| 1-12 158行の「即座に止める」 | 採る | 停止を求めて終わるまで待つ、と境界の節に合わせた |
+| 2-1 開始時刻の i64 と「2286年」 | 採る | `i64::MAX` ナノ秒は 2262-04-11。`i64::try_from` で飽和させ、指数18の範囲を 2001-09-09〜2262-04-11 と書いた（§2「未停止のタイマー」、R13） |
+| 2-2 `iter_recorded()` の値と件数 | 採る | `value_iterated_to()`（上端）と `count_at_value()` を使い、中点は `median_equivalent` と書いた（hdrhistogram 7.6.0 `src/iterators/mod.rs` 114・137・226〜228行） |
+| 2-3 出力のロックの契約は誰に対してか | 採る | `.qnt` の待ちの輪で確かめた。行き詰まるのは、書き手のロックを持つスレッド自身が停止・ドロップ・報告をする場合だけで、別のスレッドが持つのは遅れだけである。494行の「停止する呼び出し側」が近いが報告が抜けており、本番の文書（149〜154行）は全員に禁じて広すぎる。正しい契約を §2「出力のロックの契約」に書き、本番の文書の直しを申し送った |
+| 2-4 R6w の unix 側が OS の読み取りの成功を前提にする | 採る | 前提（`getrlimit` と `read_dir` の成功）をテストが確かめて `panic!` する形にした（R6w） |
+| 2-5 `with_output` の書き手と `StdoutLock` | 採る | 書き手のロックを `new` の `StdoutLock` と `with_output` の書き手のロックに分けて契約に書き、`.qnt` の `writer` にした |
+| 2-6 R14 が `d` と指数表記を落とす | 採る | `PrettyDuration.scala` 75〜83行は `d` を持つ。JVM で `%.4g` の 999.96 が `1000`、`1.0e5` が `1.000e+05` になることを確かめ、R14 を公開の `PrettyDurationInput` との一致に直した |
+| 3-1 R9 のキーの作り方 | 採る | `from_string("metrics-kit").child(..)` と書いた |
+| 3-2 単体テストの区切り | 採る | 共通の約束に、単体は `"\n"`、R21 だけ `"\r\n"` と書いた |
+| 3-3 R12 の `Weak` の注入と間隔0 | 採る | `Arc::new_cyclic` と `MetricsKitSettings::default()` を書いた |
+| 3-4 R6w の期待が OS で変わる | 採る | 上限はテストが読んだ soft と一致、開数と比率は形、とした |
+| 3-5 R13 の期待が時計に依存 | 採る | 構築の前後の時計から期待の範囲を決める形にした |
+| 3-6 R14 の述語 | 採る | 2-6 と同じ |
+| 3-7 R2 の読みの入力 | 採る | 6つの読みと、名前ごとの1行目を書いた |
+| 4-(a) 壊した版 | 採る | 作り直したモデルで13版を作り、すべて違反した。スクリプトを置いた（§6） |
+| 4-(b) 各 action | 採る | 14の action の本数を数え直した（§6） |
+| 4-(c) `outputLock` が2つのロックを1つに写す | 採る | `outputMutex` と `writerLock` に分け、書き手の種類を `writer` にした。対応表を作り直した（§6） |
+| 4-(d) 行き詰まりを検査していない、反例 | 採る（反例は一部訂正） | 行き詰まりを待ちの輪 `deadlocked` として定義し、`noDeadlock` を足した。止まっているスレッドはロックを手放せない形にした。反例そのものは、A と D が別のスレッドなら A が手放せるので遅れであり、D 自身が持つときに行き詰まる。どちらも run にした（§6） |
+| 5-1〜5-5 回答表と本文の食い違い | 採る | 1-5、1-9・1-10、2-1、2-3・4、1-7 の直しで本文を回答表に合わせた |
+
+#340 から入れたこと（元帥の決定の条件の (1)〜(4) と書式）。
+
+- (1) 「原典の JVM は HotSpot の `MaxFDLimit` で soft を上げるので、同じ環境でも値が違う。Pekko の振る舞いは soft を返すことで、それは写している」を §2「ファイルディスクリプタ」と「原典と違う点」に書いた。210〜212行の `u64::MAX` の前提を、macOS の `2^63 - 1` と Linux では無制限にできないことに直した。210行の開数は、原典が読み取りの1本を数えないので1を引くと直した（本番は申し送り）。
+- (2) ライブラリはプロセスの rlimit を書き換えない、と書いた。
+- (3) 試験はその環境の `getrlimit` の soft と一致を確かめ、数を決め打ちしない（R6w）。
+- (4) 台帳は JVM の環境の違いとして記録し、移植済みに数える（§7）。
+- 比率が 0.001 未満のときは、原典どおり `Double.toString` の指数表記にする（§2「ファイルディスクリプタ」、書式の例は §15）。
+
+読みに無かったが、`.qnt` を作り直して見つかったこともある。書き手のロックを持つスレッドが `report_metrics()` を呼ぶと、停止が無くても、報告スレッドとの間でロックの順が逆になって行き詰まる。前の版の §6 (d) は、これを「`StdoutLock` は再入できる」として範囲の外に置いていたが、誤りだった。契約に `report_metrics()` と `report_and_clear_metrics()` を足した（§2「出力のロックの契約」）。
