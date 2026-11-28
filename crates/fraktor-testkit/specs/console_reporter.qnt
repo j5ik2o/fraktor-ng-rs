@@ -24,8 +24,9 @@
 // output, whose lock is the re-entrant StdoutLock that any thread can also
 // take; a writer given to with_output may take a lock that callers can hold
 // (a shared buffer behind a Mutex, which is not re-entrant) or none. The
-// contract of the public documentation is that a thread does not stop the
-// kit, drop it, or report through it while it holds the writer's lock.
+// contract of the design (docs/design/issue-183-metrics-kit.md §2 "出力のロックの
+// 契約") is that a thread does not stop the kit, drop it, or report through it
+// while it holds the writer's lock.
 // `contract` turns the contract on (the default `init`) or off (the runs that
 // show the deadlocks it prevents); `deadlocked` is a cycle of waits, defined
 // apart from the guards.

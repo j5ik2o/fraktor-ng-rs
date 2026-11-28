@@ -172,7 +172,7 @@ impl Drop for MetricsKit;                        // shutdown_metrics 未呼出�
 2. **`timed_with_known_ops` の `finally` は、ドロップするガードで表す。** Rust では、クロージャがパニックするとスタックの巻き戻しでその後のコードは実行されないため、明示の呼び出し順序だけでは `finally` を保証できない。そこで、`metrics_kit_value.rs` の中だけに置く非公開の RAII ガード（タイマーへの参照を持ち、`Drop` で `stop()` を呼ぶ）を使い、ガードを `run()` の呼び出しの前から関数の終わりまでのスコープに置く。通常の戻りでもパニックの伝播中でも、スコープを抜けるときに必ず `stop()` が呼ばれる。ガードは `Drop` に頼るため、クロージャに `UnwindSafe` の制約は課さない。パニック時に止まることは単体テストで確かめる対象として §10 に挙げる。
 3. **キーの `/` は名前付きのメソッド `child` にする。** Scala の演算子 DSL を Rust の `Div` 実装で真似ることはしない。キーの整形規則そのものは原典どおりに写す（§4）。
 4. **登録キーの生成規則はメソッドごとに原典どおりにする。** `hdr_histogram` は、引数のキーに `"hdr-histogram"` を繋いだキー（例：`metrics-kit.hist.hdr-histogram`）で登録する（原典 `MetricsKitOps.scala` の `(key / "hdr-histogram")`）。そのため、同じキーで `average_gauge` と `hdr_histogram` を両方呼んでも衝突しない。`measure_file_descriptors` は、引数のキーに `"file-descriptors"` を繋いだ接頭辞の下に、`file-descriptors.open`・`file-descriptors.max`・`file-descriptors.ratio` を繋いで整形した3キーで登録する（ケース1の項の実例を参照）。同じキーでの再呼出は、同種でも再利用せずエラーにする。原典の `registerAll`（`MetricRegistry.java` 595〜603行）は1件ずつ `register` を呼び、`register` は既存の名前なら `IllegalArgumentException("A metric named " + name + " already exists")` を投げる（164〜169行）からである。`getOrRegister` を使う他の3つのメソッド（`average_gauge`・`timed_with_known_ops`・`hdr_histogram`）とはここが違う（I2）。原典は1件ずつ登録するため、途中のキーが衝突すると、それより前に登録したキーは残る（全か無かではない）。Rust（`metrics_kit_value.rs` 282〜298行（ed9fba5））は登録の前に3キーを全件検査し、1件も登録せずに `MetricsError::InvalidArgument` を返す（I8）。この全か無かは原典と違う（§2「原典と違う点」）。
-5. **`hdr_histogram` の再取得は、引数の検証より先にレジストリを引く。** 原典の `getOrRegister` は名前渡し（遅延評価）であり、既存のキーがある場合は新しいヒストグラムを構築しない。Rust でも、導出したキーで先にレジストリを照会し、同種の既存ハンドルがあれば、引数（最大値・有効数字・単位）を検証せずにそのハンドルを返す。既存が無い場合は、検証と構築と登録を行う。種類の違う既存がある場合、原典は登録をしないが、構築はする。衝突のメッセージに新しく作ろうとした計測のクラス名を使うため（`MetricsKit.scala` 170〜172行の `metric.getClass`）、名前渡しの `metric` がここで評価されるからである。そのため、引数が不正なら、衝突の例外より先に HdrHistogram の構築子の `IllegalArgumentException` が出る。Rust の `hdr_histogram`（`metrics_kit_value.rs` 263〜273行（ed9fba5））は、種類の違う既存があると検証も構築もせずに `KindConflict` を返す。引数が不正で、かつキーに別の種類があるときだけ、返るエラーが原典と違う（§2「原典と違う点」）。
+5. **`hdr_histogram` の再取得は、引数の検証より先にレジストリを引く。** 原典の `getOrRegister` は名前渡し（遅延評価）であり、既存のキーがある場合は新しいヒストグラムを構築しない。Rust でも、導出したキーで先にレジストリを照会し、同種の既存ハンドルがあれば、引数（最大値・有効数字・単位）を検証せずにそのハンドルを返す。既存が無い場合は、検証と構築と登録を行う。種類の違う既存がある場合、原典は登録をしないが、構築はする。衝突のメッセージに新しく作ろうとした計測のクラス名を使うため（`MetricsKit.scala` 170〜172行の `metric.getClass`）、名前渡しの `metric` がここで評価されるからである。`HdrHistogram` は構築のときに Java の `Histogram` を作る（`HdrHistogram.scala` 34行）ので、引数が不正なら、衝突の例外より先に HdrHistogram の構築子の `IllegalArgumentException` が出る。Rust の `hdr_histogram`（`metrics_kit_value.rs` 263〜273行（ed9fba5））は、種類の違う既存があると検証も構築もせずに `KindConflict` を返す。引数が不正で、かつキーに別の種類があるときだけ、返るエラーが原典と違う（§2「原典と違う点」）。
 6. **`getOrRegister` の種類の衝突は型付きのエラーにする。** 原典のメッセージは `Key: [%s] is already for different kind of metric! Was [%s], expected [%s]` であるが、`Was` に渡されているのは新しく作ろうとした計測のクラスであり、名前が示す「既存の種類」ではないという原典側の取り違えがある。Rust では `MetricsError::KindConflict { key, existing, requested }` とし、`Display` にはキーと両方の種類名を含める。文面の完全一致は原典の検査対象ではないため、取り違えは写さない。
 
 ### 設定（HOCON を写す部分）
@@ -480,7 +480,7 @@ fn render(readings: &[(String, MetricReading)], verbose: bool, line_separator: &
 確かめる口は2つになる。
 
 - **単体テスト**（`console_reporter.rs` に `#[cfg(test)] #[path = "console_reporter_test.rs"] mod tests;` を置く、このクレートの慣例の形）は、読みを手で作って `render` を呼ぶ。ファイルディスクリプタの値（42・1024・0.041015625、非 unix の `None`）とタイマーの経過時間（0、1,234,567、負の値）を注入でき、期待の文字列を完全一致で比べられる。区切りも `"\n"` と `"\r\n"` の両方を渡せる。
-- **結合テスト**（`crates/fraktor-testkit/tests/` の新しいファイル）は、公開の `ConsoleReporter::new(verbose)` と `report(&self, metrics: &BTreeMap<String, Metric>, output: &mut dyn Write) -> io::Result<()>`（`console_reporter.rs` 38・49行（ed9fba5））と `Vec<u8>` で動かす。値が入力で決まる `AveragingGauge` と `HdrHistogram` は完全一致で、OS と時計を読む `FileDescriptorGauge` と `KnownOpsInTimespanTimer` は形だけで比べる。
+- **結合テスト**（`crates/fraktor-testkit/tests/` の新しいファイル）は、公開の `ConsoleReporter::new(verbose)` と `report(&self, metrics: &BTreeMap<String, Metric>, output: &mut dyn Write) -> io::Result<()>`（`console_reporter.rs` 38・49行（ed9fba5））と `Vec<u8>` で動かす。値が入力で決まる `AveragingGauge` と `HdrHistogram` は完全一致で比べる。OS と時計を読む項目は、テストが同じ値を自分で読んで期待を決める。ファイルディスクリプタの上限はテストが読んだ `getrlimit` の soft と完全一致、開数と比率は形で比べる（R6w）。止めたタイマーの `time` と `avg` は公開の `elapsed()`・`avg_duration_nanos()` から `PrettyDurationInput` で作った文字列と完全一致、`ops/s` は形と差で比べる（R14）。止めていないタイマーは、構築の前後に読んだ時計から決めた範囲で比べる（R13）。
 
 `with_output` は `MetricsKit` 側に既にあり（`metrics_kit_value.rs` 168行（ed9fba5））、`ConsoleReporter` には足さない。
 
@@ -497,8 +497,8 @@ Rust で同じにできないもの、または直すのに公開 API の判断�
 | ファイルディスクリプタの上限の値（JVM の環境の違い） | Pekko の振る舞いは soft を返すことであり、Rust はそれを写す。原典の JVM は起動時に HotSpot の `MaxFDLimit` でプロセスの soft を上げるので、同じ環境でも値が違う（soft が 1024 や無制限でも 1048576 になる）。これは JVM が自分のプロセスにすることで、ライブラリはプロセスの rlimit を書き換えない（元帥の決定、#340、2026-11-28）。直さない | `FileDescriptorMetricSet.scala` 51〜53・58〜59行、JDK `OperatingSystemImpl.c` 357〜368行、HotSpot `os_bsd.cpp` 2051行・`os_linux.cpp` 4572行 |
 | ファイルディスクリプタの開数（本番） | 原典の JDK は読み取りに使う自分のディスクリプタを数えない。設計は1を引いて同じにするが、いまの本番（`file_descriptor_gauge.rs` 66〜69行（ed9fba5））は1多い。公開の型は変わらない。本番の担当へ申し送る（#299 の範囲に入れるかは中将が決める） | JDK `OperatingSystemImpl.c` 306〜311・352〜353行 |
 | `FileDescriptorGauge::value()` の上限の型 | 公開の口は `f64` を返すので、macOS の無制限（`2^63 - 1`）は `2^63` に丸まる。報告は `u64` の読みから10進で書くので原典と同じ。公開の口を直すには型の変更が要るので、設計には書かず報告に上げた（直す issue は中将が立てる） | `FileDescriptorMetricSet.scala` 38〜39行（`Gauge[Long]`） |
-| `measure_file_descriptors` の衝突 | 原典の `registerAll` は1件ずつ登録するので、途中のキーが衝突すると前のキーが残る。Rust は事前の全件検査で1件も登録しない（I8）。エラーの文面も原典（`A metric named ... already exists`）と違う。既存のテスト `metrics_kit_edge_case_test.rs` の `measuring_file_descriptors_registers_all_or_nothing`（295〜312行（ed9fba5））が全か無かを固定しているので、直すにはテストを変えるので、設計には書かず報告に上げた（直す issue は中将が立てる） | `MetricRegistry.java` 164〜169・595〜603行 |
-| `hdr_histogram` の種類の衝突と不正な引数 | 原典は種類の衝突でも構築するので、引数が不正なら構築子の例外が先に出る。Rust は検証せずに `KindConflict` を返す。返るエラーの列挙子が変わるので、設計には書かず報告に上げた（直す issue は中将が立てる） | `MetricsKit.scala` 165〜175行、`MetricsKitOps.scala` 59〜66行 |
+| `measure_file_descriptors` の衝突 | 原典の `registerAll` は1件ずつ登録するので、途中のキーが衝突すると、反復の順でそれより前のキーが残る。Rust は事前の全件検査で1件も登録しない（I8）。エラーの文面も原典（`A metric named ... already exists`）と違う。既存のテスト `metrics_kit_edge_case_test.rs` の `measuring_file_descriptors_registers_all_or_nothing`（295〜312行（ed9fba5））は、`...-max` を先に登録してから呼び、レジストリが `...-max` だけであることを確かめる。原典の `FileDescriptorMetricSet.scala` 35〜40行の3要素の `Map` を挿入の順（open、max、ratio）に反復するなら、原典では `...-open` が残るので、このテストは原典と違う結果を固定している（反復の順は Scala の小さい `Map` の性質から読んだもので、実行では確かめていない）。直すとテストを変えることになるので、設計には書かず報告に上げた（直す issue は中将が立てる） | `MetricRegistry.java` 164〜169・595〜603行 |
+| `hdr_histogram` の種類の衝突と不正な引数 | 原典は種類の衝突でも構築するので、引数が不正なら構築子の例外が先に出る。Rust は検証せずに `KindConflict` を返す。返るエラーの列挙子が変わるので、設計には書かず報告に上げた（直す issue は中将が立てる） | `MetricsKit.scala` 165〜175行、`MetricsKitOps.scala` 59〜66行、`HdrHistogram.scala` 34行 |
 | `report_and_clear_metrics` の並行の登録 | 原典は `reportMetrics(); clearMetrics()` であり、報告の間に登録された計測も消す。Rust は取り出した計測だけを消し、報告の間の登録を残す。出力の失敗で取り出した計測を戻すのは、原典の `PrintStream` が書き込みの失敗を投げないため原典に対応する経路が無い。どちらも既存のテスト（`metrics_kit_review_followup_test.rs`）が固定している。直すのは #339 | `MetricsKit.scala` 96〜99行 |
 
 前の版がこの表に置いていた「ファイルディスクリプタの開数と上限の型」と「ファイルディスクリプタの見出しの名前」は、上の非公開の読みと見出しの決定で原典と同じになるため、表から外した。
@@ -640,8 +640,8 @@ quint-modeling の見直しの手順で読み、次の4つを確かめた。quin
 | モデル | 本番 |
 |:---|:---|
 | `console`・`positiveInterval` | `with_output` の `has_console` と `scheduled_report_interval > Duration::ZERO`（169・180行） |
-| `writer` | `new`（163〜165行）の書き手 `std::io::stdout()` は `ReentrantLock`。`with_output`（168行）は渡した書き手による。共有のバッファの `Mutex` を取るもの（`metrics_kit_edge_case_test.rs` 41〜62行（ed9fba5）の `CapturedOutput`）は `PlainLock`、ロックを取らないもの（`metrics_kit_review_followup_test.rs` 53〜63行（ed9fba5）の `FailingOutput`）は `NoSharedLock` |
-| `contract` | 公開 API の文書の契約（§2「出力のロックの契約」）。本番のコードは検査しない |
+| `writer` | `new`（163〜165行）の書き手 `std::io::stdout()` は `ReentrantLock`。`with_output`（168行）は渡した書き手による。共有のバッファの `Mutex` を取るもの（`metrics_kit_edge_case_test.rs` 41〜64行（ed9fba5）の `CapturedOutput`）は `PlainLock`、ロックを取らないもの（`metrics_kit_review_followup_test.rs` 53〜63行（ed9fba5）の `FailingOutput`）は `NoSharedLock` |
+| `contract` | この設計の契約（§2「出力のロックの契約」）。本番のコードは検査しない。いまの本番の rustdoc（149〜154行）は違う文面であり、直しは申し送った |
 | `thread` | 報告スレッドの閉包（182〜193行）。`Waiting` は `wait_timeout_while` の中、`Reporting` は `report_once`（192行）の中、`Finished` は `break`（189行）の後 |
 | `handle` | `ReporterThreadState`（31〜38行）。モデルの `Joined` は本番の `Finished` |
 | `stopFlag`・`stopLock` | `stop_requested: Mutex<bool>`（46行）とそのロック |
@@ -656,7 +656,7 @@ quint-modeling の見直しの手順で読み、次の4つを確かめた。quin
 | `holdTheWriter`・`releaseTheWriter` | 呼び出し側が `std::io::stdout().lock()` や共有のバッファの `Mutex` を取って返すこと（本番のコードには無い） |
 | `beginShutdown`・`beginDrop` | `shutdown_metrics`（334〜336行）と `Drop::drop`（339〜343行）から `stop_reporter_thread` に入るところ |
 | `setTheFlag`・`lookAtTheThread`・`joinReturn`・`waitReturn` | 95〜98行、99〜108行、110〜114行、104行の待ちからの戻り |
-| `beginShutdown`・`beginDrop`・`beginReport` の契約のガード | 公開 API の文書の契約。本番のコードは検査しない |
+| `beginShutdown`・`beginDrop`・`beginReport` の契約のガード | この設計の契約。本番のコードは検査しない |
 | `waitsFor`・`deadlocked` | 本番には無い。スレッドがどのロックやどのスレッドの終わりを待つかを、上の対応から定義したもの |
 
 **(d) 検査の大きさと、見られないもの。** スレッドは、`shutdown_metrics` と `report_metrics` を呼ぶ2本（A、B）、ドロップする1本（D）、報告スレッド（T）である。報告スレッドの報告は3回まで、`shutdown_metrics` の呼び出しは合わせて4回まで、呼び出し側の報告は合わせて2回まで、呼び出し側が書き手のロックを取るのは2回までで、1本の実行は20歩まで、10,000本の無作為の実行である（`scripts/quint-check-specs.sh` と同じ）。全探索ではなく、違反が無かったことは「調べた実行の中に反例が無かった」という意味である。
@@ -838,7 +838,7 @@ issue #299 の「あわせて」の2点は、PR #306（`68a48a7`、コミット 
 テストではなく、本番のコードと rustdoc の担当（muse）への申し送りである。#299 の設計の3回目の改訂で見つかったもので、公開の型は変わらない。
 
 1. **出力のロックの契約の rustdoc。** `metrics_kit_value.rs` 149〜154行（ed9fba5）の文書を、§2「出力のロックの契約」に合わせる。対象を「書き手のロックを持っているスレッド」に限り（ほかのスレッドが持つことは禁じない）、`report_metrics()` と `report_and_clear_metrics()` を加え、`with_output` の書き手が `write` の中で取るロック（共有のバッファの `Mutex` など）も含める。`report_metrics`（300〜307行）・`report_and_clear_metrics`（309〜320行）・`shutdown_metrics`（329〜336行）・`with_output`（167行）の文書にも、同じ契約への参照を置く。
-2. **ファイルディスクリプタの開数。** `file_descriptor_gauge.rs` 66〜69行（ed9fba5）の `read_dir` の要素数から、読み取りに使ったディスクリプタの1本を引く（§2「ファイルディスクリプタ」）。ライブラリは `setrlimit` を呼ばない（いまも呼んでいない）。
+2. **ファイルディスクリプタの開数（#299 の範囲に入れると中将が決めた場合）。** `file_descriptor_gauge.rs` 66〜69行（ed9fba5）の `read_dir` の要素数から、読み取りに使ったディスクリプタの1本を引く（§2「ファイルディスクリプタ」）。公開の `FileDescriptorGauge::value()` の開数も1小さくなるが、型は変わらず、開数の値を固定しているテストは無い（`crates/fraktor-testkit/tests` を検索して確かめた）。開数はテストのプロセスの中で変わるので、§15 の項目でも決定的には固定できず、R6w は形だけを見る。ライブラリは `setrlimit` を呼ばない（いまも呼んでいない）。
 3. **未停止のタイマーの開始時刻の読み。** これから足す非公開の読みでは、`as_nanos()` から `i64` へ `i64::try_from(..).unwrap_or(i64::MAX)` で飽和させる（§2「未停止のタイマー」）。
 
 
@@ -853,7 +853,7 @@ issue #299 の「あわせて」の2点は、PR #306（`68a48a7`、コミット 
 | 1-3 I2・P4 と measure_file_descriptors の再呼出 | 採る | 原典 `MetricsKitOps.scala` 38・47・64〜66行は `getOrRegister`、106行は `registerAll`。I2・P4 を `getOrRegister` の3メソッドに限り、`measure_file_descriptors` は種類によらず `InvalidArgument`（`metrics_kit_value.rs` 288〜291行）と書いた |
 | 1-4 「registerAll と同じく一括」と I8 の全か無か | 採る | `MetricRegistry.java` 595〜603行は1件ずつ `register`（164〜169行）。判断4と I8 を原典どおりの説明に直し、全か無かを「原典と違う点」に足した。直すには既存のテスト（`measuring_file_descriptors_registers_all_or_nothing`）を変えるので、設計には書かず報告に上げた |
 | 1-5 §13 の「2行だけ」 | 採る | 文を置き換え、もとの文を括弧で残した（§13） |
-| 1-6 判断5の「種類が違う場合にも検証と構築と登録」 | 一部を採る | 原典 `MetricsKit.scala` 170〜172行は、種類の衝突のメッセージのために名前渡しの `metric` を評価するので、衝突でも構築（検証）はする。誤りは「登録」だけである。判断5を原典どおりに直した。本番（263〜273行）は衝突で検証しないので原典と違う。返るエラーの列挙子が変わるので、設計には書かず報告に上げた |
+| 1-6 判断5の「種類が違う場合にも検証と構築と登録」 | 一部を採る | 原典 `MetricsKit.scala` 170〜172行は、種類の衝突のメッセージのために名前渡しの `metric` を評価し、`HdrHistogram.scala` 34行は構築のときに Java の `Histogram` を作るので、衝突でも構築（検証）はする。誤りは「登録」だけである。判断5を原典どおりに直した。本番（263〜273行）は衝突で検証しないので原典と違う。返るエラーの列挙子が変わるので、設計には書かず報告に上げた |
 | 1-7 §6 の「単体テストが render で」 | 採る | 単体と結合の両方の口で確かめると直した（§6） |
 | 1-8 §2 の「計測のモジュールは無い」「依存は fraktor-actor だけ」 | 採る | 第1段（b591452）の記録と明記し、いまの13ファイルと `Cargo.toml` 9〜15行の依存を書いた |
 | 1-9 220行の HEAD 74cff4c | 採る | HEAD の SHA は書かず、「ed9fba5 の上に文書と `.qnt` だけ」を `git diff --name-only ed9fba5` で確かめる形にした |
