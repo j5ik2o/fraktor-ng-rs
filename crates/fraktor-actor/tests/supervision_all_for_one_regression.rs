@@ -239,12 +239,29 @@ fn kill_stops_all_siblings_and_cannot_bypass_a_zero_restart_limit() {
     let reports: StopReports = Arc::new(Mutex::new(Vec::new()));
     let failing = child_under(&supervisor, reporting_props(Arc::clone(&reports)));
     let sibling = child_under(&supervisor, reporting_props(Arc::clone(&reports)));
-    failing.tell("Kill", spec.test_actor());
+    let sender = spec.test_actor();
+    failing.tell("Kill", sender.clone());
     spec.system_mut().run_until_idle();
     for child in [&failing, &sibling] {
       assert!(spec.system().is_actor_terminated(child));
-      assert!(reports.lock().unwrap().contains(&(child.path().to_string(), dead_letters.clone())));
     }
+    // Pekko v2.0.0 ActorCell.scala:572,594,615-618 / FaultHandling.scala:100: the failed child sees the Kill sender.
+    let recorded = reports.lock().expect("the stop-report lock is not poisoned").clone();
+    let failing_path = failing.path().to_string();
+    let sibling_path = sibling.path().to_string();
+    let sender_of =
+      |path: &str| recorded.iter().find(|(self_path, _)| self_path == path).map(|(_, sender)| sender.clone());
+    let sender_path = sender.path().to_string();
+    assert_eq!(
+      sender_of(&failing_path).as_deref(),
+      Some(sender_path.as_str()),
+      "the failed child's stop hook sees the Kill sender"
+    );
+    assert_eq!(
+      sender_of(&sibling_path).as_deref(),
+      Some(dead_letters.as_str()),
+      "the sibling's stop hook sees dead letters"
+    );
     spec.terminate();
   }
 }
@@ -292,7 +309,8 @@ fn kill_restarts_all_siblings_when_permitted_and_stops_them_when_exhausted() {
   let first = child_under(&supervisor, counting_props(Arc::new(AtomicUsize::new(0)), Arc::clone(&reports), false));
   let second = child_under(&supervisor, counting_props(Arc::new(AtomicUsize::new(0)), Arc::clone(&reports), false));
 
-  first.tell("Kill", spec.test_actor());
+  let sender = spec.test_actor();
+  first.tell("Kill", sender.clone());
   spec.system_mut().run_until_idle();
   for child in [&first, &second] {
     let reply = child.ask("generation").await_result(default_timeout());
@@ -300,9 +318,9 @@ fn kill_restarts_all_siblings_when_permitted_and_stops_them_when_exhausted() {
   }
   let recorded = reports.lock().unwrap().clone();
   assert_eq!(recorded.len(), 2);
-  for child in [&first, &second] {
-    assert!(recorded.contains(&(child.path().to_string(), child.path().to_string())));
-  }
+  // Pekko v2.0.0 ActorCell.scala:572,594,615-618 / FaultHandling.scala:100: the failed child sees the Kill sender.
+  assert!(recorded.contains(&(first.path().to_string(), sender.path().to_string())));
+  assert!(recorded.contains(&(second.path().to_string(), second.path().to_string())));
 
   second.tell("Kill", spec.test_actor());
   spec.system_mut().run_until_idle();
