@@ -2,7 +2,7 @@
 
 原典 Apache Pekko v2.0.0（基準は `docs/baseline/README.md`）から fraktor がずれている点を、
 戻す前提で1か所に集めた一覧である。issue #311・#333・#335・#336・#337・#338・#339・#340・
-#345・#347・#348・#350・#351・#352・#353・#356・#357 と、設計
+#345・#347・#348・#350・#351・#352・#353・#356・#357・#361・#362 と、設計
 `docs/design/issue-183-metrics-kit.md`（ブランチ `wip/299-design`）の「原典と違う点」の節、
 `docs/design/issue-234-multithread-executor.md`（ブランチ `wip/300-stage4b-fix`）で
 「原典と違う」と書いてある行を写した。区分・原典の行・戻す段は issue に書いてあることを
@@ -38,3 +38,5 @@
 | 一時的（原典どおりに戻す） | `FileDescriptorGauge::value()` の型 | | 公開の `value()` が `f64` を返し、macOS の無制限の 2^63−1 が 2^63 に丸まる。報告は u64 の読みで書くので出力は原典と同じ（#299） | #353 | #299 の後に1件ずつ | open |
 | 一時的（原典どおりに戻す） | 状態タイマの印の照合（`state_timer_armed` のガード） | `FSM.scala`（行の記載なし） | `fsm.rs:965` が世代に加えて `state_timer_armed` のガードで照合する。世代の `+= 1` を落とす誤りが正の run でも不変条件でも見えなくなる（fsm_timing.qnt の変異の検査） | #356 | ずれを戻す列（`work/design-queue.md` の 6c、元帥の決定 2026-11-28：ほかの移植より先）。#300 のマージの後 | open |
 | 一時的（原典どおりに戻す） | `stopReason` が残っているあいだの `terminate` | `FSM.scala:934・888・940` | `terminate` が `stopReason` の残っている間も働き、原典より強い保証をしている。まだ走らせて確かめていない | #357 | ずれを戻す列（`work/design-queue.md` の 6c、元帥の決定 2026-11-28：ほかの移植より先）。#300 のマージの後 | open |
+| 一時的（原典どおりに戻す） | 止めたあとの `is_state_timer_active` | `FSM.scala:636・939` | 止めたあと `is_state_timer_active` を偽にする（本番の `FsmHandle::clear` と Quint の `stopActor`・`stoppedNeverArms`・変異 M13）。原典は `terminate` が `timeoutFuture` を cancel するだけで `None` にせず、真のまま残りうる。原典より強い。寄せるなら本番と Quint を一緒に直す（設計 §6.4 の 6） | #361 | ずれを戻す列（`work/design-queue.md` の 6c）。#357・#356 と一緒に | open |
+| 一時的（原典どおりに戻す） | 約248日を超えるタイマの期限 | `checkMaxDelay`（行の記載なし） | あふれない限り期限を受け付け、あふれたら黙って撃たない（`Duration::MAX` でも panic せず、撃たず、`is_timer_active` は真）。原典は約 248 日（Int の最大の tick）を超える期限を `IllegalArgumentException` で拒む | #362 | ずれを戻す列（6c）。#357・#356 と一緒に。#314 の P1 は `Duration::MAX` を入れない | open |
