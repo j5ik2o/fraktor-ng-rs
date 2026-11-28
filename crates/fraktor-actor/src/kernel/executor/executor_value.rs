@@ -291,8 +291,6 @@ struct DecisionInputs {
   /// The strategy the deciding parent applies to its children, when it
   /// keeps a table.
   governing: Option<SupervisorStrategy>,
-  /// The strategy the failed child applies to its own children.
-  own_strategy: Option<SupervisorStrategy>,
   /// The strategy the failed child was started under, or `None` when it
   /// inherits the deciding parent's.
   spawn_strategy: Option<SupervisorStrategy>,
@@ -311,9 +309,8 @@ enum Decision {
   /// says the strategy governs the whole set of siblings at once.
   Apply(Directive, SupervisorStrategy, bool),
   /// The chosen decider panicked, with the panic's message: the deciding
-  /// actor fails with it. The flag says the decider was the failed
-  /// child's own strategy, speaking for the child itself.
-  DeciderPanicked { message: String, from_child_strategy: bool },
+  /// actor fails with it.
+  DeciderPanicked { message: String },
 }
 
 /// One callback that the executor runs with the handle of a stopped actor.
@@ -2172,7 +2169,7 @@ impl Executor {
           cause_name: ACTOR_INITIALIZATION_CAUSE,
           message,
         };
-        self.handle_invoke_failure(cell, mailbox, failure, None, true);
+        self.handle_invoke_failure(cell, mailbox, failure, None);
       },
     }
   }
@@ -2335,7 +2332,7 @@ impl Executor {
         HANDLE_CHILD_TERMINATED_FAILED_MESSAGE,
       );
       let failure = Failure { child: self_ref.clone(), kind: FailureKind::MessageHandling, cause_name, message };
-      self.handle_invoke_failure(cell, mailbox, failure, None, true);
+      self.handle_invoke_failure(cell, mailbox, failure, None);
     }
     match next {
       | Some(WaitReason::Termination) => self.finish_terminate(cell),
@@ -3029,7 +3026,7 @@ impl Executor {
         cause_name: ACTOR_KILLED_CAUSE,
         message: ACTOR_KILLED_MESSAGE.to_string(),
       };
-      self.handle_invoke_failure(cell, mailbox, failure, None, true);
+      self.handle_invoke_failure(cell, mailbox, failure, None);
       self.receive_timeout_after(key, true, timeout_before);
       self.fire_due_timers();
       return Next::Continue;
@@ -3062,7 +3059,7 @@ impl Executor {
         }
         let failure =
           Failure { child: cell.self_ref(), kind: FailureKind::MessageHandling, cause_name: RUNTIME_CAUSE, message };
-        self.handle_invoke_failure(cell, mailbox, failure, None, true);
+        self.handle_invoke_failure(cell, mailbox, failure, None);
         Next::Continue
       },
     }
@@ -3489,17 +3486,12 @@ impl Executor {
   /// `perpetrator` names the child whose `Failed` the decider panicked
   /// on, when the failure is that panic; the caller leaves it empty for
   /// the actor's own failures, and the actor itself is recorded.
-  /// `tell_parent` is false for the one failure that has nowhere to be
-  /// told: a decider panic of the failed child's own strategy, met by a
-  /// deciding actor that has no parent — the suspend and the record
-  /// still happen, and the actor waits.
   fn handle_invoke_failure(
     &mut self,
     cell: &mut ActorCell,
     mailbox: &Mailbox<ActorCell>,
     failure: Failure,
     perpetrator: Option<ActorRef>,
-    tell_parent: bool,
   ) {
     let self_ref = cell.self_ref();
     mailbox.suspend();
@@ -3518,9 +3510,6 @@ impl Executor {
       if child != perpetrator {
         self.send_system(&child, SystemMessage::Suspend);
       }
-    }
-    if !tell_parent {
-      return;
     }
     match cell.parent() {
       | None => self.inline_decide(cell, failure, None),
@@ -3555,12 +3544,11 @@ impl Executor {
         let cause = RestartCause::of(&failure);
         self.apply_directive(Some(&self_ref), &failure, directive, &strategy, governing_all_for_one, cause);
       },
-      | Decision::DeciderPanicked { message, from_child_strategy } => {
+      | Decision::DeciderPanicked { message } => {
         let perpetrator = failure.child.clone();
-        let tell_parent = !(from_child_strategy && cell.parent().is_none());
         let own_failure =
           Failure { child: self_ref.clone(), kind: FailureKind::MessageHandling, cause_name: RUNTIME_CAUSE, message };
-        self.handle_invoke_failure(cell, mailbox, own_failure, Some(perpetrator), tell_parent);
+        self.handle_invoke_failure(cell, mailbox, own_failure, Some(perpetrator));
       },
     }
   }
@@ -3580,7 +3568,6 @@ impl Executor {
       | Some(parent) => self.decision_inputs(parent, &failure, self.function_refs.contains(parent)),
       | None => DecisionInputs {
         governing: None,
-        own_strategy: self.parent_entry(&failure.child).map(|entry| entry.strategy.clone()),
         spawn_strategy: Some(cell.strategy().clone()),
         count: self.entry(&failure.child).map_or(0, |entry| entry.restart_history.count()),
         escalation: self.is_escalation(&failure.child),
@@ -3610,9 +3597,8 @@ impl Executor {
 
   /// Reads what the decision for `failure` of a child in the table of
   /// `table_parent` is made from: the strategy the table's owner applies
-  /// to its children, the strategy the child applies to its own
-  /// children, the strategy the child was started under when it did not
-  /// inherit, and the restarts the child has used.
+  /// to its children, the strategy the child was started under when it
+  /// did not inherit, and the restarts the child has used.
   ///
   /// `parent_not_top` tells whether the deciding parent itself stands
   /// under a parent (an actor parent with a parent of its own, or a
@@ -3620,20 +3606,12 @@ impl Executor {
   /// started under decide for it.
   fn decision_inputs(&self, table_parent: &ActorRef, failure: &Failure, parent_not_top: bool) -> DecisionInputs {
     let governing = self.parent_entry(table_parent).map(|entry| entry.strategy.clone());
-    let own_strategy = self.parent_entry(&failure.child).map(|entry| entry.strategy.clone());
     let (count, spawn_strategy) =
       match self.parent_entry(table_parent).and_then(|entry| entry.child_record(&failure.child)) {
         | Some(record) => (record.history.count(), record.spawn_strategy.clone()),
         | None => (0, None),
       };
-    DecisionInputs {
-      governing,
-      own_strategy,
-      spawn_strategy,
-      count,
-      escalation: self.is_escalation(&failure.child),
-      parent_not_top,
-    }
+    DecisionInputs { governing, spawn_strategy, count, escalation: self.is_escalation(&failure.child), parent_not_top }
   }
 
   /// Chooses the directive for a failure from `inputs`, running a
@@ -3641,13 +3619,11 @@ impl Executor {
   ///
   /// The decider is the first of these that a caller installed: the
   /// decider of the strategy the deciding parent applies to its
-  /// children; the decider of the strategy the failed child applies to
-  /// its own children, unless the child's failure is an escalation, whose
-  /// decider already had its say when it panicked; and the decider of
-  /// the strategy the child was started under, when the deciding parent
-  /// stands under a parent itself, when the failure is an escalation, or
-  /// when the failure is of the child's start, which the strategy it was
-  /// started under answers for. With no decider chosen, the strategy the
+  /// children; and the decider of the strategy the child was started
+  /// under, when the deciding parent stands under a parent itself, when
+  /// the failure is an escalation, or when the failure is of the child's
+  /// start, which the strategy it was started under answers for. With no
+  /// decider chosen, the strategy the
   /// child was started under, or the deciding parent's when it
   /// inherited, decides by its policy alone. An all-for-one strategy,
   /// the deciding parent's or the one the child was started under,
@@ -3661,34 +3637,27 @@ impl Executor {
     if let Some(strategy) = all_for_one {
       return match self.decide_catching(strategy.clone(), child, inputs.count, kind) {
         | Ok(directive) => Decision::Apply(directive, strategy, true),
-        | Err(message) => Decision::DeciderPanicked { message, from_child_strategy: false },
+        | Err(message) => Decision::DeciderPanicked { message },
       };
     }
-    let mut decider: Option<(SupervisorStrategy, bool)> = None;
+    let mut decider: Option<SupervisorStrategy> = None;
     if let Some(governing) = &inputs.governing {
       if governing.has_custom_decider() {
-        decider = Some((governing.clone(), false));
-      }
-    }
-    if decider.is_none() && !inputs.escalation {
-      if let Some(own) = &inputs.own_strategy {
-        if own.has_custom_decider() {
-          decider = Some((own.clone(), true));
-        }
+        decider = Some(governing.clone());
       }
     }
     if decider.is_none() {
       if let Some(spawn) = &inputs.spawn_strategy {
         let speaks = inputs.parent_not_top || inputs.escalation || kind == FailureKind::Initialization;
         if spawn.has_custom_decider() && speaks {
-          decider = Some((spawn.clone(), false));
+          decider = Some(spawn.clone());
         }
       }
     }
-    if let Some((strategy, from_child_strategy)) = decider {
+    if let Some(strategy) = decider {
       return match self.decide_catching(strategy.clone(), child, inputs.count, kind) {
         | Ok(directive) => Decision::Apply(directive, strategy, false),
-        | Err(message) => Decision::DeciderPanicked { message, from_child_strategy },
+        | Err(message) => Decision::DeciderPanicked { message },
       };
     }
     let strategy = inputs
