@@ -194,7 +194,46 @@ fn r6w_the_measured_file_descriptors_report_this_process() {
     let ratio = value_after(lines[6], "             value = ");
     assert!(is_java_double(ratio), "the ratio {ratio:?} is not ^[0-9]+\\.[0-9]+(E-?[0-9]+)?$");
     assert_eq!(&lines[7..], ["", "", ""]);
+    assert_the_open_count_is_exact(&kit);
   }
+}
+
+/// The open count of a report equals the count of open file descriptors
+/// taken without opening one. Other tests of this binary open and close
+/// descriptors at the same time, so a report counts only when the count
+/// before it and the count after it agree.
+#[cfg(unix)]
+fn assert_the_open_count_is_exact(kit: &MetricsKit) {
+  for _ in 0..10 {
+    let before = open_file_descriptors_without_opening_one();
+    let (output, result) = report(&kit.registered_metrics(), false);
+    let after = open_file_descriptors_without_opening_one();
+    assert!(result.is_ok(), "{result:?}");
+    if before != after {
+      continue;
+    }
+    let lines = lines_of(&output);
+    assert_eq!(lines[3], "  metrics-kit.file-desc.file-descriptors.file-descriptors-open");
+    let open = value_after(lines[4], "             value = ");
+    assert_eq!(open, before.to_string(), "the reported open count against the count of fcntl(F_GETFD)");
+    return;
+  }
+  panic!("precondition broken: the open file descriptors changed around each of 10 reports");
+}
+
+/// The number of open file descriptors below the soft limit (at most
+/// 65536), counted by `fcntl(F_GETFD)` on each, so that counting opens none.
+#[cfg(unix)]
+fn open_file_descriptors_without_opening_one() -> u64 {
+  let bound = i32::try_from(soft_file_descriptor_limit().min(65_536)).expect("at most 65536");
+  let open = (0..bound)
+    .filter(|fd| {
+      // SAFETY: `F_GETFD` only reads the flags of `fd`, and returns -1 when
+      // `fd` is not open.
+      unsafe { libc::fcntl(*fd, libc::F_GETFD) != -1 }
+    })
+    .count();
+  u64::try_from(open).expect("a count fits in u64")
 }
 
 /// The soft limit of file descriptors of this process, read the way the
@@ -393,11 +432,31 @@ fn r14_a_stopped_timer_reports_its_public_readings() {
       "ops/s {ops:?} is not ^[0-9]+\\.[0-9]{{2}}$"
     );
     let printed: f64 = ops.parse().expect("a decimal");
-    assert!((printed - ops_per_second).abs() <= 0.005, "ops/s {ops:?} for {ops_per_second}");
+    assert!(rounds_to_two_places(printed, ops_per_second), "ops/s {ops:?} for {ops_per_second}");
   }
   let avg = Duration::from_nanos(u64::try_from(avg_nanos).expect("a stopped timer has a non-negative average"));
   assert_eq!(value_after(lines[5], "               avg = "), PrettyDurationInput::Finite(avg).pretty());
   assert_eq!(&lines[6..], ["", "", ""]);
+}
+
+/// Whether `printed`, read back from a number printed with two decimal
+/// places, is `exact` rounded to two places: half a cent, and the error of
+/// representing both as `f64`.
+fn rounds_to_two_places(printed: f64, exact: f64) -> bool {
+  (printed - exact).abs() <= 0.005 + f64::EPSILON * exact.abs()
+}
+
+// R14: an elapsed time of 40960 ns makes ops/s 244140.625, printed
+// `244140.63`; the two differ by 0.005000000004656613 in `f64`.
+#[test]
+fn r14_the_ops_per_second_rounding_admits_the_representation_error() {
+  let exact = 10.0 / (40_960.0 / 1e9);
+  assert_eq!(exact, 244_140.625);
+  let half_up: f64 = "244140.63".parse().expect("a decimal");
+  let next: f64 = "244140.64".parse().expect("a decimal");
+  assert!((half_up - exact).abs() > 0.005, "the case needs more than half a cent");
+  assert!(rounds_to_two_places(half_up, exact));
+  assert!(!rounds_to_two_places(next, exact));
 }
 
 /// The nine lines of the histogram of `0..=4`.
@@ -543,6 +602,127 @@ fn r19_the_histogram_of_case_4_input() {
       "",
     ])
   );
+}
+
+/// A histogram of `significant_digits` holding each `(value, count)`.
+fn histogram_with(significant_digits: u8, counts: &[(i64, i64)]) -> HdrHistogram {
+  let histogram = ok(HdrHistogram::new(100_000_000, significant_digits, "ns"));
+  for (value, count) in counts {
+    ok(histogram.update_with_count(*value, *count));
+  }
+  histogram
+}
+
+/// The nine lines of a histogram of 1s with a few 2s, whose 99.9% rank
+/// falls on the last 1.
+const ONES_AND_A_FEW_TWOS_LINES: [&str; 13] = [
+  HISTOGRAM_BANNER,
+  "  metrics-kit.hist.hdr-histogram",
+  "               min = 1 ns",
+  "               max = 2 ns",
+  "              mean = 1.00 ns",
+  "            stddev = 0.03",
+  "              75% <= 1 ns",
+  "              95% <= 1 ns",
+  "              98% <= 1 ns",
+  "              99% <= 1 ns",
+  "            99.9% <= 1 ns",
+  "",
+  "",
+];
+
+// R24: the rank of 99.9% of 1000 counts is 999 (design §2, the rank).
+#[test]
+fn r24_the_99_9_percentile_of_999_ones_and_a_two_is_one() {
+  let (output, result) = report(&only_histogram(histogram_with(4, &[(1, 999), (2, 1)])), false);
+
+  assert!(result.is_ok(), "{result:?}");
+  assert_eq!(output, text(&ONES_AND_A_FEW_TWOS_LINES));
+}
+
+// R25: the rank of 99.9% of 41000 counts is 40959; without lowering the
+// percentile by one ulp it would be 40960.
+#[test]
+fn r25_the_99_9_percentile_of_40959_ones_and_41_twos_is_one() {
+  let (output, result) = report(&only_histogram(histogram_with(4, &[(1, 40_959), (2, 41)])), false);
+
+  assert!(result.is_ok(), "{result:?}");
+  assert_eq!(output, text(&ONES_AND_A_FEW_TWOS_LINES));
+}
+
+// R26
+#[test]
+fn r26_the_distribution_ends_with_five_places_for_five_significant_digits() {
+  let (output, result) = report(&only_histogram(histogram_with(5, &[(0, 2), (1, 1)])), true);
+
+  assert!(result.is_ok(), "{result:?}");
+  let expected = text(&[
+    HISTOGRAM_BANNER,
+    "  metrics-kit.hist.hdr-histogram",
+    "               min = 0 ns",
+    "               max = 1 ns",
+    "              mean = 0.33 ns",
+    "            stddev = 0.47",
+    "              75% <= 1 ns",
+    "              95% <= 1 ns",
+    "              98% <= 1 ns",
+    "              99% <= 1 ns",
+    "            99.9% <= 1 ns",
+  ]) + &distribution(&[
+    "       Value     Percentile TotalCount 1/(1-Percentile)",
+    "",
+    "     0.00000 0.000000000000          2           1.00",
+    "     0.00000 0.100000000000          2           1.11",
+    "     0.00000 0.200000000000          2           1.25",
+    "     0.00000 0.300000000000          2           1.43",
+    "     0.00000 0.400000000000          2           1.67",
+    "     0.00000 0.500000000000          2           2.00",
+    "     0.00000 0.550000000000          2           2.22",
+    "     0.00000 0.600000000000          2           2.50",
+    "     0.00000 0.650000000000          2           2.86",
+    "     1.00000 0.700000000000          3           3.33",
+    "     1.00000 1.000000000000          3",
+    "#[Mean    =      0.33333, StdDeviation   =      0.47140]",
+    "#[Max     =      1.00000, Total count    =            3]",
+    "#[Buckets =           10, SubBuckets     =       262144]",
+  ]) + &text(&["", ""]);
+  assert_eq!(output, expected);
+}
+
+// R27
+#[test]
+fn r27_the_distribution_ends_without_a_point_for_no_significant_digits() {
+  let (output, result) = report(&only_histogram(histogram_with(0, &[(0, 2), (1, 1), (1000, 3)])), true);
+
+  assert!(result.is_ok(), "{result:?}");
+  let expected = text(&[
+    HISTOGRAM_BANNER,
+    "  metrics-kit.hist.hdr-histogram",
+    "               min = 0 ns",
+    "               max = 1023 ns",
+    "              mean = 384.17 ns",
+    "            stddev = 383.83",
+    "              75% <= 1023 ns",
+    "              95% <= 1023 ns",
+    "              98% <= 1023 ns",
+    "              99% <= 1023 ns",
+    "            99.9% <= 1023 ns",
+  ]) + &distribution(&[
+    "       Value     Percentile TotalCount 1/(1-Percentile)",
+    "",
+    "           0 0.000000000000          2           1.00",
+    "           0 0.100000000000          2           1.11",
+    "           0 0.200000000000          2           1.25",
+    "           0 0.300000000000          2           1.43",
+    "           1 0.400000000000          3           1.67",
+    "           1 0.500000000000          3           2.00",
+    "        1023 0.550000000000          6           2.22",
+    "        1023 1.000000000000          6",
+    "#[Mean    =          384, StdDeviation   =          384]",
+    "#[Max     =         1023, Total count    =            6]",
+    "#[Buckets =           27, SubBuckets     =            2]",
+  ]) + &text(&["", ""]);
+  assert_eq!(output, expected);
 }
 
 // R22
