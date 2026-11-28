@@ -146,12 +146,42 @@ impl Drop for StopOnDrop<'_> {
 
 /// Registers metrics under keys and reports them.
 ///
-/// When the scheduled reporter writes to the standard output (the output
-/// of [`MetricsKit::new`]), no `StdoutLock` may be held while
-/// [`MetricsKit::shutdown_metrics`] runs or the kit is dropped: the
-/// reporter thread waits for the output lock, and stopping waits for the
-/// reporter thread, so holding the lock across a stop deadlocks. Release
-/// the output lock first, then stop.
+/// The output lock contract has two parts.
+///
+/// The first part: a thread that holds the writer's lock must release
+/// it before calling [`MetricsKit::shutdown_metrics`], dropping the
+/// kit, [`MetricsKit::report_metrics`] or
+/// [`MetricsKit::report_and_clear_metrics`]. The writer's lock is the
+/// `StdoutLock` of the standard output for [`MetricsKit::new`], and for
+/// [`MetricsKit::with_output`] it is the lock the given writer takes
+/// inside its `write` or its `flush`, such as the lock of a shared
+/// buffer; a report takes that lock on each `write` and on the `flush`
+/// at the end of the report, and some writers take a lock only in
+/// `flush`. Holding the writer's lock across one of those calls can
+/// deadlock, depending on where the reporter thread is and on the kind
+/// of the writer's lock. Stopping or dropping deadlocks when the
+/// reporter thread is in the middle of a report, holding the output
+/// lock or about to take it, and waiting for the writer's lock, because
+/// stopping waits for the reporter thread to end. Reporting deadlocks
+/// when the reporter thread holds the output lock while it waits for
+/// the writer's lock, because the caller then takes the two locks in
+/// the opposite order. When the writer's lock is not reentrant,
+/// reporting always deadlocks, because the calling thread waits for
+/// itself. Another thread holding the writer's lock only delays a
+/// report or a stop, and only for as long as that thread can release
+/// the lock without waiting for the stop or the report to complete; if
+/// that thread waits for the thread that is stopping or reporting, the
+/// waits form a cycle outside this kit, which this kit cannot prevent
+/// and the caller must avoid.
+///
+/// The second part: a writer must not call back into the same kit from
+/// inside its `write` or `flush`. A writer is called during a report,
+/// while the report holds the output lock, so calling
+/// [`MetricsKit::shutdown_metrics`], dropping the kit,
+/// [`MetricsKit::report_metrics`] or
+/// [`MetricsKit::report_and_clear_metrics`] from inside `write` or
+/// `flush` can deadlock; registering a metric on the same kit from
+/// inside `write` or `flush` is fine.
 ///
 /// Mirrors `org.apache.pekko.testkit.metrics.MetricsKit` and `MetricsKitOps`.
 pub struct MetricsKit {
@@ -164,7 +194,12 @@ impl MetricsKit {
     Self::with_output(settings, Box::new(std::io::stdout()))
   }
 
-  /// Creates a kit that reports to `output`.
+  /// Creates a kit that reports to `output`. The lock `output` takes
+  /// inside its `write` or its `flush` is the writer's lock of the
+  /// output lock contract on [`MetricsKit`], and `output` must not
+  /// call the kit's `shutdown_metrics`, drop, `report_metrics` or
+  /// `report_and_clear_metrics` methods from inside `write` or
+  /// `flush`; registering a metric on the kit from there is fine.
   pub fn with_output(settings: MetricsKitSettings, output: Box<dyn Write + Send>) -> Self {
     let has_console = settings.reporters.iter().any(|kind| matches!(kind, MetricsReporterKind::Console));
     let shared = Arc::new(MetricsKitShared {
@@ -301,6 +336,9 @@ impl MetricsKit {
   /// reported to the caller, as in the original, and every metric stays
   /// registered.
   ///
+  /// A thread that holds the writer's lock must release it before
+  /// calling this method; see the output lock contract on [`MetricsKit`].
+  ///
   /// Mirrors `reportMetrics`.
   pub fn report_metrics(&self) {
     self.shared.report_once();
@@ -310,6 +348,9 @@ impl MetricsKit {
   /// registered while the report is printed stay registered, and when
   /// the output fails the printed metrics stay registered too, so a
   /// later report can print them again.
+  ///
+  /// A thread that holds the writer's lock must release it before
+  /// calling this method; see the output lock contract on [`MetricsKit`].
   ///
   /// Mirrors `reportAndClearMetrics`.
   pub fn report_and_clear_metrics(&self) {
@@ -329,6 +370,9 @@ impl MetricsKit {
   /// Stops the scheduled reports and waits until the reporter thread has
   /// ended, also when another caller is already stopping it. Calls after
   /// the thread has ended do nothing.
+  ///
+  /// A thread that holds the writer's lock must release it before
+  /// calling this method; see the output lock contract on [`MetricsKit`].
   ///
   /// Mirrors `shutdownMetrics`.
   pub fn shutdown_metrics(&self) {
