@@ -116,6 +116,12 @@
 //                            children runs at once instead of being kept aside
 //                            (an actor waiting in Creation included), so the
 //                            retried start begins inside the one under way.
+//   UntoldEscalation       : a top-level actor whose decider fails on a
+//                            child's Failed tells nobody (#319: the
+//                            `tell_parent = false` of c6a52e7), so it waits
+//                            for an answer that never comes. Pekko tells the
+//                            parent on every failure (handleInvokeFailure,
+//                            dungeon/FaultHandling.scala:226-234).
 //
 // CI runs 20 steps (scripts/quint-check-specs.sh), which do not reach every
 // deep state (a Recreate kept aside while an actor waits for its restart's
@@ -144,7 +150,7 @@ module actor_termination {
     | KeepWatching | NoCreationWait | NoRecreationWait | NoTerminateToChildren | NotifyTwice | KeepSuspended
     | NoSuspendChildren | NoStashWhenFailed | NoStashWhileWaiting | DropRecreateWhileWaiting
     | IgnoreUndecidedRecreate | NoSurvivorRecreate | NoChildCheck | NoSuspendInheritance | ResumeWithoutCause
-    | NoSuspendFirst | SuspendThePerpetrator | StopAtTheTail | HandleRecreateUnderCreation
+    | NoSuspendFirst | SuspendThePerpetrator | StopAtTheTail | HandleRecreateUnderCreation | UntoldEscalation
 
   // Free: no incarnation holds the name. Unborn: Create waits. StartFailed:
   // Create failed and the actor has no instance. Closed: finishTerminate ran;
@@ -361,7 +367,7 @@ module actor_termination {
     val x1 = updA(x, n, y => { ...y, suspend: y.suspend + 1, failed: if (first) perp else y.failed })
     val x2 = if (md == NoSuspendChildren) x1 else sendTo(x1, a.children.exclude(skip), Suspend)
     val q = PARENT_OF.get(n)
-    if (q == ROOT) rootDecide(x2, n, start, rd)
+    if (q == ROOT) (if (md == UntoldEscalation and perp != n) x2 else rootDecide(x2, n, start, rd))
     else sendSys(x2, q, Failed({ ref: refOf(x2, n), start: start }))
   }
 
@@ -1227,4 +1233,15 @@ module actor_termination {
       .expect(act(w, "c1").sys == [Suspend, Recreate, Terminate])
       .then(sysStep("c1", true)).then(sysStep("c1", true))
       .expect(not(aFailedRestartOnlyStops))
+
+  // #319: p's decider fails on c1's failed start, and p, a child of the
+  // guardian, tells nobody. p waits for an answer that never comes, so p and
+  // the child it suspended stay suspended once nothing is in progress. The
+  // fixed design reports p's failure to the guardian, whose decision restarts
+  // p (anEscalatedStartFailureIsRetriedAfterTheParentRestartTest).
+  run untoldEscalationLeavesTheParentSuspendedTest =
+    initWith(UntoldEscalation, false).then(spawn("p")).then(sysStep("p", true)).then(spawn("c1"))
+      .then(sysStep("c1", false)).then(runSys("p", true, DEscalate, DRestart, false))
+      .expect(act(w, "p").failed == "c1" and act(w, "p").suspend == 1 and act(w, "p").sys == [] and settled)
+      .expect(not(settledMeansResumed))
 }
