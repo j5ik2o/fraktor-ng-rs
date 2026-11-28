@@ -2,7 +2,7 @@
 
 原典 Apache Pekko v2.0.0（基準は `docs/baseline/README.md`）から fraktor がずれている点を、
 戻す前提で1か所に集めた一覧である。issue #311・#333・#335・#336・#337・#338・#339・#340・
-#345・#347・#348・#350・#351・#352・#353・#356・#357・#361・#362 と、設計
+#345・#347・#348・#350・#351・#352・#353・#356・#357・#361・#362・#364 と、設計
 `docs/design/issue-183-metrics-kit.md`（ブランチ `wip/299-design`）の「原典と違う点」の節、
 `docs/design/issue-234-multithread-executor.md`（ブランチ `wip/300-stage4b-fix`）で
 「原典と違う」と書いてある行を写した。区分・原典の行・戻す段は issue に書いてあることを
@@ -40,3 +40,6 @@
 | 一時的（原典どおりに戻す） | `stopReason` が残っているあいだの `terminate` | `FSM.scala:934・888・940` | `terminate` が `stopReason` の残っている間も働き、原典より強い保証をしている。まだ走らせて確かめていない | #357 | ずれを戻す列（`work/design-queue.md` の 6c、元帥の決定 2026-11-28：ほかの移植より先）。#300 のマージの後 | open |
 | 一時的（原典どおりに戻す） | 止めたあとの `is_state_timer_active` | `FSM.scala:636・939` | 止めたあと `is_state_timer_active` を偽にする（本番の `FsmHandle::clear` と Quint の `stopActor`・`stoppedNeverArms`・変異 M13）。原典は `terminate` が `timeoutFuture` を cancel するだけで `None` にせず、真のまま残りうる。原典より強い。寄せるなら本番と Quint を一緒に直す（設計 §6.4 の 6） | #361 | ずれを戻す列（`work/design-queue.md` の 6c）。#357・#356 と一緒に | open |
 | 一時的（原典どおりに戻す） | 約248日を超えるタイマの期限 | `checkMaxDelay`（行の記載なし） | あふれない限り期限を受け付け、あふれたら黙って撃たない（`Duration::MAX` でも panic せず、撃たず、`is_timer_active` は真）。原典は約 248 日（Int の最大の tick）を超える期限を `IllegalArgumentException` で拒む | #362 | ずれを戻す列（6c）。#357・#356 と一緒に。#314 の P1 は `Duration::MAX` を入れない | open |
+| 一時的（原典どおりに戻す） | `shutdown_metrics` の最後の報告 | `ScheduledReporter.java` 218〜252・223〜230行、`MetricsKit.scala` 161〜163行 | `shutdown_metrics` が最後の報告を出さない。原典の `stop()` は `start` 済み（`scheduledFuture != null`）なら最後に `report()` を1回呼ぶ（JVM で確かめた：`start(1, HOURS)` した reporter は `stop()` のたびに最後の報告（225 バイト）を出し、`start` していない reporter の `stop()` は何も出さない） | #364 | #299 の後、MetricsKit の並び（#337〜#339・#351〜#353）と一緒に | open |
+| 環境の違い（JVM 固有。写していないのではない） | `Double.toString` の最短の桁 | `AveragingGauge.scala` の `getValue`、`PekkoConsoleReporter.scala` 86行 | Rust 側で同じ規則を実装するが、最短の桁は Rust のものを使う。JDK 19 以降は同じ最短表現で、JDK 18 以前は同じ値でも桁が増えることがある。JDK の版による差であり、Rust で一つに決める | #299（設計） | 直さない（環境の違い） | — |
+| 環境の違い（JVM 固有。写していないのではない） | `Locale` | `PekkoConsoleReporter.scala` 74〜157行 | 原典の `"...".format` は JVM の既定のロケールを使うため、小数点が `,` のロケールでは Pekko も `,` を出す。Rust は常に `.` である。CI のロケールでは差は出ない | #299（設計） | 直さない（環境の違い） | — |
