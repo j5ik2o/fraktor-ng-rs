@@ -67,6 +67,7 @@ jobs:
           uv run --with pyyaml python3 tools/takt-facets/knowledge_budget_test.py
           uv run python3 scripts/check_src_hygiene_test.py
           uv run python3 scripts/pub_api_diff_test.py
+          uv run --with pyyaml python3 scripts/check_pekko_differences_test.py
       - name: Pekko baseline
         run: |
           uv run --with pyyaml python3 ledger/tools/pekko_baseline.py check-ledger --ledger ledger/nodes.yaml
@@ -74,6 +75,8 @@ jobs:
           uv run --with pyyaml python3 ledger/tools/relocate_nodes.py check
           # 項目 258 (d): 報告書の行と台帳の変更行が 1 対 1 か。検査 1〜5 を 1 つのステップで全部見る
           uv run --with pyyaml python3 ledger/tools/report_ledger_1to1.py check
+          # 差の一覧の一時的なずれを、台帳が移植済みに数えていないか。issue を立てて足す決まりは docs/pekko-differences.md
+          uv run --with pyyaml python3 scripts/check_pekko_differences.py
       - name: License headers
         run: uv run python3 tools/license-headers/license_headers.py --check --manifest docs/design/issue-206-file-origin.tsv
       # No review-process wording (re-review, design of #N, item N) and no
