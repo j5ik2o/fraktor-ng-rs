@@ -507,7 +507,10 @@ fn a_failed_child_is_decided_in_the_parents_run_not_the_childs() {
   // after the child's run has returned, so the child's `pre_restart` cannot
   // run before the decision. The parent and the child record in one log; stage
   // 4a's executor decides after the child's run in the same `run_one` and the
-  // child restarts before the parent's run.
+  // child restarts before the parent's run. The child is started without a
+  // strategy, so it inherits the parent's and the parent's counting decider
+  // decides its failure (rule 2 of the precedence decided in the comment on
+  // #350).
   let log = new_log();
   let decided = Arc::new(AtomicUsize::new(0));
   let mut system = with_catcher("Stage4bDecideInParent");
@@ -528,8 +531,8 @@ fn a_failed_child_is_decided_in_the_parents_run_not_the_childs() {
     Some("parent"),
     SupervisorStrategy::one_for_one(3),
   );
-  let child =
-    system.downgrade().spawn_child(&failing, worker("child", &log), Some("child"), SupervisorStrategy::one_for_one(3));
+  system.run_until_idle();
+  let child = spawn_inheriting(&mut system, &failing, worker("child", &log), "child");
   system.run_until_idle();
   log.lock().unwrap().clear();
 
