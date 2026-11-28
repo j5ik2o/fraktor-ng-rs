@@ -636,34 +636,35 @@ fn run_initialization_case(spec: &mut FraktorSpec, case: SmallCase) {
   // Per path: every actor that failed has exactly one initialization failure,
   // and an actor that did not fail has none. A total alone would pass when one
   // side failed twice and the other not at all, so the events are grouped by
-  // the path they name. The `Error` events and the `Terminated` notices of the
-  // failed actors do not arrive in a fixed order, so each wait takes only the
-  // type it is about and puts the other type back for the other wait. The wait
-  // has a limit.
+  // the path they name. The original's `EventFilter` counts occurrences without
+  // looking at their order (ActorRefSpec.scala v2.0.0:195-223), so the `Error`
+  // events and the `Terminated` notices are read together until both counts
+  // reach what the case expects. The wait has a limit.
   let mut failures_by_path: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
   let mut errors: Vec<Error> = Vec::new();
-  while errors.len() < created.len() {
+  let mut stopped: Vec<ActorRef> = Vec::new();
+  while errors.len() < created.len() || stopped.len() < created.len() {
     let batch = spec.test_kit_mut().receive_while(ReceiveWhile::new().max(millis(5000)).idle(millis(100)), |message| {
-      message.downcast_ref::<Error>().cloned()
+      if message.downcast_ref::<Error>().is_some() || message.downcast_ref::<Terminated>().is_some() {
+        Some(message.clone())
+      } else {
+        None
+      }
     });
     if batch.is_empty() {
       break;
     }
-    errors.extend(batch);
+    for message in batch {
+      if let Some(event) = message.downcast_ref::<Error>() {
+        errors.push(event.clone());
+      } else if let Some(terminated) = message.downcast_ref::<Terminated>() {
+        stopped.push(terminated.target().clone());
+      }
+    }
   }
   for event in errors {
     assert_eq!(event.cause_name(), Some("ActorInitializationException"), "the logged event is the failure");
     *failures_by_path.entry(event.log_source().to_string()).or_default() += 1;
-  }
-  let mut stopped: Vec<ActorRef> = Vec::new();
-  while stopped.len() < created.len() {
-    let batch = spec.test_kit_mut().receive_while(ReceiveWhile::new().max(millis(5000)).idle(millis(100)), |message| {
-      message.downcast_ref::<Terminated>().map(|terminated| terminated.target().clone())
-    });
-    if batch.is_empty() {
-      break;
-    }
-    stopped.extend(batch);
   }
   for actor in &created {
     let path = actor.path().to_string();
