@@ -2350,12 +2350,20 @@ fn an_empty_pre_restart_keeps_the_children_but_the_survivors_are_recreated_after
   // pekko v2.0.0 `actor/src/main/scala/org/apache/pekko/actor/dungeon/FaultHandling.scala`
   // `finishRecreate` keeps a snapshot of the surviving children (`val survivors = children`,
   // line 280) and restarts every one of them only after the new instance's `postRestart`
-  // (`survivors.foreach(child => ... child.restart(cause))`, lines 292-294). A restart
+  // (`survivors.foreach(child => ... child.restart(cause))`, lines 293-294). A restart
   // builds a fresh behavior, so the healthy child is created again and its state is reset.
   assert_eq!(healthy_creations.load(Ordering::SeqCst), 2, "the surviving healthy child's behavior was recreated");
   assert_eq!(*observations.lock().unwrap(), alloc::vec![(healthy.clone(), 1), (healthy, 0)]);
-  assert_eq!(*received.lock().unwrap(), alloc::vec!["recovered"], "the retained child still has no behavior");
-  assert_eq!(attempts.load(Ordering::SeqCst), 2, "only the failed child must be created again");
+  assert_eq!(
+    *received.lock().unwrap(),
+    alloc::vec!["recovered"],
+    "the retained child was started by the recreate and handled the message"
+  );
+  assert_eq!(
+    attempts.load(Ordering::SeqCst),
+    2,
+    "the failed child's start was attempted at spawn and again by the recreate"
+  );
   let duplicate = crate::kernel::sync::lock(&system.executor).spawn_named_child(&parent, Props::new(|| NoOp), "bob");
   assert!(duplicate.is_err(), "a recovered live child must still reserve bob");
 }
@@ -2674,7 +2682,7 @@ fn unlimited_one_for_one_restarts_do_not_spend_a_later_limit() {
 
   // The parent's restart keeps the kid, and pekko v2.0.0 `FaultHandling.scala`
   // `finishRecreate` restarts the survivors after the new instance's `postRestart`
-  // (lines 292-294), so the kid's `post_restart` runs once here as well.
+  // (lines 293-294), so the kid's `post_restart` runs once here as well.
   child.tell("boom", parent.clone());
   system.run_until_idle();
   assert_eq!(kid_post_restarts.load(Ordering::SeqCst), 3);
