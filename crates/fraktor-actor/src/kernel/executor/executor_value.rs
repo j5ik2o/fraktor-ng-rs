@@ -1070,6 +1070,25 @@ impl Executor {
 
   /// Runs `checkReceiveTimeout` for `key`'s actor.
   fn check_receive_timeout(&mut self, key: ActorKey, reschedule: bool) {
+    let zero_timeout = matches!(
+      self.receive_timeouts.get(&key).map(|state| state.setting()),
+      Some(ReceiveTimeoutSetting::Finite(timeout)) if timeout == Duration::ZERO
+    );
+    if zero_timeout {
+      let send_now = match self.receive_timeouts.get_mut(&key) {
+        | Some(state) => state.check_zero_timeout(reschedule),
+        | None => false,
+      };
+      self.sync_receive_timeout_index(key);
+      if send_now {
+        if let Some(entry) = self.actors.get(&key) {
+          let target = entry.self_ref.clone();
+          let sender = self.dead_letters();
+          self.send(sender, &target, Message::new(ReceiveTimeout::new(Duration::ZERO)));
+        }
+      }
+      return;
+    }
     let finite =
       matches!(self.receive_timeouts.get(&key).map(|state| state.setting()), Some(ReceiveTimeoutSetting::Finite(_)));
     let now = if finite {
@@ -1121,6 +1140,30 @@ impl Executor {
     self.remove_fsm_timer(key, &slot);
     if self.now_opt().is_none() {
       panic!("FSM timer: a finite FSM timer needs a monotonic clock, but this system has none");
+    }
+    if delay == Duration::ZERO {
+      // A zero delay runs on the spot in the original's scheduler and
+      // its task cannot be cancelled, so the mark goes to the mailbox
+      // here, at the time the timer is set, and no row is indexed:
+      // a later cancel or re-arm takes back nothing, and a timer set
+      // during `pre_start` is queued before anything a check after
+      // the creation sends.
+      let Some(entry) = self.actors.get(&key) else {
+        return;
+      };
+      let target = entry.self_ref.clone();
+      if message == POISON_PILL || message == KILL {
+        let sender = self.dead_letters();
+        self.send(sender, &target, message);
+        return;
+      }
+      let mark = match &slot {
+        | FsmTimerSlot::State => FsmTimerMark::StateTimeout { instance_id, generation },
+        | FsmTimerSlot::Named(name) => FsmTimerMark::Named { instance_id, name: name.clone(), generation },
+      };
+      let sender = sender.unwrap_or_else(|| target.clone());
+      self.send(sender, &target, Message::new(mark));
+      return;
     }
     let now = self.now_opt().expect("checked above");
     let Some(deadline) = now.checked_add(delay) else {
