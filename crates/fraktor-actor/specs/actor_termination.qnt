@@ -116,12 +116,17 @@
 //                            children runs at once instead of being kept aside
 //                            (an actor waiting in Creation included), so the
 //                            retried start begins inside the one under way.
-//   UntoldEscalation       : a top-level actor whose decider fails on a
-//                            child's Failed tells nobody (#319: the
-//                            `tell_parent = false` of c6a52e7), so it waits
-//                            for an answer that never comes. Pekko tells the
-//                            parent on every failure (handleInvokeFailure,
-//                            dungeon/FaultHandling.scala:226-234).
+//   UntoldEscalation       : the `tell_parent = false` of c6a52e7 (#319).
+//                            p, a top-level actor (a cell without a parent
+//                            cell), decides a child's own failure under
+//                            one-for-one; the decider that fails is the one
+//                            the child applies to its own children, and p
+//                            tells nobody, so it waits for an answer that
+//                            never comes. Pekko decides with the parent's
+//                            strategy only and tells the parent of every
+//                            failure (dungeon/FaultHandling.scala:313-314,
+//                            226-234). See handleFailed for what the model
+//                            reads as that decider.
 //
 // CI runs 20 steps (scripts/quint-check-specs.sh), which do not reach every
 // deep state (a Recreate kept aside while an actor waits for its restart's
@@ -359,15 +364,17 @@ module actor_termination {
 
   // handleInvokeFailure: suspend the actor and its children (all but the
   // child whose failure this escalates), remember the perpetrator unless a
-  // failure is already outstanding, and tell the parent.
-  pure def failActor(md: Mode, x: World, n: str, start: bool, perp: str, rd: Directive): World = {
+  // failure is already outstanding, and tell the parent. `told` is false only
+  // for UntoldEscalation's mistake, and only an actor without a parent cell
+  // (a child of the guardian) leaves its failure untold.
+  pure def failActor(md: Mode, x: World, n: str, start: bool, perp: str, rd: Directive, told: bool): World = {
     val a = act(x, n)
     val first = a.failed == ""
     val skip = if (first and perp != n and md != SuspendThePerpetrator) Set(perp) else Set()
     val x1 = updA(x, n, y => { ...y, suspend: y.suspend + 1, failed: if (first) perp else y.failed })
     val x2 = if (md == NoSuspendChildren) x1 else sendTo(x1, a.children.exclude(skip), Suspend)
     val q = PARENT_OF.get(n)
-    if (q == ROOT) (if (md == UntoldEscalation and perp != n) x2 else rootDecide(x2, n, start, rd))
+    if (q == ROOT) (if (told) rootDecide(x2, n, start, rd) else x2)
     else sendSys(x2, q, Failed({ ref: refOf(x2, n), start: start }))
   }
 
@@ -377,7 +384,7 @@ module actor_termination {
     if (not(ok) and x.b.fails > 0)
       failActor(md, updA({ ...x, b: { ...x.b, fails: x.b.fails - 1 } }, n, y => {
         ...y, phase: StartFailed, inst: false, handledCreate: true,
-      }), n, true, n, rd)
+      }), n, true, n, rd, true)
     else updA(x, n, y => { ...y, phase: Alive, inst: true, handledCreate: true })
 
   // finishCreate: undo the suspend of the failed start, clear the failure,
@@ -475,9 +482,24 @@ module actor_termination {
   // lasts) sends Recreate, to every child under all-for-one with a Suspend
   // first for those that did not fail; Stop sends Terminate; a failing
   // decider fails the parent (escalation), with the child as perpetrator.
+  //
+  // UntoldEscalation: c6a52e7's choose_decision ran the decider of the
+  // strategy the failed child applies to its own children when no
+  // all-for-one strategy decided, the deciding actor's strategy had no
+  // decider of its own and the child's failure was not an escalation (the
+  // child's perpetrator is the child itself; 890918a, executor_value.rs
+  // 3655-3699); a panic of that decider in an actor without a parent was
+  // left untold (:3558-3560). The model has no deciders, so the mode reads
+  // p's strategy as one without a decider of its own and the child's as one
+  // with a decider: a failing decision of p under one-for-one on a failure
+  // that is not an escalation is the child's decider. An escalated failure
+  // and all-for-one are told, as in c6a52e7. Left out: a decider of p's own
+  // that fails in the same place, which c6a52e7 tells.
   pure def handleFailed(md: Mode, x: World, n: str, f: Fail, d: Directive, rd: Directive): World = {
     val a = act(x, n)
     val c = f.ref.name
+    val escalated = act(x, c).failed != "" and act(x, c).failed != c
+    val untold = md == UntoldEscalation and not(isAllForOne(x, n)) and not(escalated)
     val x0 = { ...x, g: { ...x.g, decidedWithoutInstance: x.g.decidedWithoutInstance or not(a.inst) } }
     val known = a.children.contains(c) and (md == NoChildCheck or act(x0, c).inc == f.ref.inc)
     val stopAll = if (isAllForOne(x0, n)) sendTerminateTo(x0, a.children) else sendSys(x0, c, Terminate)
@@ -492,7 +514,7 @@ module actor_termination {
           else sendSys(x1, c, Recreate)
         } else stopAll
       | DStop => stopAll
-      | DEscalate => failActor(md, { ...x0, b: { ...x0.b, fails: x0.b.fails - 1 } }, n, false, c, rd)
+      | DEscalate => failActor(md, { ...x0, b: { ...x0.b, fails: x0.b.fails - 1 } }, n, false, c, rd, not(untold))
     }
   }
 
@@ -604,7 +626,10 @@ module actor_termination {
 
   // system.stop, context.stop: Terminate on the target's system queue. Under
   // SyncStop the executor stops an actor without children at once, outside its
-  // run.
+  // run. The parent's toDie is left as it is, as in Pekko for a stop by anyone
+  // but the parent (Children.stop marks only a child the parent stops itself);
+  // a parent that stops its own child in receive, which Pekko marks, is not
+  // in the model (design 11.13, premise 3).
   action stop(n: str): bool = all {
     w.b.stops > 0,
     act(w, n).phase != Free,
@@ -667,7 +692,7 @@ module actor_termination {
       val x = updA({ ...w, g: g1, b: if (failNow) { ...w.b, fails: w.b.fails - 1 } else w.b }, n, y => {
         ...y, queue: y.queue.tail(),
       })
-      setWorld(if (failNow) failActor(mode, x, n, false, n, rd) else x),
+      setWorld(if (failNow) failActor(mode, x, n, false, n, rd, true) else x),
     }
   }
 
@@ -1234,14 +1259,30 @@ module actor_termination {
       .then(sysStep("c1", true)).then(sysStep("c1", true))
       .expect(not(aFailedRestartOnlyStops))
 
-  // #319: p's decider fails on c1's failed start, and p, a child of the
-  // guardian, tells nobody. p waits for an answer that never comes, so p and
-  // the child it suspended stay suspended once nothing is in progress. The
-  // fixed design reports p's failure to the guardian, whose decision restarts
-  // p (anEscalatedStartFailureIsRetriedAfterTheParentRestartTest).
+  // #319, in the shape measured on c6a52e7 (design 11.13.4: the deciding
+  // top-level actor, the failing parent and its child all stay suspended).
+  // c1 fails in receive and suspends g; p's decision fails on c1's own
+  // failure, and p, a child of the guardian, tells nobody. p waits for an
+  // answer that never comes, so p, c1 and g stay suspended once nothing is
+  // in progress. The fixed design reports p's failure to the guardian, whose
+  // decision restarts p (anEscalatedStartFailureIsRetriedAfterTheParentRestartTest).
   run untoldEscalationLeavesTheParentSuspendedTest =
     initWith(UntoldEscalation, false).then(spawn("p")).then(sysStep("p", true)).then(spawn("c1"))
-      .then(sysStep("c1", false)).then(runSys("p", true, DEscalate, DRestart, false))
-      .expect(act(w, "p").failed == "c1" and act(w, "p").suspend == 1 and act(w, "p").sys == [] and settled)
+      .then(sysStep("c1", true)).then(spawn("g")).then(sysStep("g", true))
+      .then(send("c1")).then(receive("c1", true, DRestart)).then(sysStep("g", true))
+      .then(runSys("p", true, DEscalate, DRestart, false))
+      .expect(act(w, "p").failed == "c1" and act(w, "p").sys == [] and settled)
+      .expect(act(w, "p").suspend == 1 and act(w, "c1").suspend == 1 and act(w, "g").suspend == 1)
       .expect(not(settledMeansResumed))
+
+  // The boundary of the mode: an escalated failure is told, as in c6a52e7
+  // (the decider that fails on it is not the child's own). g's start fails,
+  // c1's decision fails on it, and p's decision fails on c1's escalation:
+  // p tells the guardian, whose Restart puts a Recreate on p's queue.
+  run untoldEscalationStillTellsAnEscalatedFailureTest =
+    initWith(UntoldEscalation, false).then(spawn("p")).then(sysStep("p", true)).then(spawn("c1"))
+      .then(sysStep("c1", true)).then(spawn("g")).then(sysStep("g", false))
+      .then(runSys("c1", true, DEscalate, DRestart, false))
+      .then(runSys("p", true, DEscalate, DRestart, false))
+      .expect(act(w, "c1").failed == "g" and act(w, "p").failed == "c1" and act(w, "p").sys == [Recreate] and invariant)
 }
