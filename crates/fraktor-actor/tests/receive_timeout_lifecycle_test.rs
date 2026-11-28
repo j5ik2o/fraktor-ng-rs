@@ -49,7 +49,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fraktor_actor::kernel::actor::{
-  Actor, ActorContext, DeadLetter, NotInfluenceReceiveTimeout, Props, ReceiveTimeout, ReceiveTimeoutSetting,
+  Actor, ActorContext, DeadLetter, Fsm, FsmState, NotInfluenceReceiveTimeout, Props, ReceiveTimeout,
+  ReceiveTimeoutSetting, StateTimeout,
 };
 use fraktor_actor::kernel::actor_ref::ActorRef;
 use fraktor_actor::kernel::event::EventClass;
@@ -1142,6 +1143,102 @@ fn poison_pill_fires_the_due_receive_timeout_into_dead_letters() {
   assert!(
     delivered(&deliveries).is_empty(),
     "the actor handed neither the PoisonPill nor the ReceiveTimeout to receive"
+  );
+  spec.terminate();
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZeroTimeoutState {
+  Initial,
+  Done,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Seen {
+  StateTimeout,
+  ReceiveTimeout(Duration),
+}
+
+type SeenLog = Arc<Mutex<Vec<Seen>>>;
+
+// Records a `StateTimeout` or a `ReceiveTimeout` and turns the receive
+// timeout off, so the zero timeout does not keep firing.
+fn see_timeout(seen: &SeenLog, context: &mut ActorContext<'_>, message: &Message) -> bool {
+  let event = if message.downcast_ref::<StateTimeout>().is_some() {
+    Seen::StateTimeout
+  } else if let Some(timeout) = message.downcast_ref::<ReceiveTimeout>() {
+    Seen::ReceiveTimeout(timeout.timeout())
+  } else {
+    return false;
+  };
+  seen.lock().unwrap().push(event);
+  context.set_receive_timeout(ReceiveTimeoutSetting::Undefined);
+  true
+}
+
+// `Initial` has a zero state timeout and is left on the first timeout, as a
+// `stay()` would arm it again; `Done` has none.
+fn zero_timeouts_machine(seen: &SeenLog) -> Fsm<ZeroTimeoutState, ()> {
+  let mut machine = Fsm::new();
+  machine.start_with(ZeroTimeoutState::Initial, ());
+  let initial_seen = Arc::clone(seen);
+  machine.when_with_state_timeout(
+    ZeroTimeoutState::Initial,
+    Some(Duration::ZERO),
+    move |context, _view, message, _data| {
+      if see_timeout(&initial_seen, context, message) {
+        Some(FsmState::goto(ZeroTimeoutState::Done))
+      } else {
+        Some(FsmState::stay())
+      }
+    },
+  );
+  let done_seen = Arc::clone(seen);
+  machine.when(ZeroTimeoutState::Done, move |context, _view, message, _data| {
+    see_timeout(&done_seen, context, message);
+    Some(FsmState::stay())
+  });
+  machine.initialize();
+  machine
+}
+
+// The machine of `zero_timeouts_machine`, which sets a zero receive timeout
+// after its own `pre_start` has armed the zero state timeout.
+struct ZeroTimeoutsFsm {
+  machine: Fsm<ZeroTimeoutState, ()>,
+}
+
+impl Actor for ZeroTimeoutsFsm {
+  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
+    self.machine.pre_start(context);
+    context.set_receive_timeout(finite(Duration::ZERO));
+  }
+
+  fn receive(&mut self, context: &mut ActorContext<'_>, message: Message) {
+    self.machine.receive(context, message);
+  }
+
+  fn post_stop_with_context(&mut self, context: &mut ActorContext<'_>) {
+    self.machine.post_stop_with_context(context);
+  }
+}
+
+// Pekko v2.0.0 sends the `TimeoutMarker` from `initialize` (`FSM.scala:700-702`, `901-904`) before the
+// `ReceiveTimeout(0)` of `ActorCell.create` (`ActorCell.scala:671-673`); both zero delays run at once
+// (`LightArrayRevolverScheduler.scala:223-227`).
+#[test]
+fn zero_state_timeout_arrives_before_a_zero_receive_timeout_set_at_start() {
+  let (mut spec, _clock) = spec_with_clock();
+  let seen: SeenLog = Arc::new(Mutex::new(Vec::new()));
+  let _actor = spec.system_mut().actor_of(Props::new({
+    let seen = Arc::clone(&seen);
+    move || ZeroTimeoutsFsm { machine: zero_timeouts_machine(&seen) }
+  }));
+  spec.system_mut().run_until_idle();
+  assert_eq!(
+    *seen.lock().unwrap(),
+    vec![Seen::StateTimeout, Seen::ReceiveTimeout(Duration::ZERO)],
+    "the state timeout arrives first and the ReceiveTimeout(0) after it"
   );
   spec.terminate();
 }
