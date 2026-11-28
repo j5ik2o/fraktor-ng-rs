@@ -322,6 +322,75 @@ fn a_child_started_with_a_strategy_is_decided_by_its_parents_strategy() {
 }
 
 #[test]
+fn a_child_started_with_a_restart_limit_is_restarted_by_its_parents_policy() {
+  // Design 11.13.4 "判断するのは親の戦略だけ" and #350: with no decider on
+  // either side, the policy that decides is the parent's, not the one the
+  // child was started with. Pekko v2.0.0 keeps no strategy per child:
+  // `handleFailure` runs the parent's `supervisorStrategy`
+  // (`dungeon/FaultHandling.scala:313-314`), here the `defaultStrategy`, a
+  // `OneForOneStrategy()` with no restart limit (`actor/FaultHandling.scala:230-232`)
+  // whose `processFailure` restarts the child (`:667-678`). The child's own
+  // one-for-one strategy that allows no restart takes no part.
+  let log = new_log();
+  let mut system = with_catcher("Stage4bChildPolicyIsTheParents");
+  let guardian = system.actor_of(parent("guardian", &log, SupervisorStrategy::default_strategy()));
+  let middle = system.downgrade().spawn_child(
+    &guardian,
+    parent("middle", &log, SupervisorStrategy::default_strategy()),
+    Some("middle"),
+    SupervisorStrategy::default_strategy(),
+  );
+  let child =
+    system.downgrade().spawn_child(&middle, worker("child", &log), Some("child"), SupervisorStrategy::one_for_one(0));
+  system.run_until_idle();
+  log.lock().unwrap().clear();
+
+  child.tell("boom", guardian.clone());
+  system.run_until_idle();
+  let seen = entries(&log);
+  assert!(!system.is_actor_terminated(&child), "the child was stopped by the limit it was started with: {seen:?}");
+  assert_eq!(seen, ["child:pre_restart", "child:post_restart"]);
+  assert!(!system.is_actor_terminated(&middle));
+}
+
+#[test]
+fn a_child_started_with_an_all_for_one_strategy_does_not_restart_its_siblings() {
+  // Design 11.13.4 "判断するのは親の戦略だけ" and #350: whether a failure takes
+  // the siblings along is the parent's strategy's to say, not the strategy
+  // the failed child was started with. Pekko v2.0.0 runs the parent's
+  // `supervisorStrategy` (`dungeon/FaultHandling.scala:313-314`), here the
+  // `defaultStrategy`, a `OneForOneStrategy` (`actor/FaultHandling.scala:230-232`)
+  // whose `processFailure` restarts the failed child alone (`:667-678`); only
+  // an `AllForOneStrategy` of the parent restarts every child (`:554-566`).
+  let log = new_log();
+  let mut system = with_catcher("Stage4bAllForOneIsTheParents");
+  let guardian = system.actor_of(parent("guardian", &log, SupervisorStrategy::default_strategy()));
+  let middle = system.downgrade().spawn_child(
+    &guardian,
+    parent("middle", &log, SupervisorStrategy::default_strategy()),
+    Some("middle"),
+    SupervisorStrategy::default_strategy(),
+  );
+  let failing = system.downgrade().spawn_child(
+    &middle,
+    worker("a", &log),
+    Some("a"),
+    SupervisorStrategy::all_for_one(3, RestartWindow::Unbounded),
+  );
+  let sibling =
+    system.downgrade().spawn_child(&middle, worker("b", &log), Some("b"), SupervisorStrategy::default_strategy());
+  system.run_until_idle();
+  log.lock().unwrap().clear();
+
+  failing.tell("boom", guardian.clone());
+  system.run_until_idle();
+  let seen = entries(&log);
+  assert_eq!(seen, ["a:pre_restart", "a:post_restart"], "the sibling was restarted along with the failed child");
+  assert!(!system.is_actor_terminated(&failing));
+  assert!(!system.is_actor_terminated(&sibling));
+}
+
+#[test]
 fn a_decider_panic_on_a_childs_failure_makes_the_parent_fail() {
   // Design 11.13.3 item 4 and 11.13.4 (a decider's panic is the `Escalate` of
   // a parent without an instance): the decider runs in the parent's run for the
