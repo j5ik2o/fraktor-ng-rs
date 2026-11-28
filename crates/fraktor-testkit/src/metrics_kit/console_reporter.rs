@@ -315,7 +315,7 @@ impl HistogramStats {
     if self.total == 0 {
       return 0;
     }
-    let needed = ((percentile / 100.0) * self.total as f64).ceil().max(1.0) as u64;
+    let needed = (percentile.next_down().clamp(0.0, 100.0) * self.total as f64 / 100.0).ceil().max(1.0) as u64;
     let mut cumulative = 0_u64;
     for (value, count) in &self.recorded {
       cumulative += count;
@@ -374,10 +374,10 @@ fn write_distribution(
     );
     write_line(output, &row, "\n")?;
   }
-  let mean = format_fixed(stats.mean, 4, 12);
-  let stddev = format_fixed(stats.stddev, 4, 12);
+  let mean = format_fixed(stats.mean, snapshot.sigfig() as usize, 12);
+  let stddev = format_fixed(stats.stddev, snapshot.sigfig() as usize, 12);
   write_line(output, &format!("#[Mean    = {mean}, StdDeviation   = {stddev}]"), "\n")?;
-  let max = format_fixed(snapshot.max() as f64, 4, 12);
+  let max = format_fixed(snapshot.max() as f64, snapshot.sigfig() as usize, 12);
   write_line(output, &format!("#[Max     = {max}, Total count    = {:>12}]", stats.total), "\n")?;
   let sub_buckets = sub_bucket_count(snapshot.sigfig());
   write_line(output, &format!("#[Buckets = {:>12}, SubBuckets     = {:>12}]", snapshot.buckets(), sub_buckets), "\n")
