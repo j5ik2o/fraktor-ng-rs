@@ -241,6 +241,91 @@
                 avg = 2.50
 
 
+=== HdrHistogram: 999 1s and one 2, the 99.9% rank at 1000
+-- HdrHistogram ----------------------------------------------------------------
+  metrics-kit.hist.hdr-histogram
+               min = 1 ns
+               max = 2 ns
+              mean = 1.00 ns
+            stddev = 0.03
+              75% <= 1 ns
+              95% <= 1 ns
+              98% <= 1 ns
+              99% <= 1 ns
+            99.9% <= 1 ns
+
+
+=== HdrHistogram: 40959 1s and 41 2s, the 99.9% rank at 41000
+-- HdrHistogram ----------------------------------------------------------------
+  metrics-kit.hist.hdr-histogram
+               min = 1 ns
+               max = 2 ns
+              mean = 1.00 ns
+            stddev = 0.03
+              75% <= 1 ns
+              95% <= 1 ns
+              98% <= 1 ns
+              99% <= 1 ns
+            99.9% <= 1 ns
+
+
+=== HdrHistogram: 5 significant digits, verbose
+-- HdrHistogram ----------------------------------------------------------------
+  metrics-kit.hist.hdr-histogram
+               min = 0 ns
+               max = 1 ns
+              mean = 0.33 ns
+            stddev = 0.47
+              75% <= 1 ns
+              95% <= 1 ns
+              98% <= 1 ns
+              99% <= 1 ns
+            99.9% <= 1 ns
+       Value     Percentile TotalCount 1/(1-Percentile)
+
+     0.00000 0.000000000000          2           1.00
+     0.00000 0.100000000000          2           1.11
+     0.00000 0.200000000000          2           1.25
+     0.00000 0.300000000000          2           1.43
+     0.00000 0.400000000000          2           1.67
+     0.00000 0.500000000000          2           2.00
+     0.00000 0.550000000000          2           2.22
+     0.00000 0.600000000000          2           2.50
+     0.00000 0.650000000000          2           2.86
+     1.00000 0.700000000000          3           3.33
+     1.00000 1.000000000000          3
+#[Mean    =      0.33333, StdDeviation   =      0.47140]
+#[Max     =      1.00000, Total count    =            3]
+#[Buckets =           10, SubBuckets     =       262144]
+
+
+=== HdrHistogram: 0 significant digits, verbose
+-- HdrHistogram ----------------------------------------------------------------
+  metrics-kit.hist.hdr-histogram
+               min = 0 ns
+               max = 1023 ns
+              mean = 384.17 ns
+            stddev = 383.83
+              75% <= 1023 ns
+              95% <= 1023 ns
+              98% <= 1023 ns
+              99% <= 1023 ns
+            99.9% <= 1023 ns
+       Value     Percentile TotalCount 1/(1-Percentile)
+
+           0 0.000000000000          2           1.00
+           0 0.100000000000          2           1.11
+           0 0.200000000000          2           1.25
+           0 0.300000000000          2           1.43
+           1 0.400000000000          3           1.67
+           1 0.500000000000          3           2.00
+        1023 0.550000000000          6           2.22
+        1023 1.000000000000          6
+#[Mean    =          384, StdDeviation   =          384]
+#[Max     =         1023, Total count    =            6]
+#[Buckets =           27, SubBuckets     =            2]
+
+
 === class names
 file-descriptors.open: org.apache.pekko.testkit.metrics.FileDescriptorMetricSet$$anon$1
 file-descriptors.max: org.apache.pekko.testkit.metrics.FileDescriptorMetricSet$$anon$2

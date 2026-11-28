@@ -7,7 +7,8 @@
 # console-reporter-examples.expected. Then it runs one case with the Windows
 # line separator and compares that with the "crlf" section of the same file.
 #
-# Needs: bash, git, curl, shasum or sha1sum, and Java 17 or later. The Pekko
+# Needs: bash, git, curl, shasum or sha1sum, and Java 17 or later. The
+# locale of the runs is pinned to en-US, whatever the host's is. The Pekko
 # clone is $PEKKO_REPO (default ~/Sources/github.com/j5ik2o/pekko); only
 # `git show v2.0.0:<path>` is read from it, so its work tree may be on any
 # version. The jars come from Maven Central and are checked against the
@@ -74,8 +75,14 @@ java -cp "$cp" scala.tools.nsc.Main -usejavacp -nowarn -d "$work/classes" "$work
 main=org.apache.pekko.testkit.metrics.examples.ConsoleReporterExamples
 # metrics-core logs through slf4j-api; without a binding it falls back to a
 # no-op logger and says so on stderr, which is left as it is.
-run_lf() { java -cp "$work/classes:$cp" "$main"; }
-run_crlf() { java -Dline.separator=$'\r\n' -cp "$work/classes:$cp" "$main" crlf; }
+# The reporter's "...".format uses the default FORMAT locale of the JVM (a
+# German one writes 10,09), and .expected is written with the US one, so both
+# runs pin it. The .format keys are pinned too: they override user.language
+# and user.country for that category when the environment sets them (for
+# example through JAVA_TOOL_OPTIONS, which the command line overrides).
+locale=(-Duser.language=en -Duser.country=US -Duser.language.format=en -Duser.country.format=US)
+run_lf() { java "${locale[@]}" -cp "$work/classes:$cp" "$main"; }
+run_crlf() { java "${locale[@]}" -Dline.separator=$'\r\n' -cp "$work/classes:$cp" "$main" crlf; }
 
 if [ "${1:-}" = "--print" ]; then
   run_lf

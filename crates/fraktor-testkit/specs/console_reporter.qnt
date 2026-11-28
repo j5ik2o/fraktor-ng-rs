@@ -19,14 +19,17 @@
 //
 // A report (the thread's, or a caller's report_metrics and
 // report_and_clear_metrics) takes two locks in this order: the output Mutex
-// of the kit (metrics_kit_value.rs line 68), then, inside each write, the
-// lock of the writer itself. The writer of MetricsKit::new is the standard
+// of the kit (metrics_kit_value.rs line 68), then, inside each call into the
+// writer (every write and the flush at the end), the lock of the writer
+// itself. The writer of MetricsKit::new is the standard
 // output, whose lock is the re-entrant StdoutLock that any thread can also
 // take; a writer given to with_output may take a lock that callers can hold
 // (a shared buffer behind a Mutex, which is not re-entrant) or none. The
 // contract of the design (docs/design/issue-183-metrics-kit.md §2 "出力のロックの
 // 契約") is that a thread does not stop the kit, drop it, or report through it
-// while it holds the writer's lock.
+// while it holds the writer's lock. The contract also keeps a call into the
+// writer from stopping, dropping or reporting through the same kit; this
+// model does not have that part (the design, §6 (d)).
 // `contract` turns the contract on (the default `init`) or off (the runs that
 // show the deadlocks it prevents); `deadlocked` is a cycle of waits, defined
 // apart from the guards.
@@ -39,7 +42,7 @@ module console_reporter {
   // holding it while it writes.
   type Print = NoPrint | WantsTheOutput | HasTheOutput
   type Lock = Free | HeldBy(str)
-  // The lock the writer takes in each write.
+  // The lock the writer takes in each call into it (write and flush).
   type Writer = NoSharedLock | ReentrantLock | PlainLock
 
   // Two threads that call shutdown_metrics and report_metrics, and the
@@ -576,8 +579,28 @@ module console_reporter {
       .then(lookAtTheThread("A")).then(beginShutdown("B")).then(setTheFlag("B"))
       .then(lookAtTheThread("B")).then(wakeToStop).then(waitReturn("B")).fail()
 
-  run theThreadCannotWakeWhileTheStopLockIsHeldTest =
-    initWith(true, true, ReentrantLock, true).then(construct).then(beginShutdown("A")).then(wakeToStop).fail()
+  // The flag is already set, so only the stop lock (held by B) keeps the
+  // thread from leaving; the twin below shows the same step goes through once
+  // B releases it.
+  run theThreadCannotWakeToStopWhileTheStopLockIsHeldTest =
+    initWith(true, true, ReentrantLock, true).then(construct).then(beginShutdown("A")).then(setTheFlag("A"))
+      .then(beginShutdown("B")).then(wakeToStop).fail()
+
+  run theThreadWakesToStopOnceTheStopLockIsFreeTest =
+    initWith(true, true, ReentrantLock, true).then(construct).then(beginShutdown("A")).then(setTheFlag("A"))
+      .then(beginShutdown("B")).then(setTheFlag("B")).then(wakeToStop)
+      .expect(thread == Finished and stopLock == Free)
+
+  // The flag is still clear, so only the stop lock (held by A) keeps the
+  // thread from reporting; the twin below shows the same step goes through
+  // when no stop holds the lock (A cannot release it without setting the
+  // flag).
+  run theThreadCannotWakeToReportWhileTheStopLockIsHeldTest =
+    initWith(true, true, ReentrantLock, true).then(construct).then(beginShutdown("A")).then(wakeToReport).fail()
+
+  run theThreadWakesToReportOnceTheStopLockIsFreeTest =
+    initWith(true, true, ReentrantLock, true).then(construct).then(wakeToReport)
+      .expect(thread == Reporting and stopLock == Free and not(stopFlag))
 
   // The same shutdown_metrics that succeeds before the drop (see
   // secondShutdownDoesNothingTest) is impossible after it.

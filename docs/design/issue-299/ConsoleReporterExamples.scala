@@ -97,6 +97,12 @@ object ConsoleReporterExamples {
     h
   }
 
+  private def histogramWith(digits: Int, counts: Seq[(Long, Long)]): HdrHistogram = {
+    val h = new HdrHistogram(100000000L, digits, "ns")
+    counts.foreach { case (value, count) => h.updateWithCount(value, count) }
+    h
+  }
+
   def main(args: Array[String]): Unit = {
     if (args.headOption.contains("crlf")) {
       val r = newRegistry()
@@ -227,6 +233,36 @@ object ConsoleReporterExamples {
       r.register("metrics-kit.hist.hdr-histogram", histogram(Seq(5L)))
       r.register("metrics-kit.timer", timer(10L, 1234567L))
       emit("kinds in order: gauges, timers, histograms, averaging gauges", report(r, verbose = false))
+    }
+
+    // getValueAtPercentile lowers the percentile by 1 ulp before
+    // ceil(p * total / 100): at 1000 entries the 99.9% rank is 999, not 1000.
+    {
+      val r = newRegistry()
+      r.register("metrics-kit.hist.hdr-histogram", histogramWith(4, Seq(1L -> 999L, 2L -> 1L)))
+      emit("HdrHistogram: 999 1s and one 2, the 99.9% rank at 1000", report(r, verbose = false))
+    }
+
+    // At 41000 entries, ceil(99.9 * 41000 / 100) without the 1 ulp is 40960;
+    // with it, 40959.
+    {
+      val r = newRegistry()
+      r.register("metrics-kit.hist.hdr-histogram", histogramWith(4, Seq(1L -> 40959L, 2L -> 41L)))
+      emit("HdrHistogram: 40959 1s and 41 2s, the 99.9% rank at 41000", report(r, verbose = false))
+    }
+
+    // The Mean, StdDeviation and Max of the distribution have as many
+    // decimals as the significant digits; with 0 there is no decimal point.
+    {
+      val r = newRegistry()
+      r.register("metrics-kit.hist.hdr-histogram", histogramWith(5, Seq(0L -> 2L, 1L -> 1L)))
+      emit("HdrHistogram: 5 significant digits, verbose", report(r, verbose = true))
+    }
+
+    {
+      val r = newRegistry()
+      r.register("metrics-kit.hist.hdr-histogram", histogramWith(0, Seq(0L -> 2L, 1L -> 1L, 1000L -> 3L)))
+      emit("HdrHistogram: 0 significant digits, verbose", report(r, verbose = true))
     }
 
     print("=== class names\n")
