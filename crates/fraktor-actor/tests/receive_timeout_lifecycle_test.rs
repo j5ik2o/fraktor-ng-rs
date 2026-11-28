@@ -36,9 +36,12 @@
 // - `LightArrayRevolverScheduler.schedule` (lines 223-227): a zero delay runs
 //   the task at once and returns `NotCancellable`.
 //
-// The clock is driven by hand. A task whose deadline has come fires at the
-// next point the system is driven, which is where Pekko's scheduler would
-// have sent the message under the same clock.
+// The clock is driven by hand. A task with a positive delay whose deadline
+// has come fires at the next point the system is driven, which is where
+// Pekko's scheduler would have sent the message under the same clock. A zero
+// delay is not held at all: Pekko's scheduler sends it at once and returns
+// `NotCancellable`, so a later cancel or reschedule cannot take it back, and
+// every check that schedules a zero timeout sends its own `ReceiveTimeout(0)`.
 
 use core::time::Duration;
 
@@ -54,7 +57,7 @@ use fraktor_actor::kernel::message::Message;
 use fraktor_actor::kernel::supervision::{Directive, SupervisorStrategy};
 use fraktor_actor::kernel::Clock;
 use fraktor_testkit::fraktorspec::FraktorSpec;
-use fraktor_testkit::test_kit::TestProbe;
+use fraktor_testkit::test_kit::{ReceiveWhile, TestProbe};
 
 const SYSTEM_NAME: &str = "ReceiveTimeoutLifecycleTest";
 
@@ -1084,18 +1087,27 @@ impl Actor for PoisonPillTarget {
   }
 }
 
-// `PoisonPill` is an auto-received message that influences the timeout, so
-// `ActorCell.invoke` (lines 568-585) runs its three calls around it like any
-// other: `cancelReceiveTimeoutIfNeeded`, `autoReceiveMessage` (which puts the
-// `Terminate` on the system queue) and, in the `finally`,
-// `checkReceiveTimeout`. A zero timeout is sent at once and cannot be
-// cancelled (`LightArrayRevolverScheduler.schedule`, lines 223-227), so the
-// `ReceiveTimeout(0)` is addressed to the actor that is stopping and reaches
-// it only after `FaultHandling.terminate` has closed the mailbox: it goes to
-// dead letters, exactly once. The `PoisonPill` waits in the new mailbox
-// before the actor's first run, so it is the first message `invoke` handles
-// and `receive` never sees it; no run is left to loop on the timeout the
-// check schedules again.
+// Two checks schedule the zero timeout, and each sends a `ReceiveTimeout(0)`
+// at once that cannot be cancelled (`LightArrayRevolverScheduler.schedule`,
+// lines 223-227):
+//
+// - `ActorCell.create` calls `checkReceiveTimeout(reschedule = true)` right
+//   after `aroundPreStart` (lines 672-673), so the zero timeout `pre_start`
+//   set is sent when the actor is created. The `PoisonPill` waits in the new
+//   mailbox before the actor's first run, so this `ReceiveTimeout(0)` queues
+//   behind it.
+// - `PoisonPill` is an auto-received message that influences the timeout, so
+//   `ActorCell.invoke` (lines 568-585) runs its three calls around it like
+//   any other: `cancelReceiveTimeoutIfNeeded` (which cannot take back the
+//   first one), `autoReceiveMessage` (which puts the `Terminate` on the
+//   system queue) and, in the `finally`, `checkReceiveTimeoutIfNeeded`
+//   (`ReceiveTimeout.scala`, lines 50-54), which sends the second.
+//
+// Both are addressed to the actor that is stopping and reach it only after
+// `FaultHandling.terminate` has closed the mailbox, so both go to dead
+// letters, each without a sender (`Mailboxes.scala`, lines 69-71). The
+// `PoisonPill` is the first message `invoke` handles, so `receive` never sees
+// it, and no run is left to hand either `ReceiveTimeout(0)` to `receive`.
 #[test]
 fn poison_pill_fires_the_due_receive_timeout_into_dead_letters() {
   let (mut spec, _clock) = spec_with_clock();
@@ -1109,14 +1121,23 @@ fn poison_pill_fires_the_due_receive_timeout_into_dead_letters() {
   actor.tell("PoisonPill", no_sender);
   spec.system_mut().run_until_idle();
   assert!(spec.system().is_actor_terminated(&actor), "the PoisonPill stopped the actor");
-  let dead = dead_listener.expect_msg_type::<DeadLetter>();
+  let dead_letters = dead_listener.receive_while(ReceiveWhile::new().max(millis(3000)).idle(millis(300)), |message| {
+    message.downcast_ref::<DeadLetter>().cloned()
+  });
   assert_eq!(
-    dead.message().downcast_ref::<ReceiveTimeout>().map(ReceiveTimeout::timeout),
-    Some(Duration::ZERO),
-    "the dead letter is the ReceiveTimeout(0) the check after the PoisonPill scheduled"
+    dead_letters.len(),
+    2,
+    "the ReceiveTimeout(0) sent at creation and the one sent by the check after the PoisonPill both go to dead letters"
   );
-  assert!(*dead.recipient() == actor, "it was addressed to the stopping actor");
-  assert!(*dead.sender() == spec.system().dead_letters(), "it has no sender");
+  for dead in &dead_letters {
+    assert_eq!(
+      dead.message().downcast_ref::<ReceiveTimeout>().map(ReceiveTimeout::timeout),
+      Some(Duration::ZERO),
+      "each dead letter is a ReceiveTimeout(0)"
+    );
+    assert!(*dead.recipient() == actor, "it was addressed to the stopping actor");
+    assert!(*dead.sender() == spec.system().dead_letters(), "it has no sender");
+  }
   dead_listener.expect_no_message(millis(300));
   assert!(
     delivered(&deliveries).is_empty(),
