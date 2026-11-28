@@ -545,6 +545,13 @@ fn a_failed_child_is_decided_in_the_parents_run_not_the_childs() {
   let seen = entries(&log);
   assert_eq!(decided.load(Ordering::SeqCst), 0, "the parent decided before its own run had the `Failed`: {seen:?}");
   assert_eq!(counted(&log, "child:pre_restart"), 0, "the child restarted before the parent decided: {seen:?}");
+
+  // The decision still comes, in the parent's run: the parent's counting
+  // decider is asked exactly once and the child restarts.
+  system.run_until_idle();
+  let seen = entries(&log);
+  assert_eq!(decided.load(Ordering::SeqCst), 1, "the parent's decider was not asked once for the child: {seen:?}");
+  assert_eq!(seen, ["child:pre_restart", "child:post_restart"], "the child did not restart after the decision");
 }
 
 // ----- all-for-one (design section 11.13.5)
