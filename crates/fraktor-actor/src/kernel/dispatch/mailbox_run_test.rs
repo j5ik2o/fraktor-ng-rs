@@ -71,7 +71,7 @@ impl MailboxCell for Recorder {
 
   fn system_invoke(&mut self, _env: &mut (), mailbox: &Mailbox<Self>, message: SystemMessage) {
     let entry = match message {
-      | SystemMessage::Resume => {
+      | SystemMessage::Resume { .. } => {
         mailbox.resume();
         String::from("resume")
       },
@@ -174,7 +174,7 @@ fn waiting_system_messages_go_before_the_first_normal_message() {
   let fixture = Fixture::new(RunLimits::new(Throughput::new(5)));
   fixture.send(1);
   fixture.send_system(SystemMessage::Create);
-  fixture.send_system(SystemMessage::Resume);
+  fixture.send_system(SystemMessage::Resume { caused_by_failure: false });
 
   fixture.drive();
 
@@ -220,7 +220,7 @@ fn a_suspended_mailbox_handles_only_system_messages_until_resumed() {
   // Suspended with only a normal message, the mailbox has no work to run for.
   assert!(Mailbox::try_schedule(&fixture.mailbox).is_none());
 
-  fixture.send_system(SystemMessage::Resume);
+  fixture.send_system(SystemMessage::Resume { caused_by_failure: false });
   fixture.drive();
   assert_eq!(fixture.log(), ["resume", "m1"]);
 }
@@ -493,7 +493,7 @@ mod unwind {
   fn a_panic_among_system_messages_raises_the_flag_again() {
     let fixture = Fixture::new();
     assert!(Mailbox::system_send(&fixture.mailbox, SystemMessage::Create).is_ok());
-    assert!(fixture.mailbox.system_enqueue(SystemMessage::Resume).is_ok());
+    assert!(fixture.mailbox.system_enqueue(SystemMessage::Resume { caused_by_failure: false }).is_ok());
 
     fixture.run_unwinding();
 

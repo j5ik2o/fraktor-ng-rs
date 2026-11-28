@@ -308,8 +308,12 @@ impl Actor for LateStarter {
     self.log.lock().unwrap().push(std::format!("{}:pre_start", self.name));
   }
 
-  fn post_restart(&mut self, _context: &mut ActorContext<'_>) {
+  fn post_restart(&mut self, context: &mut ActorContext<'_>) {
     self.log.lock().unwrap().push(std::format!("{}:post_restart", self.name));
+    // The default `post_restart` runs `pre_start`; keep that so the sibling
+    // records its second `pre_start`, as the `Create`-then-`Recreate` assembly
+    // of section 11.13.5 does.
+    self.pre_start(context);
   }
 
   fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
@@ -403,18 +407,25 @@ impl Actor for Leaf {
 
 #[test]
 fn a_recreate_delivered_while_the_actor_waits_for_children_runs_after_the_wait() {
-  // Design 11.13.8 "子を待つ間の `Recreate`" and #254 comment 1: an actor that is
-  // waiting for its children keeps the `Recreate` and handles it after the wait,
-  // so it restarts a second time and the recovery does not nest. Stage 4a drops
-  // the `Recreate` for a waiting actor, so `post_restart` runs once.
+  // Design 11.13.8 "子を待つ間の `Recreate`", #254 comment 1, and the Quint run
+  // `aRecreateWhileWaitingForChildrenRunsAfterTheWaitTest`: an actor that is
+  // waiting for its children keeps each `Recreate` and handles them after the
+  // wait, so it restarts twice and the recovery does not nest. Under all-for-one
+  // the second `Recreate` reaches the waiting child from a sibling's failure.
+  // Stage 4a drops the `Recreate` for a waiting actor, so `post_restart` runs
+  // once.
   let log = new_log();
   let mut system = with_catcher("Stage4bKeptRecreate");
   let guardian = system.actor_of(parent("guardian", &log, SupervisorStrategy::default_strategy()));
   let failing = system.downgrade().spawn_child(
     &guardian,
-    parent("parent", &log, SupervisorStrategy::one_for_one(3).with_decider(|_, _| Directive::Restart)),
+    parent(
+      "parent",
+      &log,
+      SupervisorStrategy::all_for_one(3, RestartWindow::Unbounded).with_decider(|_, _| Directive::Restart),
+    ),
     Some("parent"),
-    SupervisorStrategy::one_for_one(3),
+    SupervisorStrategy::all_for_one(3, RestartWindow::Unbounded),
   );
   let child = system.downgrade().spawn_child(
     &failing,
@@ -425,10 +436,21 @@ fn a_recreate_delivered_while_the_actor_waits_for_children_runs_after_the_wait()
     Some("child"),
     SupervisorStrategy::one_for_one(3),
   );
+  let sibling = system.downgrade().spawn_child(
+    &failing,
+    worker("sibling", &log),
+    Some("sibling"),
+    SupervisorStrategy::one_for_one(3),
+  );
   system.run_until_idle();
   log.lock().unwrap().clear();
 
+  // `child` fails, stops its grandchild in `pre_restart` and waits for it. While
+  // it waits, `sibling` fails; the all-for-one decision sends the waiting child
+  // a second `Recreate`, which is kept until the wait ends.
   child.tell("boom", failing.clone());
+  system.run_one();
+  sibling.tell("boom", failing.clone());
   system.run_until_idle();
   assert_eq!(
     counted(&log, "child:post_restart"),

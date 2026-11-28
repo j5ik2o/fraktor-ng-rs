@@ -146,7 +146,7 @@ fn check(ops: &[Op], shared: bool) {
       | Op::SystemSend(to) => {
         tally.system_sent[to] += 1;
         let was_closed = members[to].is_closed();
-        match members[to].system_enqueue(SystemMessage::Resume) {
+        match members[to].system_enqueue(SystemMessage::Resume { caused_by_failure: false }) {
           | Ok(()) => assert!(!was_closed, "a closed mailbox took a system message: {context}"),
           | Err(_) => {
             assert!(was_closed, "{context}");
@@ -257,13 +257,13 @@ fn closing_a_mailbox_with_its_own_queue_hands_back_what_it_held() {
   let mailbox = mailbox(unbounded(), false);
   assert!(mailbox.enqueue(envelope(1)).is_ok(), "open");
   assert!(mailbox.enqueue(envelope(2)).is_ok(), "open");
-  mailbox.system_enqueue(SystemMessage::Resume).expect("open");
+  mailbox.system_enqueue(SystemMessage::Resume { caused_by_failure: false }).expect("open");
   mailbox.system_enqueue(SystemMessage::Create).expect("open");
 
   let (messages, system) = mailbox.close();
 
   assert_eq!(messages.iter().map(number).collect::<Vec<_>>(), [1, 2]);
-  assert!(matches!(system.as_slice(), [SystemMessage::Resume, SystemMessage::Create]));
+  assert!(matches!(system.as_slice(), [SystemMessage::Resume { caused_by_failure: false }, SystemMessage::Create]));
   assert_eq!(number(&mailbox.enqueue(envelope(3)).expect_err("closed")), 3);
   assert!(matches!(mailbox.system_enqueue(SystemMessage::Create), Err(SystemMessage::Create)));
   assert!(!mailbox.has_messages() && !mailbox.has_system_messages());
@@ -405,20 +405,6 @@ impl<C: MailboxCell> Mailbox<C> {
     Arc::new(move |envelope: Envelope| {
       refused.lock().unwrap().push(envelope);
     })
-  }
-
-  /// Returns whether the mailbox is suspended.
-  pub(crate) fn is_suspended(&self) -> bool {
-    self.status.is_suspended()
-  }
-
-  /// Returns how many times the mailbox has been suspended without a resume.
-  ///
-  /// Stage 4b (design of #234, section 11.13.8) makes this a production read
-  /// next to `is_suspended`; this accessor stands in for it until then, so the
-  /// stage 4b unit tests can read the count.
-  pub(crate) fn suspend_count(&self) -> usize {
-    self.status.suspend_count()
   }
 
   /// Returns whether the queue of normal messages holds a message. For a
