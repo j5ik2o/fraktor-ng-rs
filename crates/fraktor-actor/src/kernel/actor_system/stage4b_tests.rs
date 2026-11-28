@@ -277,6 +277,101 @@ fn a_top_level_actor_is_decided_by_the_guardian_not_by_its_own_strategy() {
 }
 
 #[test]
+fn a_child_started_with_a_strategy_is_decided_by_it_under_a_parents_all_for_one() {
+  // Rule 1 of the precedence decided in the comment on #350 (design 11.13.4):
+  // a child started with a strategy is decided by that strategy, the same as
+  // main's `strategy_for` (main `18f6690`, `executor_value.rs:2213-2220`).
+  // The deciding parent `middle` is not top-level and applies an all-for-one
+  // strategy to its children; the child `a` was started with a one-for-one
+  // strategy whose decider stops it. The decider is asked once, `a` is
+  // stopped, and its sibling `b` is not taken along.
+  let log = new_log();
+  let asked = Arc::new(AtomicUsize::new(0));
+  let counted_asks = Arc::clone(&asked);
+  let mut system = with_catcher("Stage4bStartedWithOverParentAllForOne");
+  let guardian = system.actor_of(parent("guardian", &log, SupervisorStrategy::default_strategy()));
+  let middle = system.downgrade().spawn_child(
+    &guardian,
+    parent("middle", &log, SupervisorStrategy::all_for_one(3, RestartWindow::Unbounded)),
+    Some("middle"),
+    SupervisorStrategy::default_strategy(),
+  );
+  let failing = system.downgrade().spawn_child(
+    &middle,
+    worker("a", &log),
+    Some("a"),
+    SupervisorStrategy::one_for_one(3).with_decider(move |_, _| {
+      counted_asks.fetch_add(1, Ordering::SeqCst);
+      Directive::Stop
+    }),
+  );
+  let sibling =
+    system.downgrade().spawn_child(&middle, worker("b", &log), Some("b"), SupervisorStrategy::default_strategy());
+  system.run_until_idle();
+  log.lock().unwrap().clear();
+
+  failing.tell("boom", guardian.clone());
+  system.run_until_idle();
+  let seen = entries(&log);
+  assert_eq!(asked.load(Ordering::SeqCst), 1, "the strategy the child was started with was not asked: {seen:?}");
+  assert!(system.is_actor_terminated(&failing), "the child was not stopped by its own strategy: {seen:?}");
+  assert!(!system.is_actor_terminated(&sibling), "the sibling was stopped along with the child: {seen:?}");
+  assert!(!system.is_actor_terminated(&middle));
+  assert_eq!(seen, Vec::<String>::new(), "a restart ran where the child's strategy stops it");
+}
+
+#[test]
+fn a_child_started_with_a_strategy_is_decided_by_it_over_the_parents_decider() {
+  // Rule 1 of the precedence decided in the comment on #350 (design 11.13.4):
+  // a child started with a strategy is decided by that strategy, the same as
+  // main's `strategy_for` (main `18f6690`, `executor_value.rs:2213-2220`).
+  // The deciding parent `middle` is not top-level and applies a one-for-one
+  // strategy with a decider that restarts; the child `a` was started with a
+  // decider that stops it. Only the child's decider is asked, and `a` is
+  // stopped.
+  let log = new_log();
+  let parent_asked = Arc::new(AtomicUsize::new(0));
+  let counted_parent_asks = Arc::clone(&parent_asked);
+  let child_asked = Arc::new(AtomicUsize::new(0));
+  let counted_child_asks = Arc::clone(&child_asked);
+  let mut system = with_catcher("Stage4bStartedWithOverParentDecider");
+  let guardian = system.actor_of(parent("guardian", &log, SupervisorStrategy::default_strategy()));
+  let middle = system.downgrade().spawn_child(
+    &guardian,
+    parent(
+      "middle",
+      &log,
+      SupervisorStrategy::one_for_one(3).with_decider(move |_, _| {
+        counted_parent_asks.fetch_add(1, Ordering::SeqCst);
+        Directive::Restart
+      }),
+    ),
+    Some("middle"),
+    SupervisorStrategy::default_strategy(),
+  );
+  let child = system.downgrade().spawn_child(
+    &middle,
+    worker("a", &log),
+    Some("a"),
+    SupervisorStrategy::one_for_one(3).with_decider(move |_, _| {
+      counted_child_asks.fetch_add(1, Ordering::SeqCst);
+      Directive::Stop
+    }),
+  );
+  system.run_until_idle();
+  log.lock().unwrap().clear();
+
+  child.tell("boom", guardian.clone());
+  system.run_until_idle();
+  let seen = entries(&log);
+  assert_eq!(parent_asked.load(Ordering::SeqCst), 0, "the parent's decider decided a child started with a strategy");
+  assert_eq!(child_asked.load(Ordering::SeqCst), 1, "the strategy the child was started with was not asked: {seen:?}");
+  assert!(system.is_actor_terminated(&child), "the child was not stopped by its own strategy: {seen:?}");
+  assert!(!system.is_actor_terminated(&middle));
+  assert_eq!(seen, Vec::<String>::new(), "a restart ran where the child's strategy stops it");
+}
+
+#[test]
 fn a_decider_panic_on_a_childs_failure_makes_the_parent_fail() {
   // Design 11.13.3 item 4 and 11.13.4 (a decider's panic is the `Escalate` of
   // a parent without an instance): the decider runs in the parent's run for the
