@@ -20,7 +20,10 @@
 //!
 //! The file is a submodule of `actor_system_value_test`, the crate's test
 //! module for `ActorSystem`, so the suspend read reaches the executor through
-//! the test-only `stage4b_suspend_counts` helper that module exposes.
+//! the test-only `stage4b_suspend_counts` helper that module exposes. A child
+//! that inherits its parent's strategy is started through the executor's
+//! `spawn_named_child`, the entry `ActorContext::actor_of` uses, since no public
+//! entry starts a child from outside the parent without a strategy.
 //!
 //! The scenarios not reached here (the restart count, which the parent's table
 //! already keeps, and the two variants of a failure of one run that the stage
@@ -81,6 +84,16 @@ fn with_catcher(name: &str) -> ActorSystem {
 /// callers make sure their actors are alive.
 fn counts_of(system: &mut ActorSystem, targets: &[&ActorRef]) -> Vec<Option<usize>> {
   stage4b_suspend_counts(system, targets)
+}
+
+/// Starts a child of `parent` that inherits the strategy `parent` applies to
+/// its children (rule 2 of the precedence decided in the comment on #350),
+/// through the entry `ActorContext::actor_of` uses. The parent must have
+/// handled its `Create`, which registers that strategy.
+fn spawn_inheriting(system: &mut ActorSystem, parent: &ActorRef, props: Props, name: &str) -> ActorRef {
+  crate::kernel::sync::lock(&system.executor)
+    .spawn_named_child(parent, props, name)
+    .expect("the parent takes a child that inherits its strategy")
 }
 
 // ----- a shared worker and parent
@@ -372,13 +385,66 @@ fn a_child_started_with_a_strategy_is_decided_by_it_over_the_parents_decider() {
 }
 
 #[test]
+fn a_child_started_with_a_strategy_without_a_decider_is_decided_by_it() {
+  // Rule 1 of the precedence decided in the comment on #350 (design 11.13.4)
+  // holds for a strategy without a decider of its own as well: main's
+  // `strategy_for` (main `18f6690`, `executor_value.rs:2213-2220`) chooses by
+  // whether the child inherited, not by whether the strategy carries a decider.
+  // The deciding parent `middle` is not top-level and applies an all-for-one
+  // strategy whose decider stops; the child `a` was started with a plain
+  // one-for-one strategy, whose default decider restarts it. The parent's
+  // decider is not asked, only `a` restarts, and its sibling `b` is not taken
+  // along. On main the parent's decider is asked 0 times, `b` restarts 0 times
+  // and `a` restarts once.
+  let log = new_log();
+  let parent_asked = Arc::new(AtomicUsize::new(0));
+  let counted_parent_asks = Arc::clone(&parent_asked);
+  let mut system = with_catcher("Stage4bStartedWithoutDecider");
+  let guardian = system.actor_of(parent("guardian", &log, SupervisorStrategy::default_strategy()));
+  let middle = system.downgrade().spawn_child(
+    &guardian,
+    parent(
+      "middle",
+      &log,
+      SupervisorStrategy::all_for_one(3, RestartWindow::Unbounded).with_decider(move |_, _| {
+        counted_parent_asks.fetch_add(1, Ordering::SeqCst);
+        Directive::Stop
+      }),
+    ),
+    Some("middle"),
+    SupervisorStrategy::default_strategy(),
+  );
+  let failing =
+    system.downgrade().spawn_child(&middle, worker("a", &log), Some("a"), SupervisorStrategy::one_for_one(3));
+  let sibling =
+    system.downgrade().spawn_child(&middle, worker("b", &log), Some("b"), SupervisorStrategy::default_strategy());
+  system.run_until_idle();
+  log.lock().unwrap().clear();
+
+  failing.tell("boom", guardian.clone());
+  system.run_until_idle();
+  let seen = entries(&log);
+  assert_eq!(
+    parent_asked.load(Ordering::SeqCst),
+    0,
+    "the parent's decider decided a child started with a strategy: {seen:?}"
+  );
+  assert_eq!(seen, ["a:pre_restart", "a:post_restart"], "only the child should restart, once, by its own strategy");
+  assert!(!system.is_actor_terminated(&failing), "the child was stopped by the parent's decider: {seen:?}");
+  assert!(!system.is_actor_terminated(&sibling), "the sibling was stopped along with the child: {seen:?}");
+  assert!(!system.is_actor_terminated(&middle));
+}
+
+#[test]
 fn a_decider_panic_on_a_childs_failure_makes_the_parent_fail() {
   // Design 11.13.3 item 4 and 11.13.4 (a decider's panic is the `Escalate` of
   // a parent without an instance): the decider runs in the parent's run for the
   // child's `Failed`, so its panic is the parent's own failure and the
   // guardian restarts the parent. Stage 4a runs the decider in the executor's
   // `finish_run`, where a panic is handled without failing the parent, so the
-  // parent does not restart.
+  // parent does not restart. The child is started without a strategy, so it
+  // inherits the parent's and the parent's decider decides its failure (rule 2
+  // of the precedence decided in the comment on #350).
   let log = new_log();
   let mut system = with_catcher("Stage4bPerpetrator");
   let guardian = system.actor_of(parent("guardian", &log, SupervisorStrategy::default_strategy()));
@@ -388,8 +454,8 @@ fn a_decider_panic_on_a_childs_failure_makes_the_parent_fail() {
     Some("parent"),
     SupervisorStrategy::one_for_one(3),
   );
-  let child =
-    system.downgrade().spawn_child(&failing, worker("child", &log), Some("child"), SupervisorStrategy::one_for_one(3));
+  system.run_until_idle();
+  let child = spawn_inheriting(&mut system, &failing, worker("child", &log), "child");
   system.run_until_idle();
   let before = counted(&log, "parent:pre_restart");
 
@@ -596,7 +662,9 @@ fn a_recreate_delivered_while_the_actor_waits_for_children_runs_after_the_wait()
   // wait, so it restarts twice and the recovery does not nest. Under all-for-one
   // the second `Recreate` reaches the waiting child from a sibling's failure.
   // Stage 4a drops the `Recreate` for a waiting actor, so `post_restart` runs
-  // once.
+  // once. The child and its sibling are started without a strategy, so they
+  // inherit the parent's all-for-one (rule 2 of the precedence decided in the
+  // comment on #350), which takes both of them along.
   let log = new_log();
   let mut system = with_catcher("Stage4bKeptRecreate");
   let guardian = system.actor_of(parent("guardian", &log, SupervisorStrategy::default_strategy()));
@@ -610,21 +678,17 @@ fn a_recreate_delivered_while_the_actor_waits_for_children_runs_after_the_wait()
     Some("parent"),
     SupervisorStrategy::all_for_one(3, RestartWindow::Unbounded),
   );
-  let child = system.downgrade().spawn_child(
+  system.run_until_idle();
+  let child = spawn_inheriting(
+    &mut system,
     &failing,
     Props::new({
       let log = Arc::clone(&log);
       move || WaitsForItsChild { log: Arc::clone(&log), child: Arc::new(Mutex::new(None)) }
     }),
-    Some("child"),
-    SupervisorStrategy::one_for_one(3),
+    "child",
   );
-  let sibling = system.downgrade().spawn_child(
-    &failing,
-    worker("sibling", &log),
-    Some("sibling"),
-    SupervisorStrategy::one_for_one(3),
-  );
+  let sibling = spawn_inheriting(&mut system, &failing, worker("sibling", &log), "sibling");
   system.run_until_idle();
   log.lock().unwrap().clear();
 
