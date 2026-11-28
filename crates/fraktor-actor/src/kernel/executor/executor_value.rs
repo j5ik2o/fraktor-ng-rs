@@ -3617,11 +3617,11 @@ impl Executor {
   /// Chooses the directive for a failure from `inputs`, running a
   /// decider under the catcher when one is chosen.
   ///
-  /// A child the deciding parent started with a strategy that carries
-  /// a decider of its own, under a parent that itself stands under a
-  /// parent, is decided by that strategy alone, ahead of the deciding
-  /// parent's all-for-one reach and of its decider, with the started
-  /// strategy's all-for-one reach when it is all-for-one.
+  /// A child the deciding parent started with a strategy of its own,
+  /// under a parent that itself stands under a parent, is decided by
+  /// that strategy alone, whether or not it carries a decider, ahead of
+  /// the deciding parent's all-for-one reach and of its decider, with
+  /// the started strategy's all-for-one reach when it is all-for-one.
   /// Otherwise the decider is the first of these that a caller
   /// installed: the decider of the strategy the deciding parent applies
   /// to its children; and the decider of the strategy the child was
@@ -3634,7 +3634,7 @@ impl Executor {
   /// whole set of siblings at once.
   fn choose_decision(&self, child: &ActorRef, kind: FailureKind, inputs: &DecisionInputs) -> Decision {
     if inputs.parent_not_top {
-      if let Some(spawn) = inputs.spawn_strategy.clone().filter(|strategy| strategy.has_custom_decider()) {
+      if let Some(spawn) = inputs.spawn_strategy.clone() {
         return match self.decide_catching(spawn.clone(), child, inputs.count, kind) {
           | Ok(directive) => Decision::Apply(directive, spawn.clone(), spawn.is_all_for_one()),
           | Err(message) => Decision::DeciderPanicked { message },
