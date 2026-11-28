@@ -16,7 +16,9 @@ What it checks (design docs/design/issue-198-fsm-timing-actor-ref.md, section 6)
   applied to a copy in a temporary directory (nothing is written under
   crates/*/specs/, which CI globs), and must be killed by every checker it
   names: an invariant that a fixed-seed `quint run` violates, or a run that
-  `quint test` fails. A mutant marked equivalent must be killed by nothing.
+  `quint test` fails. A mutant marked equivalent must not violate an
+  invariant or fail a positive run; failing a negative control (a run named
+  bug*Test) is reported, since it means the mutant hides that defect.
   Every invariant of the spec must be the expected killer of some mutant.
 - (b) witnesses: every action and branch of `step` is taken in some trace.
 

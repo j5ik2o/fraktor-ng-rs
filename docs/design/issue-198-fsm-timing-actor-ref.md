@@ -608,7 +608,7 @@ impl FraktorSpec {
 | P1：`Single` は 1 回、繰り返しは取り消すまで続く | 持つ（`singleFiresOnce`・`singleLeavesTable`・`repeatStaysInTable`、run `repeatedTimerKeepsFiringUntilCancelledTest`） | 回数と間隔は P1 |
 | P1：同じハンドラの中の `is_timer_active` の即時性、撃つ順（`(期限, seq)`）、`FixedRate` の追いつき、間隔 0 の panic、`FixedDelay` と `FixedRate` の違い | 持たない（時刻と順を持たない） | P1（#314） |
 | P2：状態タイムアウトの選択（既定・`After`・`Infinite`・`stay()`・未処理・同一状態の `goto`・存在しない状態） | 持つ（`armedMatchesSelection`・`infiniteNeverArms`） | 時刻は P2 |
-| P2：名前付きの印を受けて張り直したあとに古い `StateTimeout` の印が捨てられる（ケース 8 の張り直す形） | 持つ（run `namedMarkRearmDropsOldStateMarkTest`、`currentGenStateMarkIsLive`） | 本番の側は P2（#314）。本番の `fsm.rs:965` のガードを通して世代の進め忘れが見える唯一の道なので、P2 に決まった筋書きとして入れる（§10） |
+| P2：名前付きの印を受けて張り直したあとに古い `StateTimeout` の印が捨てられる（ケース 8 の張り直す形） | 持つ（run `namedMarkRearmDropsOldStateMarkTest`、`currentGenStateMarkIsLive`） | 本番の側は P2（#314）。世代の `+= 1` だけを落とし `state_timer_armed` は `None` にする誤りが、本番の `fsm.rs:965` のガードを通して見えるのはこの道だけなので、P2 に決まった筋書きとして入れる（§10。コードを読んだうえでの判断で、走らせてはいない） |
 | P2：撃つ時刻と回数、`when_with_state_timeout` を複数回呼んだときの `timeout.or(existing)` の合成 | 持たない | P2（#314） |
 | P3（I6・I7） | 持たない（このモデルの外） | P3（#314） |
 | FSMTimingSpec ケース 2・4 の `Cancel` の返事 | 持たない（§6.6） | `fsm_timing_spec.rs`（#313） |
@@ -676,7 +676,7 @@ impl FraktorSpec {
 
 | # | 差 | 原典の行 | モデル | 本番 | 扱い |
 |:---:|:---|:---|:---|:---|:---|
-| 1 | 状態タイムアウトの印を、枠が立っていること（`state_timer_armed == Some(generation)`）でも照合する | `FSM.scala:818-819`（`generation == gen` だけ） | 原典どおり持たない | 持つ（`fsm.rs:965`） | **原典と違う。** 正しい実装では結果を変えない（変異 G1 は正の run と不変条件を 1 つも落とさない。`currentGenStateMarkIsLive` が成り立つので余分）。ただし世代の進め忘れを隠す（G1 を入れると負の対照 `bugNamedMarkKeepsGenerationTest` が通らなくなる。#257 の後にケース 8 を Rust へ写しても、原典の形の道では同じ理由で見えない）。**直すのは新しい issue（未起票）**：本番の `fsm.rs:965` から `state_timer_armed` の照合を外し、原典どおり世代だけにする（本番の担当） |
+| 1 | 状態タイムアウトの印を、枠が立っていること（`state_timer_armed == Some(generation)`）でも照合する | `FSM.scala:818-819`（`generation == gen` だけ） | 原典どおり持たない | 持つ（`fsm.rs:965`） | **原典と違う。** 正しい実装では結果を変えない（変異 G1 は正の run と不変条件を 1 つも落とさない。`currentGenStateMarkIsLive` が成り立つので余分）。ただし世代の進め忘れを隠す（G1 を入れると負の対照 `bugNamedMarkKeepsGenerationTest` が通らなくなる。#257 の後にケース 8 を Rust へ写しても、原典の形の道では同じ理由で見えないはずである。これはコードを読んだうえでの推測で、走らせてはいない）。**直すのは新しい issue（未起票）**：本番の `fsm.rs:965` から `state_timer_armed` の照合を外し、原典どおり世代だけにする（本番の担当） |
 | 2 | 状態タイムアウトの印も `instance_id` を運び、前の個体の印を捨てる | `FSM.scala:818`（`TimeoutMarker(gen)` は持ち主を運ばない。持ち主の照合は名前付きの `:823` だけ） | 持つ | 持つ（`fsm.rs:962`） | 原典より強い。設計 M1 の意図的な強化で、直さない |
 | 3 | 存在しない状態への遷移と停止のたびにタイマを消す | `FSM.scala:934`（`terminate` は `currentState.stopReason` が空のときだけ働く）、`:888`・`:940`（存在しない状態への遷移が `stopReason` を残す） | いつも消す | いつも消す（`fsm.rs:435-446`、`:990-999`） | 原典より強い（安全側）。原典では、存在しない状態への遷移のあと遷移が 1 回成功するまで、2 回目の存在しない状態への遷移も止めたときの `postStop` もタイマを消さない。**直すかどうかは新しい issue（未起票）で決める** |
 | 4 | `StateTimeout` の印から存在しない状態へ移ったあとの `isStateTimerActive` | `FSM.scala:939`（`timeoutFuture` を取り消すが `None` に戻さない）、`:636` | 原典どおり真のまま（#344 で直した。前の版は偽） | `state_timer_armed` は `None`（`fsm.rs:443`、差 1 のガードの旗）。`is_state_timer_active` の元の `state_timer`（`fsm.rs:129`）はこの道で触らないので真のまま、と読める（読んだだけで、走らせていない） | 観測できる値は原典どおりと読める。直すものは差 1 の issue に含まれる |
@@ -955,7 +955,7 @@ python3 scripts/quint_fsm_timing_mutants.py --full --samples 5000   # (a) の表
   - 決まった筋書きとして入れるもの：ケース 7 の形（開始 → `run_until_idle()` → `Cancel` を送る（未処理）→ 時計を期限まで進める → `run_until_idle()`。印が先に積まれ、`Cancel` のあとに捨てられる。§5 P1 の本文）と、再起動のあとに古い `instance_id` の印が捨てられる筋書き。
 - **P2（状態タイムアウト。I1・I2・I5）**：
   - 既定のタイムアウト（なし／有限／`when_with_state_timeout` を複数回呼んだ合成）× `for_max`（なし／`After`／`Infinite`）× 遷移の種類（`goto`／同一状態の `goto`／存在しない状態への `goto`／`stay()`／未処理／`StateTimeout` の受信／名前付きの印の受信）のランダムな列で、撃つ時刻・回数・同じ期限の順・古い印の破棄を参照モデルと比べる。
-  - **決まった筋書きとして必ず入れるもの（#341）**：ケース 8 の張り直す形。既定のタイムアウトのある状態 A で、同じハンドラの中で名前付きの `Single` を張る（状態タイマより先に予約されるので、同じ長さなら先に撃つ。§3.1(c)）→ 時計を両方の期限の先まで 1 回で進める → `run_until_idle()`。名前付きの印が先に処理されて既定のタイムアウトのある状態 B へ移り（張り直す）、続く古い `StateTimeout` の印は捨てられる。B の状態関数が `StateTimeout` を受けたら観測できる印（tester へのメッセージや遷移）を出すようにし、それが来ないことを見る。**この道だけが、本番の `fsm.rs:965` のガードを通して世代の進め忘れを見せる**（遷移先が張らない原典の形では、ガードが古い印を落とすので見えない）。書けることは確かめた：`set_clock` があり、`fire_due_timers`（`executor_value.rs:1266`）は 1 回の `now` で期限の来た行を `(期限, seq)` の順にすべて撃つので、2 通の印が両方メールボックスに積まれてから処理される。
+  - **決まった筋書きとして必ず入れるもの（#341）**：ケース 8 の張り直す形。既定のタイムアウトのある状態 A で、同じハンドラの中で名前付きの `Single` を張る（状態タイマより先に予約されるので、同じ長さなら先に撃つ。§3.1(c)）→ 時計を両方の期限の先まで 1 回で進める → `run_until_idle()`。名前付きの印が先に処理されて既定のタイムアウトのある状態 B へ移り（張り直す）、続く古い `StateTimeout` の印は捨てられる。B の状態関数が `StateTimeout` を受けたら観測できる印（tester へのメッセージや遷移）を出すようにし、それが来ないことを見る。**世代の `+= 1` だけを落とし `state_timer_armed` は `None` にする誤りは、本番の `fsm.rs:965` のガードを通すとこの道でしか見えない**（遷移先が張らない原典の形では、ガードが古い印を落とすので見えない）。`cancel_state_timer_with_context`（`fsm.rs:396-402`）の呼び出しごと落とす誤りなら、原典の形の道でも見える。どちらもコードを読んだうえでの判断で、走らせてはいない。書けると判断した根拠（読んだだけ）：`set_clock` があり、`fire_due_timers`（`executor_value.rs:1266`）は 1 回の `now` で期限の来た行を `(期限, seq)` の順にすべて撃つので、2 通の印が両方メールボックスに積まれてから処理される。
   - Quint に無いもの：撃つ時刻と回数、`timeout.or(existing)` の合成。
 - **P3（I6・I7）**：§5 の本文のとおり。Quint は持たない。
 - どの性質も台帳の件数には数えない（§5、§1.4）。
