@@ -1,0 +1,281 @@
+=== empty registry
+
+=== gauges: averaging gauge and file descriptors 42/1024
+-- AveragingGauge --------------------------------------------------------------
+  metrics-kit.avg-size
+             value = 2.5
+  metrics-kit.file-desc.file-descriptors.file-descriptors-max
+             value = 1024
+  metrics-kit.file-desc.file-descriptors.file-descriptors-open
+             value = 42
+  metrics-kit.file-desc.file-descriptors.file-descriptors-ratio
+             value = 0.041015625
+
+-- AveragingGauge --------------------------------------------------------------
+  metrics-kit.avg-size
+                avg = 2.50
+
+
+=== gauges: file descriptors only
+-- FileDescriptorMetricSet$$anon$2 ---------------------------------------------
+  metrics-kit.file-desc.file-descriptors.file-descriptors-max
+             value = 1024
+  metrics-kit.file-desc.file-descriptors.file-descriptors-open
+             value = 42
+  metrics-kit.file-desc.file-descriptors.file-descriptors-ratio
+             value = 0.041015625
+
+
+=== gauges: file descriptors with limit 0
+-- FileDescriptorMetricSet$$anon$2 ---------------------------------------------
+  metrics-kit.file-desc.file-descriptors.file-descriptors-max
+             value = 0
+  metrics-kit.file-desc.file-descriptors.file-descriptors-open
+             value = 42
+  metrics-kit.file-desc.file-descriptors.file-descriptors-ratio
+             value = NaN
+
+
+=== gauges: file descriptors on a non-unix bean
+-- FileDescriptorMetricSet$$anon$2 ---------------------------------------------
+  metrics-kit.file-desc.file-descriptors.file-descriptors-max
+<thrown: java.lang.ClassCastException>
+=== gauges: the ratio alone on a non-unix bean
+-- FileDescriptorRatioGauge ----------------------------------------------------
+  metrics-kit.file-desc.file-descriptors.file-descriptors-ratio
+             value = NaN
+
+
+=== averaging gauges: Double.toString and HALF_UP
+-- AveragingGauge --------------------------------------------------------------
+  metrics-kit.a-empty
+             value = NaN
+  metrics-kit.b-tiny
+             value = 1.0E-4
+  metrics-kit.c-quarter
+             value = 6.25
+  metrics-kit.d-whole
+             value = 2.0
+  metrics-kit.e-eighth
+             value = 0.125
+
+-- AveragingGauge --------------------------------------------------------------
+  metrics-kit.b-tiny
+                avg = 0.00
+  metrics-kit.a-empty
+                avg = NaN
+  metrics-kit.c-quarter
+                avg = 6.25
+  metrics-kit.e-eighth
+                avg = 0.13
+  metrics-kit.d-whole
+                avg = 2.00
+
+
+=== key order: U+E000 and U+1F600
+-- AveragingGauge --------------------------------------------------------------
+  metrics-kit.😀
+             value = 2.0
+  metrics-kit.
+             value = 1.0
+
+-- AveragingGauge --------------------------------------------------------------
+  metrics-kit.
+                avg = 1.00
+  metrics-kit.😀
+                avg = 2.00
+
+
+=== timers (the banner names the anonymous subclass of this driver)
+-- ConsoleReporterExamples$$anon$4 ---------------------------------------------
+  metrics-kit.t3-unstopped
+               ops = 10
+              time = -1.235e+14 ns
+             ops/s = -0.00
+               avg = -1.235e+13 ns
+  metrics-kit.t2-zero
+               ops = 10
+              time = 0.000 ns
+             ops/s = Infinity
+               avg = 0.000 ns
+  metrics-kit.t1-ms
+               ops = 10
+              time = 1.235 ms
+             ops/s = 8100.01
+               avg = 123.5 μs
+  metrics-kit.t5-no-ops-zero
+               ops = 0
+              time = 0.000 ns
+             ops/s = NaN
+               avg = 0.000 ns
+  metrics-kit.t4-no-ops
+               ops = 0
+              time = 1.000 μs
+             ops/s = 0.00
+               avg = 1.068e+05 d
+
+
+=== a timer whose avg is Long.MinValue
+-- ConsoleReporterExamples$$anon$4 ---------------------------------------------
+  metrics-kit.t6-unstopped-no-ops
+               ops = 0
+              time = -1.235e+14 ns
+             ops/s = -0.00
+<thrown: java.lang.IllegalArgumentException>
+=== an unstopped timer, digits masked
+-- KnownOpsInTimespanTimer -----------------------------------------------------
+  metrics-kit
+               ops = 10
+              time = -<digits> ns
+             ops/s = -<digits>
+               avg = -<digits> ns
+
+
+=== HdrHistogram: case 4 input, not verbose
+-- HdrHistogram ----------------------------------------------------------------
+  metrics-kit.hist.hdr-histogram
+               min = 0 ns
+               max = 1579391 ns
+              mean = 789666.04 ns
+            stddev = 455913.92
+              75% <= 1184511 ns
+              95% <= 1500415 ns
+              98% <= 1547775 ns
+              99% <= 1563583 ns
+            99.9% <= 1577791 ns
+
+
+=== HdrHistogram: 0..4, verbose
+-- HdrHistogram ----------------------------------------------------------------
+  metrics-kit.hist.hdr-histogram
+               min = 0 ns
+               max = 4 ns
+              mean = 2.00 ns
+            stddev = 1.41
+              75% <= 3 ns
+              95% <= 4 ns
+              98% <= 4 ns
+              99% <= 4 ns
+            99.9% <= 4 ns
+       Value     Percentile TotalCount 1/(1-Percentile)
+
+      0.0000 0.000000000000          1           1.00
+      0.0000 0.100000000000          1           1.11
+      0.0000 0.200000000000          1           1.25
+      1.0000 0.300000000000          2           1.43
+      1.0000 0.400000000000          2           1.67
+      2.0000 0.500000000000          3           2.00
+      2.0000 0.550000000000          3           2.22
+      2.0000 0.600000000000          3           2.50
+      3.0000 0.650000000000          4           2.86
+      3.0000 0.700000000000          4           3.33
+      3.0000 0.750000000000          4           4.00
+      3.0000 0.775000000000          4           4.44
+      3.0000 0.800000000000          4           5.00
+      4.0000 0.825000000000          5           5.71
+      4.0000 1.000000000000          5
+#[Mean    =       2.0000, StdDeviation   =       1.4142]
+#[Max     =       4.0000, Total count    =            5]
+#[Buckets =           13, SubBuckets     =        32768]
+
+
+=== HdrHistogram: empty, verbose
+-- HdrHistogram ----------------------------------------------------------------
+  metrics-kit.hist.hdr-histogram
+               min = 0 ns
+               max = 0 ns
+              mean = 0.00 ns
+            stddev = 0.00
+              75% <= 0 ns
+              95% <= 0 ns
+              98% <= 0 ns
+              99% <= 0 ns
+            99.9% <= 0 ns
+       Value     Percentile TotalCount 1/(1-Percentile)
+
+#[Mean    =       0.0000, StdDeviation   =       0.0000]
+#[Max     =       0.0000, Total count    =            0]
+#[Buckets =           13, SubBuckets     =        32768]
+
+
+=== HdrHistogram: seven 1s and one 2
+-- HdrHistogram ----------------------------------------------------------------
+  metrics-kit.hist.hdr-histogram
+               min = 1 ns
+               max = 2 ns
+              mean = 1.13 ns
+            stddev = 0.33
+              75% <= 1 ns
+              95% <= 2 ns
+              98% <= 2 ns
+              99% <= 2 ns
+            99.9% <= 2 ns
+
+
+=== kinds in order: gauges, timers, histograms, averaging gauges
+-- AveragingGauge --------------------------------------------------------------
+  metrics-kit.avg-size
+             value = 2.5
+
+-- ConsoleReporterExamples$$anon$4 ---------------------------------------------
+  metrics-kit.timer
+               ops = 10
+              time = 1.235 ms
+             ops/s = 8100.01
+               avg = 123.5 μs
+
+-- HdrHistogram ----------------------------------------------------------------
+  metrics-kit.hist.hdr-histogram
+               min = 5 ns
+               max = 5 ns
+              mean = 5.00 ns
+            stddev = 0.00
+              75% <= 5 ns
+              95% <= 5 ns
+              98% <= 5 ns
+              99% <= 5 ns
+            99.9% <= 5 ns
+
+-- AveragingGauge --------------------------------------------------------------
+  metrics-kit.avg-size
+                avg = 2.50
+
+
+=== class names
+file-descriptors.open: org.apache.pekko.testkit.metrics.FileDescriptorMetricSet$$anon$1
+file-descriptors.max: org.apache.pekko.testkit.metrics.FileDescriptorMetricSet$$anon$2
+file-descriptors.ratio: com.codahale.metrics.jvm.FileDescriptorRatioGauge
+=== crlf: HdrHistogram 0..4, verbose
+-- HdrHistogram ----------------------------------------------------------------<CR>
+  metrics-kit.hist.hdr-histogram<CR>
+               min = 0 ns<CR>
+               max = 4 ns<CR>
+              mean = 2.00 ns<CR>
+            stddev = 1.41<CR>
+              75% <= 3 ns<CR>
+              95% <= 4 ns<CR>
+              98% <= 4 ns<CR>
+              99% <= 4 ns<CR>
+            99.9% <= 4 ns<CR>
+       Value     Percentile TotalCount 1/(1-Percentile)
+
+      0.0000 0.000000000000          1           1.00
+      0.0000 0.100000000000          1           1.11
+      0.0000 0.200000000000          1           1.25
+      1.0000 0.300000000000          2           1.43
+      1.0000 0.400000000000          2           1.67
+      2.0000 0.500000000000          3           2.00
+      2.0000 0.550000000000          3           2.22
+      2.0000 0.600000000000          3           2.50
+      3.0000 0.650000000000          4           2.86
+      3.0000 0.700000000000          4           3.33
+      3.0000 0.750000000000          4           4.00
+      3.0000 0.775000000000          4           4.44
+      3.0000 0.800000000000          4           5.00
+      4.0000 0.825000000000          5           5.71
+      4.0000 1.000000000000          5
+#[Mean    =       2.0000, StdDeviation   =       1.4142]
+#[Max     =       4.0000, Total count    =            5]
+#[Buckets =           13, SubBuckets     =        32768]
+<CR>
+<CR>
