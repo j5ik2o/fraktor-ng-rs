@@ -22,8 +22,12 @@ What it checks (design docs/design/issue-198-fsm-timing-actor-ref.md, section 6)
   Every invariant of the spec must be the expected killer of some mutant.
 - (b) witnesses: every action and branch of `step` is taken in some trace.
 
-The exit status is non-zero when any of this does not hold. The simulation uses
-quint's default (Rust) backend with a fixed seed, which repeats exactly.
+The exit status is non-zero when any of this does not hold, and also when a
+quint process ends in a way that gives no result (a crash, a kill, a `quint
+test` report that does not name every run). quint runs with colour turned off
+(FORCE_COLOR is dropped and NO_COLOR set), and its output is read with any
+escape sequences removed. The simulation uses quint's default (Rust) backend
+with a fixed seed, which repeats exactly.
 """
 
 from __future__ import annotations
@@ -91,11 +95,13 @@ MUTANTS = [
          "acceptNamedWith(stateGen, m, kind, target, ov)")],
         {"currentGenStateMarkIsLive", "namedMarkRearmDropsOldStateMarkTest",
          "namedTimerMarkCancelsStateTimerTest"}),
-    Mutant("G1", "the production guard on the slot (fsm.rs:965), alone; hides bugNamedMarkKeepsGenerationTest", [
+    Mutant("G1", "the production guard on the slot (fsm.rs:965, stActive for state_timer_armed), alone; "
+           "hides bugNamedMarkKeepsGenerationTest", [
         ("receiveStateMark", "if (m.inst == curInst and m.gen == stateGen)",
          "if (m.inst == curInst and stActive and m.gen == stateGen)")],
         equivalent=True),
-    Mutant("G1M05", "the production guard with M05: the case 8 run no longer sees it", [
+    Mutant("G1M05", "the production guard with M05: the guard drops the stale mark, and both case 8 runs "
+           "still fail through their invariant expectations", [
         ("receiveStateMark", "if (m.inst == curInst and m.gen == stateGen)",
          "if (m.inst == curInst and stActive and m.gen == stateGen)"),
         ("receiveNamedMark", "acceptNamedWith(stateGen + 1, m, kind, target, ov)",
@@ -170,6 +176,9 @@ MUTANTS = [
     Mutant("M28", "a fresh arming is born already fired", [
         ("applyTransitionWith", "stIssued' = if (arms) false else keptIssued,", "stIssued' = keptIssued,")],
         {"stateTimeoutRearmsWhenTargetHasDefaultTest"}),
+    Mutant("M29", "a goto into a nonexistent state arms under forMax(After)", [
+        ("applyTransitionWith", "val arms = valid and actualArm", "val arms = actualArm")],
+        {"armedMatchesSelection", "gotoNonExistentUnderForMaxAfterArmsNothingTest"}),
 ]
 
 # (b): one predicate per action and branch of `step`.
@@ -202,15 +211,21 @@ WITNESSES = {
     "wOldMarksAfterRestart": (
         "curInst > 0 and (stateMarks.indices().exists(i => stateMarks[i].inst < curInst)"
         " or namedMarks.indices().exists(i => namedMarks[i].inst < curInst))"),
-    # #341: a named acceptance while an older state mark of this instance is
-    # queued, once with a new arming and once without.
+    # #341: a named acceptance while a state mark of this instance that was
+    # current just before it is queued, once with a new arming and once
+    # without. The acceptance advances stateGen by one, so such a mark has
+    # gen == stateGen - 1; a mark that was already older does not count.
     "wNamedAcceptOverQueuedStateMarkRearm": (
         'lastAction == "acceptNamed" and liveSid != -1'
-        " and stateMarks.indices().exists(i => stateMarks[i].inst == curInst and stateMarks[i].gen < stateGen)"),
+        " and stateMarks.indices().exists(i => stateMarks[i].inst == curInst and stateMarks[i].gen == stateGen - 1)"),
     "wNamedAcceptOverQueuedStateMarkNoArm": (
         'lastAction == "acceptNamed" and liveSid == -1'
-        " and stateMarks.indices().exists(i => stateMarks[i].inst == curInst and stateMarks[i].gen < stateGen)"),
+        " and stateMarks.indices().exists(i => stateMarks[i].inst == curInst and stateMarks[i].gen == stateGen - 1)"),
 }
+
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# Colour codes break the patterns below, so quint never gets FORCE_COLOR.
+QUINT_ENV = {k: v for k, v in os.environ.items() if k != "FORCE_COLOR"} | {"NO_COLOR": "1"}
 
 TOP_LEVEL = re.compile(r"^  (?:action|val|pure def|pure val|def|run|var|type) (\w+)", re.M)
 
@@ -241,16 +256,28 @@ def wait_for_load() -> None:
 
 def quint(*args: str) -> subprocess.CompletedProcess[str]:
     wait_for_load()
-    return subprocess.run([str(QUINT), *args], capture_output=True, text=True)
+    out = subprocess.run([str(QUINT), *args], capture_output=True, text=True, env=QUINT_ENV)
+    out.stdout = ANSI.sub("", out.stdout)
+    out.stderr = ANSI.sub("", out.stderr)
+    return out
 
 
 def run_names(text: str) -> list[str]:
     return re.findall(r"^  run (\w+)", text, re.M)
 
 
-def failing_runs(path: Path) -> set[str]:
+def failing_runs(path: Path, runs: list[str]) -> set[str]:
     out = quint("test", str(path))
-    return set(re.findall(r"^\s+\d+\) (\w+) failed", out.stdout, re.M))
+    failed = set(re.findall(r"^\s+\d+\) (\w+) failed", out.stdout, re.M))
+    passed = set(re.findall(r"^\s+ok (\w+) passed", out.stdout, re.M))
+    # `quint test` exits 0 when every run passes and 1 when some fail. Any
+    # other exit (a crash, a kill), or a report that does not name each run
+    # exactly once as passed or failed, is no result: an empty set read from
+    # it would let the baseline and the equivalent mutant pass unchecked.
+    if (out.returncode not in (0, 1) or (out.returncode == 1) != bool(failed)
+            or passed & failed or passed | failed != set(runs)):
+        raise SystemExit(f"quint test gave no result on {path} (exit {out.returncode}):\n{out.stdout}\n{out.stderr}")
+    return failed
 
 
 def violates(path: Path, invariant: str, steps: int, samples: int) -> bool:
@@ -258,18 +285,19 @@ def violates(path: Path, invariant: str, steps: int, samples: int) -> bool:
                 f"--max-samples={samples}", f"--seed={SEED}", "--verbosity=1", str(path))
     if "[violation]" in out.stdout or "[violation]" in out.stderr:
         return True
-    if out.returncode != 0:
+    if out.returncode != 0 or "[ok]" not in out.stdout + out.stderr:
         raise SystemExit(f"quint run failed on {path} ({invariant}):\n{out.stdout}\n{out.stderr}")
     return False
 
 
-def check_mutant(mutant: Mutant, base: str, work: Path, steps: int, samples: int, full: bool) -> tuple[Mutant, set[str], list[str]]:
+def check_mutant(mutant: Mutant, base: str, runs: list[str], work: Path, steps: int, samples: int,
+                 full: bool) -> tuple[Mutant, set[str], list[str]]:
     path = work / f"{mutant.ident}.qnt"
     path.write_text(apply_edits(base, mutant.edits))
     typed = quint("typecheck", str(path))
     if typed.returncode != 0:
         return mutant, set(), [f"does not typecheck:\n{typed.stdout}{typed.stderr}"]
-    killed = failing_runs(path)
+    killed = failing_runs(path, runs)
     # An equivalent mutant is simulated once against the conjunction
     # `invariant`; --full checks every invariant separately.
     if full:
@@ -319,8 +347,8 @@ def main() -> int:
         if quint("typecheck", str(baseline)).returncode != 0:
             print("baseline does not typecheck", file=sys.stderr)
             return 1
-        broken = failing_runs(baseline)
         runs = run_names(base)
+        broken = failing_runs(baseline, runs)
         print(f"baseline: {len(runs)} runs, failing: {sorted(broken) or 'none'}", flush=True)
         if broken:
             failures.append(f"baseline runs fail: {sorted(broken)}")
@@ -343,11 +371,12 @@ def main() -> int:
             if uncovered:
                 failures.append(f"invariants no mutant expects to kill: {sorted(uncovered)}")
         print()
+        print(f"mutants: {len(selected)} of {len(MUTANTS)}")
         print("| mutant | change | expected killers | killed by | result |")
         print("|:---|:---|:---|:---|:---|")
         with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
             results = pool.map(
-                lambda m: check_mutant(m, base, work, args.steps, args.samples, args.full), selected)
+                lambda m: check_mutant(m, base, runs, work, args.steps, args.samples, args.full), selected)
             for mutant, killed, problems in results:
                 expected = "(equivalent)" if mutant.equivalent else ", ".join(sorted(mutant.killers))
                 print(f"| {mutant.ident} | {mutant.summary} | {expected} | {', '.join(sorted(killed)) or '-'} | "
@@ -367,8 +396,8 @@ def main() -> int:
             text = out.stdout + out.stderr
             counts = dict(re.findall(r"^(\w+) was witnessed in (\d+) trace", text, re.M))
             stats = re.search(r"Trace length statistics: (.*)", text)
-            if not counts:
-                failures.append(f"witness run printed no counts:\n{text}")
+            if out.returncode != 0 or set(counts) != set(WITNESSES):
+                failures.append(f"witness run gave no count for every witness (exit {out.returncode}):\n{text}")
             print()
             print(f"witnesses (20 steps x 10000 traces, seed {SEED}; {stats.group(1) if stats else 'no stats'}):")
             for name in WITNESSES:

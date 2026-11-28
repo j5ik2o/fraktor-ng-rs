@@ -38,9 +38,10 @@
 // - Named timers use a separate generation counter (`namedGen`) so starting or
 //   cancelling a named timer (from a state function or `onTransition`) never
 //   invalidates an armed state timer.
-// - Restart creates a fresh `Fsm` instance with `stateGen = 0` and
-//   `namedGen = 0`, distinguished from prior instances by a globally unique
-//   `instance_id` (`owner eq this` in `FSM.scala:823`).
+// - Restart creates a fresh `Fsm` instance with `stateGen = 0`,
+//   `namedGen = 0`, and an empty state timer slot, distinguished from prior
+//   instances by a globally unique `instance_id` (`owner eq this` in
+//   `FSM.scala:823`).
 // - Stopping the actor cancels every timer immediately; no deadline fires
 //   after stop.
 // - A `goto` into a state that has no state function keeps the state, arms
@@ -57,13 +58,23 @@
 // - Every `goto` into a nonexistent state and every stop clears the timers.
 //   Pekko's `terminate` does nothing while `currentState.stopReason` is set
 //   (`FSM.scala:934`), which a `goto` into a nonexistent state leaves behind
-//   (`FSM.scala:888, 940`) until a transition succeeds. Stronger than Pekko.
+//   (`FSM.scala:888, 940`) until a transition succeeds. Stronger than Pekko;
+//   #357 aligns it.
 // - The production machine also drops a state timeout mark unless
 //   `state_timer_armed == Some(generation)` (`fsm.rs:965`). Pekko has no such
 //   guard and this model does not either: `currentGenStateMarkIsLive` shows it
 //   is redundant, and with it a missing generation bump stays hidden on the
 //   path of Pekko's case 8. The script
-//   `scripts/quint_fsm_timing_mutants.py` checks the guarded form as mutant G1.
+//   `scripts/quint_fsm_timing_mutants.py` checks the guarded form as mutant
+//   G1, with `stActive` standing for `state_timer_armed` (#356).
+// - A stop clears `stActive`. Pekko's `postStop` runs `terminate`
+//   (`FSM.scala:929`), which cancels `timeoutFuture` without resetting it to
+//   `None` (`:939`), so `isStateTimerActive` can stay true after a stop that
+//   arrives while a state timer is armed or kept after a state timeout mark.
+//   The production machine clears it too (`FsmHandle::clear`), and
+//   `stoppedNeverArms` asks for it, so this is stronger than Pekko (design
+//   section 6.4; mutant M13 breaks the stronger rule only). Restart is not
+//   affected: Pekko's new instance starts with `None` as well.
 // - A `Single` may fire more than once while it is in the table
 //   (`namedTimerDue` only needs the row). Pekko's scheduler fires it once.
 //   This is wider than Pekko; the extra marks are dropped after the first
@@ -140,11 +151,16 @@ module fsm_timing {
   var namedGen: int
 
   // The machine's state timer slot. `stActive` is Pekko's
-  // `timeoutFuture.isDefined` (`isStateTimerActive`, `FSM.scala:636`): it is
-  // cleared only by an ordinary message or an accepted named mark
-  // (`FSM.scala:822-827, 849-853`), and it stays true after a state timeout
-  // mark whose transition arms nothing. `stGen` and `stSid` are the generation
-  // and the deadline of the last arming.
+  // `timeoutFuture.isDefined` (`isStateTimerActive`, `FSM.scala:636`). Every
+  // received ordinary message and accepted named mark sets it to `None`
+  // before the state function runs (`FSM.scala:822-827, 849-853`), so after
+  // such a message it is true only if the transition arms a new deadline. A
+  // state timeout mark leaves it as it was unless the transition arms (it
+  // stays true, also into a nonexistent state, `FSM.scala:939`). Restart
+  // starts a new instance with an empty slot (`restartWith`), as in Pekko.
+  // Stop clears it (`stopActor`), which Pekko does not ("Differences" above).
+  // `stGen` and `stSid` are the generation and the deadline of the last
+  // arming.
   var stActive: bool
   var stGen: int
   var stSid: int
@@ -270,18 +286,18 @@ module fsm_timing {
   }
 
   // Applies `makeTransition` for a state function result (or default unhandled
-  // `stay()`). `actualArm` is what the transition arms and `expectedArm` is what
-  // I1 selects; a negative control passes values that differ, which is where
-  // its defect comes from. Nothing here compares the two: `armedMatchesSelection`
-  // works the selection out again from the model's own state (review low 1).
+  // `stay()`). `actualArm` is whether the transition arms: `applyTransition`
+  // passes what I1 selects, and a negative control passes something else,
+  // which is where its defect comes from. Nothing here checks the choice:
+  // `armedMatchesSelection` works the selection out again from the model's
+  // own state (review low 1).
   action applyTransitionWith(
     nextStateGen: int,
     kind: TransitionKind,
     target: int,
     ov: TimeoutOverride,
     fromStateTimeout: bool,
-    actualArm: bool,
-    expectedArm: bool
+    actualArm: bool
   ): bool = {
     val effTarget = if (kind == Goto) target else state
     val effOv = if (kind == Unhandled) NoOverride else ov
@@ -329,7 +345,7 @@ module fsm_timing {
     val effTarget = if (kind == Goto) target else state
     val effOv = if (kind == Unhandled) NoOverride else ov
     val shouldArm = selectionShouldArm(effTarget, effOv)
-    applyTransitionWith(nextStateGen, kind, target, ov, fromStateTimeout, shouldArm, shouldArm)
+    applyTransitionWith(nextStateGen, kind, target, ov, fromStateTimeout, shouldArm)
   }
 
   // Ordinary message: cancels armed state timer, raises `stateGen`, runs
@@ -629,8 +645,13 @@ module fsm_timing {
   }
 
   // ---- Negative-control defective actions ----
-  // Each one is a real action with one argument changed; none sets a ghost
-  // variable by hand (#344).
+  // Each one is a real action called with other arguments (one argument, or
+  // two for the restart); none sets a ghost variable by hand (#344). The
+  // numbers follow design section 6.3. Defects 2, 3, 4, 7 and 8 are separate
+  // review findings but make the same step: a `NoOverride` transition back
+  // into the current state that arms nothing (`kind` only decides the
+  // effective target and override, which are the same for the three kinds
+  // here). The ten controls tell six kinds of defect apart.
 
   action keepNegativeControlGhosts = all {
     keepLifecycle,
@@ -647,7 +668,7 @@ module fsm_timing {
   // Defect 1: ignores `forMax(Infinite)` and arms the target state's default.
   action bugForMaxIgnored(target: int): bool = all {
     alive,
-    applyTransitionWith(stateGen + 1, Goto, target, OverrideInfinite, false, defaultHasTimeout(target), false),
+    applyTransitionWith(stateGen + 1, Goto, target, OverrideInfinite, false, defaultHasTimeout(target)),
     keepNegativeControlGhosts,
   }
 
@@ -655,39 +676,42 @@ module fsm_timing {
   // default `stateTimeout` (review H1).
   action bugStayDropsDefaultTimeout = all {
     alive,
-    applyTransitionWith(stateGen + 1, Stay, state, NoOverride, false, false, defaultHasTimeout(state)),
+    applyTransitionWith(stateGen + 1, Stay, state, NoOverride, false, false),
     keepNegativeControlGhosts,
   }
 
   // Defect 3: unhandled event skips `makeTransition(stay())` and leaves the
   // default `stateTimeout` unarmed (review H1, the `fsm.rs:587-590` of the
-  // time).
+  // time). The step is the one of defect 2.
   action bugUnhandledDoesNotRearm = all {
     alive,
-    applyTransitionWith(stateGen + 1, Unhandled, state, NoOverride, false, false, defaultHasTimeout(state)),
+    applyTransitionWith(stateGen + 1, Unhandled, state, NoOverride, false, false),
     keepNegativeControlGhosts,
   }
 
-  // Defect 4: `goto(currentState)` skips re-arming the state timeout.
+  // Defect 4: `goto(currentState)` skips re-arming the state timeout. The
+  // step is the one of defect 2.
   action bugSameStateGotoDoesNotRearm = all {
     alive,
-    applyTransitionWith(stateGen + 1, Goto, state, NoOverride, false, false, defaultHasTimeout(state)),
+    applyTransitionWith(stateGen + 1, Goto, state, NoOverride, false, false),
     keepNegativeControlGhosts,
   }
 
-  // Review low 1, first mutation: `NoOverride` never arms, so neither `stay()`
-  // nor the unhandled default re-arms the state's default timeout.
+  // Defect 7 (review low 1, first mutation): `NoOverride` never arms, so
+  // neither `stay()` nor the unhandled default re-arms the state's default
+  // timeout. The step is the one of defect 2.
   action bugNoOverrideNeverArms = all {
     alive,
-    applyTransitionWith(stateGen + 1, Stay, state, NoOverride, false, false, false),
+    applyTransitionWith(stateGen + 1, Stay, state, NoOverride, false, false),
     keepNegativeControlGhosts,
   }
 
-  // Review low 1, second mutation: only the unhandled event skips the re-arm,
-  // while every other `NoOverride` transition arms the default as it should.
+  // Defect 8 (review low 1, second mutation): only the unhandled event skips
+  // the re-arm, while every other `NoOverride` transition arms the default as
+  // it should. The step is the one of defect 3.
   action bugUnhandledOnlyNeverArms = all {
     alive,
-    applyTransitionWith(stateGen + 1, Unhandled, state, NoOverride, false, false, false),
+    applyTransitionWith(stateGen + 1, Unhandled, state, NoOverride, false, false),
     keepNegativeControlGhosts,
   }
 
@@ -702,7 +726,7 @@ module fsm_timing {
   // instance's generation 1.
   action bugRestartReusesInstanceId = restartWith(curInst, nextInst)
 
-  // Defect 7 (#341, the M05 mutation): an accepted named mark does not advance
+  // Defect 9 (#341, the M05 mutation): an accepted named mark does not advance
   // `stateGen`, so the state timeout mark that was already queued keeps the
   // current generation (Pekko's case 8, `FSMTimingSpec.scala:115-129`).
   action bugNamedMarkKeepsGeneration(m: NamedMark, kind: TransitionKind, target: int, ov: TimeoutOverride): bool = all {
@@ -712,7 +736,7 @@ module fsm_timing {
     acceptNamedWith(stateGen, m, kind, target, ov),
   }
 
-  // Defect 8 (#342, the M21 mutation): the executor fires one arming twice.
+  // Defect 10 (#342, the M21 mutation): the executor fires one arming twice.
   action bugStateTimerFiresTwice = stateTimerDueWith(false)
 
   action step = {
@@ -748,18 +772,27 @@ module fsm_timing {
 
   // ---- Invariants ----
 
-  // I1: the armed state timer slot matches what I1 selects. The selection is
-  // written out here again from the model's own variables (`stActive`,
-  // `lastTarget`, `lastOverride`) instead of being read from `expectedArmed`,
-  // which the actions fill from the same call as the arming itself: comparing
-  // the ghost with itself let two broken selections pass the simulation
-  // (review low 1). It is also not written with `selectionShouldArm`: a broken
-  // `selectionShouldArm` would then move both sides.
+  // I1: the armed state timer slot matches what I1 selects, including a
+  // `goto` into a nonexistent state. The selection is written out here again
+  // from the model's own variables (`stActive`, `lastTarget`, `lastOverride`)
+  // instead of being read from a ghost that the actions fill from the same
+  // call as the arming itself (an earlier version's `expectedArmed`):
+  // comparing the ghost with itself let two broken selections pass the
+  // simulation (review low 1). It is also not written with
+  // `selectionShouldArm`: a broken `selectionShouldArm` would then move both
+  // sides.
   val armedMatchesSelection =
     alive
     implies
-      not(ValidStates.contains(lastTarget))
-      or (if (keptAfterMark)
+      (if (not(ValidStates.contains(lastTarget)))
+         // A `goto` into a state without a state function arms nothing under
+         // any override (`FSM.scala:886-888` calls `terminate` before the
+         // timeout is read). The slot is what the receipt left: kept after a
+         // state timeout mark (`FSM.scala:939`), cleared otherwise. Which of
+         // the two it is moves with `keptAfterMark`, so the run
+         // `stateTimeoutToNonExistentKeepsSlotTest` checks that (M25).
+         (liveSid == -1 and stActive == keptAfterMark)
+       else if (keptAfterMark)
             // A state timeout mark kept the consumed slot, which is legal
             // only when the transition needs no fresh deadline: the slot
             // stays active and no new deadline is armed (`FSM.scala:818-821`).
@@ -874,8 +907,10 @@ module fsm_timing {
       .expect(state == SNoTimeout and timers.keys().contains("a") and invariant)
 
   // Pekko's case 8 (`FSMTimingSpec.scala:115-129`, states `:262-277`): the
-  // named mark is processed first, moves to a state without a timeout, and the
-  // queued state timeout mark is dropped because the generation moved on.
+  // named mark is processed first and moves to a state that arms no state
+  // timer (B under `forMax(Infinite)`; Pekko's target registers no timeout),
+  // and the queued state timeout mark is dropped because the generation moved
+  // on.
   run namedTimerMarkCancelsStateTimerTest =
     init
       .then(receiveOrdinary(Goto, SWithTimeoutA, NoOverride))
@@ -1000,6 +1035,20 @@ module fsm_timing {
       .then(stateTimerDue)
       .then(receiveStateMark({ inst: 0, gen: 1, sid: 0 }, Goto, SNonExistent, NoOverride))
       .expect(state == SWithTimeoutA and stActive and liveSid == -1 and timers == Map() and stateGen == 1 and invariant)
+      .then(stateTimerDue.fail())
+
+  // A `goto` into a state without a state function arms nothing under
+  // `forMax(After)` either (`FSM.scala:886-888`), on the state timeout path,
+  // where the slot stays, and on the ordinary path, where it is cleared. No
+  // deadline is left to fire (`liveSid == -1` is what enables `stateTimerDue`).
+  run gotoNonExistentUnderForMaxAfterArmsNothingTest =
+    init
+      .then(receiveOrdinary(Goto, SWithTimeoutA, NoOverride))
+      .then(stateTimerDue)
+      .then(receiveStateMark({ inst: 0, gen: 1, sid: 0 }, Goto, SNonExistent, OverrideAfter))
+      .expect(state == SWithTimeoutA and stActive and liveSid == -1 and invariant)
+      .then(receiveOrdinary(Goto, SNonExistent, OverrideAfter))
+      .expect(state == SWithTimeoutA and not(stActive) and liveSid == -1 and invariant)
       .then(stateTimerDue.fail())
 
   // A `Single` started again under the same name is a new registration
