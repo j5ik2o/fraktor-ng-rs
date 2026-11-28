@@ -196,11 +196,6 @@ struct ParentEntry {
   /// What the parent waits for its dying children for (Pekko's
   /// `TerminatingChildrenContainer`).
   waiting: Option<WaitReason>,
-  /// The children a restart that is under way keeps, taken when the
-  /// restart's first half begins: the second half restarts each one that
-  /// is still in the table, together with the children the wait itself
-  /// brought in. Empty outside a restart.
-  pending_survivors: Option<Vec<ActorRef>>,
 }
 
 /// What a parent's table keeps of one child (Pekko's `ChildRestartStats`
@@ -221,7 +216,7 @@ struct ChildRecord {
 
 impl ParentEntry {
   fn new(parent: ActorRef, strategy: SupervisorStrategy) -> Self {
-    Self { parent, strategy, children: Vec::new(), dying: Vec::new(), waiting: None, pending_survivors: None }
+    Self { parent, strategy, children: Vec::new(), dying: Vec::new(), waiting: None }
   }
 
   /// Returns whether `child` is in the table, by the identifier and the
@@ -1635,18 +1630,6 @@ impl Executor {
     let label = path.name().to_string();
     let self_ref = ActorRef::for_mailbox(next_actor_id(), Arc::new(path), Arc::clone(&mailbox));
     self.reserve_name(parent.as_ref(), label, &self_ref, &strategy, strategy_inherited);
-    // A child that a restart's wait brings in is kept by that restart, as
-    // a child that was already in the table is: the restart's second half
-    // restarts it with the others.
-    if let Some(parent_ref) = parent.as_ref() {
-      if let Some(entry) = self.parent_entry_mut(parent_ref) {
-        if matches!(entry.waiting, Some(WaitReason::Recreation(_))) {
-          if let Some(survivors) = entry.pending_survivors.as_mut() {
-            survivors.push(self_ref.clone());
-          }
-        }
-      }
-    }
     let cell = ActorCell::pending(self_ref.clone(), parent.clone(), props, strategy);
     mailbox.put_back_cell(Box::new(cell));
     let entry = ActorEntry {
@@ -3520,9 +3503,12 @@ impl Executor {
   /// `handleInvokeFailure`).
   ///
   /// The mailbox is suspended once, the perpetrator of the failure is
-  /// recorded while no failure waits for an answer yet, every child but
-  /// the perpetrator is suspended, and the parent is told with a
-  /// `Failed`. A parent without a mailbox (a guardian, a function
+  /// recorded while no failure waits for an answer yet, and every child
+  /// but the perpetrator this failure records is suspended: a failure of
+  /// an actor that has already failed records nothing, so its children
+  /// are all suspended, the earlier perpetrator among them. The parent
+  /// is told with a `Failed`. A parent without a mailbox (a guardian, a
+  /// function
   /// reference) decides on the spot instead, as it does for an actor
   /// that has no parent.
   ///
@@ -3538,19 +3524,18 @@ impl Executor {
   ) {
     let self_ref = cell.self_ref();
     mailbox.suspend();
-    let recorded = self.entry(&self_ref).and_then(|entry| entry.perpetrator.clone());
-    let perpetrator = match recorded {
-      | Some(existing) => existing,
-      | None => {
-        let perpetrator = perpetrator.unwrap_or_else(|| self_ref.clone());
-        if let Some(entry) = self.entry_mut(&self_ref) {
-          entry.perpetrator = Some(perpetrator.clone());
-        }
-        perpetrator
-      },
+    let already_recorded = self.entry(&self_ref).is_some_and(|entry| entry.perpetrator.is_some());
+    let recorded_here = if already_recorded {
+      None
+    } else {
+      let perpetrator = perpetrator.unwrap_or_else(|| self_ref.clone());
+      if let Some(entry) = self.entry_mut(&self_ref) {
+        entry.perpetrator = Some(perpetrator.clone());
+      }
+      Some(perpetrator)
     };
     for child in self.children_of(&self_ref) {
-      if child != perpetrator {
+      if recorded_here.as_ref() != Some(&child) {
         self.send_system(&child, SystemMessage::Suspend);
       }
     }
@@ -3969,10 +3954,11 @@ impl Executor {
   ///
   /// A `Recreate` answers a suspend, so the mailbox is suspended when
   /// this runs. An actor without an instance goes to the retry of its
-  /// start instead. The children the restart keeps are recorded before
-  /// anything runs, so a child the old instance starts in its
-  /// `pre_restart` is not among them, while a child the wait itself
-  /// brings in joins them. The stash goes back to the mailbox, as
+  /// start instead. The children the restart keeps are read from the
+  /// table by the second half, so a child the old instance starts in its
+  /// `pre_restart`, and a child a child-terminated hook starts while the
+  /// restart waits, are among them. The stash goes back to the mailbox,
+  /// as
   /// Pekko's `UnrestrictedStash.preRestart` returns it before the old
   /// instance's `pre_restart`, so the new instance handles it.
   /// `pre_restart` runs on the old instance, under the catcher, with the
@@ -3987,9 +3973,6 @@ impl Executor {
       return;
     }
     let target = cell.self_ref();
-    if let Some(entry) = self.parent_entry_mut(&target) {
-      entry.pending_survivors = Some(entry.children.iter().map(|record| record.child.clone()).collect());
-    }
     self.unstash_all(&target);
     let reason = self.failure_reason(&target, cause.cause_name, &cause.message);
     let reason_box: Box<dyn core::any::Any + Send> = Box::new(reason);
@@ -4027,9 +4010,13 @@ impl Executor {
   /// Runs the second half of a restart of `cell` (Pekko's
   /// `finishRecreate`).
   ///
-  /// One suspend is undone and the failure record is cleared before the
-  /// new instance is built, so a child the new instance starts in its
-  /// `post_restart` does not take the answered suspend on itself. The
+  /// The children the restart keeps are taken from the table first,
+  /// before the new instance is built, so the children it starts are not
+  /// among them, while the children the first half and the wait brought
+  /// in are. One suspend is undone and the failure record is cleared
+  /// before the new instance is built, so a child the new instance
+  /// starts in its `post_restart` does not take the answered suspend on
+  /// itself. The
   /// recipe creates the new instance and its `post_restart` runs, which
   /// is what Pekko's default `postRestart` does. The children the
   /// restart kept are restarted with the same cause. A failure of the
@@ -4038,9 +4025,10 @@ impl Executor {
   /// already ran.
   fn finish_recreate(&mut self, cell: &mut ActorCell, mailbox: &Mailbox<ActorCell>, cause: RestartCause) {
     let target = cell.self_ref();
-    let pending = self.parent_entry_mut(&target).and_then(|entry| entry.pending_survivors.take());
-    let survivors: Vec<ActorRef> =
-      pending.unwrap_or_default().into_iter().filter(|child| self.is_child_in_table(&target, child)).collect();
+    let survivors: Vec<ActorRef> = self
+      .parent_entry(&target)
+      .map(|entry| entry.children.iter().map(|record| record.child.clone()).collect())
+      .unwrap_or_default();
     self.resume_mailbox(&target);
     if let Some(entry) = self.entry_mut(&target) {
       entry.perpetrator = None;
