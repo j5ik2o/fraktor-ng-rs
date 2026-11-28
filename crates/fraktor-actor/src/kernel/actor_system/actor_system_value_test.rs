@@ -2563,42 +2563,6 @@ impl Actor for ChangesStrategyOnRestart {
   }
 }
 
-/// Starts a `kid` on every start, stops it in `pre_restart` so the name frees
-/// for the new instance, and carries the strategy the test gives it.
-struct RecreatesItsKidWithAStoppingStrategy {
-  strategy: crate::kernel::supervision::SupervisorStrategy,
-  kid: Arc<Mutex<Option<ActorRef>>>,
-  kid_post_restarts: Arc<AtomicUsize>,
-}
-
-impl Actor for RecreatesItsKidWithAStoppingStrategy {
-  fn pre_start(&mut self, context: &mut ActorContext<'_>) {
-    let post_restarts = Arc::clone(&self.kid_post_restarts);
-    if let Ok(kid) =
-      context.actor_of(Props::new(move || CountsRestarts { post_restarts: Arc::clone(&post_restarts) }), "kid")
-    {
-      *self.kid.lock().unwrap() = Some(kid);
-    }
-  }
-
-  fn pre_restart(&mut self, context: &mut ActorContext<'_>, _reason: &(dyn core::any::Any + Send)) {
-    // The default `pre_restart` stops the children; do the same so the old
-    // `kid` leaves the table and the new instance can reuse the name (4b
-    // stops the children a restart does not keep).
-    context.stop_children();
-  }
-
-  fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
-    if message.downcast_ref::<&'static str>() == Some(&"panic") {
-      panic!("simulated failure of the parent");
-    }
-  }
-
-  fn supervisor_strategy(&self) -> crate::kernel::supervision::SupervisorStrategy {
-    self.strategy.clone()
-  }
-}
-
 #[test]
 fn a_child_follows_the_strategy_of_its_restarted_parent() {
   let creations = Arc::new(AtomicUsize::new(0));
@@ -2616,34 +2580,29 @@ fn a_child_follows_the_strategy_of_its_restarted_parent() {
       } else {
         crate::kernel::supervision::SupervisorStrategy::stopping_strategy()
       };
-      RecreatesItsKidWithAStoppingStrategy {
-        strategy,
-        kid: Arc::clone(&kid),
-        kid_post_restarts: Arc::clone(&kid_post_restarts),
-      }
+      ChangesStrategyOnRestart { strategy, kid: Arc::clone(&kid), kid_post_restarts: Arc::clone(&kid_post_restarts) }
     }
   }));
 
   system.run_until_idle();
-  assert!(kid.lock().unwrap().is_some(), "the parent created its kid");
+  let kid_handle = kid.lock().unwrap().clone().expect("the parent created its kid");
   parent.tell("panic", parent.clone());
   system.run_until_idle();
   assert!(!system.is_actor_terminated(&parent), "the parent did not restart");
+  // The parent's restart keeps the kid, and pekko v2.0.0 `FaultHandling.scala`
+  // `finishRecreate` restarts the survivors after the new instance's `postRestart`
+  // (lines 293-294), so the kid's `post_restart` runs once here.
+  assert_eq!(kid_post_restarts.load(Ordering::SeqCst), 1, "the kept kid was not restarted with its parent");
 
-  // The parent stopped its first kid in `pre_restart`, and the new instance
-  // created a fresh kid under the same name under the new strategy.
-  let recreated_kid = kid.lock().unwrap().clone().expect("the restarted parent created its kid again");
-  assert_eq!(kid_post_restarts.load(Ordering::SeqCst), 0, "the recreated kid must not have restarted yet");
-
-  recreated_kid.tell("boom", recreated_kid.clone());
+  kid_handle.tell("boom", kid_handle.clone());
   system.run_until_idle();
 
   assert_eq!(
     kid_post_restarts.load(Ordering::SeqCst),
-    0,
+    1,
     "the child used the strategy from before the parent restarted"
   );
-  assert!(system.is_actor_terminated(&recreated_kid), "the child was not stopped by the new parent strategy");
+  assert!(system.is_actor_terminated(&kid_handle), "the child was not stopped by the new parent strategy");
 }
 
 #[test]

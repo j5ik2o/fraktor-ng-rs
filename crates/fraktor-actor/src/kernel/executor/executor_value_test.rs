@@ -2409,18 +2409,23 @@ mod stage4a {
     system.run_until_idle();
 
     failing.tell("boom", failing.clone());
+    // The first `run_one` delivers `boom` to `a`, whose `Failed` then waits in
+    // the guardian's mailbox. The guardian's run takes that `Failed` and the
+    // ordinary `tick` behind it, so the second `run_one` returns once the
+    // all-for-one decision has sent `b` its `Suspend` and `Recreate`, before
+    // `b` has handled them.
+    assert!(system.run_one(), "the failing run of `a` did not run");
+    guardian.tell("tick", guardian.clone());
+    assert!(system.run_one(), "the guardian's run did not run");
+    assert!(!entries(&log).contains(&String::from("b:post_restart")), "{:?}", entries(&log));
+    // `m` reaches `b` while it waits to restart, behind its `Suspend`
+    // (design of #234, section 11.13.18 item 3).
     sibling.tell("m", sibling.clone());
     system.run_until_idle();
 
     let log = entries(&log);
-    // Stage 4b keeps the sibling's `Suspend` and `Recreate` while its restart
-    // waits for its child, so the stop of `b-child` and the restart of `b` no
-    // longer share one run with the held message: `b:m` was already queued and
-    // is handled before the `Suspend` reaches `b`, so it is not ordered against
-    // the restart. The sibling still stops its child and restarts, and the
-    // failed sibling `a` restarts.
     assert!(position(&log, "b-child:post_stop") < position(&log, "b:post_restart"), "{log:?}");
-    assert!(log.contains(&String::from("b:m")), "{log:?}");
+    assert!(position(&log, "b:post_restart") < position(&log, "b:m"), "{log:?}");
     assert!(log.contains(&String::from("a:post_restart")), "{log:?}");
   }
 
@@ -2638,7 +2643,11 @@ mod stage4a {
     // The second `Recreate` restarts the created c1, and that restart's
     // `pre_restart` runs the default stop hook once; the resumed child then
     // receives "hello", which shows it is no longer suspended.
-    assert_eq!(entries(&log), ["post_stop", "hello"], "the retried child is still suspended");
+    assert_eq!(
+      entries(&log),
+      ["post_stop", "hello"],
+      "the retried child resumes after its restart and receives `hello`"
+    );
   }
 
   // ----- the decision waits while the parent is suspended
@@ -2767,7 +2776,7 @@ mod stage4a {
     assert_eq!(
       entries(&log),
       ["b:pre_start", "b:pre_restart", "b:post_stop", "b:post_restart", "b:pre_start"],
-      "the sibling that had not started was not restarted"
+      "the sibling that had not started handles its `Create`, then is restarted by the `Recreate`"
     );
     assert!(!system.is_actor_terminated(&unborn));
   }
