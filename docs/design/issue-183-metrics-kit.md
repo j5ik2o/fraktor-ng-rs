@@ -215,11 +215,232 @@ unix でないプラットフォーム（CI の Windows を含む）でも、3�
 
 ### レポーターと報告の形
 
-原典の `PekkoConsoleReporter` は、ゲージ、カウンタ、ヒストグラム、メーター、タイマーの標準の種類に加え、独自の3種類（`KnownOpsInTimespanTimer`、`HdrHistogram`、`AveragingGauge`）を横断バナー付きで標準出力へ印字する。Rust では `ConsoleReporter` が `MetricsKit` のレジストリのスナップショットを受け取り、登録順ではなくキー順（`BTreeMap`）に、種類ごとの見出しと `key` と値を印字する。
+本項の行番号は、断らない限り `origin/main` の `ed9fba5d5bb071c6ac32373e2d50b871d087bb3d` の行番号であり、原典の行番号は Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）の `testkit/src/test/scala/org/apache/pekko/testkit/metrics/reporter/PekkoConsoleReporter.scala` の行番号である。`PekkoConsoleReporter.scala` の本文は、手元の Pekko の写し（`9a54d1294c`）と字句の近代化（`Gauge[?]` など）以外で同じであり、行番号も同じであることを確かめた。原典が継承する Dropwizard の版は v2.0.0 の `project/Dependencies.scala` の metrics-core 4.2.40 であり、HdrHistogram は 2.2.2 である。
+
+#### 原典の構造と Rust の対応
+
+原典の `report`（38〜60行）は、8つの種類を固定の順に印字する。標準の5種類（ゲージ、カウンタ、ヒストグラム、メーター、タイマー、46〜51行）と、独自の3種類（`KnownOpsInTimespanTimer`、`HdrHistogram`、`AveragingGauge`、53〜56行）である。1つの種類について `printMetrics`（62〜71行）が、空でなければ見出しを1行出し（64行）、項目ごとに `"  " + key` の行（66行）と値の行を出し、種類の終わりに空行を1つ出す（69行）。報告の最後にもう1つ空行を出して flush する（58〜59行）。したがって、1つの種類だけを持つ報告の末尾には空行が2つ続き、空のレジストリの報告は空行1つだけになる。
+
+見出しは `printWithBanner`（159〜168行）が作る。`"-- " + simpleName(先頭の項目の実行時クラス)` の後ろに空白を1つ置き、`-` を並べて行の長さをちょうど `ConsoleWidth = 80`（36行）にする。`simpleName`（171〜175行）はクラス名の最後の `.` の後ろを取る。名前は種類ではなく「その種類の先頭の項目の実行時クラス」から取る（64行）ため、同じ種類でも先頭の項目のクラスが変われば名前が変わる。
+
+Rust の `Metric`（`crates/fraktor-testkit/src/metrics_kit/metric.rs` の23〜31行）は4種類だけを持つ。原典の8つのうち、Rust が印字するのは次の4つであり、この順に出す。
+
+| 順 | 原典の種類 | Rust の列挙子 | 原典の行 |
+|:---|:---|:---|:---|
+| 1 | ゲージ（標準） | `AveragingGauge` と `FileDescriptorGauge` の両方 | 47行、`printGauge` 85〜87行 |
+| 2 | `KnownOpsInTimespanTimer` | `KnownOpsInTimespanTimer` | 54行、128〜136行 |
+| 3 | `HdrHistogram` | `HdrHistogram` | 55行、138〜153行 |
+| 4 | `AveragingGauge` | `AveragingGauge` | 56行、155〜157行 |
+
+- **`AveragingGauge` は2回出る。** 原典の `AveragingGauge` は `Gauge[Double]` でもあるため、ゲージの種類（`value = ...`）と `AveragingGauge` の種類（`avg = ...`）の両方に現れる。同じキーの行が2回出るのは原典どおりであり、Rust も同じにする。
+- **`FileDescriptorGauge` はゲージの種類にだけ出る。** 原典では3つの `Gauge`（開数・上限・比率）であり、独自の種類には入らない。
+- **カウンタ、Codahale のヒストグラム、メーター、タイマーは出さない。** Rust のレジストリにこれらの種類が無いためであり、原典で空の種類を出さない規則（62〜63行）と同じ結果になる。
+
+#### 種類ごとの行
+
+値の行は、原典の書式文字列をそのまま写す。空白の数は原典の文字列のとおりである。
+
+**ゲージ**（85〜87行）: `             value = {値}`（`value` の前に空白13）。ファイルディスクリプタの開数と上限は整数として（`f64` を `u64` に直して）出し、比率と平均ゲージは Java の `Double.toString` の規則で出す（下の「JVM の書式との違い」）。値が無い非 unix の開数と上限は `NaN` と出す。
+
+**`KnownOpsInTimespanTimer`**（128〜136行）: 4行。
+
+```
+               ops = {件数}
+              time = {整形した時間}
+             ops/s = {2桁の小数}
+               avg = {整形した時間}
+```
+
+`time` は `elapsedTime.nanos.pretty`（133行）、`avg` は `avgDuration.nanos.pretty`（135行）であり、どちらも `PrettyDuration` の4桁の有効数字と単位（`ns`・`μs`・`ms`・`s`・`min`・`h`・`d`）で書く。`ops/s` は1秒あたりの回数を2桁の小数で書く（134行）。
+
+**`HdrHistogram`**（138〜153行）: 9行。`count` と `median` は出さない。`count` と `median` があるのは Codahale のヒストグラム用の `printHistogram`（89〜102行）であり、Rust のレジストリにその種類は無い。
+
+```
+               min = {整数} {単位}
+               max = {整数} {単位}
+              mean = {2桁の小数} {単位}
+            stddev = {2桁の小数}
+              75% <= {整数} {単位}
+              95% <= {整数} {単位}
+              98% <= {整数} {単位}
+              99% <= {整数} {単位}
+            99.9% <= {整数} {単位}
+```
+
+`stddev` だけ単位を付けない（144行）。`verbose` が `true` のときは、この9行の後ろに百分位の分布を続ける（151〜152行）。
+
+**`AveragingGauge`**（155〜157行）: `                avg = {2桁の小数}`（`avg` の前に空白16）。
+
+#### キーの順序
+
+原典の順序は、種類によって2つに分かれる。
+
+- **標準のゲージはキー順である。** `ScheduledReporter.report()` が渡す `getGauges(filter)` は、`MetricRegistry` が `ConcurrentHashMap` から `TreeMap` を作って返す（metrics-core 4.2.40 の `MetricRegistry.java` の531〜542行）。順序は `String` の自然順、すなわち UTF-16 の符号単位の辞書順である（`java.lang.String.compareTo`）。
+- **独自の3種類はキー順ではない。** `PekkoMetricRegistry.filterFor`（`MetricsKit.scala` の212〜216行）は `registry.getMetrics` をそのまま辿る。`MetricRegistry.getMetrics` は `ConcurrentHashMap` を包んだ `Map` を返す（`MetricRegistry.java` の605〜608行）ため、`KnownOpsInTimespanTimer`・`HdrHistogram`・`AveragingGauge` の3つの種類の項目の順序は、ハッシュ表の並びであり、キー順でも登録順でもない。原典のテストも文書もこの順序を約束していない。
+
+Rust では4つの種類のすべてをキー順に出す。これは元帥の指示（項目の並びはキー順）に従うものであり、原典が約束していない順序をキー順に確定させる選択である（`pekko-semantics-first.md` の「許している範囲の中で選べる振る舞いを狭めることはずれにしない」に当たる）。キーの比較は UTF-16 の符号単位で行う。Rust の `BTreeMap` は UTF-8 のバイト順なので、U+10000 以上の文字と U+E000〜U+FFFF の文字が同じレジストリに混ざると `BTreeMap` の順は Java と変わる（U+1F600 と U+E000 は、Java では U+1F600 が先、UTF-8 では U+E000 が先）。そのため、種類に分けた後にキーを UTF-16 の符号単位で並べ直す。
+
+#### 原典の行との対応
+
+| 出力 | 原典 |
+|:---|:---|
+| 種類の順と空行 | `PekkoConsoleReporter.scala` 46〜51、53〜56、58〜59行 |
+| 見出しの条件と形（80桁） | 62〜64行、159〜168行、36行 |
+| 見出しの名前 | 171〜175行 |
+| キーの行（空白2つ） | 66行 |
+| 種類の終わりの空行 | 69行 |
+| ゲージの値 | 85〜87行 |
+| `KnownOpsInTimespanTimer` の4行 | 128〜136行 |
+| `HdrHistogram` の9行 | 138〜149行 |
+| `HdrHistogram` の分布（`verbose`） | 151〜152行 |
+| `AveragingGauge` の1行 | 155〜157行 |
+| rate と duration の単位 | `ScheduledReporter.java`（metrics-core 4.2.40）143〜146、304〜318、328〜331行 |
+| 百分位の刻みと表の書式 | `AbstractHistogram.java`（HdrHistogram 2.2.2）1737〜1740、1769〜1777、1789〜1790、1822〜1831行、`PercentileIterator.java` 50〜58、86〜91行 |
+| 値の分布の元（コピー） | `Histogram.java` 108〜112行、`HdrHistogram.scala` の58行（`getData`） |
+
+rate と duration の単位は、原典が `ScheduledReporter` に rate を `TimeUnit.SECONDS`、duration を `TimeUnit.NANOSECONDS` で渡す（33〜34行）ことから決まる。`ScheduledReporter` は rate の係数を `SECONDS.toSeconds(1) = 1`、名前を `"seconds"` の末尾を落とした `"second"` とし（143〜144行、328〜331行）、duration の係数を `NANOSECONDS.toNanos(1) = 1`、名前を `"nanoseconds"` とする（145〜146行）。変換はどちらも1倍・1除算なので値は変わらない（312〜318行）。この2つの文字列（`events/second`、`calls/second`、`nanoseconds`）はメーターと Codahale のタイマーの行にだけ出る。Rust のレジストリにその2種類は無いため、Rust の出力には現れない。`KnownOpsInTimespanTimer` の単位は `PrettyDuration` のもの、`HdrHistogram` の単位は利用者が渡す `unit`（例: `ns`）である。
+
+#### 出力の例
+
+ゲージの種類と `AveragingGauge` の種類（登録は `metrics-kit.avg-size` の平均ゲージと、`metrics-kit.file-desc.file-descriptors.file-descriptors-{max,open,ratio}` の3つ。値は開数42、上限1024、比率0.041015625、平均2.5）。
+
+```
+-- AveragingGauge --------------------------------------------------------------
+  metrics-kit.avg-size
+             value = 2.5
+  metrics-kit.file-desc.file-descriptors.file-descriptors-max
+             value = 1024
+  metrics-kit.file-desc.file-descriptors.file-descriptors-open
+             value = 42
+  metrics-kit.file-desc.file-descriptors.file-descriptors-ratio
+             value = 0.041015625
+
+-- AveragingGauge --------------------------------------------------------------
+  metrics-kit.avg-size
+                avg = 2.50
+```
+
+ゲージの見出しが `-- AveragingGauge` なのは、先頭のキー `metrics-kit.avg-size` の項目が `AveragingGauge` だからである（64行）。ファイルディスクリプタの3つは同じ見出しの下に入る。この報告の末尾には空行が2つ続く。
+
+`HdrHistogram`（ケース4の入力。`highest = 100_000_000`、4桁、単位 `ns`、0〜1,579,331 を11回と 1,579,331 をもう1回、合計 17,372,653 件。`verbose = false`）。
+
+```
+-- HdrHistogram ----------------------------------------------------------------
+  metrics-kit.hist.hdr-histogram
+               min = 0 ns
+               max = 1579391 ns
+              mean = 789666.04 ns
+            stddev = 455913.92
+              75% <= 1184511 ns
+              95% <= 1500415 ns
+              98% <= 1547775 ns
+              99% <= 1563583 ns
+            99.9% <= 1577791 ns
+```
+
+`HdrHistogram`（0〜4 の5件、`highest = 100_000_000`、4桁、単位 `ns`、`verbose = true`）。9行の後ろに分布が続く。
+
+```
+-- HdrHistogram ----------------------------------------------------------------
+  metrics-kit.hist.hdr-histogram
+               min = 0 ns
+               max = 4 ns
+              mean = 2.00 ns
+            stddev = 1.41
+              75% <= 3 ns
+              95% <= 4 ns
+              98% <= 4 ns
+              99% <= 4 ns
+            99.9% <= 4 ns
+       Value     Percentile TotalCount 1/(1-Percentile)
+
+      0.0000 0.000000000000          1           1.00
+      0.0000 0.100000000000          1           1.11
+      0.0000 0.200000000000          1           1.25
+      1.0000 0.300000000000          2           1.43
+      1.0000 0.400000000000          2           1.67
+      2.0000 0.500000000000          3           2.00
+      2.0000 0.550000000000          3           2.22
+      2.0000 0.600000000000          3           2.50
+      3.0000 0.650000000000          4           2.86
+      3.0000 0.700000000000          4           3.33
+      3.0000 0.750000000000          4           4.00
+      3.0000 0.775000000000          4           4.44
+      3.0000 0.800000000000          4           5.00
+      4.0000 0.825000000000          5           5.71
+      4.0000 1.000000000000          5
+#[Mean    =       2.0000, StdDeviation   =       1.4142]
+#[Max     =       4.0000, Total count    =            5]
+#[Buckets =           13, SubBuckets     =        32768]
+```
+
+分布の書式は、表の見出しが `%12s %14s %10s %14s\n\n`（`AbstractHistogram.java` の1777行）、行が `%12.{桁}f %2.12f %10d %14.2f\n`（1789行）、100%の行が `%12.{桁}f %2.12f %10d\n`（1790行）、末尾の3行が1822〜1831行である。`{桁}` は有効数字の桁数（この例では4）。刻みは、原典が `outputPercentileDistribution(output, 1)` と呼ぶ（152行）ため、引数の `1` はスケーリング比（`Double` の1.0）であり、刻みは既定の「半距離あたり5本」になる（1737〜1740行）。表の行は、記録した値の昇順に累積件数を取り、各刻みの百分位 `p` について、累積件数が `p/100 × 全件数` 以上になる最初の値の階級の上端（`highestEquivalentValue`）を出す（`PercentileIterator.java` 86〜91行、`AbstractHistogramIterator.java` 133〜135行）。全件数を使い切った行を出したら、その同じ値で100%の行を出して止める（`PercentileIterator.java` 50〜58行）。
+
+9行の百分位（75・95・98・99・99.9）は、同じ累積から、要求百分位を1ulp下げて `ceil(p/100 × 全件数)`（1未満は1）を初めて超える値の上端として求める（`AbstractHistogram.java` 1432〜1460行）。
+
+Rust の `hdrhistogram` 7.6.0 の `iter_quantiles(5)` は、この刻みの進み方が原典と一致しない（0〜4 の5件で、原典は 0.6 を値2で出すが、クレートは値3で出し、以降が1刻みずれる）。そのため分布はクレートの `iter_quantiles` を使わず、`iter_recorded()` の（値、件数）の列から上の規則で組み立てる。`value_at_percentile` も使わず、同じ累積から求める（原典は要求百分位を1ulp下げてから数えるため）。9行の `mean` と `stddev` も、クレートの `mean()`・`stdev()` ではなく、原典の式（各階級の中点 × 件数の和を全件数で割る、標準偏差は同じ中点からの偏差の二乗和）で求める（`AbstractHistogram.java` 1385〜1420行）。
+
+原典は `getData` でヒストグラムを複製してから読む（`HdrHistogram.scala` の58行）。Rust も同じにし、`Mutex` の中では `hdrhistogram::Histogram` を複製するだけにして、読み取りと出力は複製の上で行う（出力の間、ロックを保持しない）。そのため `HdrHistogram` に非公開の `with_snapshot`（複製を渡して閉包を呼ぶ）を置き、いまの `report_values` と `PERCENTILES`（`hdr_histogram.rs` の27行、165〜173行）は置き換える。`min`・`max`・`unit`・`count` の公開メソッドはそのまま残す。
+
+#### JVM の書式との違い
+
+次のものは同じ出力にする。
+
+- `%d`（10進、桁区切りなし）は Rust の `u64`・`i64` の `Display` と同じ。
+- `%2.2f` は2桁の固定小数である。Java の `Formatter` は `Double.toString` の最短桁を HALF_UP で丸める（`0.125` は `0.13`、`2.675` は `2.68`、`1.005` は `1.01`）。Rust の `{:.2}` は値の2進の正確な値で偶数丸めするため `0.12`・`2.67`・`1.00` になり、違う。報告では、最短桁を取って HALF_UP で丸める関数を1つ置き、`%2.2f` と `%2.12f` の両方に使う（`fraktor-actor` の `pretty_duration_format::format_g` と同じ作り。あれは非公開なので testkit に置く）。
+- `NaN`・`Infinity` は Java の綴り（`NaN`、`Infinity`、`-Infinity`）で出す（Rust の `inf` は使わない）。
+- キーの順は UTF-16 の符号単位で並べ直す（上のとおり）。
+
+Rust で同じにできない違いは次の4つである。
+
+| 違い | 理由 |
+|:---|:---|
+| ファイルディスクリプタの開数と上限の型 | 原典は `Long` を `%s` で出す。Rust の `FileDescriptorGauge::value` は3つとも `f64`（`file_descriptor_gauge.rs` の51〜61行）なので、2^53 を超える値（`RLIM_INFINITY` など）は丸まる。また、値が無い非 unix では `NaN` と出る（原典は JVM の `Long` を返す）。通常の値は整数として出すので同じになる。 |
+| ゲージの値の `Double.toString` | 原典の `%s` は Java の `Double.toString` であり、`1e-3 <= abs(v) < 1e7` は小数、外は `1.0E-4` のような指数表記、整数値にも `.0` を付ける（`2.0`）。Rust 側で同じ規則を実装するが、最短の桁は Rust のものを使う。JDK 19 以降は同じ最短表現であり、JDK 18 以前は同じ値でも桁が増えることがある。この差は JDK の版による。 |
+| `Locale` | 原典の `"...".format(...)` は JVM の既定ロケール（`Locale.getDefault(Locale.Category.FORMAT)`）を使うため、小数点が `,` のロケールでは Pekko も `,` を出す。Rust は常に `.` である。CI のロケールでは差は出ない。原典の百分位分布（`Locale.US`）と `PrettyDuration`（`Locale.ROOT`）はロケールを固定している。 |
+| ファイルディスクリプタの見出しの名前 | 原典は先頭のゲージの実行時クラス名を使う（64行、171〜175行）ため、Scala の無名クラス（`FileDescriptorMetricSet$$anon$1`）になる。Rust に無名クラスは無い。`-- FileDescriptorGauge` とする（問い1）。 |
+
+#### 確かめる口と、red のテストの項目
+
+出力を確かめる口は、いまの `report(&self, metrics: &BTreeMap<String, Metric>, output: &mut dyn Write) -> io::Result<()>`（`console_reporter.rs` の49行）で足りる。`ConsoleReporter::new(verbose)`（38行）と `Vec<u8>` だけで、時計もスレッドも出力先の差し替えも要らない。`with_output` は `MetricsKit` 側に既にあり（`metrics_kit_value.rs` の168行）、`ConsoleReporter` には足さない。
+
+材料は2つに分かれる。値が入力で決まるもの（`AveragingGauge` と `HdrHistogram`）は行をそのまま比べられる。OS と時計を読むもの（`FileDescriptorGauge` と `KnownOpsInTimespanTimer`）は値が実行のたびに変わるため、行の形だけを比べる。`FileDescriptorGauge` の3つは `FileDescriptorMetricSet::new().gauges()` で作れる。
+
+テストの担当がそのまま書ける項目を挙げる。置き場所は `crates/fraktor-testkit/tests/` の新しいファイル（例: `console_reporter_output_test.rs`）とし、原典外のテストとして台帳の5ケースには数えない（§7）。
+
+1. 空のレジストリ: 出力は `"\n"` ちょうど（1バイト）。
+2. 見出し: 空でない種類の1行目は `"-- " + 名前 + " " + '-' × (76 - 名前の長さ)` で、全体が80バイト。名前は `AveragingGauge`・`FileDescriptorGauge`・`KnownOpsInTimespanTimer`・`HdrHistogram` のいずれか。
+3. キーの行: `"  " + key` であり、前に空白が2つある。
+4. 種類の順: ゲージ、`KnownOpsInTimespanTimer`、`HdrHistogram`、`AveragingGauge`。
+5. `AveragingGauge` は2回出る: ゲージの種類に `value = 2.5`、`AveragingGauge` の種類に `avg = 2.50`。
+6. ゲージの見出しは先頭のキーの項目で決まる: `metrics-kit.avg-size` が先頭なら `-- AveragingGauge`、ファイルディスクリプタのキーだけなら `-- FileDescriptorGauge`。
+7. キーの順: 同じ種類の中で昇順。`metrics-kit.` + U+1F600 と `metrics-kit.` + U+E000 のキーを入れると、Java の順（U+1F600 が先）で出る。
+8. ゲージの値の表記: `2.5`、空のゲージの `NaN`、和1・個数10,000 の `1.0E-4`、和25・個数4 の `6.25`、和4・個数2 の `2.0`（`2` ではない）。
+9. `%2.2f` の HALF_UP: 和1・個数8 のゲージは `value = 0.125`、`avg = 0.13`（`0.12` ではない）。
+10. `HdrHistogram` の9行: 0〜4 の5件で、上の例の9行と一致する。`count` と `median` の行が無いこと、`stddev` に単位が無いことも確かめる。
+11. `mean` の HALF_UP: 1 を7件と 2 を1件で `mean = 1.13`。
+12. 百分位: `75% <=` などの値は整数で、小数が付かない。
+13. タイマーの4行: 前置きと `ops = 10` が一致する。`time` と `avg` は「4桁の有効数字 + 空白 + `ns`・`μs`・`ms`・`s`・`min`・`h`・`d` のいずれか」の形であり、`ops/s` は2桁の小数である。値は実行ごとに変わるので比べない。
+14. `verbose` の差: `false` では表の見出し `       Value     Percentile TotalCount 1/(1-Percentile)` が無い。`true` では9行の後にこの見出しと空行が続き、0〜4 の5件で上の表（15行）と3つの `#[` 行が一致する。
+15. 空の `HdrHistogram` の `verbose`: `min = 0`、`max = 0`、`mean = 0.00`、`stddev = 0.00`、百分位はすべて0で、表は見出し・空行・3つの `#[` 行だけで行が無い。
+16. 空行: 空でない種類の後に空行が1つ、報告の後にさらに1つ。1種類だけの報告は空行2つで終わる。
+17. 書き込みの失敗は `Err` で返る（いまの性質を保つ）。
+
+#### 上司に上げる問い
+
+**問い1（ファイルディスクリプタの見出しの名前）。** 原典はゲージの種類の見出しに先頭の項目の実行時クラス名を使う（64行、171〜175行）。ファイルディスクリプタの3つのゲージは Scala の無名クラスなので、JVM と同じ名前（`FileDescriptorMetricSet$$anon$1`）は Rust で作れない。案A（推し）: 先頭が `FileDescriptorGauge` のときは `-- FileDescriptorGauge` と出し、「先頭の項目で決まる」という原典の規則を保つ（先頭が平均ゲージなら `-- AveragingGauge` になる）。案B: ゲージの種類の見出しを常に `-- Gauges` にする（Dropwizard の `ConsoleReporter` の形。原典の規則からは離れる）。
+
+**問い2（未停止のタイマーの `time` と `avg`）。** 原典の `elapsedTime` は `stopTime - startTime` であり（`KnownOpsInTimespanTimer.scala` の42行）、未停止では `stopTime` が0なので負になる。`PekkoConsoleReporter.scala` の133・135行により、原典は `time = -1.234e+09 ns` のような負の値を出す。Rust の `elapsed()` は未停止で `None` を返し（I5）、報告はいま `time = not stopped` としている。案A（推し）: `not stopped` のままにする。原典の値は意味が無く、5ケースはどれも停止してから報告するためである。案B: 原典どおり負のナノ秒を出す（開始時刻を出す非公開の口と、負の値を受ける `%g` を足す）。
+
+#### 定期報告スレッド
 
 定期報告（Console レポーターが有効であり、かつ `scheduled_report_interval` が 0 より大きい場合）は標準ライブラリのスレッドで回す。これはアクターの dispatcher ではなく、レポーター自身のスレッドであり、[Issue #234](https://github.com/j5ik2o/fraktor-ng-rs/issues/234) の実行器とは無関係である（§8）。既定値では間隔が 0 のためスレッドは起動しない。スレッドと本体は、レジストリ・停止フラグ・出力先を含む共有状態を `Arc` で共有し、レジストリは `Mutex<BTreeMap<String, Metric>>` とする。スレッドの待ちは `thread::sleep` ではなく、停止フラグと対になった `Condvar::wait_timeout_while`（述語は「フラグが立っていない」）とし、`shutdown_metrics()` が呼ばれたら長い間隔の途中でも即座に目覚めて終わる。スレッドはフラグの確認のために停止ロックを取るが、報告はロックを解放してから行うため、報告の途中でも停止側はフラグを立てられる。`shutdown_metrics()` は冪等であり（2回目以降は何もしない）、呼ばれないまま `MetricsKit` がドロップされた場合も、`Drop` が同じ停止手順（停止ロックの中でフラグを立て、解放して Condvar で起こし、ハンドルの状態を見て、スレッドを接合するか接合の完了を待つ）を行うため、スレッドは残らない。このライフサイクルは状態遷移であるため、Quint で検査する（§6）。テストから出力を差し替えられるよう、出力先は `with_output` 構築子で `Box<dyn Write + Send>` を受け取り、`new` では標準出力にする。
 
+#### 停止の境界
+
 停止の保証の境界は、停止フラグを立てた時点ではなく、`shutdown_metrics()`（または `Drop` の停止手順）が戻った時点である。スレッドは報告の前に停止フラグを読むため、停止要求の直前に始まっていた報告は、停止手順が戻る前に完了することがある。戻った後に新しい報告が始まることはない。並行して `shutdown_metrics()` を呼んだ場合も、全ての呼び出しがスレッドの終了を待ってから戻る（接合中の呼び出しは完了を待つ）。出力先が標準出力の場合、呼び出し側が `StdoutLock` を保持したまま停止手順を呼ぶと、スレッドが出力を待ち、停止手順がスレッドの終了を待つため止まったままになる。そのため、出力ロックを解放してから停止する契約とし、公開 API の文書にも明記する。
+
+#### 報告の失敗の扱い
 
 報告の失敗の扱いも定める。`ConsoleReporter::report` は書き込みと flush の失敗を呼び出し側へ返す。`report_metrics()` は原典どおり失敗を呼び出し側へ伝えないが、計測は登録されたまま残る。`report_and_clear_metrics()` は、報告対象を取り出してから出力し、出力が成功した場合だけ取り出した計測を消去済みとする。失敗した場合は取り出した計測を戻す（その間に同じキーが再登録されていた場合は新しい登録を残す）。出力の途中で失敗した場合、既に出力された行が再報告で重複することがある。報告中に新しく登録された計測は取り出しの対象に含まれないため、次の報告に残る。
 
@@ -273,14 +494,24 @@ unix でないプラットフォーム（CI の Windows を含む）でも、3�
 
 書かない部分も明記する。タイマーの「計測中→停止済み」の2状態は、停止が一回限りである性質を I5 と P5 で直接に確かめられるため Quint にはしない。レジストリの登録・取得・消去は写像の意味論であり、順序の interleaving をモデル化しても得られる検査が増えないため Quint にはしない。
 
+出力の形（§2）も Quint にはしない。出力は、レジストリの写像をキーで並べ替え、種類ごとの書式で文字列にするだけの関数であり、状態も遷移も持たない（同じ入力と同じ `verbose` に対して常に同じ文字列を返す）。並び順と書式は、§2 の red のテストの項目にある golden テストで直接に確かめられる。定期報告スレッドのライフサイクルは、これまでどおり `crates/fraktor-testkit/specs/console_reporter.qnt` が検査する（本改訂では変えない）。両者は別の関心事であり、出力の形のために Quint の状態を増やさない。
+
 ## 7. 台帳の見込みと、区分の提案
 
-第1段では台帳（`ledger/nodes.yaml`）を触らない（第1段の前例どおり）。第2段の見込みは次のとおりである。
+第1段では台帳（`ledger/nodes.yaml`）を触らない（第1段の前例どおり）。第2段の見込みは次のとおりである（実装はマージ済みであり、いまの台帳の状態は下の「この issue（#299）の台帳への影響」に書く）。
 
 - 対象ノード `testkit/src/test/scala/org/apache/pekko/testkit/metrics/MetricsKitSpec.scala` を、`cases.total: 5`、`ported: 5`、`passing: 5`、`rust.crate: fraktor-testkit`、`rust.test_file: crates/fraktor-testkit/tests/metrics_kit_spec.rs` として green にする見込みである。
 - ノードの `goal` は現在 null である。周囲の testkit のノードは `G0b` に属しているため、第2段では台帳の決まりに従って goal の帰属を確認してから書く（本設計では決めない）。
 - **ケース単位の除外（`cases.excluded`）と作らない区分（`cases.not_built`）の提案は無い。** 5件すべてを移す。区分は人間だけが決めるものであり、本設計は提案すら要らないという判断である。
 - 5件が使わない原典の表面は、この issue の範囲の外として作らない。対象は、`counter`、通常の `histogram`（Codahale の蓄積型）、`measureMemory`、`measureGc`、`gc`（`System.gc()` の委譲）、メモリと GC とファイルディスクリプタに絞った報告である。これらは JVM の管理 Bean とガベージコレクションに固有のものを含むが、ケースの除外ではないため、人間の承認を要する提案としては上げない。将来に別の Spec が必要としたときに、その issue で扱う。
+
+### この issue（#299）の台帳への影響
+
+行番号は `origin/main` の `ed9fba5d5bb071c6ac32373e2d50b871d087bb3d` の `ledger/nodes.yaml` である。
+
+- **`cases` は動かない。** 対象ノード（33460〜33486行）は `total: 5`、`ported: 5`、`passing: 5` のままである。出力の形を確かめるテストは原典の5ケースの検査ではなく、原典外の単体テストだからである。
+- **`verified_against: v2.0.0` は付いたままである。** 対象ノードの33486行に既にあり、付け直しも書き換えもしない。
+- したがって第2段で `ledger/nodes.yaml` を触る必要は無い。
 
 ## 8. 複数スレッドの実行器・dispatcher との関係
 
@@ -330,3 +561,24 @@ unix でないプラットフォーム（CI の Windows を含む）でも、3�
 テストの担当が足した面：`Metric` の列挙子 `AveragingGauge`・`HdrHistogram`・`KnownOpsInTimespanTimer`（`#[derive(Clone)]`。ファイルディスクリプタの列挙子は実装の担当が決める）、`HdrHistogram::min` と `HdrHistogram::max`（原典 `getMinValue`・`getMaxValue`、空では 0）、`impl Default for AveragingGauge`（`new` と同じ値）。理由：ケース2の暗黙の検査（登録されたタイマーの件数と停止）と P3 の最小・最大を書くため。また、引数の無い `new` には `Default` が無いと clippy の `new_without_default` が `-D warnings` で落ちるため（中将の判断、2026-11-27）。
 
 追記（テストの担当による `console_reporter.qnt` のモデルの作り直しへの追従）：上記の回答表は当時の対応の記録であり、書き換えない。作り直し後のモデルでは、状態は `Thread`・`Handle`・`Call` の3つに分かれ、「停止要求済み」という状態は無く、停止の保証の境界は不変条件 `noReportOnceACallReturned` で表される。§6 の記述は、作り直し後の状態と遷移に合わせて直した。高-4 の理由に書いた `Condvar::wait_timeout` は当時の設計文面であり、実装は述語つきの `wait_timeout_while` であるため、§2 の記述は実態にそろえた。
+
+## 13. 改訂（2026-11-28）
+
+issue #299 の元帥の点検（2026-11-27）の重い指摘「コンソールの出力の形が原典と違う」に合わせ、§2 の「レポーターと報告の形」を原典 `PekkoConsoleReporter` の出力の形に書き直した。コンソールの出力は利用者の目に触れる振る舞いであり、`pekko-semantics-first.md` により原典の意味論を優先するためである。行番号は `origin/main` の `ed9fba5d5bb071c6ac32373e2d50b871d087bb3d` と Pekko v2.0.0（`9fbd2283b1cf701c90a1223bf621942c191db61f`）のものである。
+
+変えた点は次のとおりである。
+
+- 種類ごとの見出し（80桁のバナー）、種類の順、1項目1行の書式、キーの順序、空行の位置を、原典の行（`PekkoConsoleReporter.scala` 38〜175行）に対応づけて書いた。
+- 原典のコードと、原典が使う Dropwizard 4.2.40 と HdrHistogram 2.2.2 のコードから出力の例を作って載せた。`HdrHistogram` の9行と百分位の分布は、原典が使う HdrHistogram 2.2.2 を JVM（Temurin 26）で動かして確かめた。Rust 側は `hdrhistogram` 7.6.0 で同じ入力を記録し、百分位の表の値と件数が一致することを確かめた。違ったのは12桁の百分位の2行だけで、これは Java の HALF_UP と Rust の偶数丸めの違いであり、同じ関数を置いて同じにする（§2）。
+- JVM の書式のうち Rust で同じにできるもの（`%d`、HALF_UP の固定小数、`NaN`・`Infinity`、UTF-16 順）は同じにし、できないものだけを違いとして1行ずつ挙げた。
+- red のテストの担当のための面（`report` で足りるか、確かめる項目）を書いた。
+- 出力の形は Quint にしない理由を §6 に1段落で足した。
+- §7 に、台帳の `cases` と `verified_against` が動かないことを書いた。
+- 出力の形を確かめるテストは原典外であるため、台帳の件数と `verified_against` を変えない。
+
+issue #299 の「あわせて」の2点は、PR #306（`68a48a7`、コミット `0992b1e`）でマージ済みである。設計し直さない。
+
+- 中：`metrics_kit_value.rs` の複製してから retain する形を `mem::take` にする — 済み。`0992b1e`
+- 中：hdrhistogram の推移の依存（byteorder（Unlicense OR MIT）、num-traits、autocfg）を `docs/design/issue-206-license-policy.md` §4.3 に記録する — 済み。`0992b1e`
+
+§12 は前のレビューの記録であり、書き換えない。
