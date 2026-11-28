@@ -3617,18 +3617,30 @@ impl Executor {
   /// Chooses the directive for a failure from `inputs`, running a
   /// decider under the catcher when one is chosen.
   ///
-  /// The decider is the first of these that a caller installed: the
-  /// decider of the strategy the deciding parent applies to its
-  /// children; and the decider of the strategy the child was started
-  /// under, when the deciding parent stands under a parent itself, when
-  /// the failure is an escalation, or when the failure is of the child's
-  /// start, which the strategy it was started under answers for. With no
-  /// decider chosen, the strategy the
-  /// child was started under, or the deciding parent's when it
-  /// inherited, decides by its policy alone. An all-for-one strategy,
-  /// the deciding parent's or the one the child was started under,
-  /// decides for the whole set of siblings at once.
+  /// A child the deciding parent started with a strategy that carries
+  /// a decider of its own, under a parent that itself stands under a
+  /// parent, is decided by that strategy alone, ahead of the deciding
+  /// parent's all-for-one reach and of its decider, with the started
+  /// strategy's all-for-one reach when it is all-for-one.
+  /// Otherwise the decider is the first of these that a caller
+  /// installed: the decider of the strategy the deciding parent applies
+  /// to its children; and the decider of the strategy the child was
+  /// started under, when the failure is an escalation, or when the
+  /// failure is of the child's start, which the strategy it was started
+  /// under answers for. With no decider chosen, the strategy the child
+  /// was started under, or the deciding parent's when it inherited,
+  /// decides by its policy alone. An all-for-one strategy, the deciding
+  /// parent's or the one the child was started under, decides for the
+  /// whole set of siblings at once.
   fn choose_decision(&self, child: &ActorRef, kind: FailureKind, inputs: &DecisionInputs) -> Decision {
+    if inputs.parent_not_top {
+      if let Some(spawn) = inputs.spawn_strategy.clone().filter(|strategy| strategy.has_custom_decider()) {
+        return match self.decide_catching(spawn.clone(), child, inputs.count, kind) {
+          | Ok(directive) => Decision::Apply(directive, spawn.clone(), spawn.is_all_for_one()),
+          | Err(message) => Decision::DeciderPanicked { message },
+        };
+      }
+    }
     let all_for_one = inputs
       .governing
       .clone()
@@ -3648,7 +3660,7 @@ impl Executor {
     }
     if decider.is_none() {
       if let Some(spawn) = &inputs.spawn_strategy {
-        let speaks = inputs.parent_not_top || inputs.escalation || kind == FailureKind::Initialization;
+        let speaks = inputs.escalation || kind == FailureKind::Initialization;
         if spawn.has_custom_decider() && speaks {
           decider = Some(spawn.clone());
         }
