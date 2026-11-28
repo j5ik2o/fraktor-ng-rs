@@ -76,6 +76,19 @@ class Mutant:
     equivalent: bool = False
 
 
+@dataclass(frozen=True)
+class Checks:
+    # What every mutant is checked against: the pristine spec, the names of
+    # its runs, the temporary directory its copy goes in, and the search
+    # budget of the simulation.
+    base: str
+    runs: list[str]
+    work: Path
+    steps: int
+    samples: int
+    full: bool
+
+
 MUTANTS = [
     Mutant("M01", "NoOverride never arms the default", [
         ("selectionShouldArm", "| NoOverride => defaultHasTimeout(targetState)", "| NoOverride => false")],
@@ -290,24 +303,23 @@ def violates(path: Path, invariant: str, steps: int, samples: int) -> bool:
     return False
 
 
-def check_mutant(mutant: Mutant, base: str, runs: list[str], work: Path, steps: int, samples: int,
-                 full: bool) -> tuple[Mutant, set[str], list[str]]:
-    path = work / f"{mutant.ident}.qnt"
-    path.write_text(apply_edits(base, mutant.edits))
+def check_mutant(mutant: Mutant, checks: Checks) -> tuple[Mutant, set[str], list[str]]:
+    path = checks.work / f"{mutant.ident}.qnt"
+    path.write_text(apply_edits(checks.base, mutant.edits))
     typed = quint("typecheck", str(path))
     if typed.returncode != 0:
         return mutant, set(), [f"does not typecheck:\n{typed.stdout}{typed.stderr}"]
-    killed = failing_runs(path, runs)
+    killed = failing_runs(path, checks.runs)
     # An equivalent mutant is simulated once against the conjunction
     # `invariant`; --full checks every invariant separately.
-    if full:
+    if checks.full:
         wanted = INVARIANTS
     elif mutant.equivalent:
         wanted = ["invariant"]
     else:
         wanted = sorted(k for k in mutant.killers if k in INVARIANTS)
     for invariant in wanted:
-        if violates(path, invariant, steps, samples):
+        if violates(path, invariant, checks.steps, checks.samples):
             killed.add(invariant)
     problems = []
     # A negative control (a run named bug*Test) shows a defect; a mutant that
@@ -374,9 +386,9 @@ def main() -> int:
         print(f"mutants: {len(selected)} of {len(MUTANTS)}")
         print("| mutant | change | expected killers | killed by | result |")
         print("|:---|:---|:---|:---|:---|")
+        checks = Checks(base, runs, work, args.steps, args.samples, args.full)
         with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-            results = pool.map(
-                lambda m: check_mutant(m, base, runs, work, args.steps, args.samples, args.full), selected)
+            results = pool.map(lambda m: check_mutant(m, checks), selected)
             for mutant, killed, problems in results:
                 expected = "(equivalent)" if mutant.equivalent else ", ".join(sorted(mutant.killers))
                 print(f"| {mutant.ident} | {mutant.summary} | {expected} | {', '.join(sorted(killed)) or '-'} | "
