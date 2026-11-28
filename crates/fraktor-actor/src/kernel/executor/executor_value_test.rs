@@ -2853,6 +2853,69 @@ mod stage4a {
   }
 
   #[test]
+  fn a_resume_after_a_failure_carries_the_cause_to_the_perpetrator_child_only() {
+    // Design 11.13.7, the `Resume` row, and 11.13.18 item 9.5: Pekko v2.0.0's
+    // `faultResume` resumes its children with the cause of its own failure
+    // only for the child that failure names as the perpetrator, and without
+    // a cause for every other child (`dungeon/FaultHandling.scala:146-151`,
+    // `dungeon/Children.scala:216-222`,
+    // `child.resume(if (perp == child) causedByFailure else null)`).
+    // `k`'s decider panics on `x`'s failure, so `k` fails with `x` as the
+    // perpetrator; `k`'s parent is a function reference, whose decider for
+    // `k` panics too, so `k` is resumed with the cause (11.13.7: the one
+    // place a `Resume` is sent). The runs are taken one at a time, and the
+    // `Resume`s `k` sends are read from its children's mailboxes before
+    // either child runs: `x` is given the cause, `y` is not.
+    let address = crate::kernel::address::Address::new("pekko", "Stage4bResumeCause");
+    let root = crate::kernel::actor_path::RootActorPath::new(address);
+    let mut executor = super::Executor::new(super::ActorPath::from_root(root), Arc::new(ChannelBoundary::new()));
+    executor.set_failure_catcher(Arc::new(UnwindCatcher));
+    let log = new_log();
+    let asked_for_k = Arc::new(AtomicUsize::new(0));
+    let asked_for_x = Arc::new(AtomicUsize::new(0));
+    let parent = executor.function_ref("parent", |_: &ActorRef, _: Message| {});
+    let k = executor.spawn_child(
+      &parent,
+      Node::new("k", &log).supervising_with(panicking_decider(&asked_for_x)).props(),
+      Some("k"),
+      panicking_decider(&asked_for_k),
+    );
+    executor.run_until_idle();
+    let x = executor.spawn_named_child(&k, Node::new("x", &log).failing_on("boom").props(), "x").expect("`x`");
+    let y = executor.spawn_named_child(&k, Node::new("y", &log).props(), "y").expect("`y`");
+    executor.run_until_idle();
+
+    x.tell("boom", x.clone());
+    let mut runs = 0;
+    while asked_for_k.load(Ordering::SeqCst) == 0
+      || executor.entry(&k).is_some_and(|entry| entry.mailbox.suspend_count() > 0)
+    {
+      let task = executor.manual.pop().expect("a run is left before `k` is resumed");
+      executor.run_task(task, None);
+      runs += 1;
+      assert!(runs <= 2, "`k` was not resumed in the runs of `x` and `k`");
+    }
+    assert_eq!(asked_for_x.load(Ordering::SeqCst), 1, "`k`'s decider was not asked once for `x`");
+    assert_eq!(asked_for_k.load(Ordering::SeqCst), 1, "the function reference's decider was not asked once for `k`");
+
+    let resumes_of = |executor: &super::Executor, child: &ActorRef| -> Vec<bool> {
+      let entry = executor.entry(child).expect("the child is in the table");
+      entry
+        .mailbox
+        .close()
+        .1
+        .into_iter()
+        .filter_map(|message| match message {
+          | super::SystemMessage::Resume { caused_by_failure } => Some(caused_by_failure),
+          | _ => None,
+        })
+        .collect()
+    };
+    assert_eq!(resumes_of(&executor, &x), [true], "the perpetrator `x` was not resumed with the cause once");
+    assert_eq!(resumes_of(&executor, &y), [false], "`y`, which did not fail, was resumed with the cause");
+  }
+
+  #[test]
   fn a_held_failure_of_a_child_that_has_left_the_table_is_dropped() {
     let mut system = with_catcher("Stage4aDroppedDecision");
     let log = new_log();

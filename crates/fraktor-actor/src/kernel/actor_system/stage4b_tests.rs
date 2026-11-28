@@ -55,6 +55,10 @@ use crate::{
   },
 };
 
+// The tests on which children a parent's restarts recreate live in a file of
+// their own, which reads this file's helpers through `use super::*`.
+mod recreate_test;
+
 type Log = Arc<Mutex<Vec<String>>>;
 
 /// The cause name and the message of one recorded event.
@@ -73,6 +77,20 @@ fn entries(log: &Log) -> Vec<String> {
 
 fn counted(log: &Log, text: &str) -> usize {
   entries(log).iter().filter(|entry| entry.as_str() == text).count()
+}
+
+/// The places in `seen` that hold `text`, in order.
+fn positions(seen: &[String], text: &str) -> Vec<usize> {
+  seen.iter().enumerate().filter(|(_, entry)| entry.as_str() == text).map(|(at, _)| at).collect()
+}
+
+/// The place of the one entry `text` in `seen`; a missing entry fails the
+/// test instead of comparing as nothing.
+fn position(seen: &[String], text: &str) -> usize {
+  match positions(seen, text).as_slice() {
+    | [at] => *at,
+    | found => panic!("`{text}` is recorded {} times, not once: {seen:?}", found.len()),
+  }
 }
 
 fn with_catcher(name: &str) -> ActorSystem {
@@ -432,6 +450,68 @@ fn a_child_started_with_a_strategy_without_a_decider_is_decided_by_it() {
   assert_eq!(seen, ["a:pre_restart", "a:post_restart"], "only the child should restart, once, by its own strategy");
   assert!(!system.is_actor_terminated(&failing), "the child was stopped by the parent's decider: {seen:?}");
   assert!(!system.is_actor_terminated(&sibling), "the sibling was stopped along with the child: {seen:?}");
+  assert!(!system.is_actor_terminated(&middle));
+}
+
+#[test]
+fn a_child_started_with_an_all_for_one_strategy_takes_its_siblings_along() {
+  // Rule 1 of the precedence decided in the comment on #350 (design 11.13.4)
+  // with the reach of the strategy the child was started with: a child started
+  // with an all-for-one strategy under a parent that is not top-level is
+  // decided by that strategy, and its restart takes the siblings along, as
+  // main's `strategy_for` and `apply_all_for_one` do (main `18f6690`). The
+  // deciding parent `middle` applies a one-for-one strategy whose decider
+  // stops; `a` was started with an all-for-one strategy whose decider
+  // restarts, and its sibling `b` with the default strategy. Only `a`'s decider
+  // is asked, once, and both `a` and `b` restart (11.13.18 item 9.3).
+  let log = new_log();
+  let parent_asked = Arc::new(AtomicUsize::new(0));
+  let counted_parent_asks = Arc::clone(&parent_asked);
+  let child_asked = Arc::new(AtomicUsize::new(0));
+  let counted_child_asks = Arc::clone(&child_asked);
+  let mut system = with_catcher("Stage4bStartedWithAllForOne");
+  let guardian = system.actor_of(parent("guardian", &log, SupervisorStrategy::default_strategy()));
+  let middle = system.downgrade().spawn_child(
+    &guardian,
+    parent(
+      "middle",
+      &log,
+      SupervisorStrategy::one_for_one(3).with_decider(move |_, _| {
+        counted_parent_asks.fetch_add(1, Ordering::SeqCst);
+        Directive::Stop
+      }),
+    ),
+    Some("middle"),
+    SupervisorStrategy::default_strategy(),
+  );
+  let failing = system.downgrade().spawn_child(
+    &middle,
+    worker("a", &log),
+    Some("a"),
+    SupervisorStrategy::all_for_one(3, RestartWindow::Unbounded).with_decider(move |_, _| {
+      counted_child_asks.fetch_add(1, Ordering::SeqCst);
+      Directive::Restart
+    }),
+  );
+  let sibling =
+    system.downgrade().spawn_child(&middle, worker("b", &log), Some("b"), SupervisorStrategy::default_strategy());
+  system.run_until_idle();
+  log.lock().unwrap().clear();
+
+  failing.tell("boom", guardian.clone());
+  system.run_until_idle();
+  let seen = entries(&log);
+  assert_eq!(parent_asked.load(Ordering::SeqCst), 0, "the parent's decider decided a child started with a strategy");
+  assert_eq!(child_asked.load(Ordering::SeqCst), 1, "the strategy the child was started with was not asked: {seen:?}");
+  for text in ["a:pre_restart", "a:post_restart", "b:pre_restart", "b:post_restart"] {
+    assert_eq!(
+      counted(&log, text),
+      1,
+      "`{text}` is not recorded once: the restart did not reach every sibling: {seen:?}"
+    );
+  }
+  assert!(!system.is_actor_terminated(&failing));
+  assert!(!system.is_actor_terminated(&sibling));
   assert!(!system.is_actor_terminated(&middle));
 }
 
@@ -806,11 +886,20 @@ impl Actor for CreatesFromPreRestart {
 
 #[test]
 fn a_child_created_under_a_suspended_parent_receives_the_parents_suspend() {
-  // Design 11.13.7 "suspend された親の下での子の生成" (`Children.scala:340`) and
-  // 11.13.12 "生成" first line: a child created under a suspended parent gets a
-  // `Suspend` behind its `Create` for each suspend the parent holds, so it does
-  // not handle a normal message before the parent's decision. Stage 4a creates
-  // it without the `Suspend`.
+  // Design 11.13.7 "suspend された親の下での子の生成" (`Children.scala:340`),
+  // 11.13.12 "生成" first line, 11.13.6 (the survivors are taken at the start
+  // of the second half) and 11.13.18 item 9.1: a child created under a
+  // suspended parent gets a `Suspend` behind its `Create` for each suspend the
+  // parent holds, so it does not handle a normal message before the parent's
+  // decision. A child the parent creates in its `pre_restart` is among the
+  // survivors of Pekko v2.0.0's `finishRecreate`
+  // (`dungeon/FaultHandling.scala:280` takes `children` after `preRestart`), so
+  // the parent's second half restarts it (`:293-294`), and that `Recreate`
+  // answers the inherited `Suspend`: the child handles `Create`, `Suspend` and
+  // `Recreate`, restarts once, and is no longer suspended once the parent has
+  // restarted. Stage 4a creates it without the `Suspend`; PR #300 at `65c9ee1`
+  // leaves it out of the survivors, so it stays suspended for good and never
+  // handles a normal message (the pre-merge reading of PR #300, item 1).
   let log = new_log();
   let mut system = with_catcher("Stage4bSuspendInheritance");
   let guardian = system.actor_of(parent("guardian", &log, SupervisorStrategy::default_strategy()));
@@ -827,18 +916,35 @@ fn a_child_created_under_a_suspended_parent_receives_the_parents_suspend() {
   );
   system.run_until_idle();
   log.lock().unwrap().clear();
-  // The parent's decider panics, so the guardian restarts the parent, whose
-  // `pre_restart` creates `late` while the parent is suspended.
+  // The guardian restarts the parent, whose `pre_restart` creates `late`
+  // while the parent is suspended.
   failing.tell("boom", guardian.clone());
   system.run_until_idle();
   assert_eq!(counted(&log, "parent:post_restart"), 1, "the parent did not restart: {:?}", entries(&log));
   let late = created.lock().unwrap().clone().expect("the parent created its child from `pre_restart`");
-  let counts = counts_of(&mut system, &[&late]);
+  assert_eq!(
+    counted(&log, "late:pre_restart"),
+    1,
+    "the child created in `pre_restart` was not restarted by the parent's second half: {:?}",
+    entries(&log)
+  );
+  assert_eq!(counted(&log, "late:post_restart"), 1, "the child did not restart once: {:?}", entries(&log));
+  let counts = counts_of(&mut system, &[&failing, &late]);
   assert_eq!(
     counts,
-    alloc::vec![Some(1)],
-    "the child created under the suspended parent got no `Suspend` for it: {:?}",
+    alloc::vec![Some(0), Some(0)],
+    "the parent's restart left the parent or the child created in `pre_restart` suspended: {:?}",
     entries(&log)
+  );
+
+  late.tell("ping", guardian.clone());
+  system.run_until_idle();
+  let seen = entries(&log);
+  assert_eq!(counted(&log, "late:ping"), 1, "the child created in `pre_restart` takes no normal message: {seen:?}");
+  assert!(
+    position(&seen, "late:pre_start") < position(&seen, "late:post_restart")
+      && position(&seen, "late:post_restart") < position(&seen, "late:ping"),
+    "the child did not start, restart and then handle `ping`, in that order: {seen:?}"
   );
 }
 
