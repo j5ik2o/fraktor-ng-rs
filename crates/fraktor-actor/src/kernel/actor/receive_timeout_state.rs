@@ -114,6 +114,23 @@ impl ReceiveTimeoutState {
     }
   }
 
+  /// Runs `checkReceiveTimeout` for a zero timeout and returns
+  /// whether the caller must send the timeout at once. The original's
+  /// scheduler sends a zero delay on the spot and returns a task that
+  /// cannot be cancelled, so the state records the firing as already
+  /// in the mailbox: nothing is scheduled, no deadline is indexed,
+  /// and a later cancel only clears this record without taking the
+  /// message back.
+  pub(crate) fn check_zero_timeout(&mut self, reschedule: bool) -> bool {
+    if reschedule || self.task == ReceiveTimeoutTask::Empty {
+      self.task = ReceiveTimeoutTask::Fired;
+      self.version = self.version.wrapping_add(1);
+      true
+    } else {
+      false
+    }
+  }
+
   /// Moves the scheduled firing to a new deadline, keeping its
   /// timeout. Used when the clock the deadline was measured on is
   /// replaced, so the firing keeps the remaining time it had.
