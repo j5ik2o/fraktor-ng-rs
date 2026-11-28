@@ -29,6 +29,10 @@
 //! tests here because they do not fail on this implementation.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
+// The declaring module (`actor_system_value_test`) is itself loaded with
+// `#[path]`, so `cfg-std-forbid` cannot follow this file back to a `cfg(test)`
+// declaration; the one `std` use carries the test-only guard itself.
+#[cfg(test)]
 use std::sync::Mutex;
 
 use super::stage4b_suspend_counts;

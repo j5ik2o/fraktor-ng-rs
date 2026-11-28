@@ -51,7 +51,6 @@ fn stage4b_suspend_counts(system: &mut ActorSystem, targets: &[&ActorRef]) -> Ve
 }
 
 #[cfg(test)]
-#[path = "../executor/executor_stage4b_test.rs"]
 mod stage4b_tests;
 
 struct QueueBoundary {
