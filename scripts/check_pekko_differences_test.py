@@ -107,6 +107,88 @@ class CheckPekkoDifferencesTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("欄が 7 個でない", stderr)
 
+    def test_references_next_to_japanese_text_are_found(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            table = root / "differences.md"
+            table.write_text(
+                differences(row("一時的（原典どおりに戻す）", "#311", "sender")), encoding="utf-8"
+            )
+            ledger = root / "nodes.yaml"
+            ledger.write_text(
+                "\n".join(
+                    [
+                        "nodes:",
+                        node("japanese-node", "green", "直すのは#311"),
+                        node("restore-node", "green", "復元は#311"),
+                        node("longer-number-node", "green", "直すのは#3110"),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            code, stdout, _ = run_quietly(["--differences", str(table), "--ledger", str(ledger)])
+
+        self.assertEqual(code, 1)
+        self.assertIn("食い違い: 2 件", stdout)
+        self.assertIn(": japanese-node", stdout)
+        self.assertIn(": restore-node", stdout)
+        self.assertNotIn("longer-number-node", stdout)
+
+    def test_matches_quoted_and_indented_ids_and_comment_references(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            table = root / "differences.md"
+            table.write_text(
+                differences(row("一時的（原典どおりに戻す）", "#311", "sender")), encoding="utf-8"
+            )
+            ledger = root / "nodes.yaml"
+            ledger.write_text(
+                "\n".join(
+                    [
+                        "nodes:",
+                        '  - id: "quoted-node"',
+                        "    status: green",
+                        '    reason: "x"',
+                        "    # 復元は #311",
+                        "  - id: inline-node  # 行内のコメント",
+                        "    status: green",
+                        '    reason: "x"',
+                        "    # 直すのは #311",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            code, stdout, _ = run_quietly(["--differences", str(table), "--ledger", str(ledger)])
+
+        self.assertEqual(code, 1)
+        self.assertIn("食い違い: 2 件", stdout)
+        self.assertIn(": quoted-node", stdout)
+        self.assertIn(": inline-node", stdout)
+
+    def test_escaped_pipe_stays_in_one_cell(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            table = root / "differences.md"
+            table.write_text(
+                differences("| 一時的（原典どおりに戻す） | 話題 \\| その2 | | | #311 | | open |"),
+                encoding="utf-8",
+            )
+            ledger = root / "nodes.yaml"
+            ledger.write_text(
+                "\n".join(["nodes:", node("pipe-node", "green", "復元は issues/311")]) + "\n",
+                encoding="utf-8",
+            )
+
+            code, stdout, _ = run_quietly(["--differences", str(table), "--ledger", str(ledger)])
+
+        self.assertEqual(code, 1)
+        self.assertIn("食い違い: 1 件", stdout)
+        self.assertIn(": pipe-node", stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

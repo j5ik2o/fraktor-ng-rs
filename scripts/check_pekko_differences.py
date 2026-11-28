@@ -41,8 +41,10 @@ PORTED_STATUS = "green"
 
 SEPARATOR_CELL = re.compile(r":?-+:?")
 ISSUE_CELL = re.compile(r"#(\d+)")
-# `#311` と `issues/311`（URL の中も）を受ける。`#3110` や `#1311` は数えない。
-REFERENCE = re.compile(r"(?<![\w#])#(\d+)(?!\d)|(?<!\w)issues/(\d+)(?!\d)")
+# `#311` と `issues/311`（URL の中も）を受ける。先行の境界は ASCII の英数字と
+# アンダースコアだけで見るので、日本語の直後の `直すのは#311` も受ける。`#3110` や
+# `#1311` は数えない。
+REFERENCE = re.compile(r"(?<![A-Za-z0-9_])#(\d+)(?!\d)|(?<![A-Za-z0-9_])issues/(\d+)(?!\d)")
 
 
 class InputError(Exception):
@@ -50,12 +52,36 @@ class InputError(Exception):
 
 
 def split_row(line: str) -> list[str] | None:
-    """Markdown の表の1行を欄に分ける。表の行でなければ None。"""
+    """Markdown の表の1行を欄に分ける。表の行でなければ None。
+
+    エスケープした `\\|` は欄の区切りにせず、欄の中の `|` として読む。
+    """
     stripped = line.strip()
     if not stripped.startswith("|"):
         return None
     inner = stripped[1:-1] if stripped.endswith("|") else stripped[1:]
-    return [cell.strip() for cell in inner.split("|")]
+    return [cell.strip() for cell in split_cells(inner)]
+
+
+def split_cells(inner: str) -> list[str]:
+    """エスケープされていない `|` だけで欄に分ける。"""
+    cells: list[str] = []
+    current: list[str] = []
+    index = 0
+    while index < len(inner):
+        char = inner[index]
+        if char == "\\" and index + 1 < len(inner) and inner[index + 1] == "|":
+            current.append("|")
+            index += 2
+            continue
+        if char == "|":
+            cells.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+        index += 1
+    cells.append("".join(current))
+    return cells
 
 
 def parse_temporary_issues(text: str) -> list[tuple[int, str]]:
@@ -124,16 +150,33 @@ def referenced_issues(node: dict, block: str) -> set[int]:
     return found
 
 
+NODE_START = re.compile(r"^[ \t]*- id:(?:[ \t]+(?P<id>.*))?$")
+
+
+def yaml_scalar(raw: str) -> str:
+    """`- id:` の後ろを YAML のスカラーとして読む（引用符と行内のコメントを落とす）。"""
+    try:
+        value = yaml.safe_load(raw)
+    except yaml.YAMLError:
+        value = None
+    return value if isinstance(value, str) else raw.strip()
+
+
 def node_blocks(text: str) -> dict[str, str]:
-    """台帳の生の行を、`- id:` で始まるノードごとに分ける。"""
+    """台帳の生の行を、`- id:` で始まるノードごとに分ける。
+
+    id は YAML のスカラーとして読み、引用符つき・行内のコメントつき・インデントされた
+    `- id:` でも、解析後のノードの id と対応させる。
+    """
     blocks: dict[str, str] = {}
     current: str | None = None
     lines: list[str] = []
     for line in text.splitlines():
-        if line.startswith("- id: "):
+        match = NODE_START.match(line)
+        if match:
             if current is not None:
                 blocks[current] = "\n".join(lines)
-            current = line[len("- id: "):].strip()
+            current = yaml_scalar(match.group("id") or "")
             lines = [line]
         elif current is not None:
             lines.append(line)
