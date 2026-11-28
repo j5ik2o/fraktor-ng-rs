@@ -2014,11 +2014,19 @@ mod stage4a {
     fail_on: Option<&'static str>,
     on_pre_restart: Option<Hook>,
     post_restart_runs_pre_start: bool,
+    strategy: Option<SupervisorStrategy>,
   }
 
   impl Node {
     fn new(label: &'static str, log: &Log) -> Self {
-      Self { label, log: Arc::clone(log), fail_on: None, on_pre_restart: None, post_restart_runs_pre_start: false }
+      Self {
+        label,
+        log: Arc::clone(log),
+        fail_on: None,
+        on_pre_restart: None,
+        post_restart_runs_pre_start: false,
+        strategy: None,
+      }
     }
 
     fn failing_on(mut self, text: &'static str) -> Self {
@@ -2039,6 +2047,13 @@ mod stage4a {
       self
     }
 
+    /// Makes the node apply `strategy` to its own children, in place of
+    /// the default strategy.
+    fn supervising_with(mut self, strategy: SupervisorStrategy) -> Self {
+      self.strategy = Some(strategy);
+      self
+    }
+
     fn props(&self) -> Props {
       let node = self.clone();
       Props::new(move || node.clone())
@@ -2052,6 +2067,10 @@ mod stage4a {
   impl Actor for Node {
     fn pre_start(&mut self, _context: &mut ActorContext<'_>) {
       self.record("pre_start");
+    }
+
+    fn supervisor_strategy(&self) -> SupervisorStrategy {
+      self.strategy.clone().unwrap_or_else(SupervisorStrategy::default_strategy)
     }
 
     fn receive(&mut self, _context: &mut ActorContext<'_>, message: Message) {
@@ -2837,6 +2856,7 @@ mod stage4a {
   fn a_held_failure_of_a_child_that_has_left_the_table_is_dropped() {
     let mut system = with_catcher("Stage4aDroppedDecision");
     let log = new_log();
+    let dead = dead_letters_of(&mut system);
     let asked = Arc::new(AtomicUsize::new(0));
     let slow = Arc::new(Mutex::new(None::<ActorRef>));
     let to_stop = Arc::clone(&slow);
@@ -2848,29 +2868,36 @@ mod stage4a {
     let grandparent = system.actor_of(grandparent_node.props());
     let x = spawn(&system, &grandparent, &Node::new("x", &log), SupervisorStrategy::default_strategy());
     *slow.lock().unwrap() = Some(x);
-    let parent =
-      spawn(&system, &grandparent, &Node::new("p", &log).failing_on("boom"), SupervisorStrategy::one_for_one(5));
+    // Both the strategy `p` applies to its children and the one `c` is
+    // started with count the decisions asked of them, so `asked` reads every
+    // decider that could answer for `c`.
+    let parent = spawn(
+      &system,
+      &grandparent,
+      &Node::new("p", &log).supervising_with(panicking_decider(&asked)),
+      SupervisorStrategy::one_for_one(5),
+    );
     let child = spawn(&system, &parent, &Node::new("c", &log).failing_on("boom"), panicking_decider(&asked));
     system.run_until_idle();
 
-    // `g` waits for `x` in its restart, so the decision for `p` waits; `p`
-    // is suspended, so the decision for `c` waits. Once `g` has restarted,
-    // `p` restarts, and its default `pre_restart` stops `c`, which leaves
-    // `p`'s table. `p` is a survivor of `g`'s restart, so the later half of
-    // `g`'s restart recreates it as well, and `p` restarts twice (design
-    // 11.13.6, D4b-1 A). The held failure for `c` is then dropped: the
-    // decider is asked at most once per failure, and none at all once `c`
-    // has left the table (design 11.13.13, decision 1).
+    // `g` fails and suspends `p`, and `c` takes its own `boom` before
+    // `p`'s `Suspend` reaches it, so `c` fails and its `Failed` is held by
+    // the suspended `p`. `g` waits for `x` in its restart; once `g` has
+    // restarted, `p`, a survivor of `g`'s restart, is recreated once
+    // (design 11.13.6, D4b-1 A), and its default `pre_restart` stops `c`,
+    // which leaves `p`'s table. The held `Failed(c)` is then dropped, as
+    // Pekko v2.0.0 drops a `Failed` from an unknown child
+    // (`dungeon/FaultHandling.scala:307-324`): the decider is never asked
+    // (design 11.13.13, decision 1, and 11.13.18 item 6). That `c` failed
+    // at all is read from dead letters: its `boom` was taken, not left.
     grandparent.tell("boom", grandparent.clone());
-    parent.tell("boom", parent.clone());
     child.tell("boom", child.clone());
     system.run_until_idle();
 
-    let asked_count = asked.load(Ordering::SeqCst);
-    assert!(asked_count <= 1, "one failure was decided more than once: {asked_count}");
-    assert_eq!(asked_count, 0, "the decider was asked about a child that had left the table");
+    assert_eq!(entries(&dead), Vec::<String>::new(), "`c` did not take its `boom`, so it never failed");
+    assert_eq!(asked.load(Ordering::SeqCst), 0, "the decider was asked about a child that had left the table");
     let log = entries(&log);
-    assert_eq!(log.iter().filter(|entry| *entry == "p:post_restart").count(), 2, "{log:?}");
+    assert_eq!(log.iter().filter(|entry| *entry == "p:post_restart").count(), 1, "{log:?}");
     assert!(!system.is_actor_terminated(&parent));
     assert!(system.is_actor_terminated(&child));
   }

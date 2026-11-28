@@ -255,7 +255,10 @@ fn a_top_level_actor_is_decided_by_the_guardian_not_by_its_own_strategy() {
   // own failure. Pekko v2.0.0 decides a top-level failure with the `/user`
   // guardian's strategy (`ActorRefProvider.scala:534`, `:580`), the
   // `defaultStrategy` that restarts on an `Exception`
-  // (`actor/FaultHandling.scala:98-100`, `:218-223`).
+  // (`actor/FaultHandling.scala:98-100`, `:218-223`). The expectation is the
+  // one under Pekko's default `guardian-supervisor-strategy`
+  // (`DefaultSupervisorStrategy`); under `StoppingSupervisorStrategy` the
+  // top-level actor would be stopped (design 11.13.4; the setting is #335).
   let log = new_log();
   let mut system = with_catcher("Stage4bTopLevelDecidedByGuardian");
   let top =
@@ -271,6 +274,51 @@ fn a_top_level_actor_is_decided_by_the_guardian_not_by_its_own_strategy() {
     entries(&log)
   );
   assert_eq!(entries(&log), ["top:pre_restart", "top:post_restart"]);
+}
+
+#[test]
+fn a_child_started_with_a_strategy_is_decided_by_its_parents_strategy() {
+  // Design 11.13.4 "判断するのは親の戦略だけ" and #350: the strategy a child is
+  // started with takes no part in the decision for the child's failure, even
+  // when the deciding parent stands under a parent of its own. Pekko v2.0.0
+  // keeps no strategy per child: `handleFailure` runs the parent's own
+  // `supervisorStrategy` (`dungeon/FaultHandling.scala:313-314`). The parent
+  // here has the `defaultStrategy`, which restarts on an `Exception`
+  // (`actor/FaultHandling.scala:218-223`), so the child restarts and the
+  // stopping decider it was started with is never asked. The parent's
+  // strategy has no decider of its own: a parent decider is already chosen
+  // first, so only the default's `Restart` shows the started-with decider
+  // overriding it.
+  let log = new_log();
+  let asked = Arc::new(AtomicUsize::new(0));
+  let counted_asks = Arc::clone(&asked);
+  let mut system = with_catcher("Stage4bChildDecidedByParentStrategy");
+  let guardian = system.actor_of(parent("guardian", &log, SupervisorStrategy::default_strategy()));
+  let middle = system.downgrade().spawn_child(
+    &guardian,
+    parent("middle", &log, SupervisorStrategy::default_strategy()),
+    Some("middle"),
+    SupervisorStrategy::default_strategy(),
+  );
+  let child = system.downgrade().spawn_child(
+    &middle,
+    worker("child", &log),
+    Some("child"),
+    SupervisorStrategy::one_for_one(3).with_decider(move |_, _| {
+      counted_asks.fetch_add(1, Ordering::SeqCst);
+      Directive::Stop
+    }),
+  );
+  system.run_until_idle();
+  log.lock().unwrap().clear();
+
+  child.tell("boom", guardian.clone());
+  system.run_until_idle();
+  let seen = entries(&log);
+  assert_eq!(asked.load(Ordering::SeqCst), 0, "the strategy the child was started with decided its failure");
+  assert!(!system.is_actor_terminated(&child), "the child was stopped instead of restarted: {seen:?}");
+  assert_eq!(seen, ["child:pre_restart", "child:post_restart"]);
+  assert!(!system.is_actor_terminated(&middle));
 }
 
 #[test]
