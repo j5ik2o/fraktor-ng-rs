@@ -2672,9 +2672,9 @@ B の半分）では成り立たない。子を suspend して、残した子を
 1. 失敗した子が、親の表に、`Failed` の `ActorRef`（id と世代）と同じ登録で残っているときだけ判断する。ほかは捨てる（原典の
    「dropping Failed from unknown child」「from old child」。11.12.6 の照合を、取り置きの解放から `Failed` の処理へ移す）
 2. 失敗を publish する（今の `publish_child_failure`）
-3. 戦略を決める。子が親から受け継ぐなら親の戦略（`ParentEntry.strategy`）、生成のときに戦略を渡された子なら、その戦略
-   （親の表の子の記録に置く。下）。ただし後者は、親の戦略に独自の decider が無く、`speaks` の条件が真のときだけ、その decider が
-   判断する（下の「`speaks` を原典と照らす」。**原典と違う**：原典は親の戦略だけで判断する）。decider を catcher で包んで回す（今の
+3. 戦略を決める。下の「生成のときの戦略と親の戦略の優先（#350）」の規則による：生成のときに戦略を渡された子は、その戦略
+   （親の表の子の記録に置く。下）で判断し、渡されなかった子は、親のアクターの `supervisor_strategy`（`ParentEntry.strategy`）で判断する。
+   判断する親がトップレベルのときは #300 の形（同じ節）。decider を catcher で包んで回す（今の
    `decide_catching`）。**失敗した子が自分の子に当てる
    戦略（その子の `Actor::supervisor_strategy`。その子の `ParentEntry.strategy`）は、その子自身の失敗の判断に使わない**（下の
    「判断するのは親の戦略だけ」）
@@ -2704,6 +2704,10 @@ decider の panic のあとの子は、親の判断の効果で決まる。親�
 1 つの経路（生き残りの `Recreate`）になる。
 
 **判断するのは親の戦略だけ（[#319](https://github.com/j5ik2o/fraktor-ng-rs/issues/319)・[#332](https://github.com/j5ik2o/fraktor-ng-rs/issues/332)。c6a52e7 の直し）**：
+
+ここで「親の戦略」と言うのは、判断する親が子に当てる戦略である。fraktor では、生成のときに子へ渡す戦略も、それに含む。生成のときの戦略は、
+Pekko で親が `supervisorStrategy` を override することの代わりである（下の「生成のときの戦略と親の戦略の優先（#350）」）。この節で
+退けるのは、**失敗した子が自分の子に当てる戦略**を、その子自身の失敗の判断に使うことだけである。
 
 原典の行：
 
@@ -2739,7 +2743,7 @@ c6a52e7 のずれ（2 つ。どちらも原典に無い）：
 - **decider の panic のとき**：親 P の戦略の decider が子 C の `Failed` で panic すると、P の失敗になる（11.13.3 の 1〜4。張本人は C。
   C には `Suspend` を送らず、P のほかの子に送る）。P は**いつも**親に知らせる。P の親がメールボックスを持てば、その列に `Failed(P)` を
   積む。P がトップレベルなら、ガーディアンがその場で判断する（下の「メールボックスの無い親」）。P の失敗を判断するのは P の親の
-  戦略（P が生成のときに戦略を渡されていれば、`speaks` の条件の下でその戦略。原典と違う。下の「`speaks` を原典と照らす」。
+  戦略（P が生成のときに戦略を渡されていれば、その戦略。下の「生成のときの戦略と親の戦略の優先（#350）」。
   トップレベルなら、生成のときに入る `default_strategy`。下の行）で、
   panic した decider を持つ P 自身の戦略は使わない。既定の戦略なら `Restart` で、P は再起動される。P の `pre_restart` が子を止め
   なければ、P の後半が生き残りの子（C を含む）に `Recreate` を送る（11.13.6）。上の 1 本目のテストの筋書きなら、`parent` が
@@ -2772,29 +2776,64 @@ c6a52e7 のずれ（2 つ。どちらも原典に無い）：
 生成のときの戦略の decider が判断に加わる条件（`choose_decision` の `speaks`、644ba80 の `:3651`。判断する親がさらに親を持つとき、
 escalation のとき、開始の失敗のとき）は、この直しでは変えない。
 
-**`speaks` を原典と照らす**（PR #300 の設計の直し 2 回目。コードの読みで、実測はしていない）：
+**生成のときの戦略と親の戦略の優先（[#350](https://github.com/j5ik2o/fraktor-ng-rs/issues/350)。元帥の決定、2026-11-28）**：
 
-- 原典には、子ごとに渡す戦略が無い。子の失敗を判断するのは、いつも判断する親の `supervisorStrategy` で（`dungeon/FaultHandling.scala:313-314`）、
-  `Props` は戦略を持たない。トップレベルのアクターを判断する `/user` の戦略も、`/user` 自身の `supervisorStrategy` である
-  （`ActorRefProvider.scala:580`）。つまり原典では、生成のときの戦略が判断に加わることは無く、`speaks` の 3 つの条件はどれも原典に無い
-- fraktor で生成のときの戦略が効くのは、戦略を渡して作った子だけである（公開 API の `ActorContext::actor_of_with_strategy`、
-  `actor_context.rs:386`、`WeakActorSystem::spawn_child` と `try_spawn_child`）。トップレベルのアクターは `default_strategy`
-  （`supervisor_strategy.rs:138-139`。独自の decider が無い）で作られるので、`speaks` が真でも、生成のときの戦略の decider は回らない
-- 644ba80 の振る舞い：判断する親の戦略に独自の decider があれば、それが判断する（原典の側）。無ければ、`speaks` が真のときに限って、
-  生成のときの戦略の decider が判断する。`speaks` が偽なら、生成のときの戦略の policy（`SupervisorStrategy::decide`）が decider を
-  使わずに判断する
-- main（`ed9fba5`）は、受け継がない子なら生成のときの戦略だけで判断した（`strategy_for`、main の `executor_value.rs:2170-2177`）。
-  `speaks`（`parent_not_top`）は c6a52e7 で入った（`git log -S parent_not_top`）。**この差は main からあるものではなく、#300 で入った**
-- **原典と違う**：戦略を渡して作った子の失敗を、親の戦略でない戦略が判断する（`speaks` が真のときはその decider、偽のときはその
-  policy）。**直すのは新しい issue（PR #300 の設計の直し 2 回目の報告で中将に上げた。番号は立ったあとで書き入れる）**。原典に
-  寄せると、生成のときの戦略は判断に加わらず、`actor_of_with_strategy` の意味（公開 API）を決め直すことになる。段 4b の PR で
-  直すか、別にするかは中将が決める
+- 原典 classic には子ごとに渡す戦略が無く、親は戦略を 1 つしか持たない。子の失敗を判断するのは、いつも判断する親の
+  `supervisorStrategy` である（`dungeon/FaultHandling.scala:313-314`。`Props` は戦略を持たない）。子によって戦略を変えたい親は、
+  `supervisorStrategy` を override する。testkit の `childActorOf(props, strategy)` も、子に戦略を渡すのではなく、親（testActor）の
+  `supervisorStrategy` に代入する（`TestKit.scala:131-134`。使う側は `TestProbeSpec.scala:68-87`。`Supervisor.scala:20` は
+  `override val supervisorStrategy` を引数で受ける親）
+- fraktor は、親のアクターの `supervisor_strategy`（`Actor::supervisor_strategy`、`actor_trait.rs:97`。`ParentEntry.strategy`）と、
+  生成のときに渡す戦略（公開 API の `ActorContext::actor_of_with_strategy`、`actor_context.rs:386`、`WeakActorSystem::spawn_child`、
+  `try_spawn_child`、`weak_actor_system.rs:81`、`:116`）の 2 つを持つ。生成のときの戦略は、原典で親が `supervisorStrategy` を override する
+  ことの代わりとして使われている（`actor_of_with_strategy` の rustdoc の「this port lets the caller pass one so a test helper can put a
+  child under a chosen strategy」と、`fraktor-testkit` の `restart_a_failing_child_if_the_given_supervisor_says_so`）。原典は戦略を
+  1 つしか持たないので、両方があるときにどちらが勝つかは原典では決まらない。fraktor の公開 API が選ぶことである
+- **規則**：
+  1. 生成のときに戦略を渡した子は、その戦略で判断する（main の `strategy_for`、main `18f6690` の `executor_value.rs:2213-2220` と同じ意味）
+  2. 渡さなかった子は、親のアクターの `supervisor_strategy` で判断する
+  3. 判断する親がトップレベル（`/user` の子。セルを持ち、親のセルを持たない。`decision_inputs` の `parent_not_top` が偽）のときは、
+     #300 の形で判断する。こちらの方が原典に近い。順は今の `choose_decision`（`executor_value.rs:3631-3669`）のとおり：
+     (a) 親の戦略か生成のときの戦略が all-for-one なら、その戦略が判断する（親の側が先）。(b) 親の戦略に独自の decider があれば、
+     その decider が判断する。(c) 生成のときの戦略の decider は、escalation の失敗と開始の失敗のときだけ回す（`speaks` の 3 条件のうち
+     `parent_not_top` を除く 2 つ）。(d) どの decider も選ばれなければ、生成のときの戦略の policy が判断する。生成のときの戦略が無ければ
+     親の戦略の policy で、どちらも `SupervisorStrategy::decide` を使い、decider は使わない。トップレベルのアクター自身の失敗
+     （ガーディアンがその場で判断する。`inline_decide`、`:3565-3589`）も `parent_not_top` が偽で、生成のときの戦略は `default_strategy` である
+     （上の「正しい振る舞い」）
+- この規則を設計と rustdoc（`actor_of_with_strategy`、`spawn_child`、`try_spawn_child`）に書くのが #350 である。今の `spawn_child` の
+  rustdoc は引数 `strategy` を説明していない。意味を書いているのは、非公開の `executor_value.rs` の doc の「The `strategy` is the
+  caller's own choice and stays with the child」だけである
+
+実測（2026-11-28。使い捨ての worktree で流し、repo には入れていない。記録は coordinator の memo `check-350-origin.md`）：
+
+- #350 の red 3 本（11.13.18 の 8）は、main `18f6690`、`1515131`、c6a52e7 のどれでも 3 本とも落ち、落ち方（assert と left/right）も
+  同じだった。3 本は、判断する親 `middle` をトップレベルのアクター `guardian` の下に置く。だから `parent_not_top` が真の枝だけを通り、
+  #300 と main を区別しない
+- 親がトップレベルの形のプローブ（親は既定の戦略、子には止める decider を渡して作る）は、main と `1515131` で落ち（decider が 1 回
+  呼ばれた）、c6a52e7 で通った（呼ばれない）。トップレベルの親については、#300 の方が main より原典に近い（規則の 3）
+- 3 本を通す本番の直し（使い捨て）を d35ca6d に当てると、main からある 19 本が落ちた（lib 15、`actor_life_cycle_spec.rs` 3、
+  `fraktor-testkit` の `test_probe_spec.rs` 1）。19 本は、main でも `1515131` でも通る。19 本は「生成のときに渡した
+  戦略で判断する」（規則の 1）の意味で書かれている
+
+**読みの誤り**（直し 2 回目、51319c2）：コードを読んだだけで、生成のときの戦略を「親の戦略でない」と読み、`speaks` を「#300（c6a52e7）で入った、原典と違う差」としたが、生成のときの戦略は fraktor では Pekko の親の `supervisorStrategy` の override の代わりとして使われていて main でも同じで、実測で #300 の差ではないと分かった。
+
+**規則と今のコードの食い違い（読み。実測していない）**：判断する親がトップレベルでないときは、規則の 1 により、生成のときの戦略
+だけが判断する。ところが今の `choose_decision` は、(a) 親の戦略が all-for-one ならそれを先に使い、(b) 親の戦略に独自の decider が
+あればそれを先に使って、どちらの場合も生成のときの戦略に進まない。main の `strategy_for` は生成のときの戦略だけを使った。上の
+実測は、親が既定の戦略（all-for-one でも、独自の decider を持つのでもない）の形だけで、この 2 つの形は流していない。上の読みの誤りと
+同じ種類の主張なので、実測するまで差とは書かない。コードを規則に合わせるか、規則に例外として書くかは、#350 で決める（中将）。
+
+Quint（`actor_termination.qnt`）は、規則によって変わらない。モデルは判断の方向（`d`、`rd`）と p の戦略が one-for-one か all-for-one か
+（`afo`）だけを持ち、どの戦略の decider かを持たない。判断は、生成のときの戦略で判断するときも親の実行の中で、親の表の子の記録から
+行う（`decision_inputs`）ので、`decideWithInstance`（親がインスタンスを持つときだけ判断する）とも食い違わない。読み直して、食い違いは
+見つからなかった。モデルの外に残るもの：兄弟の子が別々の、生成のときの戦略を持つ形（モデルの `afo` は p の子のすべてに 1 つ）と、
+上の「規則と今のコードの食い違い」の順（親の all-for-one と独自の decider が先に立つこと）。
 
 Quint（`actor_termination.qnt`）は判断の方向（`d` は判断する親が、`rd` はガーディアンが選ぶ）だけを持ち、どの戦略の decider かは
-持たないので、1 のずれはモデルの外にある。2 のずれは、負の対照 `UntoldEscalation` として写した（11.13.11）。モデルの p は
+持たないので、c6a52e7 のずれの 1 はモデルの外にある。c6a52e7 のずれの 2 は、負の対照 `UntoldEscalation` として写した（11.13.11）。モデルの p は
 ガーディアン（ROOT）の子で、セルとメールボックスを持ち、親のセルを持たない。fraktor のトップレベルのアクター（`cell.parent()` が
 無い。`handle_invoke_failure` は `inline_decide` に進む）と同じ位置で、c6a52e7 の `tell_parent = false` が起きる位置である。
-このモードが写すのは、1 の条件のうちモデルが持つもの：判断するのが p（親のセルが無い）、p の戦略が one-for-one（all-for-one の
+このモードが写すのは、c6a52e7 のずれの 1 の条件のうちモデルが持つもの：判断するのが p（親のセルが無い）、p の戦略が one-for-one（all-for-one の
 早い戻りを通らない）、失敗した子の失敗が escalation でない（子の張本人が子自身）。モデルが持たない 2 つ（p の戦略に独自の decider が
 無い、子が自分の子に当てる戦略に decider がある）は、モードの読みとして置いた前提である。この読みの下で、p の判断の
 decider の panic（`d = DEscalate`）は、子が自分の子に当てる戦略の decider の panic で、p はそれを誰にも知らせない。escalation の
@@ -3734,7 +3773,7 @@ PR #300 の設計の読み切り（890918a、Opus 5.5）と、DS41F の設計の
 | `receive` | `invoke`（`:2967`）。catcher の下の失敗は `handle_invoke_failure` へ |
 | `failActor`（純粋関数） | `handle_invoke_failure`（`:3489`）。引数 `told` は c6a52e7 の `tell_parent`（644ba80 で消えた）を写し、正しい形ではいつも真。偽にするのは `UntoldEscalation` だけ |
 | `rootDecide`（純粋関数） | `inline_decide`（`:3565`） |
-| `runSys` の引数 `d`、`rd` | `choose_decision`（`:3631`）の答え。モデルは、どの戦略の decider かを持たない（#319・#332 の 1 のずれと、`speaks` の差はモデルの外） |
+| `runSys` の引数 `d`、`rd` | `choose_decision`（`:3631`）の答え。モデルは、どの戦略の decider かを持たない（#319・#332 の 1 のずれと、生成のときの戦略と親の戦略の優先（#350、11.13.4）はモデルの外） |
 | `runSys` の引数 `stopKids` | 利用者の `pre_restart`（既定は子をすべて止める） |
 | `runSys` の引数 `ok` | `pre_start`、振る舞いを作る recipe、`post_restart` の成否 |
 | `tellRest` | `finish_terminate` の 2 通目の通知（別の実行が間に入りうる） |
@@ -3748,7 +3787,7 @@ PR #300 の設計の読み切り（890918a、Opus 5.5）と、DS41F の設計の
   と `post_stop` と子の終了のフックの失敗（#334 の C11 の筋書き、#336）、root guardian と `/user` の失敗（#335）、`Creation` の待ちの
   間に外から届く `Recreate`（段 4c）、`Creation` で待つ親の下の外からの生成、Restart の許しを使い切る枝（この定数では届かない。
   上の (b)）、`mark_dying` をどの実行が書くか（前提 3。モデルは、
-  親でない呼び手の停止については原典の側で `toDie` を書かない。親が `receive` で子を止める形はモデルに無い）、生成のときの戦略の decider が加わる条件（`speaks`。11.13.4）、`Termination`
+  親でない呼び手の停止については原典の側で `toDie` を書かない。親が `receive` で子を止める形はモデルに無い）、生成のときの戦略と親の戦略の優先（`speaks` を含む。#350、11.13.4）、`Termination`
   で待つインスタンスの無いアクターの作り直し（原典の `faultCreate` の上書き。モデルは fraktor の形で、取っておいて捨てる。11.13.8）、
   dead letters の中身、段 5 の複数スレッド
 - 探索は抜き取りで、違反が出なかったことは「流した範囲で反例を見なかった」であって、成り立つことの証明ではない
@@ -3771,7 +3810,7 @@ quint が再現の seed を出す）。期待と違う行があれば `UNEXPECTE
 
 **残り**（この直しでは決めない、または変えないもの）：
 
-- `choose_decision` の `speaks`：直し 2 回目で照らした（11.13.4 の「`speaks` を原典と照らす」。原典と違い、#300 で入った。新しい issue）
+- `choose_decision` の `speaks`：直し 2 回目で照らし、「原典と違い、#300 で入った。新しい issue」としたが、読みの誤りだった。元帥の決定（2026-11-28）で、生成のときの戦略と親の戦略の優先を規則にした（11.13.4 の「生成のときの戦略と親の戦略の優先（#350）」）。規則を設計と rustdoc に書くのは #350。規則と今のコードの食い違い（トップレベルでない親の all-for-one と独自の decider が先に立つこと。読み、未実測）も #350 で決める
 - `ActorEntry.restart_history`（`:159`）と `ChildRecord.history`（`:216`）の 2 つの再起動の記録（11.13.4 の「再起動の回数を親の表に
   置く」との関係）を照らすこと
 - 11.13.13 の表のうち、PR #300 でまだ手を付けていないもの：判断が要る 2（C7 の親の再起動のフックの回数を記録に足す）、
@@ -3853,6 +3892,17 @@ quint が再現の seed を出す）。期待と違う行があれば `UNEXPECTE
    `Recreation` で待つ：`g:pre_restart`、`x:post_stop`、`g:post_restart`）だけである。原典と違う形（`system.stop` で止めた子を、
    子を残して再起動する親が待つ）の red は、新しい issue で足す（前提 3）。今のテストに直しは要らない
 
+#350 の扱い（元帥の決定、2026-11-28）で足した申し送り：
+
+8. **#350 の red 3 本は入れない（#350 で規則を書く）**：`stage4b_tests.rs` の
+   `a_child_started_with_a_strategy_is_decided_by_its_parents_strategy`（f31123e）、
+   `a_child_started_with_a_restart_limit_is_restarted_by_its_parents_policy`、
+   `a_child_started_with_an_all_for_one_strategy_does_not_restart_its_siblings`（どちらも d35ca6d）。3 本は「生成のときの戦略は
+   判断に加わらない」を期待するが、規則の 1（生成のときに戦略を渡した子は、その戦略で判断する。11.13.4 の「生成のときの戦略と
+   親の戦略の優先（#350）」）と逆で、main からある 19 本とも食い違う。3 本は d35ca6d の木にあり、そこで落ちる（2026-11-28 に `cargo test -p fraktor-actor --lib a_child_started_with` で実測。3 本とも落ち、`stage4b_tests.rs` の `:318`、`:351`、`:388` の assert で止まる）。PR #300 から外すのは
+   テストの担当である。f31123e のほかの 2 つの直し（6 の `a_held_failure_of_a_child_that_has_left_the_table_is_dropped` と、1 の #332 の
+   red の doc）は残す。規則と今のコードの食い違い（11.13.4 の同じ節。読み、未実測）を確かめるテストを足すかは、#350 で決める
+
 #### 11.13.19 PR #300 の設計の直し 2 回目（2026-11-28、644ba80 に対して）
 
 DS41F の敵対的な読み（a842f1a・be66057 に対して）と、前回の読み切りに答えた直しである。原典は Pekko v2.0.0、本番の行は 644ba80
@@ -3868,7 +3918,7 @@ DS41F の敵対的な読み（a842f1a・be66057 に対して）と、前回の�
 | 5 | `requestRestartPermission` の数え方 | 採った。回数を変えるのは `:59`、`:79`、`:82` の枝だけで、`:58`（上限 0）と `:61`（上限も窓も無し）は増やさない。3 通りを「許しを求める子」で書き直した | 11.13.5 の「`forall` の短絡」、11.13.4 の規則 2 の 1、11.13.13 の判断が要る 5 |
 | 6 | `pre_restart` の panic のあとの `:114` | 採った。`toDie` が空ならその場で、空でなければ子を待ってから `finishRecreate` に進む、と条件つきにした | 11.13.11 の「`pre_restart` の panic と `isFailedFatally`」の 2 段落 |
 | 7 | #332 の期待は既定の `guardian-supervisor-strategy` のときだけ | 採った。原典と違う（設定で変えられない）、直すのは #335 | 11.13.4 の「正しい振る舞い」、11.13.18 の 1 |
-| 8 | `speaks` | 採った。原典は子ごとの戦略を持たず、`speaks` の 3 条件はどれも原典に無い。c6a52e7 で入った（#300 の差）。**原典と違う**、直すのは新しい issue | 11.13.4 の 3 と「`speaks` を原典と照らす」、11.13.17 の「残り」 |
+| 8 | `speaks` | 採った。原典は子ごとの戦略を持たず、`speaks` の 3 条件はどれも原典に無い。c6a52e7 で入った（#300 の差）。**原典と違う**、直すのは新しい issue。**（あとで訂正：#300 の差というのは読みの誤りで、実測で main でも同じと分かった。元帥の決定で優先を規則にし、#350 で設計と rustdoc に書く。11.13.4 の「生成のときの戦略と親の戦略の優先（#350）」と、その中の「読みの誤り」）** | 11.13.4 の 3 と「生成のときの戦略と親の戦略の優先（#350）」（元は「`speaks` を原典と照らす」）、11.13.17 の「残り」 |
 | 9 | `own_strategy` の枝の `!escalation` | 採った。all-for-one の早い戻りと `!inputs.escalation` を、ずれの説明に足した | 11.13.4 の c6a52e7 のずれ 1 |
 | 10 | `Termination` の状態の書き方 | 形を変えて採った。「原典と違う。直すのは #N」の形にしたが、「段 4c で外から積む口ができると差が出る」という前提は誤りだった：親の判断（one-for-one でも all-for-one でも）が、止まる途中の、開始に失敗したアクターに `Recreate` を送るので、段 4b の中で差が出る。Quint の写しで到達を確かめた。ただし既定の戦略では起きず、開始の失敗を再起動する戦略か、子を残す `pre_restart` と親でない呼び手の停止が要る。原典で作り直された c1 は suspend のまま残る（読み）。直すのは新しい issue（#255 で届く筋書きが増える） | 11.13.8 の「`Termination` の状態」と「この筋書きは段 4b で起きる」、11.13.17 の (d) |
 | 11 | #321 の `m` を送る時点 | 採った。f93b541 の同期点（`run_one`、`guardian` への `tick`、`run_one`）の形で書いた | 11.13.18 の 3 |
@@ -3878,7 +3928,7 @@ DS41F の敵対的な読み（a842f1a・be66057 に対して）と、前回の�
 **新しい issue が要るもの**（中将が立てる。本文では「新しい issue（…番号は立ったあとで書き入れる）」と書いた）：
 
 1. `mark_dying`：親でない呼び手（止まるアクター自身、ほかのアクター、実行の外）の停止にも、親の表に印が付く（前提 3）。main からある
-2. `speaks`：戦略を渡して作った子の失敗を、親の戦略でない戦略が判断する（11.13.4）。c6a52e7 で入った（#300 の差）
+2. `speaks`：戦略を渡して作った子の失敗を、親の戦略でない戦略が判断する（11.13.4）。c6a52e7 で入った（#300 の差）。**（あとで訂正：読みの誤り。#300 の差ではなく、原典と違う差でもない。生成のときの戦略は親の override の代わり。立ったのは [#350](https://github.com/j5ik2o/fraktor-ng-rs/issues/350)「優先の規則を設計と rustdoc に書く件」。11.13.4）**
 3. `Termination` の状態：止まる途中の、開始に失敗したアクターに親の `Recreate` が届くと、原典は作り直し（suspend のまま残る）、fraktor は止める（11.13.8）。開始の失敗を再起動する戦略か、子を残す `pre_restart` のときだけ起きる。原典の側はコードの読み、fraktor の側は Quint のモデルで、どちらも実測していない。main からある
 
 **仕様の次の直しに回すもの**（新しい issue にするかは中将が決める）：Restart の許しを使い切る枝が、`FAILS = 3`、`RESTARTS = 3` では
