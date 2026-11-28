@@ -173,7 +173,7 @@ fn promise_intercept(tx: std::sync::mpsc::Sender<String>, make: impl FnOnce() ->
 - **ケース 7**（`FSMTimingSpec.scala:102-113`、`:237-251`）は、1ms のタイマ `"hallo"` を張り、`TestKit.awaitCond(context.asInstanceOf[ActorCell].mailbox.hasMessages, 1.second.dilated)`（`:240`）で印がメールボックスに積まれるのを待ってから取り消す。この待ちが観察の中心なので、待ちを落として移すと確かめる中身が別物になる。アクターが自分のメールボックスを読む口が無い点がケース 8 と同じである。
 - 世代分離そのものは [PR #275](https://github.com/j5ik2o/fraktor-ng-rs/pull/275) および本設計 §3.1（`state_generation` と `named_timer_generation` の分離）で kernel に入る。
 - ケース 7・8 は除外（`cases.excluded`）にも作らない区分（`cases.not_built`）にもしない。台帳の `FSMTimingSpec` ノードは `status: unported`、`cases.total: 10, ported: 8, passing: 8`、`verified_against` なしのまま残し、**`#257` 完了後にケース 7・8 を移植する後続 issue を切る**（[Issue #194](https://github.com/j5ik2o/fraktor-ng-rs/issues/194) の `LocalActorRefProviderSpec`・後続 [Issue #265](https://github.com/j5ik2o/fraktor-ng-rs/issues/265) および [Issue #200](https://github.com/j5ik2o/fraktor-ng-rs/issues/200) の `ReceiveTimeoutSpec` ケース 9 と同一の運用）。後続 issue には「`#257` で戻して数に入れる」と書く（決定の「延ばすものは、台帳と PR の本文にどの段で戻すかを書く」）。
-- 代わりの裏付け（§5 P1・P2、§6 の Quint `staleNamedNeverFires`）は、`#257` を待つ間に世代分離と印の破棄の正しさを支えるためのもので、**ケース 7・8 の移植の代わりに数には入れない**。
+- 代わりの裏付け（§5 P1・P2、§6 の Quint `staleNamedNeverFires`・`currentGenStateMarkIsLive` と決まった筋書きの run。今の中身は決定 5・6 の「裏付けの今の中身」）は、`#257` を待つ間に世代分離と印の破棄の正しさを支えるためのもので、**ケース 7・8 の移植の代わりに数には入れない**。
 - 残る 20 件は `#234` 段 6 に依存しない。
 
 ### 1.5 決定（作れないもの・延ばすもの。元帥・オーナーの判断）
@@ -231,6 +231,7 @@ fn promise_intercept(tx: std::sync::mpsc::Sender<String>, make: impl FnOnce() ->
 - **今移せない理由**：外からの `ActorRefWithCell.suspend()`／`resume()` と `mailbox.hasMessages` の観測口が未実装であり、それらは [Issue #234](https://github.com/j5ik2o/fraktor-ng-rs/issues/234) 段 6（[Issue #257](https://github.com/j5ik2o/fraktor-ng-rs/issues/257)）の範囲である。
 - **決定と扱い**：`#257` の後に延ばす。`#257` が入ったら戻して数に入れる。除外・作らない区分にはせず、台帳 `cases.total: 10, ported: 8, passing: 8, status: unported` のまま残し、#257 完了後の後続 issue で移植する（§1.4）。
 - **代わりの裏付け**：名前付きタイマ受信時の状態タイマキャンセルと世代分離は、単体テスト・PBT（P1・P2：手動時計 `ActorSystem::set_clock` でメールボックス滞留順序を確定的に再現）・Quint（`crates/fraktor-actor/specs/fsm_timing.qnt`）で先行検証する。ただしこれは裏付けであり、ケース 8 を今数に入れる理由にはしない。
+- **裏付けの今の中身（#341、2026-11-28）**：P1・P2 のファイルはまだ無い（#314。§10 の申し送り）。今あるのは Quint だけで、ケース 8 の道は決まった筋書きの run 2 本（`namedTimerMarkCancelsStateTimerTest`：遷移先が張らない原典の形、`namedMarkRearmDropsOldStateMarkTest`：遷移先が張り直す形）と、滞留した印を見る不変条件 `currentGenStateMarkIsLive` で見る。名前付きの印で世代を進め忘れる変異（M05）は、この 3 つのどれでも落ちる（§6.5）。前の版は確率でしか捕まえなかった（1 本の trace あたり 0.02〜0.03%）。本番の `fsm.rs:965` のガードがある形でも、張り直す形の run と不変条件は M05 を落とす（変異 G1M05）。
 
 #### 決定 6：FSMTimingSpec ケース 7 も `#257` の後へ回す
 
@@ -238,6 +239,7 @@ fn promise_intercept(tx: std::sync::mpsc::Sender<String>, make: impl FnOnce() ->
 - **同じ形で作れない理由**：原典は状態関数の中で 1ms タイマを張り、その印がメールボックスに入るまで待ってから `cancelTimer` する。fraktor-ng-rs には、アクターが自分のメールボックスの滞留を見る口が無い（`mailbox.hasMessages` は #257 の範囲で、ケース 8 と同じ）。
 - **決定と扱い**：待ちを落とした形で今写すと、原典が確かめる「すでに届いた印が捨てられる」を通らないために確かめる中身が別物になる（案 C では、期限の検査は `Executor` の `run_one`／`run_until_idle` の境目と `await_envelope` の前後で走るので、状態関数が走っている間に印がメールボックスへ入ることは無い）。そこでケース 8 と同じく `#257` の後に延ばす。台帳は `ported: 8, passing: 8`（§1.2、§1.4）。
 - **代わりの裏付け**：「滞留した古い印は取り消し・張り直しのあとに捨てられる」と「古い印は再起動のあとに捨てられる」は、§5 P1 の決まった手順（手動時計で期限を過ぎさせ、`Cancel` が処理される前に印を積ませる）と §6 の Quint（`staleNamedNeverFires`）で確かめる。ただしこれは裏付けであり、ケース 7 を今数に入れる理由にはしない。
+- **裏付けの今の中身（2026-11-28）**：P1 のファイルはまだ無い（#314）。Quint には不変条件 `staleNamedNeverFires` に加えて、ケース 7 の形（印が積まれたあとに取り消し、同じ名前で張り直し、古い印が届く）の決まった筋書きの run `cancelledTimerQueuedMarkDroppedTest` と、再起動の run `restartInstanceIdDropsOldMarksTest` がある（§6.3）。
 
 ## 2. fraktor-ng-rs の現状（`main` `53014ed` 基準）
 
@@ -283,7 +285,9 @@ fn promise_intercept(tx: std::sync::mpsc::Sender<String>, make: impl FnOnce() ->
 
 ### 3.1 FSM のタイマ・状態タイムアウト・発火運搬（案 C 採用）
 
-#### (a) 原典 `FSM.scala:511-513, 615-644, 755-763, 768-772, 817-914` との 1 対 1 対応
+#### (a) 原典 `FSM.scala:511-513, 615-644, 755-763, 768-772, 817-914` との対応
+
+原典の手順を順に写す。原典と違う所が 3 つあり、各項に「原典と違う」と書いた（状態タイムアウトの印の照合、存在しない状態への遷移、`terminate` の働く条件。まとめは §6.4）。
 
 1. **状態登録（`when` / `when_with_state_timeout`、`FSM.scala:475-476, 755-763`）**：
    - 同一状態 `S` に複数回登録した場合、状態関数は登録順に試行し（`orElse`）、状態の既定タイムアウトは **`timeout.or(existing)`** で合成する（新しい登録が `Some(d)` なら上書き、`None` なら既存の既定タイムアウトを保持する）。
@@ -307,9 +311,10 @@ fn promise_intercept(tx: std::sync::mpsc::Sender<String>, make: impl FnOnce() ->
      2. 受理した場合：`Single` なら `timers` から削除（`handle` 同期）し、通常メッセージと同じく状態タイマを取り消して `state_generation += 1` したうえで、そのタイマの `message` をイベントとして処理する（状態関数 → 未処理なら警告＋`stay()` → `make_transition`）。
    - **状態タイムアウトの印（`FsmTimerMark::StateTimeout { instance_id, generation }`）**：
      1. `instance_id == self.instance_id` かつ `self.state_timer == Some(generation)` かつ `self.state_generation == generation` のときのみ受理。不一致は黙って破棄する。
+        - **原典と違う。** 原典 `FSM.scala:818-819` の照合は `generation == gen` だけである。`instance_id` の照合は設計 M1 の意図的な強化で、直さない。`state_timer == Some(generation)`（本番 `fsm.rs:965` の `state_timer_armed`）は原典に無い。正しい実装では結果を変えない（§6.4 の 1、変異 G1）が、名前付きの印で世代を進め忘れても、ケース 8 の道（遷移先がタイムアウトを張らない）ではこのガードが古い印を落とすので、誤りが見えなくなる（#341）。Quint はこのガードを持たない（原典どおり）。直すのは新しい issue（未起票。本番のガードを外す）。
      2. 受理した場合：原典 `FSM.scala:818-821` どおり **`state_generation` は進めない**。`StateTimeout` をイベントとして処理し `make_transition` を通す。次の遷移が新しい状態タイマを張らない場合（例：`for_max(Infinite)` または既定タイムアウト無しの状態への遷移）、`Executor` の期限行は発火時に消費済みのため二度と発火しない一方、`is_state_timer_active`（`self.state_timer.is_some()`）は原典どおり次の通常メッセージまで `true` のまま残る（#181 設計 I5 を維持）。次の遷移が新しい状態タイマを張る場合（`for_max(After(d))` または既定タイムアウトありの状態への `stay()`/`goto`）は、現在の `state_generation` のまま `Executor` に新しい期限を登録する。
    - **`make_transition` での状態タイムアウト選択（`FSM.scala:901-912`）**：
-     - 遷移先が存在しない状態なら遷移せず、状態タイマも張らない（現行どおり）。さらに、原典 `FSM.scala:886-888` はこのとき `terminate` を呼び、`terminate`（`FSM.scala:933-939`）は**名前付きタイマをすべて取り消して表を空にし、状態タイマも取り消す**。この issue で通常の機械にも名前付きタイマが入るので、存在しない状態への遷移でも名前付きタイマの表と `Executor` の期限索引の行を空にする（§6 の Quint `gotoNonExistentClearsTimersTest`）。原典はこのとき `logTermination` でエラーログ（`"Next state X does not exist"`）も出し、`onTermination` を呼ぶが、port には `onTermination` が無く、ログも今は出していない（`fsm.rs:293-306` の doc）。これはタイマと別の話なので、この issue では足さない（§8 の別件）。
+     - 遷移先が存在しない状態なら遷移せず、状態タイマも張らない（現行どおり）。さらに、原典 `FSM.scala:886-888` はこのとき `terminate` を呼び、`terminate`（`FSM.scala:933-939`）は**名前付きタイマをすべて取り消して表を空にし、状態タイマも取り消す**。ただし `terminate` は `timeoutFuture` を取り消すだけで `None` に戻さない（`:939`）。`StateTimeout` の印からこの道へ来たときは、`isStateTimerActive`（`:636`）は真のまま残る（通常のメッセージと名前付きの印の道では、受信の時点で `None` にしている）。Quint はこれに合わせた（#344。前の版は偽にしていた）。本番は `state_timer_armed = None`（`fsm.rs:443`）にするが、これは上のガードの旗で、`is_state_timer_active` の元の test-support の `state_timer`（`fsm.rs:129`）はこの道で触らないので、真のまま残ると読める（読んだだけで、走らせていない）。**もう 1 つ原典と違う所**：原典の `terminate` は `currentState.stopReason` が空のときだけ働く（`:934`）。存在しない状態への遷移は `stopReason` つきの `stay()` を `currentState` に入れる（`:888`、`:940`）ので、遷移が 1 回成功するまでは、次の存在しない状態への遷移も `postStop` の `terminate` もタイマを消さない。本番と Quint はいつも消す（原典より強い）。直すかどうかは新しい issue（未起票）で決める。この issue で通常の機械にも名前付きタイマが入るので、存在しない状態への遷移でも名前付きタイマの表と `Executor` の期限索引の行を空にする（§6 の Quint `gotoNonExistentClearsTimersTest`）。原典はこのとき `logTermination` でエラーログ（`"Next state X does not exist"`）も出し、`onTermination` を呼ぶが、port には `onTermination` が無く、ログも今は出していない（`fsm.rs:293-306` の doc）。これはタイマと別の話なので、この issue では足さない（§8 の別件）。
      - 遷移が成立したら、`replies` 送信 → `onTransition` 実行（直後に `pending_ops` を反映）→ リスナー通知 → `current` 更新（`handle` スナップショット同期）の順で進めた後、`next_state.timeout` に従って状態タイマを張る：
        1. `Some(FsmTimeout::Infinite)` → **張らない**（既定タイムアウトを無効化）。
        2. `Some(FsmTimeout::After(d))` → `d` で張る（`self.state_timer = Some(self.state_generation)`、`Executor` 期限索引へ登録、`handle` 同期）。
@@ -595,31 +600,202 @@ impl FraktorSpec {
 | P2 | 状態タイムアウト選択のモデル照合（`fsm_timing_property_test.rs`）：`ActorSystem::set_clock`（手動時計）の下で、状態の既定タイムアウト（なし／有限／複数回 `when_with_state_timeout` 合成）× `for_max` 上書き（なし／`After`／`Infinite`）× 遷移種別（`goto`／同一状態 `goto`／存在しない状態への `goto`／`stay()`／未処理イベント／`StateTimeout` 受信／名前付きタイマ受信）のランダム列を流し、発火時刻・発火回数・**同じ期限の行の撃つ順（予約した順、`seq`）**・古い印の破棄が Pekko 参照モデルと完全一致することを検証する。P1 と同じく、参照モデルは §3.1(c) の `(期限, seq)` の規則を使う。**ケース 8 の移植の代わりには数えない**（§1.4） | I1、I2、I5 |
 | P3 | 初期化失敗の後始末と `child` 一貫性（`actor_ref_property_test.rs`）：factory／`pre_start` で失敗する名前付き生成と成功する名前付き生成・停止のランダムな列について、各生成後に `system.run_until_idle()` で非同期 `Create` → 監督 `Stop` → 終了完了まで進めた後、失敗した名前は必ず再利用でき、成功した生存中の子はすべて相異なる参照を持ち、`context.child(name)` の結果が参照モデル（生存集合）と常に一致することを検証する | I6、I7 |
 
+**P1〜P3 と Quint の分担（#343、2026-11-28）**：P1〜P3 のファイルは PR #288 のマージの時点で無かった（#314）。`fsm_timing.qnt` は P1〜P3 の代わりにならない。Quint が持つのは、時刻を持たない部分だけである。
+
+| 性質 | Quint が持つか | 持たないなら担うもの |
+|:---|:---|:---|
+| P1：取り消し・置き換え・再起動のあとに滞留した古い名前付きの印が捨てられる | 持つ（`staleNamedNeverFires`、run `cancelledTimerQueuedMarkDroppedTest`・`restartInstanceIdDropsOldMarksTest`） | — |
+| P1：`Single` は 1 回、繰り返しは取り消すまで続く | 持つ（`singleFiresOnce`・`singleLeavesTable`・`repeatStaysInTable`、run `repeatedTimerKeepsFiringUntilCancelledTest`） | 回数と間隔は P1 |
+| P1：同じハンドラの中の `is_timer_active` の即時性、撃つ順（`(期限, seq)`）、`FixedRate` の追いつき、間隔 0 の panic、`FixedDelay` と `FixedRate` の違い | 持たない（時刻と順を持たない） | P1（#314） |
+| P2：状態タイムアウトの選択（既定・`After`・`Infinite`・`stay()`・未処理・同一状態の `goto`・存在しない状態） | 持つ（`armedMatchesSelection`・`infiniteNeverArms`） | 時刻は P2 |
+| P2：名前付きの印を受けて張り直したあとに古い `StateTimeout` の印が捨てられる（ケース 8 の張り直す形） | 持つ（run `namedMarkRearmDropsOldStateMarkTest`、`currentGenStateMarkIsLive`） | 本番の側は P2（#314）。本番の `fsm.rs:965` のガードを通して世代の進め忘れが見える唯一の道なので、P2 に決まった筋書きとして入れる（§10） |
+| P2：撃つ時刻と回数、`when_with_state_timeout` を複数回呼んだときの `timeout.or(existing)` の合成 | 持たない | P2（#314） |
+| P3（I6・I7） | 持たない（このモデルの外） | P3（#314） |
+| FSMTimingSpec ケース 2・4 の `Cancel` の返事 | 持たない（§6.6） | `fsm_timing_spec.rs`（#313） |
+
 ## 6. 状態遷移と Quint（1 ファイル仕様）
 
-**書く（本設計と同時に作成・検査済み）。** 既存の `crates/fraktor-actor/specs/test_fsm_ref.qnt`（#181）は `TestFsmRef` の外部 `set_state` とハンドル中心であり、通常の `Fsm` の状態タイムアウト選択（既定値・`forMax(Infinite)`・`forMax(After)`・`stay()`・未処理イベント・`StateTimeout` 受信時の再張り直し）と再起動時の `instance_id` 分離を持たない。
+**書く（本設計と同時に作成・検査済み。2026-11-28 に #341〜#344 で直した）。** 既存の `crates/fraktor-actor/specs/test_fsm_ref.qnt`（#181）は `TestFsmRef` の外部 `set_state` とハンドル中心であり、通常の `Fsm` の状態タイムアウト選択（既定値・`forMax(Infinite)`・`forMax(After)`・`stay()`・未処理イベント・`StateTimeout` 受信時の再張り直し）と再起動時の `instance_id` 分離を持たない。
 
-`scripts/quint-check-specs.sh` の規約（`crates/*/specs/*.qnt` の各ファイルに `init`/`step`/`val invariant`・`*Test` で終わる `run` が 1 本以上・`quint run --invariant=invariant` で `max > 1`）に従い、本体・不変条件・正のテスト・負の対照を **`crates/fraktor-actor/specs/fsm_timing.qnt` の 1 ファイル** にまとめる（レビュー M3）。
+`scripts/quint-check-specs.sh` の規約（`crates/*/specs/*.qnt` の各ファイルに `init`/`step`/`val invariant`・`*Test` で終わる `run` が 1 本以上・`quint run --invariant=invariant` で `max > 1`）に従い、本体・不変条件・正のテスト・負の対照を **`crates/fraktor-actor/specs/fsm_timing.qnt` の 1 ファイル** にまとめる（レビュー M3）。変異・到達・本数の確かめは `scripts/quint_fsm_timing_mutants.py` で再現できる（§6.5）。
 
-- **状態**：`alive`, `curInst`/`nextInst`（`instance_id`）, `state`（既定タイムアウト無しの `SNoTimeout`、既定タイムアウトありの `SWithTimeoutA`/`SWithTimeoutB`、存在しない `SNonExistent`）, `stateGen`, `namedGen`, 状態タイマ枠（`stActive`, `stGen`, `stSid`, `stIssued`）, 名前付きタイマ表 `timers`, 滞留印集合 `namedMarks`/`stateMarks`, 不変条件用ゴースト変数（`liveSid`, `expectedArmed`, `lastOverride`, `deadEids`, `staleStateAccepted`, `staleNamedAccepted`, `acceptedSingle`）。
-- **遷移**：`receiveOrdinary(kind, target, ov)`（`Goto`/`Stay`/`Unhandled` × `NoOverride`/`OverrideAfter`/`OverrideInfinite`）, `startNamedTimer`, `cancelNamedTimer`, `namedTimerDue`, `stateTimerDue`, `receiveNamedMark`, `receiveStateMark`, `restartActor`（ローカル世代を 0 へ戻しつつ `curInst` を進める）, `stopActor`。
-- **不変条件（`val invariant`）**：`armedMatchesSelection`（I1）, `infiniteNeverArms`（I1）, `staleStateNeverFires`（I1/I2/M1）, `staleNamedNeverFires`（I2/I3/M1）, `stoppedNeverArms`（I4）, `singleLeavesTable`（I3）, `singleFiresOnce`（I3）。
-  - **`armedMatchesSelection` の作り直し（レビュー低1）**：前の版は `(liveSid != -1) == expectedArmed` で、`expectedArmed` は `liveSid` と同じ `selectionShouldArm` の呼び出しから作っていた。同じものを自分と比べていたので、`NoOverride => false` と「未処理のときだけ張らない」の 2 つの変異が `quint run` で違反にならなかった。第 2 段では、モデルの変数（`stActive`／`lastTarget`／`lastOverride`）から選択を**書き下し直して**比べる（`selectionShouldArm` は使わない。書き換えると両辺が一緒に動く）。`lastTarget` は直前の遷移の遷移先を残すゴースト変数で、`keepStateMachine` などで更新する。`keptAfterMark` は「`StateTimeout` の印を受けて張り直さなかったので枠を残している」（`FSM.scala:818-821`）を表す。存在しない状態への `goto` は張らない（`FSM.scala:886-888`）ので対象外にする。
-  - **`singleLeavesTable` の作り直し（レビュー低1）**：前の版は `acceptedSingle` を受理の直後に `NoName` に戻すため、作りから見て必ず真だった。`acceptedSingle` を「最後に受理した `Single` の名前」として**次の通常メッセージ・開始・取り消し・遷移まで残し**、`singleLeavesTable` はその名前が表に無いことを見る（`Single` の印を受理したら表から消す、`FSM.scala:829-831`）。**I3 の「`Single` は高々 1 回」** は、受理した `Single` の名前を集めた `acceptedSingles: Set[str]` の大きさが `NamedNames` の数を超えないこと（`singleFiresOnce`）で見る。この 2 つで、`Single` の印を受理したあとも表から消さない変異（`timers' = ... else timers`）が `quint run` で違反になることを確かめた。
-- **正のテスト（11 本）**：`defaultTimeoutOnEnterAndStayTest`, `unhandledRearmsDefaultTimeoutTest`, `forMaxInfiniteDisablesDefaultTimeoutTest`, `forMaxAfterOverridesNoDefaultTest`, `sameStateGotoRearmsTimeoutTest`, `stateTimeoutRearmsWhenTargetHasDefaultTest`, `namedTimerDoesNotInvalidateStateTimerTest`, `namedTimerMarkCancelsStateTimerTest`, `restartInstanceIdDropsOldMarksTest`, `stopClearsAllTimersTest`, `gotoNonExistentClearsTimersTest`（存在しない状態への `goto` は状態を変えず、名前付きタイマを空にし、そのあと届いた古い印を捨てる。`FSM.scala:886-888, 933-939`）。
-- **検査の結果**：`bash scripts/quint-check-specs.sh` が全 spec で通る（`fsm_timing.qnt` は `quint test` 19 本、`quint run --invariant=invariant --max-steps=40 --max-samples=30000` で違反なし、trace の長さの最大 41）。
-- **負の対照（8 本、すべて狙った不変条件の破れを確認）**：
+### 6.1 状態と action
+
+- **状態**：
+  - 寿命と個体：`alive`、`curInst`／`nextInst`（`instance_id`）。
+  - 機械：`state`（既定タイムアウト無しの `SNoTimeout`、既定タイムアウトありの `SWithTimeoutA`／`SWithTimeoutB`、存在しない `SNonExistent`）、`stateGen`、`namedGen`。
+  - 状態タイマの枠：`stActive`（原典の `timeoutFuture.isDefined`、つまり `isStateTimerActive`）、`stGen`・`stSid`（最後に張った世代と期限）。
+  - `Executor` の状態タイマの行：`liveSid`（取り消されていない期限、無ければ -1）と `stIssued`（その期限はもう撃った）。**`liveSid` はゴーストではない**。`stateTimerDue` はこれで有効になる（#344。前の版は「ゴースト」と書いていた）。
+  - 名前付きタイマ表 `timers`（行は世代・繰り返しか・登録の番号 `eid`）。
+  - メールボックスに滞留した印：`namedMarks`・`stateMarks`。**どちらも `List`**。同じ印の 2 回目の配送をまとめずに残すため（#342 で `stateMarks` も `Set` から `List` にした）。
+  - 不変条件と witness のためのゴースト：`nextEid`、`nextSid`、`deadEids`、`lastOverride`、`lastTarget`、`keptAfterMark`、`staleStateAccepted`、`staleNamedAccepted`、`acceptedSingle`、`acceptedSingles`（`eid` → 受理した回数）、`acceptedRepeat`（最後に受理した繰り返しタイマ）、`stateFires`（期限 → 撃った回数）、`firedAfterStop`、`lastAction`（最後の action とその枝）。
+- **action（`step` の 9 つの枝）**：`receiveOrdinary(kind, target, ov)`（`Goto`／`Stay`／`Unhandled` × `NoOverride`／`OverrideAfter`／`OverrideInfinite`）、`startNamedTimer`、`cancelNamedTimer`、`namedTimerDue`、`stateTimerDue`、`restartActor`、`stopActor`、`receiveNamedMark`（受理 `acceptNamedWith`／破棄 `dropNamed`）、`receiveStateMark`（受理 `acceptState`／破棄 `dropState`）。
+  - `namedTimerDue` と `stateTimerDue` は `Executor` の行だけで有効になり、`alive` を見ない（`Executor` は行しか知らない）。止めたときに行が残れば撃つので、I4 を振る舞いで確かめられる（#344）。
+  - `restartActor` と `stopActor` は 4 回に 1 回だけ選ばれる（`lifecycleDraw`）。止めると trace が終わるので、ほかの枝と同じ重みで選ぶと trace の平均が 6 手ほどになっていた（#344）。選ぶ頻度を変えるだけで、届く状態は変わらない。
+- **止めた後の再起動は作らない。** 原典でも止めたアクターは再起動しない。前の版の §6 が「実装の担当と決める」と残していた 2 点のうち、`namedMarks` の `List` 化は前の版でされ、こちらはこの決定で閉じる。
+
+### 6.2 不変条件（`val invariant`、11 個）
+
+| 不変条件 | 設計 | 見るもの | 見ていないもの |
+|:---|:---|:---|:---|
+| `armedMatchesSelection` | I1 | 枠の張り方が選択の規則と合う（規則は `selectionShouldArm` を使わずに書き下し直す。レビュー低1） | 存在しない状態への遷移（対象外にしている）、張った期限が実際に撃つこと（run が見る。変異 M17） |
+| `infiniteNeverArms` | I1 | `forMax(Infinite)` のあとに期限が無い | — |
+| `staleStateNeverFires` | I1・I2・M1 | 取り消された期限の印を受理しない | — |
+| `currentGenStateMarkIsLive`（#341 で足した） | I1・I2 | 今の個体の印で、今の世代を持つものは、今張っている期限の印である。**受理の時点ではなく滞留した印を見る**ので、世代を進め忘れた遷移はその手で破れる。遷移先が張るかどうかにも、本番のガードにもよらない。これが成り立つことが、原典の世代だけの照合で足りる理由であり、本番のガードが余分である理由でもある | — |
+| `staleNamedNeverFires` | I2・I3・M1 | 取り消し・置き換え・再起動・存在しない状態への遷移で死んだ登録の印を受理しない | — |
+| `stoppedNeverArms` | I4 | 止めたあとに枠・期限・表が残らない | — |
+| `stoppedNeverFires`（#344 で足した） | I4 | 止めたあとに期限が撃たない（`Executor` の行だけで撃つので、止め方の誤りがそのまま振る舞いに出る） | 止める前に積まれた印の `DeadLetter`（I4 の破れではない） |
+| `stateTimerFiresOnce`（#342 で足した） | I4 | 1 つの期限を `Executor` が 2 回撃たない | `FixedRate` の追いつき（名前付きタイマは 1 つの行が何度でも撃てる形にしている） |
+| `singleLeavesTable` | I3 | 受理した `Single` は表から消える | — |
+| `singleFiresOnce` | I3 | 1 つの `Single` の登録を 2 回受理しない | — |
+| `repeatStaysInTable`（#343 で足した） | I3 | 受理した繰り返しタイマは、取り消し・置き換えまで表に残る | — |
+
+設計の I5（未処理の警告とハンドラの差し替え）は、未処理のときに既定のタイムアウトを張り直すこと（`Unhandled` の種類、負の対照 3・8）だけを持つ。警告の回数と `with_unhandled`／`clear_unhandled` は持たない。I6・I7・I8 はこのモデルの外である。
+
+### 6.3 run（28 本：正 18 本・負の対照 10 本）
+
+- **正（18 本）**：`defaultTimeoutOnEnterAndStayTest`、`unhandledRearmsDefaultTimeoutTest`、`forMaxInfiniteDisablesDefaultTimeoutTest`、`forMaxAfterOverridesNoDefaultTest`、`sameStateGotoRearmsTimeoutTest`、`stateTimeoutRearmsWhenTargetHasDefaultTest`、`namedTimerDoesNotInvalidateStateTimerTest`、`namedTimerMarkCancelsStateTimerTest`（ケース 8 の原典の形。遷移先は張らない）、`restartInstanceIdDropsOldMarksTest`、`stopClearsAllTimersTest`（止めたあとに撃てないことも見る）、`gotoNonExistentClearsTimersTest`、`duplicateDeliveryStaysQueuedTest`、`singleRestartedUnderSameNameFiresOnceTest`、および今回足した・直したもの：
+  - `namedMarkRearmDropsOldStateMarkTest`（#341）：ケース 8 の張り直す形。A へ移る → 名前付き `a` を張る → `a` が撃つ → 状態タイマが撃つ → `a` を受理して既定のタイムアウトのある B へ移る（張り直す）→ 古い状態タイムアウトの印が届いて捨てられる。本番のガードがあっても、ここでは枠がまた立つので、世代だけが古い印と新しい期限を分ける。
+  - `stateTimerFiresOnceTest`（#342）：1 回張った状態タイマは 1 回撃つと、もう撃てない（`.fail()`）。
+  - `cancelledTimerQueuedMarkDroppedTest`：ケース 7 の形。印が積まれてから取り消し、同じ名前で張り直すと、古い印は捨てられる。
+  - `repeatedTimerKeepsFiringUntilCancelledTest`（#343）：ケース 9 の形。繰り返しタイマは受理のたびに表に残り、取り消すと撃てない。
+  - `stateTimeoutToNonExistentKeepsSlotTest`（#344。前の名前は `stateTimeoutToNonExistentClearsSlotTest`）：`StateTimeout` の印から存在しない状態へ移ると、状態は変わらず、表は空になり、期限は無いが、`stActive`（`isStateTimerActive`）は原典どおり真のまま残る。
+- **負の対照（10 本。どれも本物の action の引数を 1 つ変えたもので、ゴーストを手で書き換えない）**：
   1. `bugForMaxIgnoredTest`（`forMax(Infinite)` を無視して既定タイムアウトを張る）
   2. `bugStayDropsDefaultTimeoutTest`（`stay()` で既定タイムアウトを張り直さない）
   3. `bugUnhandledDoesNotRearmTest`（未処理イベントで `makeTransition(stay())` を通らず既定タイムアウトを落とす）
   4. `bugSameStateGotoDoesNotRearmTest`（同一状態 `goto` で張り直さない）
-  5. `bugStayKeepsOldTimerTest`（`stay()` で旧状態タイマをキャンセルせず旧印が通る）
+  5. `bugStayKeepsOldTimerTest`（`stay()` で世代を進めない。`receiveOrdinaryWith(stateGen, …)`。滞留した印がその手で `currentGenStateMarkIsLive` を破り、受理されて `staleStateNeverFires` を破る。#344：前の版は壊した action が自分で `liveSid` を -1 にして違反を作っていた）
   6. `bugRestartReusesInstanceIdTest`（再起動時に `instance_id` を変えずローカル世代 0 始まりで旧印が誤一致する）
-  7. `bugNoOverrideNeverArmsTest`（レビュー低1 の変異 1：`NoOverride` で何も張らない。`quint run` でも違反になることを確かめた）
-  8. `bugUnhandledOnlyNeverArmsTest`（レビュー低1 の変異 2：未処理のときだけ張らない。`quint run` でも違反になることを確かめた）
-  - 旧版でこの 2 つの変異を入れて `quint run --invariant=invariant` を流すと、どちらも違反なしで通ることを確かめた（直っていることの裏付け）。
-- **残る弱点（今回は直さない）**：`namedMarks` は `Set` なので、同じ名前の繰り返しタイマの印が重なるとまとまる。`stopActor` の後に trace が終わるので、trace の長さの平均は 6 程度と浅い。どちらも今回の変異を捕まえることとは別で、直すとモデルの形が大きく変わる。**第 2 段の Quint の見直しでは、`namedMarks` を多重集合（`Set` を `List` にする）へ変えるかと、止めた後の `restart` を許すかを、実装の担当と決める。**
-- **モデルにしないもの**：実時間そのもの（期限到来は非決定選択）、リスナー通知順（`fsm_transition.qnt` が担当）、警告文字列の内容。
+  7. `bugNoOverrideNeverArmsTest`（レビュー低1 の変異 1：`NoOverride` で何も張らない）
+  8. `bugUnhandledOnlyNeverArmsTest`（レビュー低1 の変異 2：未処理のときだけ張らない）
+  9. `bugNamedMarkKeepsGenerationTest`（#341：名前付きの印を受理しても世代を進めない。`acceptNamedWith(stateGen, …)`。ケース 8 の原典の形の道で `currentGenStateMarkIsLive` が破れ、古い印が受理されて `staleStateNeverFires` が破れる）
+  10. `bugStateTimerFiresTwiceTest`（#342：`Executor` が 1 つの期限を 2 回撃つ。`stateTimerDueWith(false)`。`stateTimerFiresOnce` が破れ、2 通目が滞留して、1 通目の受理のあとに `currentGenStateMarkIsLive` が、2 通目の受理で `staleStateNeverFires` が破れる）
+
+### 6.4 原典との差
+
+| # | 差 | 原典の行 | モデル | 本番 | 扱い |
+|:---:|:---|:---|:---|:---|:---|
+| 1 | 状態タイムアウトの印を、枠が立っていること（`state_timer_armed == Some(generation)`）でも照合する | `FSM.scala:818-819`（`generation == gen` だけ） | 原典どおり持たない | 持つ（`fsm.rs:965`） | **原典と違う。** 正しい実装では結果を変えない（変異 G1 は正の run と不変条件を 1 つも落とさない。`currentGenStateMarkIsLive` が成り立つので余分）。ただし世代の進め忘れを隠す（G1 を入れると負の対照 `bugNamedMarkKeepsGenerationTest` が通らなくなる。#257 の後にケース 8 を Rust へ写しても、原典の形の道では同じ理由で見えない）。**直すのは新しい issue（未起票）**：本番の `fsm.rs:965` から `state_timer_armed` の照合を外し、原典どおり世代だけにする（本番の担当） |
+| 2 | 状態タイムアウトの印も `instance_id` を運び、前の個体の印を捨てる | `FSM.scala:818`（`TimeoutMarker(gen)` は持ち主を運ばない。持ち主の照合は名前付きの `:823` だけ） | 持つ | 持つ（`fsm.rs:962`） | 原典より強い。設計 M1 の意図的な強化で、直さない |
+| 3 | 存在しない状態への遷移と停止のたびにタイマを消す | `FSM.scala:934`（`terminate` は `currentState.stopReason` が空のときだけ働く）、`:888`・`:940`（存在しない状態への遷移が `stopReason` を残す） | いつも消す | いつも消す（`fsm.rs:435-446`、`:990-999`） | 原典より強い（安全側）。原典では、存在しない状態への遷移のあと遷移が 1 回成功するまで、2 回目の存在しない状態への遷移も止めたときの `postStop` もタイマを消さない。**直すかどうかは新しい issue（未起票）で決める** |
+| 4 | `StateTimeout` の印から存在しない状態へ移ったあとの `isStateTimerActive` | `FSM.scala:939`（`timeoutFuture` を取り消すが `None` に戻さない）、`:636` | 原典どおり真のまま（#344 で直した。前の版は偽） | `state_timer_armed` は `None`（`fsm.rs:443`、差 1 のガードの旗）。`is_state_timer_active` の元の `state_timer`（`fsm.rs:129`）はこの道で触らないので真のまま、と読める（読んだだけで、走らせていない） | 観測できる値は原典どおりと読める。直すものは差 1 の issue に含まれる |
+| 5 | `Single` が表にある間は何度でも撃てる | 原典のスケジューラは 1 回だけ撃つ | 何度でも撃てる（2 回目以降の印は 1 回目の受理のあと捨てられる） | 1 回だけ（`Executor` が行を消す） | モデルが原典より広い（安全側の近似）。直さない |
+
+### 6.5 確かめたこと（元帥の決まりの (a)〜(d)、2026-11-28）
+
+**再現の手順**（リポジトリの根で）：
+
+```sh
+npm ci
+python3 scripts/quint_fsm_timing_mutants.py          # 元の spec、(a) の期待どおりに落ちるか、(b) の witness
+python3 scripts/quint_fsm_timing_mutants.py --full --samples 5000   # (a) の表：全変異 × 全不変条件（数十分かかる）
+```
+
+- スクリプトは spec を一時ディレクトリへ写し、写しだけを書き換える（`crates/*/specs/` には何も置かない。CI はそこを glob する）。変異は「名前を挙げた定義の中で、決めた文字列 1 か所だけを置き換える」形で、1 か所でなければ止まる。
+- `quint run` は既定の Rust の backend に `--seed=0x1` を渡す。同じ seed なら同じ結果になることを確かめた。標本は既定で 20 手 × 10000 本。
+- 期待した検査（不変条件か run）で落ちない変異、等価と書いた変異を落とす正の run か不変条件、どの変異にも期待されない不変条件、届かない witness があれば、終了コードが 0 でなくなる。
+- 重い検査を同時に 2 本（`--jobs` で 4 本まで）走らせ、load average が 50 を超えているあいだは次を始めない。
+- `quint run` は標本の検査で、`quint verify` は使っていない。違反が出ないことは「流した範囲で反例が見つからなかった」という意味で、成り立つことの証明ではない。元の spec の `invariant` は、今の版を 40 手 × 30000 本、seed 21・22 で流して違反なし（trace の平均 22.7 手）。直す途中の版でも seed 1〜4・11・12 で違反なし。
+
+**(a) 壊した版で違反が出るか**（`--full --samples 5000`、つまり 20 手 × 5000 本、seed `0x1`。既定の 10000 本では、期待した検査で落ちることを全変異で確かめた。「落とした検査」は、違反になった不変条件と、落ちた run。負の対照の run（`bug*Test`）も数に入れて書く）：
+
+| 変異 | 変えたもの | 違反になった不変条件 | 落ちた run（正） | 落ちた負の対照 | 期待どおりか |
+|:---|:---|:---|:---|:---|:---|
+| M01 | `selectionShouldArm`：`NoOverride` で既定のタイムアウトを張らない | `armedMatchesSelection` | `defaultTimeoutOnEnterAndStayTest`、`namedMarkRearmDropsOldStateMarkTest`、`namedTimerDoesNotInvalidateStateTimerTest`、`namedTimerMarkCancelsStateTimerTest`、`restartInstanceIdDropsOldMarksTest`、`sameStateGotoRearmsTimeoutTest`、`stateTimeoutRearmsWhenTargetHasDefaultTest`、`stateTimeoutToNonExistentKeepsSlotTest`、`stateTimerFiresOnceTest`、`unhandledRearmsDefaultTimeoutTest` | `bugNamedMarkKeepsGenerationTest`、`bugStateTimerFiresTwiceTest`、`bugStayKeepsOldTimerTest` | はい |
+| M02 | `selectionShouldArm`：`forMax(Infinite)` で張る | `armedMatchesSelection`、`infiniteNeverArms` | `forMaxInfiniteDisablesDefaultTimeoutTest`、`namedTimerMarkCancelsStateTimerTest` | `bugNamedMarkKeepsGenerationTest` | はい |
+| M03 | `selectionShouldArm`：`forMax(After)` で張らない | `armedMatchesSelection` | `forMaxAfterOverridesNoDefaultTest` | なし | はい |
+| M04 | `receiveOrdinary`：通常のメッセージで世代を進めない | `armedMatchesSelection`、`currentGenStateMarkIsLive`、`staleStateNeverFires` | `defaultTimeoutOnEnterAndStayTest`、`forMaxAfterOverridesNoDefaultTest`、`namedMarkRearmDropsOldStateMarkTest`、`namedTimerDoesNotInvalidateStateTimerTest`、`namedTimerMarkCancelsStateTimerTest`、`restartInstanceIdDropsOldMarksTest`、`sameStateGotoRearmsTimeoutTest`、`stateTimeoutRearmsWhenTargetHasDefaultTest`、`stateTimeoutToNonExistentKeepsSlotTest`、`unhandledRearmsDefaultTimeoutTest` | `bugNamedMarkKeepsGenerationTest`、`bugStateTimerFiresTwiceTest`、`bugStayKeepsOldTimerTest` | はい |
+| M05 | `receiveNamedMark`：名前付きの印を受理しても世代を進めない（#341、ケース 8） | `armedMatchesSelection`、`currentGenStateMarkIsLive`、`staleStateNeverFires` | `namedMarkRearmDropsOldStateMarkTest`、`namedTimerMarkCancelsStateTimerTest` | なし | はい |
+| G1 | `receiveStateMark`：本番のガード（`fsm.rs:965` の `state_timer_armed` の照合）を、モデルの `stActive` で足す | なし | なし | `bugNamedMarkKeepsGenerationTest` | はい（等価） |
+| G1M05 | G1 と M05 を両方入れる | `currentGenStateMarkIsLive`、`staleStateNeverFires` | `namedMarkRearmDropsOldStateMarkTest`、`namedTimerMarkCancelsStateTimerTest` | `bugNamedMarkKeepsGenerationTest` | はい |
+| M06 | `receiveStateMark`：前の個体の状態タイムアウトの印を受理する | `armedMatchesSelection`、`staleStateNeverFires` | `restartInstanceIdDropsOldMarksTest` | なし | はい |
+| M07 | `namedMarkMatches`：古い世代の名前付きの印を受理する | `singleFiresOnce`、`staleNamedNeverFires` | `cancelledTimerQueuedMarkDroppedTest` | なし | はい |
+| M08 | `namedMarkMatches`：前の個体の名前付きの印を受理する | `staleNamedNeverFires` | `restartInstanceIdDropsOldMarksTest` | なし | はい |
+| M09 | `cancelNamedTimer`：取り消しても表に残す | `staleNamedNeverFires` | `repeatedTimerKeepsFiringUntilCancelledTest` | なし | はい |
+| M10 | `startNamedTimer`：置き換えで古い世代を使う | `staleNamedNeverFires` | なし | なし | はい |
+| M11 | `stopActor`：止めても名前付きタイマを残す | `stoppedNeverArms`、`stoppedNeverFires` | `stopClearsAllTimersTest` | なし | はい |
+| M12 | `stopActor`：止めても `Executor` の状態タイマの行を残す | `stateTimerFiresOnce`、`stoppedNeverArms`、`stoppedNeverFires` | `stopClearsAllTimersTest` | なし | はい |
+| M13 | `stopActor`：止めても枠を立てたままにする | `stoppedNeverArms` | `stopClearsAllTimersTest` | なし | はい |
+| M14 | `acceptNamedWith`：受理した `Single` を表に残す | `singleFiresOnce`、`singleLeavesTable`、`staleNamedNeverFires` | `namedMarkRearmDropsOldStateMarkTest`、`namedTimerMarkCancelsStateTimerTest`、`singleRestartedUnderSameNameFiresOnceTest` | なし | はい |
+| M15 | `acceptNamedWith`：繰り返しタイマを 1 回目の受理で表から消す（#343） | `repeatStaysInTable` | `duplicateDeliveryStaysQueuedTest`、`repeatedTimerKeepsFiringUntilCancelledTest` | なし | はい |
+| M16 | `receiveOrdinaryWith`：存在しない状態への遷移で名前付きタイマを残す | `staleNamedNeverFires` | `gotoNonExistentClearsTimersTest` | なし | はい |
+| M17 | `applyTransitionWith`：張っても `Executor` に期限を登録しない | なし | `defaultTimeoutOnEnterAndStayTest`、`forMaxAfterOverridesNoDefaultTest`、`namedMarkRearmDropsOldStateMarkTest`、`namedTimerDoesNotInvalidateStateTimerTest`、`namedTimerMarkCancelsStateTimerTest`、`restartInstanceIdDropsOldMarksTest`、`sameStateGotoRearmsTimeoutTest`、`stateTimeoutRearmsWhenTargetHasDefaultTest`、`stateTimeoutToNonExistentKeepsSlotTest`、`stateTimerFiresOnceTest`、`unhandledRearmsDefaultTimeoutTest` | `bugForMaxIgnoredTest`、`bugNamedMarkKeepsGenerationTest`、`bugStateTimerFiresTwiceTest`、`bugStayKeepsOldTimerTest` | はい |
+| M19 | `applyTransitionWith`：状態タイムアウトの印の後で枠を残さない | `armedMatchesSelection` | `forMaxAfterOverridesNoDefaultTest`、`namedTimerDoesNotInvalidateStateTimerTest`、`stateTimeoutRearmsWhenTargetHasDefaultTest`、`stateTimeoutToNonExistentKeepsSlotTest` | なし | はい |
+| M20 | `restartActor`：再起動で `instance_id` を変えない | `armedMatchesSelection`、`currentGenStateMarkIsLive`、`staleNamedNeverFires`、`staleStateNeverFires` | `restartInstanceIdDropsOldMarksTest` | なし | はい |
+| M21 | `stateTimerDue`：1 つの期限を 2 回撃てる（#342） | `currentGenStateMarkIsLive`、`staleStateNeverFires`、`stateTimerFiresOnce` | `stateTimerFiresOnceTest` | なし | はい |
+| M22 | `restartWith`：再起動で名前付きタイマを残す | `singleFiresOnce`、`staleNamedNeverFires` | なし | なし | はい |
+| M24 | `dropNamed`：捨てた名前付きの印をメールボックスに残す | なし | `cancelledTimerQueuedMarkDroppedTest`、`gotoNonExistentClearsTimersTest` | なし | はい |
+| M25 | `applyTransitionWith`：`StateTimeout` から存在しない状態へ移ると枠を落とす（前の版の形、#344） | なし | `stateTimeoutToNonExistentKeepsSlotTest` | なし | はい |
+| M26 | `dropState`：捨てた状態タイムアウトの印をメールボックスに残す | なし | `namedMarkRearmDropsOldStateMarkTest` | なし | はい |
+| M27 | `acceptState`：受理した状態タイムアウトの印をメールボックスに残す | `currentGenStateMarkIsLive`、`staleStateNeverFires` | `forMaxAfterOverridesNoDefaultTest`、`namedTimerDoesNotInvalidateStateTimerTest`、`stateTimeoutRearmsWhenTargetHasDefaultTest`、`stateTimeoutToNonExistentKeepsSlotTest` | `bugStateTimerFiresTwiceTest` | はい |
+| M28 | `applyTransitionWith`：張った期限を撃ったことにして始める | なし | `stateTimeoutRearmsWhenTargetHasDefaultTest` | なし | はい |
+
+- 不変条件ごとに、それを期待どおりに落とす変異がある（スクリプトが確かめる）。
+- 等価な変異は G1 だけである（正の run と不変条件は 1 つも落ちない。落ちるのは負の対照 `bugNamedMarkKeepsGenerationTest` だけで、これはガードが誤りを隠すことそのもの）。前の点検の M18（ガードを外す）は、今の spec ではガードが無い形が元なので、G1 が向きを逆にした同じ変異である。前の点検の M23（`namedTimerDue` から `alive` を外す）も、今の spec の元の形なので外した。
+- M17（張っても期限を登録しない）と M28（張った期限が撃てない）は、どの不変条件も落とさない（撃たないことは安全性の破れではない）。どちらも正の run が落とす。
+- M25（`StateTimeout` から存在しない状態へ移ると枠を落とす、前の版の形）を落とすのは run `stateTimeoutToNonExistentKeepsSlotTest` だけである（`armedMatchesSelection` は存在しない状態への遷移を対象外にしている）。
+
+**(b) 各 action が実行の中で起きるか**（witness。20 手 × 10000 本、seed `0x1`。trace の長さは max 21、min 2、平均 14.7。前の版は平均 6.0）：
+
+| witness | 届いた trace | witness | 届いた trace |
+|:---|---:|:---|---:|
+| 通常のメッセージ：`forMax(After)` で張る | 5193 | 通常のメッセージ：`forMax(Infinite)` | 5537 |
+| 通常のメッセージ：既定のタイムアウトで張る | 3465 | 通常のメッセージ：張らない | 8105 |
+| 通常のメッセージ：存在しない状態へ | 2722 | 名前付きの開始（新規） | 9052 |
+| 名前付きの開始（置き換え） | 5937 | 取り消し（ある名前） | 6792 |
+| 取り消し（無い名前） | 8474 | 名前付きの期限が撃つ | 6232 |
+| 名前付きの印が 2 通以上滞留 | 2273 | 状態タイマの期限が撃つ | 4330 |
+| 名前付きの受理（`Single`） | 1534 | 名前付きの受理（繰り返し） | 1525 |
+| 名前付きの受理（存在しない状態へ） | 328 | 名前付きの破棄（前の個体） | 474 |
+| 名前付きの破棄（表に無い） | 1512 | 名前付きの破棄（古い世代） | 1052 |
+| 状態の受理（枠を残す） | 855 | 状態の受理（張り直す） | 1110 |
+| 状態の受理（存在しない状態へ） | 208 | 状態の破棄（前の個体） | 267 |
+| 状態の破棄（古い世代） | 1384 | 再起動 | 3248 |
+| 停止 | 4093 | 再起動の後に前の個体の印が残る | 1029 |
+| ケース 8 の道：古い状態の印が滞留したまま名前付きを受理し、張り直す | 247 | ケース 8 の道：同上で、張らない | 211 |
+
+- `step` の 9 つの枝と、受理・破棄の下の分岐は、すべて 1 回以上起きた。0 の witness は無い。
+- ケース 8 の道（今の個体の古い状態タイムアウトの印が滞留しているあいだに名前付きの印を受理する）は、張り直す形・張らない形とも 2% ほどの trace で起きる（前の版では受理・破棄の道が 0.2〜0.3%）。
+
+**(c) 状態・action と本番（`crates/fraktor-actor/src/kernel/actor/fsm.rs`）の対応**：
+
+| モデル | 本番 | 合うか |
+|:---|:---|:---|
+| `curInst`／`nextInst`、`restartWith` | `instance_id`（`fsm.rs:122`、`:149` の `NEXT_INSTANCE.fetch_add`）。再起動で新しい `Fsm::new()` | 合う |
+| `stateGen` | `state_generation`（`:123`）。`cancel_state_timer_with_context`（`:396-402`）で +1 | 合う |
+| `stActive` | test-support の `state_timer`（`:129`、`FsmHandle::is_state_timer_active` の元、`test_support/fsm_handle.rs:124`）。原典の `timeoutFuture.isDefined` | 合うと読める（§6.4 の 4） |
+| `stGen`／`stSid` | `state_timer_armed: Option<u64>`（`:124`）の世代。`stSid` はモデルだけの期限の番号 | 世代は合う。`state_timer_armed` の照合そのもの（`:965`）はモデルに無い（§6.4 の 1） |
+| `liveSid`／`stIssued`／`stateTimerDue` | `Executor` の状態タイマの行（`executor_value.rs:1221` `schedule_fsm_state_timer`、`:1239` `cancel_fsm_state_timer`、`:1266` `fire_due_timers` が撃つと 1 回で消える） | 合う |
+| `namedGen`／`timers`、`startNamedTimer`／`cancelNamedTimer` | `FsmTimerState` の `named_timer_gen`・`timers`（`fsm_view.rs:65-72`）。開始と取り消しは `pending_ops` に積み、`flush_timer_ops`（`fsm.rs:360-394`）で `Executor` へ送る | 合う。モデルは表と `Executor` への反映を 1 手で済ませる（表への反映が即時であることは同じ） |
+| `namedTimerDue` | `executor_value.rs:1216` `schedule_fsm_named_timer` の行を `fire_due_timers` が撃つ | 合う。ただし `Single` を何度でも撃てる（§6.4 の 5） |
+| `receiveOrdinary` | `receive` の末尾（`fsm.rs:986-987`）＋`offer_event`＋`apply_next`（`:425-459`） | 合う。購読・購読解除・`ListenerTerminated`（`:910-925`）は世代を進めないが、モデルには無い |
+| `receiveNamedMark`／`acceptNamedWith`／`dropNamed` | `FsmTimerMark::Named`（`:928-959`）。個体・名前・世代を照合し、`Single` なら表から消し、状態タイマを取り消して世代を進める | 合う |
+| `receiveStateMark`／`acceptState`／`dropState` | `FsmTimerMark::StateTimeout`（`:961-976`） | 個体と世代の照合は合う。本番はさらに `state_timer_armed` を見る（§6.4 の 1） |
+| 存在しない状態への遷移（`gotoNonExistent`） | `apply_next` の `!moved`（`:435-446`）。表を空にし、`Executor` の名前付きの行と状態タイマを消し、`state_timer_armed = None` | 合う（§6.4 の 3・4） |
+| `stopActor` | `post_stop_with_context`（`:990-999`）の `clear_fsm_timers`（`executor_value.rs:1158`）＋`post_stop`（`fsm.rs:1001-`） | 合う |
+| 負の対照の action 10 個 | 本番には無い（壊した版） | `step` に入っていないので正しい |
+| 対応の無いもの | `FsmControl`（test-support の操作口、`fsm.rs:775-870`）、`pre_start` が最初の状態のタイムアウトを張ること（`:888-899`）、`when_with_state_timeout` を何回も呼んだときの合成、返事（`replying`）、Transition の通知、`whenUnhandled` の差し替え | どれもモデルの外（(d)） |
+
+**(d) 検査の大きさと見られないもの**：
+
+- 定数：状態は 4 つ（既定のタイムアウトなし 0、ありの 1・2、関数の無い 9）、名前は 2 つ（`"a"`、`"b"`）。上書きは 3 種類で、`After(d)` の長さは持たない。タイマの種類は `Single` と繰り返しの 2 つで、`FixedDelay` と `FixedRate` は区別しない。アクターは 1 本、データは持たない。
+- CI（`scripts/quint-check-specs.sh`）は `quint test`（28 本）と、`invariant` の 20 手 × 10000 本（seed は毎回変わる）を流す。今の spec では 4 秒ほど（前の版は 2 秒ほど）。**CI は変異のスクリプトを流さない**。(a)・(b) は直したときに人か担当が流す。
+- これで見られないもの：
+  - 実時間、期限の順、`(期限, seq)` の撃つ順、`FixedRate` の追いつきの回数、間隔 0 の panic（P1・P2 の中身）。
+  - 返事（`Cancel`）、Transition の通知、警告、購読、`whenUnhandled`、最初の状態のタイムアウト、負の有限の `forMax`（原典 `:908` の `d.length >= 0` に当たらない値は既定のタイムアウトに落ちる）。
+  - 止めた後の再起動（作らない。§6.1）。
+  - 撃たないこと（生きていること）は不変条件では見ない。run が見る（M17・M28）。
+
+### 6.6 `.qnt` が持たないもの（テストが担う）
+
+- **FSMTimingSpec ケース 2・4 の `Cancel` の返事（#313）**：落ちていたのはテストの状態関数の `replying(Cancel)` で、FSM の核の誤りではない。核は返事を送る（`make_transition` が遷移の通知の前に `replies` を送る、`fsm.rs:613-676`。原典 `FSM.scala:890-892`）。テストの状態関数の書き落としは、核のどんなモデルでも捕まえられないので、`.qnt` には返事を入れない。テストが担う（§10）。
+- **P1〜P3（#314）**：§5 の「P1〜P3 と Quint の分担」の表のとおり。時刻・順・回数と I6・I7 はテストが担う（§10）。
+
+### 6.7 残る弱点
+
+- `quint run` は標本の検査である。不変条件の破れを捕まえる確率は、決まった筋書きの run で補っている（ケース 7・8・9 の形と、二重発火）。
+- 止めると trace が終わる。`lifecycleDraw` で平均は 14.7 手（20 手のうち）になったが、40 手を超える深い組み合わせは見ていない。
 
 ## 7. 壊しうる入力
 
@@ -737,3 +913,49 @@ impl FraktorSpec {
 | 存在しない状態への `goto` で、原典は `terminate` を呼んで名前付きタイマを空にする（`FSM.scala:886-888, 933-939`） | §3.1(a) に足し、Quint にも入れた（`gotoNonExistentClearsTimersTest`）。エラーログを出さないことは別件（§8） |
 | 原典の `filter` は 1 つの事象を最初に当たったフィルタ 1 本にだけ数える。port は当たったすべてに数える | この issue のフィルタは重ならないので結果は同じ。変えると既存テストに響くため、別件にした（§3.5、§8） |
 | 基準の `main` が `53014ed` に進んだ | 取り込み、`executor_value.rs` の行番号を `53014ed` の位置に直した |
+
+### 9.2 PR #288 の Quint の読み直し（#341〜#344）への対応（2026-11-28）
+
+点検 `audit-288-qnt.md`（Opus 5.5）の 9 件への対応である。直したのは `fsm_timing.qnt`、この設計、再現のスクリプト `scripts/quint_fsm_timing_mutants.py` だけで、テストと本番のコードは触っていない。
+
+| 点検 | issue | 対応と反映箇所 |
+|:---:|:---:|:---|
+| 1 | #341 | 滞留した印を見る不変条件 `currentGenStateMarkIsLive`、張り直す形の run `namedMarkRearmDropsOldStateMarkTest`、負の対照 `bugNamedMarkKeepsGenerationTest` を足した。モデルの受理の条件から `stActive` を外して原典どおりにした（等価であることは変異 G1 で確かめた）。名前付きの印で世代を進め忘れる変異 M05 は、不変条件と run 2 本で落ちる。本番の `fsm.rs:965` のガードが誤りを隠すことと、それを外す新しい issue が要ることを §3.1(a)・§6.4 の 1 に書いた（§6.2、§6.3、§6.5、決定 5） |
+| 2 | #342 | `stateMarks` を `List` にし、不変条件 `stateTimerFiresOnce`、run `stateTimerFiresOnceTest`、負の対照 `bugStateTimerFiresTwiceTest` を足した。二重発火の変異 M21 は 3 つの不変条件と run で落ちる（§6.1〜§6.3、§6.5） |
+| 3 | #343 | 不変条件 `repeatStaysInTable` と run `repeatedTimerKeepsFiringUntilCancelledTest`（ケース 9 の形）を足した。繰り返しタイマを 1 回目で表から消す変異 M15 は両方で落ちる。`Cancel` の返事を `.qnt` に入れない理由（テストの状態関数の書き落としで、核のモデルでは捕まえられない）と、P1〜P3 のうち `.qnt` が持つもの・持たないものを書き分けた（§5、§6.6、§10） |
+| 4 | #344 | `StateTimeout` の印から存在しない状態へ移ったあとも `stActive` を真のまま残す（原典 `FSM.scala:939`）。run を `stateTimeoutToNonExistentKeepsSlotTest` に改めた（§3.1(a)、§6.3、§6.4 の 4） |
+| 5 | #344 | 冒頭のコメントの「1 対 1」を、原典との差を並べる形に書き直した。§3.1(a) の見出しも同じ（§3.1(a)、§6.4） |
+| 6 | #344 | §6 を今の spec に合わせて書き直した（状態、不変条件 11 個、run 28 本、検査の大きさ） |
+| 7 | #344 | `namedTimerDue`・`stateTimerDue` を `Executor` の行だけで有効にし、不変条件 `stoppedNeverFires` を足した（止め方の誤り M11・M12 が振る舞いで落ちる）。`restartActor`・`stopActor` を 4 回に 1 回だけ選ぶようにして、trace の平均を 6.0 手から 14.7 手（CI の 20 手）にした（§6.1、§6.5） |
+| 8 | #344 | `bugStayKeepsOldTimerTest` を、本物の action の引数を 1 つ変えた形（`receiveOrdinaryWith(stateGen, …)`）に直した。負の対照のどれもゴーストを手で書き換えない（§6.3） |
+| 9 | #344 | `liveSid` を `Executor` の状態タイマの行として書き直した（ゴーストではない）（§6.1） |
+
+- 新しい issue が要るもの（未起票）：(1) 本番 `fsm.rs:965` の `state_timer_armed` の照合を外す（§6.4 の 1）。(2) `terminate` が `stopReason` のあいだ働かない原典の振る舞いに合わせるかどうか（§6.4 の 3）。(3) `StateTimeout` から存在しない状態へ移ったあとの `is_state_timer_active` が真のまま残ることを、本番で走らせて確かめる（§6.4 の 4。読んだだけ）。
+- 設計の I1〜I7 と §5 を読み直した。I3 の「`FixedDelay`／`FixedRate` は取り消されるまで続く」と I4 の「二重発火しない」は、今は Quint の不変条件と run がある（§6.2）。I1 の「`StateTimeout` 印の受信は … `is_state_timer_active` を維持する」は、存在しない状態への遷移でも維持する形に Quint を合わせた。食い違いは残っていない。§1.2 のケース 7・8 の「代わりの確かめ」と決定 5・6 は、P1・P2 がまだ無いことを書き足した。
+
+## 10. テストの担当への申し送り（2026-11-28）
+
+### 10.1 #313：FSMTimingSpec ケース 2・4 に `Cancel` の返事を戻す
+
+- 原典：状態関数は `case Event(Cancel, _) => goto(Initial).replying(Cancel)`（`FSMTimingSpec.scala:217-218`。`TestCancelStateTimerInNamedTimerMessage2` も同じ、`:275-276`）。ケース 2 は `expectMsg(Cancel)` のあとに `expectMsg(Transition(fsm, TestStateTimeout, Initial))`（`:49-50`）、ケース 4 も同じ順（`:72-73`）。
+- 今の `crates/fraktor-actor/tests/fsm_timing_spec.rs`：
+  - ケース 2 の機械 `state_machine`（`:175` から。`TestStateTimeout` の状態関数は `:201-211`）と、ケース 4 の機械 `override_state_machine`（`:416` から。状態関数は `:430-438`）が、どちらも `StateTimeout` と `Cancel` を 1 つの枝（`goto(Initial)`）で受けている。**枝を 2 つに分け、`Cancel` の枝だけ `FsmState::goto(State::Initial).using(*data).replying(Cancel)` にする**（`FsmState::replying`、`fsm_state.rs:129`）。`StateTimeout` の枝は返事を足さない。
+  - ケース 2（`cancels_a_state_timeout`、`:336-351`）とケース 4（`allows_a_state_timeout_override`）の `within(1s)` の中で、`Transition` の前に `Cancel` を受ける（`spec.expect_msg_type::<Cancel>()` など）。返事は遷移の通知より先に送られる（原典 `FSM.scala:890-892` で `replies` を送ってから `:893-898` で通知。本番 `make_transition` も `replies` を先に送る）ので、順は原典どおり `Cancel` → `Transition` である。
+  - `:344-346` のコメント（「the machine answers it with the transition, which carries Cancel nowhere」）は誤りなので消す。
+  - 返事の宛先は `Cancel` の送り手（`fsm.tell(Cancel, test_actor.clone())` の `test_actor`）。`ignore_msg` は `Initial` からの `Transition` だけを捨てるので、`Cancel` は捨てられない。
+- Quint はこれを担わない（§6.6）。
+
+### 10.2 #314：§5 の P1〜P3 のファイル
+
+置き場所は §5 のとおり `crates/fraktor-actor/tests/fsm_timing_property_test.rs`（P1・P2）と `crates/fraktor-actor/tests/actor_ref_property_test.rs`（P3）。固定 seed の SplitMix64 と `ActorSystem::set_clock`（`actor_system_value.rs:207`。前例 `receive_timeout_property_test.rs:276`）を使う。**Quint が持たない部分**（§5 の分担の表）が中身の中心になる。
+
+- **P1（名前付きタイマ。I2・I3・I4）**：
+  - ランダムな操作列（開始・置き換え・取り消し・同じハンドラの中の `is_timer_active`・時計を進める・通常のメッセージ・再起動・停止）を流し、参照モデルの発火列と完全に一致することを見る。参照モデルは同じ期限なら予約した順（`seq`）、FSM の索引と受信タイムアウトの索引を合わせて `(期限, seq)` の順に撃つ（§3.1(c)）。
+  - Quint に無いもの：同じハンドラの中の `is_timer_active` が直前の開始・取り消しを返すこと、撃つ順、`FixedRate` が時計の飛びに追いつく回数と `FixedDelay` が追いつかないこと、繰り返しの間隔 0 の panic（文面は §3.1(c)）、`Single` の `Duration::ZERO` の即時発火、`Duration::MAX` 近くであふれても panic しないこと。
+  - 決まった筋書きとして入れるもの：ケース 7 の形（開始 → `run_until_idle()` → `Cancel` を送る（未処理）→ 時計を期限まで進める → `run_until_idle()`。印が先に積まれ、`Cancel` のあとに捨てられる。§5 P1 の本文）と、再起動のあとに古い `instance_id` の印が捨てられる筋書き。
+- **P2（状態タイムアウト。I1・I2・I5）**：
+  - 既定のタイムアウト（なし／有限／`when_with_state_timeout` を複数回呼んだ合成）× `for_max`（なし／`After`／`Infinite`）× 遷移の種類（`goto`／同一状態の `goto`／存在しない状態への `goto`／`stay()`／未処理／`StateTimeout` の受信／名前付きの印の受信）のランダムな列で、撃つ時刻・回数・同じ期限の順・古い印の破棄を参照モデルと比べる。
+  - **決まった筋書きとして必ず入れるもの（#341）**：ケース 8 の張り直す形。既定のタイムアウトのある状態 A で、同じハンドラの中で名前付きの `Single` を張る（状態タイマより先に予約されるので、同じ長さなら先に撃つ。§3.1(c)）→ 時計を両方の期限の先まで 1 回で進める → `run_until_idle()`。名前付きの印が先に処理されて既定のタイムアウトのある状態 B へ移り（張り直す）、続く古い `StateTimeout` の印は捨てられる。B の状態関数が `StateTimeout` を受けたら観測できる印（tester へのメッセージや遷移）を出すようにし、それが来ないことを見る。**この道だけが、本番の `fsm.rs:965` のガードを通して世代の進め忘れを見せる**（遷移先が張らない原典の形では、ガードが古い印を落とすので見えない）。書けることは確かめた：`set_clock` があり、`fire_due_timers`（`executor_value.rs:1266`）は 1 回の `now` で期限の来た行を `(期限, seq)` の順にすべて撃つので、2 通の印が両方メールボックスに積まれてから処理される。
+  - Quint に無いもの：撃つ時刻と回数、`timeout.or(existing)` の合成。
+- **P3（I6・I7）**：§5 の本文のとおり。Quint は持たない。
+- どの性質も台帳の件数には数えない（§5、§1.4）。
