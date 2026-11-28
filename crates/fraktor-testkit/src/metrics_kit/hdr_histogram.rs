@@ -23,9 +23,6 @@ use crate::metrics_kit::MetricsError;
 /// The lowest discernible value, the one the original builds with.
 const LOWEST_DISCERNIBLE_VALUE: i64 = 1;
 
-/// The percentiles a verbose console report prints.
-pub(crate) const PERCENTILES: [f64; 6] = [0.0, 50.0, 90.0, 95.0, 99.0, 100.0];
-
 /// The distribution of recorded values. Clones share the state.
 ///
 /// Mirrors `org.apache.pekko.testkit.metrics.HdrHistogram`.
@@ -162,13 +159,12 @@ impl HdrHistogram {
     self.inner.lock().expect("histogram lock").max()
   }
 
-  /// Returns the values a console report prints, all read under one lock
-  /// so a report never mixes two states of the histogram: the count, the
-  /// minimum, the maximum, and, when `verbose`, the values at the
-  /// reported percentiles in the order of `PERCENTILES`.
-  pub(crate) fn report_values(&self, verbose: bool) -> (u64, u64, u64, Option<[u64; 6]>) {
-    let inner = self.inner.lock().expect("histogram lock");
-    let percentiles = verbose.then(|| PERCENTILES.map(|percentile| inner.value_at_percentile(percentile)));
-    (inner.len(), inner.min(), inner.max(), percentiles)
+  /// Calls `f` with a snapshot of the recorded values. The snapshot is
+  /// made under the lock and `f` runs after the lock is released, so a
+  /// report reads and prints one state of the histogram without holding
+  /// the lock while it writes.
+  pub(crate) fn with_snapshot<T>(&self, f: impl FnOnce(hdrhistogram::Histogram<u64>) -> T) -> T {
+    let snapshot = self.inner.lock().expect("histogram lock").clone();
+    f(snapshot)
   }
 }

@@ -16,6 +16,8 @@
 
 //! A gauge that reads one file descriptor value of this process.
 
+use crate::metrics_kit::console_reporter::FileDescriptorReading;
+
 /// Which file descriptor value a gauge reads.
 #[derive(Clone, Copy)]
 enum FileDescriptorKind {
@@ -48,6 +50,17 @@ impl FileDescriptorGauge {
     Self { kind: FileDescriptorKind::Ratio }
   }
 
+  /// Returns the reading a console report prints: the raw count or
+  /// limit for the open and limit gauges, and the ratio for the ratio
+  /// gauge, whose reading is `NaN` where the platform has no value.
+  pub(crate) fn reading(&self) -> FileDescriptorReading {
+    match self.kind {
+      | FileDescriptorKind::Open => FileDescriptorReading::Open(open_file_descriptors()),
+      | FileDescriptorKind::Max => FileDescriptorReading::Max(max_file_descriptors()),
+      | FileDescriptorKind::Ratio => FileDescriptorReading::Ratio(self.value()),
+    }
+  }
+
   /// Returns the current value, `NaN` where the platform has no value.
   pub fn value(&self) -> f64 {
     match self.kind {
@@ -65,7 +78,9 @@ impl FileDescriptorGauge {
 #[cfg(unix)]
 fn open_file_descriptors() -> Option<u64> {
   let entries = std::fs::read_dir("/proc/self/fd").or_else(|_| std::fs::read_dir("/dev/fd")).ok()?;
-  Some(entries.count() as u64)
+  // The directory reading itself holds one descriptor, which the
+  // original's reading does not count.
+  Some((entries.count() as u64).saturating_sub(1))
 }
 
 /// The number of file descriptors this process has open.

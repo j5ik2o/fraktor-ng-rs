@@ -18,11 +18,12 @@
 
 use core::time::Duration;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// The state the clones of a [`KnownOpsInTimespanTimer`] share.
 struct TimerState {
   started_at: Instant,
+  started_epoch_nanos: i64,
   stopped_at: Mutex<Option<Instant>>,
 }
 
@@ -39,7 +40,14 @@ pub struct KnownOpsInTimespanTimer {
 impl KnownOpsInTimespanTimer {
   /// Starts a timer of `expected_ops` operations.
   pub fn new(expected_ops: i64) -> Self {
-    Self { expected_ops, state: Arc::new(TimerState { started_at: Instant::now(), stopped_at: Mutex::new(None) }) }
+    Self {
+      expected_ops,
+      state: Arc::new(TimerState {
+        started_at: Instant::now(),
+        started_epoch_nanos: epoch_nanos_now(),
+        stopped_at: Mutex::new(None),
+      }),
+    }
   }
 
   /// Stops the timer. Only the first call returns `true`.
@@ -72,10 +80,29 @@ impl KnownOpsInTimespanTimer {
     self.elapsed().map(|elapsed| (elapsed.as_nanos() as f64 / self.expected_ops as f64) as i64)
   }
 
+  /// Returns the signed elapsed nanoseconds a console report prints:
+  /// the elapsed time of a stopped timer, and for an unstopped timer the
+  /// negation of the start time reading.
+  pub(crate) fn elapsed_nanos_for_report(&self) -> i64 {
+    match self.elapsed() {
+      | Some(elapsed) => i64::try_from(elapsed.as_nanos()).unwrap_or(i64::MAX),
+      | None => 0_i64.wrapping_sub(self.state.started_epoch_nanos),
+    }
+  }
+
   /// Returns the operations per second, `None` until stopped.
   ///
   /// Mirrors `opsPerSecond`.
   pub fn ops_per_second(&self) -> Option<f64> {
     self.elapsed().map(|elapsed| self.expected_ops as f64 / (elapsed.as_nanos() as f64 / 1_000_000_000.0))
+  }
+}
+
+/// The nanoseconds between the Unix epoch and now, saturated to the
+/// largest `i64`. A clock before the epoch reads as zero.
+fn epoch_nanos_now() -> i64 {
+  match SystemTime::now().duration_since(UNIX_EPOCH) {
+    | Ok(since) => i64::try_from(since.as_nanos()).unwrap_or(i64::MAX),
+    | Err(_) => 0,
   }
 }

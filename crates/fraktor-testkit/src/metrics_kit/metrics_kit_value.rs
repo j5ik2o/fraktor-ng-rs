@@ -146,12 +146,18 @@ impl Drop for StopOnDrop<'_> {
 
 /// Registers metrics under keys and reports them.
 ///
-/// When the scheduled reporter writes to the standard output (the output
-/// of [`MetricsKit::new`]), no `StdoutLock` may be held while
-/// [`MetricsKit::shutdown_metrics`] runs or the kit is dropped: the
-/// reporter thread waits for the output lock, and stopping waits for the
-/// reporter thread, so holding the lock across a stop deadlocks. Release
-/// the output lock first, then stop.
+/// The output lock contract: a thread that holds the writer's lock must
+/// release it before calling [`MetricsKit::shutdown_metrics`], dropping
+/// the kit, [`MetricsKit::report_metrics`] or
+/// [`MetricsKit::report_and_clear_metrics`]. The writer's lock is the
+/// `StdoutLock` of the standard output for [`MetricsKit::new`], and for
+/// [`MetricsKit::with_output`] it is the lock the given writer takes
+/// inside its `write`, such as the lock of a shared buffer. The reporter
+/// thread waits for the output lock and a writer waits for the writer's
+/// lock, and stopping waits for the reporter thread, so a thread that
+/// holds the writer's lock across one of those calls deadlocks. Another
+/// thread holding the writer's lock does not deadlock; that only delays
+/// the report or the stop until the lock is released.
 ///
 /// Mirrors `org.apache.pekko.testkit.metrics.MetricsKit` and `MetricsKitOps`.
 pub struct MetricsKit {
@@ -164,7 +170,9 @@ impl MetricsKit {
     Self::with_output(settings, Box::new(std::io::stdout()))
   }
 
-  /// Creates a kit that reports to `output`.
+  /// Creates a kit that reports to `output`. The lock `output` takes
+  /// inside its `write` is the writer's lock of the output lock contract
+  /// on [`MetricsKit`].
   pub fn with_output(settings: MetricsKitSettings, output: Box<dyn Write + Send>) -> Self {
     let has_console = settings.reporters.iter().any(|kind| matches!(kind, MetricsReporterKind::Console));
     let shared = Arc::new(MetricsKitShared {
@@ -301,6 +309,9 @@ impl MetricsKit {
   /// reported to the caller, as in the original, and every metric stays
   /// registered.
   ///
+  /// A thread that holds the writer's lock must release it before
+  /// calling this method; see the output lock contract on [`MetricsKit`].
+  ///
   /// Mirrors `reportMetrics`.
   pub fn report_metrics(&self) {
     self.shared.report_once();
@@ -310,6 +321,9 @@ impl MetricsKit {
   /// registered while the report is printed stay registered, and when
   /// the output fails the printed metrics stay registered too, so a
   /// later report can print them again.
+  ///
+  /// A thread that holds the writer's lock must release it before
+  /// calling this method; see the output lock contract on [`MetricsKit`].
   ///
   /// Mirrors `reportAndClearMetrics`.
   pub fn report_and_clear_metrics(&self) {
@@ -329,6 +343,9 @@ impl MetricsKit {
   /// Stops the scheduled reports and waits until the reporter thread has
   /// ended, also when another caller is already stopping it. Calls after
   /// the thread has ended do nothing.
+  ///
+  /// A thread that holds the writer's lock must release it before
+  /// calling this method; see the output lock contract on [`MetricsKit`].
   ///
   /// Mirrors `shutdownMetrics`.
   pub fn shutdown_metrics(&self) {
